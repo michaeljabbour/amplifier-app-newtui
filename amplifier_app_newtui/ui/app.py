@@ -27,6 +27,8 @@ outside the chain:
 
 from __future__ import annotations
 
+import threading
+
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
@@ -158,11 +160,34 @@ class NewTuiApp(App[None]):
         yield self.footer_bar
 
     def on_mount(self) -> None:
+        # Safety net: any mounted module that print()s raw ANSI under the
+        # full-screen TUI would corrupt the Textual screen (found live —
+        # a streaming-ui hook blanked the whole turn). Stray prints are
+        # captured into the app log instead.
+        self.begin_capture_print(self)
         self.composer.focus_input()
-        self.adapter.steering.add_listener(lambda: app_support.sync_steer_echoes(self))
+        self._ui_thread_id = threading.get_ident()
+        self.adapter.steering.add_listener(self._on_steering_changed)
         self.refresh_status()
         self.run_worker(self._consume_events(), exclusive=False)
         self.run_worker(self._boot_runtime(), exclusive=False)
+
+    def on_unmount(self) -> None:
+        shutdown = getattr(self.adapter, "shutdown", None)
+        if callable(shutdown):
+            shutdown()  # stop the runtime thread (real sessions)
+
+    def on_print(self, event: events.Print) -> None:
+        if text := event.text.strip():
+            self.log(f"captured print: {text[:200]}")
+
+    def _on_steering_changed(self) -> None:
+        # A real runtime consumes steers on ITS thread (step-boundary
+        # bridge); widget work must hop back to the UI thread.
+        if threading.get_ident() == self._ui_thread_id:
+            app_support.sync_steer_echoes(self)
+        else:
+            self.call_from_thread(app_support.sync_steer_echoes, self)
 
 
     async def _boot_runtime(self) -> None:

@@ -500,3 +500,23 @@ async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> 
         assert any(m["role"] == "system" for m in messages)
     finally:
         await resumed.cleanup()
+
+
+def test_strip_printing_hooks_removes_line_mode_printers() -> None:
+    """App overlays can drag in stdout printers (hooks-streaming-ui et al);
+    raw ANSI under the full-screen TUI corrupts the screen (found live)."""
+    from amplifier_app_newtui.kernel.runtime import _strip_printing_hooks
+
+    plan = {
+        "hooks": [
+            {"module": "hooks-streaming-ui"},
+            {"module": "hooks-approval"},
+            {"module": "hooks-todo-display"},
+            {"module": "hooks-insight-blocks"},
+            {"module": "hooks-inline-blocks"},
+            {"module": "hooks-mode"},
+        ]
+    }
+    _strip_printing_hooks(plan)
+    assert [h["module"] for h in plan["hooks"]] == ["hooks-approval", "hooks-mode"]
+    _strip_printing_hooks({})  # tolerates missing/odd shapes

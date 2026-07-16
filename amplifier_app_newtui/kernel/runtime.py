@@ -58,6 +58,35 @@ def _provider_and_model(mount_plan: dict[str, Any]) -> tuple[str, str]:
     return (provider, model)
 
 
+_PRINTING_HOOKS = frozenset(
+    {
+        "hooks-streaming-ui",  # green "Amplifier:" line-mode streaming printer
+        "hooks-todo-display",  # todo-table stdout printer
+        "hooks-insight-blocks",  # insight-panel stdout printer
+        "hooks-inline-blocks",  # inline-panel stdout printer
+    }
+)
+"""Line-mode stdout printers (composed in by app-level bundle overlays).
+
+This app owns its rendering: the packaged bundle mounts no printing
+hooks (NOTES-kernel-runtime), but user ``bundle.app`` overlays can drag
+them in transitively, and a hook writing raw ANSI (cursor moves, line
+erases) under the full-screen TUI corrupts the Textual screen — found
+live: the whole turn rendered blank in real mode. Stripped for the
+headless ``run`` subcommand too, where the same printers double-echo.
+"""
+
+
+def _strip_printing_hooks(mount_plan: dict[str, Any]) -> None:
+    hooks = mount_plan.get("hooks")
+    if isinstance(hooks, list):
+        mount_plan["hooks"] = [
+            h
+            for h in hooks
+            if not (isinstance(h, dict) and h.get("module") in _PRINTING_HOOKS)
+        ]
+
+
 class RealRuntime:
     """One real amplifier session driving the UI event queue."""
 
@@ -118,6 +147,7 @@ class RealRuntime:
     async def start(self) -> None:
         """Resolve config, create the session, register every hook."""
         resolved = await resolve_config(self._bundle, project_dir=self._project_dir)
+        _strip_printing_hooks(resolved.mount_plan)
         self._resolved = resolved
         store = SessionStore(project_dir=resolved.project_dir)
         self._store = store

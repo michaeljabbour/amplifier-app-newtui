@@ -16,7 +16,7 @@ from typing import Any
 
 from amplifier_core import HookResult
 
-from .events import UIEvent, normalize
+from .events import ContentBlockEnd, UIEvent, normalize, usage_from_content_block_end
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,14 @@ class QueueBridge:
     async def handle_event(self, event: str, data: dict[str, Any]) -> HookResult:
         normalized = normalize(event, data or {})
         if normalized is not None:
+            # The streaming orchestrator never fires ``provider:response``;
+            # per-response usage (tokens + provider-computed cost) rides on
+            # the final content block. Synthesize the telemetry event first
+            # so cost/token consumers stay single-sourced (spec §11).
+            if isinstance(normalized, ContentBlockEnd):
+                usage = usage_from_content_block_end(normalized)
+                if usage is not None:
+                    self.emit(usage)
             self.emit(normalized)
         return HookResult(action="continue")
 

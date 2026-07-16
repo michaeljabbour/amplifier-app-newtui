@@ -288,3 +288,76 @@ def test_events_json_roundtrip() -> None:
     assert isinstance(event, ToolPost)
     restored = ToolPost.model_validate_json(event.model_dump_json())
     assert restored == event
+
+
+class TestUsageFromContentBlockEnd:
+    """Real runtime: usage rides on content_block:end (no provider:response)."""
+
+    def test_synthesizes_usage_with_provider_cost(self) -> None:
+        from decimal import Decimal
+
+        from amplifier_app_newtui.kernel.cost import cost_of
+        from amplifier_app_newtui.kernel.events import (
+            normalize,
+            usage_from_content_block_end,
+        )
+
+        block_end = normalize(
+            "content_block:end",
+            {
+                "block_type": "text",
+                "block_index": 0,
+                "total_blocks": 1,
+                "block": {"text": "OK", "type": "text"},
+                "usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 4,
+                    "cache_read_tokens": None,
+                    "cache_creation_input_tokens": 88471,
+                    "cost_usd": "1.1061075",
+                },
+            },
+        )
+        usage = usage_from_content_block_end(block_end)
+        assert usage is not None
+        assert usage.input_tokens == 2
+        assert usage.output_tokens == 4
+        assert usage.cache_write == 88471
+        assert usage.cost_usd == Decimal("1.1061075")
+        # Provider-reported cost is authoritative over the table estimate.
+        assert cost_of(usage) == Decimal("1.1061075")
+
+    def test_no_usage_payload_returns_none(self) -> None:
+        from amplifier_app_newtui.kernel.events import (
+            normalize,
+            usage_from_content_block_end,
+        )
+
+        block_end = normalize(
+            "content_block:end",
+            {"block_type": "text", "block": {"text": "hi", "type": "text"}},
+        )
+        assert usage_from_content_block_end(block_end) is None
+
+    def test_bridge_emits_usage_before_block_end(self) -> None:
+        import asyncio
+
+        from amplifier_app_newtui.kernel.queue_bridge import QueueBridge
+
+        async def run() -> list[str]:
+            queue: asyncio.Queue = asyncio.Queue()
+            bridge = QueueBridge(queue)
+            await bridge.handle_event(
+                "content_block:end",
+                {
+                    "block_type": "text",
+                    "block": {"text": "OK", "type": "text"},
+                    "usage": {"input_tokens": 2, "output_tokens": 4, "cost_usd": "0.5"},
+                },
+            )
+            kinds = []
+            while not queue.empty():
+                kinds.append(queue.get_nowait().kind)
+            return kinds
+
+        assert asyncio.run(run()) == ["provider_response_usage", "content_block_end"]

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from itertools import count
 from typing import Annotated, Any, Literal
 
@@ -237,6 +238,10 @@ class ProviderResponseUsage(_Envelope):
     cache_read: int = 0
     cache_write: int = 0
     model: str = ""
+    cost_usd: Decimal | None = None
+    """Provider-reported cost when available (e.g. loop-streaming's
+    ``content_block:end`` usage payload) — authoritative over the local
+    pricing-table estimate."""
 
 
 class ProviderNotice(_Envelope):
@@ -427,6 +432,40 @@ def _int(data: Mapping[str, Any], *keys: str, default: int = 0) -> int:
         except (TypeError, ValueError):
             continue
     return default
+
+
+def _cost_usd(data: Mapping[str, Any]) -> Decimal | None:
+    value = data.get("cost_usd")
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def usage_from_content_block_end(event: "ContentBlockEnd") -> "ProviderResponseUsage | None":
+    """Synthesize provider telemetry from a ``content_block:end`` usage payload.
+
+    The streaming orchestrator does not fire ``provider:response`` hooks;
+    each response's usage (including a provider-computed ``cost_usd``)
+    rides on the final content block instead. Without this, real-mode
+    turn rules and the footer read ``0.0k tok · $0.00`` forever.
+    """
+    usage = event.usage
+    if not usage:
+        return None
+    return ProviderResponseUsage(
+        session_id=event.session_id,
+        parent_id=event.parent_id,
+        input_tokens=_int(usage, "input_tokens", "prompt_tokens"),
+        output_tokens=_int(usage, "output_tokens", "completion_tokens"),
+        cache_read=_int(usage, "cache_read", "cache_read_input_tokens", "cache_read_tokens"),
+        cache_write=_int(
+            usage, "cache_write", "cache_creation_input_tokens", "cache_write_tokens"
+        ),
+        cost_usd=_cost_usd(usage),
+    )
 
 
 def _dict(data: Mapping[str, Any], *keys: str) -> dict[str, Any]:

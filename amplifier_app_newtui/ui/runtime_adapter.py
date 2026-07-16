@@ -126,8 +126,36 @@ class RuntimeAdapter:
         return f"Applying decision: {choice}"
 
 
+class _AppLoopQueue:
+    """``put_nowait`` shim marshalling runtime-thread emits to the app loop.
+
+    ``asyncio.Queue`` is not thread-safe; the runtime thread's hooks emit
+    UIEvents synchronously, so each put hops to the app loop via
+    ``call_soon_threadsafe``. Only the producer half is proxied — the app
+    keeps consuming the real queue.
+    """
+
+    def __init__(self, queue: asyncio.Queue[UIEvent], loop: asyncio.AbstractEventLoop) -> None:
+        self._queue = queue
+        self._loop = loop
+
+    def put_nowait(self, event: UIEvent) -> None:
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
+
+
 class RealRuntimeAdapter(RuntimeAdapter):
-    """Adapter over ``kernel/runtime.RealRuntime`` (real amplifier session)."""
+    """Adapter over ``kernel/runtime.RealRuntime`` (real amplifier session).
+
+    The runtime lives on its OWN thread + event loop: real sessions mount
+    user-overlay hooks (memory briefings, context intelligence, …) that
+    do seconds of synchronous work inside ``session.execute`` — on the UI
+    loop that starved rendering completely (found live: the whole turn
+    painted at once at the rule). Marshalling: UIEvents hop loops through
+    :class:`_AppLoopQueue`; ``submit``/``interrupt``/``fork`` proxy in
+    via ``run_coroutine_threadsafe``; approval answers hop in via
+    ``call_soon_threadsafe``; approval presentation hops out to the app
+    with ``call_soon_threadsafe`` on the app loop.
+    """
 
     def __init__(self, *, bundle: str | None = None, resume_id: str | None = None) -> None:
         super().__init__()
@@ -135,21 +163,22 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self._resume_id = resume_id
         self._runtime: Any = None
         self._presented: str | None = None
+        self._app_loop: asyncio.AbstractEventLoop | None = None
+        self._runtime_loop: asyncio.AbstractEventLoop | None = None
+        self._thread: Any = None
+        self._stop: asyncio.Event | None = None  # belongs to the runtime loop
 
     async def start(self, ready: Callable[[], None]) -> None:
-        from ..kernel.runtime import RealRuntime  # lazy: --demo stays offline
+        import threading
 
-        runtime = RealRuntime(
-            bundle=self._bundle,
-            resume_id=self._resume_id,
-            queue=self.queue,
-            steering=self.steering,
-            needs_you=self.needs_you,
-            denial_log=self.denial_log,
-            mode=self._current_mode,
+        self._app_loop = asyncio.get_running_loop()
+        started: asyncio.Future[None] = self._app_loop.create_future()
+        self._thread = threading.Thread(
+            target=self._thread_main, args=(started,), name="real-runtime", daemon=True
         )
-        self._runtime = runtime
-        await runtime.start()
+        self._thread.start()
+        await started  # runtime.start() finished (or raised) on its thread
+        runtime = self._runtime
         self.bundle_name = runtime.bundle_name
         self.session_short = runtime.session_short
         self.banner = runtime.banner
@@ -160,24 +189,73 @@ class RealRuntimeAdapter(RuntimeAdapter):
         runtime.broker.add_listener(self._on_broker_change)
         ready()
 
+    def _thread_main(self, started: asyncio.Future[None]) -> None:
+        asyncio.run(self._thread_body(started))
+
+    async def _thread_body(self, started: asyncio.Future[None]) -> None:
+        from ..kernel.runtime import RealRuntime  # lazy: --demo stays offline
+
+        assert self._app_loop is not None
+        self._runtime_loop = asyncio.get_running_loop()
+        self._stop = asyncio.Event()
+
+        def _resolve(fn: Callable[[], None]) -> None:
+            self._app_loop.call_soon_threadsafe(  # type: ignore[union-attr]
+                lambda: fn() if not started.done() else None
+            )
+
+        try:
+            runtime = RealRuntime(
+                bundle=self._bundle,
+                resume_id=self._resume_id,
+                queue=_AppLoopQueue(self.queue, self._app_loop),  # type: ignore[arg-type]
+                steering=self.steering,
+                needs_you=self.needs_you,
+                denial_log=self.denial_log,
+                mode=self._current_mode,
+            )
+            await runtime.start()
+        except BaseException as error:  # surface boot failures on the app loop
+            _resolve(lambda: started.set_exception(error))
+            return
+        self._runtime = runtime
+        _resolve(lambda: started.set_result(None))
+        await self._stop.wait()  # keep the loop alive for proxied calls
+        try:
+            await runtime.cleanup()
+        except Exception:
+            pass  # best-effort teardown on exit
+
+    async def _in_runtime(self, coro: Any) -> Any:
+        assert self._runtime_loop is not None
+        future = asyncio.run_coroutine_threadsafe(coro, self._runtime_loop)
+        return await asyncio.wrap_future(future)
+
     def _current_mode(self) -> str:
         return self.app.mode_id if self.app is not None else "chat"
 
     def _on_broker_change(self) -> None:
+        # Fires on the runtime thread — presentation hops to the app loop.
         head = self._runtime.broker.head if self._runtime else None
         if head is None:
             self._presented = None
             return
         if head.ticket_id != self._presented and self.app is not None:
             self._presented = head.ticket_id
-            self.app.present_approval(head.ticket_id, head.prompt, head.options)
+            app, ticket = self.app, head
+            if self._app_loop is not None:
+                self._app_loop.call_soon_threadsafe(
+                    app.present_approval, ticket.ticket_id, ticket.prompt, ticket.options
+                )
 
     async def submit(self, text: str) -> None:
         if self._runtime is not None:
-            await self._runtime.submit(text)
+            await self._in_runtime(self._runtime.submit(text))
 
     async def interrupt(self) -> bool:
-        return await self._runtime.interrupt() if self._runtime else False
+        if self._runtime is None:
+            return False
+        return await self._in_runtime(self._runtime.interrupt())
 
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Real fork: foundation in-memory fork + ``context.set_messages()``."""
@@ -185,14 +263,24 @@ class RealRuntimeAdapter(RuntimeAdapter):
 
         if self._runtime is None:
             raise RewindError("session not started")
-        await self._runtime.fork(checkpoint_id, ledger)
+        await self._in_runtime(self._runtime.fork(checkpoint_id, ledger))
 
     def answer_approval(self, ticket_id: str, choice: str) -> None:
-        if self._runtime is not None:
+        if self._runtime is None or self._runtime_loop is None:
+            return
+
+        def _answer() -> None:
             try:
                 self._runtime.broker.answer(ticket_id, choice)
             except KeyError:
                 pass  # ticket already timed out / resolved
+
+        self._runtime_loop.call_soon_threadsafe(_answer)
+
+    def shutdown(self) -> None:
+        """Ask the runtime thread to clean up and exit (best-effort)."""
+        if self._runtime_loop is not None and self._stop is not None:
+            self._runtime_loop.call_soon_threadsafe(self._stop.set)
 
     def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
         """Claims derived from the turn's tool calls (spec §10; ADR-0007

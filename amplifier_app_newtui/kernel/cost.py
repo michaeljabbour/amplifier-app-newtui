@@ -148,7 +148,12 @@ def estimate_cost(
 
 
 def cost_of(usage: ProviderResponseUsage, pricing: PricingTable | None = None) -> Decimal | None:
-    """Cost of one normalized ``provider_response_usage`` event."""
+    """Cost of one normalized ``provider_response_usage`` event.
+
+    A provider-reported ``cost_usd`` (loop-streaming's content-block
+    usage payload) is authoritative over the local table estimate."""
+    if usage.cost_usd is not None:
+        return usage.cost_usd
     return estimate_cost(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
