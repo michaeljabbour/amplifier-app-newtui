@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from .app import NewTuiApp
 
 STEER_NOTICE = "steer queued · shift+enter queues a full next-turn message"
+STEER_NOTICE_LEGACY = "steer queued · alt+enter queues a full next-turn message"
+STEER_DISCARDED_NOTICE = "steer not applied · discarded at turn end"
 QUEUED_NOTICE = "message queued · runs as the next turn"
 APPROVAL_NOTICE = "approval required · choose below the transcript"
 APPROVAL_NOTICE_DURATION = 6.0
@@ -97,8 +99,22 @@ def permissions_block(
         Segment(text=f"  {trust_str}\n", style_token="dim"),
     ]
     spans.extend(
-        Segment(text=f"  {slot.label}\n", style_token="fg") for slot in surface.slots()
+        Segment(text=f"  {slot.label()}\n", style_token="fg") for slot in surface.slots()
     )
+    if snapshot.exceptions:
+        spans.append(
+            Segment(
+                text="  always allowed: " + " · ".join(snapshot.exceptions) + "\n",
+                style_token="dim",
+            )
+        )
+    if snapshot.blocks:
+        spans.append(
+            Segment(
+                text="  blocked: " + " · ".join(snapshot.blocks) + "\n",
+                style_token="dim",
+            )
+        )
     spans.append(Segment(text=f"  boundary: {snapshot.boundary}", style_token="dim"))
     return Answer(id=allocator.next_id(), spans=tuple(spans))
 
@@ -187,7 +203,9 @@ def echo_steer(app: NewTuiApp, text: str) -> None:
     echo = SteerEcho(id=app.allocator.next_id(), text=text)
     app.steer_echoes[queued.message_id] = echo.id
     app.append_block(echo)
-    app.show_notice(STEER_NOTICE)
+    # Advertise the queue chord the terminal can actually deliver
+    # (README/§12: alt+enter is the legacy fallback).
+    app.show_notice(STEER_NOTICE if app.kitty_protocol else STEER_NOTICE_LEGACY)
 
 
 def handle_lane_focus_change(app: NewTuiApp, lane_id: str | None) -> None:
@@ -230,7 +248,11 @@ def finish_turn_queues(app: NewTuiApp) -> None:
     notice) are reduced, so — as in the mockup ``drainQueue`` — the
     pickup notice lands last and stays visible.
     """
-    app.adapter.steering.drain_steers()  # discard; the listener drops the ↳ echoes
+    # Discard leftovers (ADR-0007: an unconsumed steer must not become a
+    # turn the user never sent) — but say so; silent loss of typed input
+    # reads as a bug. The listener drops the ↳ echoes.
+    if app.adapter.steering.drain_steers():
+        app.show_notice(STEER_DISCARDED_NOTICE)
     queued = app.adapter.steering.consume_next_turn_message()
     if queued is not None:
         app.show_notice("queued message picked up")
@@ -315,7 +337,7 @@ def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
     from .needs_you import applying_decision_line
 
     try:
-        app.adapter.needs_you.answer(decision_id, answer)
+        item = app.adapter.needs_you.answer(decision_id, answer)
     except (KeyError, ValueError) as error:
         app.show_notice(str(error))
         return
@@ -323,7 +345,9 @@ def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
     # Mockup logs the applied decision as a narration line: bright "● "
     # marker + fg text (design-v3-cohesive.html:289).
     app.append_block(Narration(id=app.allocator.next_id(), text=narration))
-    app.journal.record_override(answer)
+    # The denied ACTION is the /improve join key (DenialLog counts by
+    # action); the chip label is only the fallback for actionless items.
+    app.journal.record_override(item.action or answer)
     app.refresh_status()
 
 

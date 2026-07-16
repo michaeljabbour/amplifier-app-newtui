@@ -522,6 +522,18 @@ def _render_improve(block: ImproveBlock, width: int) -> tuple[Line, ...]:
             Segment(text=f"Improve  {IMPROVE_HEADER}", style_token="fg"),
         )
     ]
+    if not block.proposals:
+        lines.append(
+            (
+                Segment(
+                    text=(
+                        "  no proposals yet · repeated approvals and overridden"
+                        " denials become evidence here"
+                    ),
+                    style_token="dimmer",
+                ),
+            )
+        )
     for index, proposal in enumerate(block.proposals, start=1):
         if proposal.action:
             # 'allowlist:' rows name the action once, in green (mockup

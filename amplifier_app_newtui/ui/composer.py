@@ -103,6 +103,25 @@ class ComposerInput(TextArea):
             event.stop()
             event.prevent_default()
             composer.handle_queue()
+        elif event.key == "ctrl+j":
+            # Multi-line input, amplifier-app-cli parity (its banner:
+            # "Multi-line: Ctrl-J"). The TextArea grows to max-height 6.
+            # Ignored while empty: automation that sends Enter as CRLF
+            # (e.g. node-pty key helpers) must not leave a phantom
+            # newline in the just-cleared composer.
+            event.stop()
+            event.prevent_default()
+            if self.text:
+                self.insert("\n")
+        elif event.key in ("up", "down") and not self.text:
+            # Empty composer: arrows drive the auto-opened lanes panel
+            # (spec §8 header "↑↓ select · enter focus") — the panel keeps
+            # composer focus at fan-out so typing still steers.
+            event.stop()
+            event.prevent_default()
+            composer.post_message(
+                Composer.NavKey(-1 if event.key == "up" else 1)
+            )
         elif event.key == "escape":
             event.stop()
             event.prevent_default()
@@ -179,6 +198,18 @@ class Composer(Horizontal):
     class EscPressed(Message):
         """Esc in the composer; the app resolves it via ``ESC_CHAIN``."""
 
+    class NavKey(Message):
+        """↑/↓ on an EMPTY composer — the app routes it to an open,
+        unfocused overlay strip (auto-opened lanes panel, spec §8)."""
+
+        def __init__(self, delta: int) -> None:
+            self.delta = delta
+            super().__init__()
+
+    class EnterEmpty(Message):
+        """Enter on an EMPTY composer — focus the selected lane when the
+        lanes panel is open (otherwise ignored, as before)."""
+
     class CycleModeRequested(Message):
         """The ``[mode]`` badge was clicked; the app cycles the mode."""
 
@@ -246,6 +277,7 @@ class Composer(Horizontal):
     def handle_enter(self) -> None:
         text = self._input.text.strip()
         if not text:
+            self.post_message(self.EnterEmpty())
             return
         if self.running:
             self.post_message(self.Steer(text))

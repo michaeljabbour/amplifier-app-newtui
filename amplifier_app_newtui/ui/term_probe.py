@@ -63,3 +63,39 @@ def _parse_version(raw: str) -> tuple[int, int]:
     """Leading ``major.minor`` of a version string; (0, 0) when unparsable."""
     match = re.match(r"(\d+)\.(\d+)", raw)
     return (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+
+
+_alt_named_keys_patched = False
+
+
+def patch_legacy_alt_named_keys() -> None:
+    """Make legacy ``ESC``-prefixed chords on NAMED keys reach the app.
+
+    A legacy terminal sends alt+enter as ``ESC CR``. Textual's
+    ``XTermParser`` reissues the pair with ``alt=True``, but its
+    ``_sequence_to_key_events`` only honours ``alt`` for
+    single-character key names (``if len(name) == 1 and alt``), so
+    alt+enter is delivered as plain ``enter`` (verified on Textual
+    8.2.8) — mid-turn that silently turns a queue into a steer. Wrap
+    the method so named keys (enter, tab, …) regain their ``alt+``
+    prefix. Kitty-protocol terminals are unaffected (extended keys
+    resolve before this path).
+    """
+    global _alt_named_keys_patched
+    if _alt_named_keys_patched:
+        return
+    from textual import events
+    from textual._xterm_parser import XTermParser
+
+    original = XTermParser._sequence_to_key_events
+
+    def _with_alt_named(self, sequence: str, alt: bool = False):  # type: ignore[no-untyped-def]
+        for event in original(self, sequence, alt=alt):
+            key = event.key
+            if alt and len(sequence) == 1 and len(key) > 1 and "+" not in key:
+                yield events.Key(f"alt+{key}", event.character)
+            else:
+                yield event
+
+    XTermParser._sequence_to_key_events = _with_alt_named  # type: ignore[method-assign]
+    _alt_named_keys_patched = True

@@ -176,6 +176,9 @@ class NeedsYouItem(BaseModel):
     choices: tuple[str, ...] = ()
     highlight: str = ""
     """Substring of ``question`` the UI accents teal (mockup ``mj/waypoint``)."""
+    action: str = ""
+    """The denied action this decision defers (joins override records to
+    the DenialLog for /improve trust-slot evidence)."""
     status: NeedsYouStatus = "pending"
     answer: str = ""
     created_at: float = 0.0
@@ -222,6 +225,7 @@ class NeedsYouQueue(_ListenerMixin):
         *,
         choices: tuple[str, ...] = (),
         highlight: object = "",
+        action: object = "",
     ) -> NeedsYouItem:
         """Park a decision for later; raises ``ValueError`` when full/empty."""
         active = [i for i in self._items if i.status in {"pending", "answered"}]
@@ -236,6 +240,7 @@ class NeedsYouQueue(_ListenerMixin):
             reason=_clean_line(reason, 4_096),
             choices=tuple(_clean_line(c, 200) for c in choices if _clean_line(c, 200)),
             highlight=_clean_line(highlight, 200),
+            action=_clean_line(action, 4_096),
             created_at=self._clock(),
         )
         self._next_id += 1

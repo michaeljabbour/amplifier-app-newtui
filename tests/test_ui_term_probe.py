@@ -38,3 +38,27 @@ def test_multiplexers_and_explicit_disable_fall_back() -> None:
     assert not probe_kitty_protocol({"TERM": "screen-256color"})
     # honoring Textual's own kill switch: it won't request the protocol at all
     assert not probe_kitty_protocol({"TERM": "xterm-kitty", "TEXTUAL_DISABLE_KITTY_KEY": "1"})
+
+
+def test_patch_legacy_alt_named_keys_restores_alt_enter() -> None:
+    """ESC CR from a legacy terminal must arrive as alt+enter, not enter.
+
+    Textual 8.2.8 drops the alt modifier for named keys in
+    ``XTermParser._sequence_to_key_events`` — the reissue path hands it
+    ``("\\r", alt=True)`` and gets plain ``enter`` back, silently turning
+    a mid-turn queue (alt+enter) into a steer. The patch adds the prefix.
+    """
+    from textual._xterm_parser import XTermParser
+
+    from amplifier_app_newtui.ui.term_probe import patch_legacy_alt_named_keys
+
+    patch_legacy_alt_named_keys()
+    patch_legacy_alt_named_keys()  # idempotent — wraps once
+
+    parser = XTermParser()
+    keys = [e.key for e in parser._sequence_to_key_events("\r", alt=True)]
+    assert keys == ["alt+enter"]
+    # Named keys without alt, and single-char alt chords, are unchanged.
+    assert [e.key for e in parser._sequence_to_key_events("\r")] == ["enter"]
+    assert [e.key for e in parser._sequence_to_key_events("x", alt=True)] == ["alt+x"]
+    assert [e.key for e in parser._sequence_to_key_events("\t", alt=True)] == ["alt+tab"]

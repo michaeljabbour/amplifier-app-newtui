@@ -261,9 +261,11 @@ class NewTuiApp(App[None]):
         self._refresh_footer()
 
     def decision_deferred(self, message: str) -> None:
-        question, reason, choices, highlight = self.adapter.deferred_decision(message)
+        question, reason, choices, highlight, action = self.adapter.deferred_decision(
+            message
+        )
         self.adapter.needs_you.defer(
-            question, reason, choices=choices, highlight=highlight
+            question, reason, choices=choices, highlight=highlight, action=action
         )
         self._refresh_footer()
 
@@ -373,6 +375,19 @@ class NewTuiApp(App[None]):
         message.stop()
         self.palette.apply_filter(None)
         self._refresh_footer()
+
+    def on_composer_nav_key(self, message: Composer.NavKey) -> None:
+        message.stop()
+        # Empty-composer arrows drive the auto-opened (unfocused) lanes
+        # panel — spec §8 advertises "↑↓ select" while fan-out keeps the
+        # keyboard on the composer for steering.
+        if self.lanes_panel.display and not self.lanes_panel.has_focus:
+            self.lanes_panel.move_selection(message.delta)
+
+    def on_composer_enter_empty(self, message: Composer.EnterEmpty) -> None:
+        message.stop()
+        if self.lanes_panel.display and not self.lanes_panel.has_focus:
+            self.lanes_panel.focus_selected()
 
     def on_composer_esc_pressed(self, message: Composer.EscPressed) -> None:
         message.stop()

@@ -296,13 +296,14 @@ class DemoRuntimeAdapter(RuntimeAdapter):
 
     def deferred_decision(
         self, message: str
-    ) -> tuple[str, str, tuple[str, ...], str]:
+    ) -> tuple[str, str, tuple[str, ...], str, str]:
         del message
         return (
             DEMO_DEFERRED_DECISION.text,
             "",
             (DEMO_DEFERRED_DECISION.chip_label,),
             DEMO_DEFERRED_DECISION.highlight,
+            DEMO_DEFERRED_DECISION.action,
         )
 
     def decision_narration(self, choice: str) -> str:

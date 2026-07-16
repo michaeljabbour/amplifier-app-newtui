@@ -426,6 +426,9 @@ class DemoDeferredDecision(_FrozenModel):
     applied_narration: str
     highlight: str = ""
     """Question substring the UI renders teal (mockup: ``mj/waypoint``)."""
+    action: str = ""
+    """Denied-action key joining the override to the DenialLog (mockup
+    /improve evidence rows count denials by action, e.g. ``push-to-fork``)."""
 
 
 DEMO_DEFERRED_DECISION = DemoDeferredDecision(
@@ -435,6 +438,7 @@ DEMO_DEFERRED_DECISION = DemoDeferredDecision(
     ),
     chip_label="yes · push to fork",
     highlight="mj/waypoint",
+    action="push-to-fork",
     applied_narration=(
         "Applying decision: pushing to fork mj/waypoint. "
         "Trust-slot suggestion queued for /improve."

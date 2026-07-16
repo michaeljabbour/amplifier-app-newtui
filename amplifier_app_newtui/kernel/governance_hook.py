@@ -262,6 +262,7 @@ class GovernanceHook:
                     f"Allow {action}?",
                     reason,
                     choices=STANDARD_OPTIONS,
+                    action=action,
                 )
             except ValueError:
                 pass

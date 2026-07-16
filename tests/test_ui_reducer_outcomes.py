@@ -218,3 +218,31 @@ def test_demo_spec_interrupted_close_out_adds_no_extra_recap() -> None:
     before_rule = host.blocks[host.blocks.index(rule) - 1]
     # Directly above the rule is the user line — no synthesized recap.
     assert not isinstance(before_rule, Answer)
+
+
+def test_permissions_block_renders_slot_labels_not_bound_methods() -> None:
+    """Regression: /permissions once rendered ``<bound method TrustSlot.label …>``
+    because ``slot.label`` was never called (found live in forge, 2026-07-16)."""
+    from amplifier_app_newtui.commands.permissions import PermissionSurface
+    from amplifier_app_newtui.model.blocks import BlockIdAllocator
+    from amplifier_app_newtui.ui.app_support import permissions_block
+
+    surface = PermissionSurface(mode="auto")
+    surface.add_exception("uv run pytest")
+    block = permissions_block(surface, "auto read,write · classifier-gated", BlockIdAllocator())
+    text = "".join(segment.text for segment in block.spans)
+    assert "bound method" not in text
+    assert "read · allow" in text
+    assert "always allowed: uv run pytest" in text
+    assert "boundary: within project" in text
+
+
+def test_improve_block_empty_state_renders_placeholder_row() -> None:
+    """/improve with no evidence must say so, not print a bare header."""
+    from amplifier_app_newtui.commands.improve import build_improve_block
+    from amplifier_app_newtui.ui.transcript import render_block
+
+    block = build_improve_block("b1", ())
+    lines = render_block(block, 120)
+    assert len(lines) == 2
+    assert "no proposals yet" in "".join(s.text for s in lines[1])

@@ -114,10 +114,12 @@ class RuntimeAdapter:
 
     def deferred_decision(
         self, message: str
-    ) -> tuple[str, str, tuple[str, ...], str]:
-        """(question, reason, choices, highlight) for a deferred-decision
-        event — ``highlight`` is the question substring rendered teal."""
-        return (message, "", (), "")
+    ) -> tuple[str, str, tuple[str, ...], str, str]:
+        """(question, reason, choices, highlight, action) for a
+        deferred-decision event — ``highlight`` is the question substring
+        rendered teal; ``action`` is the denied action key (the /improve
+        override-evidence join against the DenialLog)."""
+        return (message, "", (), "", "")
 
     def decision_narration(self, choice: str) -> str:
         """The ``Applying decision: …`` narration for an acted-on choice."""

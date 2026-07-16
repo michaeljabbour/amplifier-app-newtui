@@ -26,7 +26,9 @@ async def _launch_tui(
     *, demo: bool, bundle: str | None = None, resume_id: str | None = None
 ) -> int:
     from .ui.app import NewTuiApp
-    from .ui.term_probe import probe_kitty_protocol
+    from .ui.term_probe import patch_legacy_alt_named_keys, probe_kitty_protocol
+
+    patch_legacy_alt_named_keys()
 
     if demo:
         from .ui.demo_wiring import DemoRuntimeAdapter
