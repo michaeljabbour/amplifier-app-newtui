@@ -246,3 +246,52 @@ def test_improve_block_empty_state_renders_placeholder_row() -> None:
     lines = render_block(block, 120)
     assert len(lines) == 2
     assert "no proposals yet" in "".join(s.text for s in lines[1])
+
+
+def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
+    """Supervisor feedback: spec-less (real) turns pulse from second zero."""
+    from amplifier_app_newtui.kernel import events as ev
+    from amplifier_app_newtui.ui.transcript import render_block
+
+    reducer, host = make_reducer("auto")
+    reducer.handle(ev.PromptSubmit(session_id="s", prompt="hi", ts=100.0))
+    kinds = [b.kind for b in host.blocks]
+    assert kinds == ["user_line", "working_status"]
+
+    # 1s heartbeat: wall clock bumps the seconds and the spinner pulses.
+    reducer.tick(103.0)
+    working = host.blocks[-1]
+    assert working.kind == "working_status"
+    assert working.spinner_frame == 1
+    line = "".join(s.text for s in render_block(working, 200)[0])
+    assert "working · 3s" in line and "1 agent" in line
+
+    # A running tool replaces the static '1 agent' with the actual work.
+    reducer.handle(
+        ev.ToolPre(
+            session_id="s",
+            tool_call_id="t1",
+            tool_name="bash",
+            tool_input={"command": "uv run pytest -q"},
+            ts=104.0,
+        )
+    )
+    working = next(b for b in host.blocks if b.kind == "working_status")
+    line = "".join(s.text for s in render_block(working, 200)[0])
+    assert "$ uv run pytest -q" in line and "1 agent" not in line
+    # ...and the pulse rides at the BOTTOM, under the newest content.
+    assert host.blocks[-1].kind == "working_status"
+
+    reducer.handle(
+        ev.ToolPost(
+            session_id="s",
+            tool_call_id="t1",
+            tool_name="bash",
+            tool_input={"command": "uv run pytest -q"},
+            result={"output": "ok"},
+            ts=105.0,
+        )
+    )
+    working = next(b for b in host.blocks if b.kind == "working_status")
+    line = "".join(s.text for s in render_block(working, 200)[0])
+    assert "1 agent" in line  # activity cleared — back to model time

@@ -28,6 +28,8 @@ outside the chain:
 from __future__ import annotations
 
 import threading
+import time
+from typing import Any
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -38,8 +40,10 @@ from ..commands.context import ContextUsage
 from ..commands.improve import ApprovalJournal
 from ..commands.permissions import PermissionSurface
 from ..model.blocks import (
+    Answer,
     BlockIdAllocator,
     EvidenceBlock,
+    Segment,
     TranscriptBlock,
     UserLine,
 )
@@ -130,6 +134,8 @@ class NewTuiApp(App[None]):
         )
         self.turn_active = False
         self.fork_pending = False  # a confirmed fork is in flight (interrupt-then-fork)
+        self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
+        self._boot_block_id: str | None = None  # boot-progress transcript line
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
@@ -257,12 +263,22 @@ class NewTuiApp(App[None]):
         self.turn_active = True
         self.composer.running = True
         self.title_bar.running = True
+        # 1s heartbeat: pulse the working line's spinner and (real turns)
+        # its seconds counter — usage events alone froze it during long
+        # provider calls (supervisor feedback, spec §3/§11).
+        if self._working_timer is None:
+            self._working_timer = self.set_interval(
+                1.0, lambda: self.reducer.tick(time.time())
+            )
         self.refresh_status()
 
     def turn_finished(self) -> None:
         self.turn_active = False
         self.composer.running = False
         self.title_bar.running = False
+        if self._working_timer is not None:
+            self._working_timer.stop()
+            self._working_timer = None
         self._turn_queues_pending = True  # drained in _consume_events (§5)
         # Mockup openRewind/rewindNext read the live this.checkpoints
         # array — a checkpoint cut while the picker is open is
@@ -311,6 +327,35 @@ class NewTuiApp(App[None]):
         message.stop()  # durable record path owns the transcript append
 
     # -- approvals -------------------------------------------------------------------
+
+    def boot_progress(self, action: str, detail: str) -> None:
+        """Live boot feedback: one self-updating dim line in the transcript.
+
+        Module prepare can run for minutes on a cold cache; the
+        supervisor sees each phase ('preparing · newtui', foundation's
+        per-module install messages, 'creating · session') instead of a
+        blank screen. Removed by ``announce_ready``.
+        """
+        action = action.replace("_", " ")  # foundation emits snake_case phases
+        spans = (
+            Segment(text="✳ ", style_token="orange"),
+            Segment(text=f"{action} · {detail}" if detail else action, style_token="dim"),
+        )
+        block = Answer(
+            id=self._boot_block_id or self.allocator.next_id(),
+            spans=spans,
+            clickable=False,
+        )
+        if self._boot_block_id is None:
+            self._boot_block_id = block.id
+            self.append_block(block)
+        else:
+            self.replace_block(block)
+
+    def clear_boot_progress(self) -> None:
+        if self._boot_block_id is not None:
+            self.remove_block(self._boot_block_id)
+            self._boot_block_id = None
 
     def present_approval(self, ticket_id: str, prompt: str, options: tuple[str, ...]) -> None:
         """Show the inline approval bar for one ticket (spec §7)."""

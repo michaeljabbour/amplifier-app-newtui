@@ -216,6 +216,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
                 needs_you=self.needs_you,
                 denial_log=self.denial_log,
                 mode=self._current_mode,
+                on_progress=self._boot_progress,
             )
             await runtime.start()
         except BaseException as error:  # surface boot failures on the app loop
@@ -231,6 +232,13 @@ class RealRuntimeAdapter(RuntimeAdapter):
             await runtime.cleanup()
         except Exception:
             pass  # best-effort teardown on exit
+
+    def _boot_progress(self, action: str, detail: str) -> None:
+        # Fires on the runtime thread during start(); painting hops to
+        # the app loop (boot can spend minutes in module prepare).
+        app, loop = self.app, self._app_loop
+        if app is not None and loop is not None:
+            loop.call_soon_threadsafe(app.boot_progress, action, detail)
 
     async def _in_runtime(self, coro: Any) -> Any:
         assert self._runtime_loop is not None

@@ -134,7 +134,13 @@ class RealRuntime:
         denial_log: DenialLog | None = None,
         mode: Callable[[], str] = lambda: "chat",
         project_dir: Path | None = None,
+        on_progress: Callable[[str, str], None] | None = None,
     ) -> None:
+        self._on_progress = on_progress
+        """Boot-phase feedback ``(action, detail)`` — module prepare can
+        run for minutes; the TUI shows each phase instead of a blank
+        screen. Defensive arity: foundation's ``progress_callback``
+        consumers vary, so :meth:`_progress` tolerates 1–2 args."""
         self.queue: asyncio.Queue[UIEvent] = queue if queue is not None else asyncio.Queue()
         self.evidence = EvidenceCollector()
         """Derives §10 evidence links from the turn's tool calls — taps the
@@ -185,11 +191,26 @@ class RealRuntime:
         """(role, text) pairs replayed into the transcript on resume."""
         self.degraded_notice: str | None = None
 
+    def _progress(self, action: str = "", detail: str = "", *rest: object) -> None:
+        del rest
+        self._report_progress(str(action), str(detail))
+
+    def _report_progress(self, action: str, detail: str) -> None:
+        if self._on_progress is None:
+            return
+        try:
+            self._on_progress(action, detail)
+        except Exception:  # noqa: BLE001 — progress display is best-effort
+            logger.debug("boot progress callback failed", exc_info=True)
+
     async def start(self) -> None:
         """Resolve config, create the session, register every hook."""
-        resolved = await resolve_config(self._bundle, project_dir=self._project_dir)
+        resolved = await resolve_config(
+            self._bundle, project_dir=self._project_dir, progress=self._progress
+        )
         _strip_printing_hooks(resolved.mount_plan)
         self._resolved = resolved
+        self._report_progress("creating", "session")
         store = SessionStore(project_dir=resolved.project_dir)
         self._store = store
 

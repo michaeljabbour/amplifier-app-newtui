@@ -308,10 +308,13 @@ def _render_working_status(block: WorkingStatus, width: int) -> tuple[Line, ...]
                 Segment(text=block.interrupt_hint, style_token="dimmer"),
             ),
         )
+    # Real turns carry the current work item (running tool / thinking);
+    # the mockup's static ``1 agent`` is the fallback (spec §3).
+    doing = block.activity or "1 agent"
     return (
         (
             Segment(text=f"{frame} ", style_token="orange"),
-            Segment(text=f"working · {inner} · 1 agent · ", style_token="dim"),
+            Segment(text=f"working · {inner} · {doing} · ", style_token="dim"),
             Segment(
                 text=f"{block.interrupt_hint} · {block.steer_hint}",
                 style_token="dimmer",

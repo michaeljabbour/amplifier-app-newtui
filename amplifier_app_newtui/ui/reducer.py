@@ -156,6 +156,11 @@ class _Turn:
     last_ts: float = 0.0
     agent_total: int = 0
     """Subagents spawned this turn — pins ``coordinating N agents``."""
+    spinner_frame: int = 0
+    """Working-line pulse frame, advanced by the app's 1s heartbeat."""
+    activity: str = ""
+    """Current work item for the working line (real turns): running
+    tool / ``thinking`` — supervisor-facing context."""
 
 
 class TranscriptReducer:
@@ -236,6 +241,8 @@ class TranscriptReducer:
                 self._start_turn(event)
             case ev.StreamBlockStart():
                 self._host.stream_opened(event.block_type)
+                if event.block_type == "thinking":
+                    self.set_activity("thinking")
             case ev.StreamBlockDelta():
                 self._host.stream_delta(event.text)
             case ev.StreamBlockEnd():
@@ -305,6 +312,14 @@ class TranscriptReducer:
         self._host.append_block(
             UserLine(id=self._ids.next_id(), text=event.prompt, mode=turn.mode)
         )
+        if turn.spec is None:
+            # Real turn: the working line mounts IMMEDIATELY — pre-model
+            # hook work and provider latency can run for seconds before
+            # the first content block, and the supervisor needs a pulse
+            # the whole time. (Scripted demo turns keep the mockup's
+            # lazy mount under the first content block.)
+            turn.working_id = self._ids.next_id()
+            self._host.append_block(self._working_block(turn))
         # The working line mounts lazily under the turn's first content
         # block (mockup runTurn: after the plan header + items;
         # runAgentsTurn: after the fan-out narration) — see _append_content.
@@ -445,16 +460,17 @@ class TranscriptReducer:
         status) — later content accumulates below the pinned status line."""
         self._host.append_block(block)
         turn = self._turn
-        if turn is None or turn.working_id is not None:
+        if turn is None:
+            return
+        if turn.working_id is not None:
+            if turn.spec is None:
+                # Real turn: keep the pulse at the BOTTOM, riding under
+                # the newest content next to the composer.
+                self._host.remove_block(turn.working_id)
+                self._host.append_block(self._working_block(turn))
             return
         turn.working_id = self._ids.next_id()
-        self._host.append_block(
-            WorkingStatus(
-                id=turn.working_id,
-                telemetry=self._live_telemetry(),
-                agent_count=turn.agent_total or 1,
-            )
-        )
+        self._host.append_block(self._working_block(turn))
 
     # -- assistant text (durable Channel B) -------------------------------------
 
@@ -514,8 +530,11 @@ class TranscriptReducer:
         block_id = self._ids.next_id()
         command = str(event.tool_input.get("command", "")) if event.tool_input else ""
         if event.tool_name == "bash" and command:
+            head = command if len(command) <= 40 else f"{command[:39]}…"
+            self.set_activity(f"$ {head}")
             self._append_content(LiveCommand(id=block_id, command=command))
         else:
+            self.set_activity(event.tool_name)
             self._append_content(
                 ToolLine(
                     id=block_id,
@@ -544,6 +563,7 @@ class TranscriptReducer:
         info = turn.calls.pop(event.tool_call_id, None)
         if info is None:
             return
+        self.set_activity("")  # tool finished — back to model time
         self.tool_tokens += _approx_tokens(event.tool_input, event.result)
         command = info["command"] or str(event.tool_input.get("command", ""))
         status = str(event.result.get("status", ""))
@@ -666,19 +686,47 @@ class TranscriptReducer:
             secs=max(0.0, turn.last_ts - turn.start_ts), tokens_down=turn.tokens
         )
 
+    def _working_block(self, turn: _Turn) -> WorkingStatus:
+        assert turn.working_id is not None
+        return WorkingStatus(
+            id=turn.working_id,
+            telemetry=self._live_telemetry(),
+            # Spec §3: ``N agent(s)`` — 1 on single-agent turns, the
+            # fan-out total (never decaying) on multi-agent turns.
+            agent_count=turn.agent_total or 1,
+            spinner_frame=turn.spinner_frame,
+            activity=turn.activity,
+        )
+
     def _update_working(self) -> None:
         turn = self._turn
         if turn is None or turn.working_id is None:
             return
-        self._host.replace_block(
-            WorkingStatus(
-                id=turn.working_id,
-                telemetry=self._live_telemetry(),
-                # Spec §3: ``N agent(s)`` — 1 on single-agent turns, the
-                # fan-out total (never decaying) on multi-agent turns.
-                agent_count=turn.agent_total or 1,
-            )
-        )
+        self._host.replace_block(self._working_block(turn))
+
+    def tick(self, now: float) -> None:
+        """App 1s heartbeat while a turn runs: pulse the working line.
+
+        Real turns get their clock bumped to wall time (usage events only
+        arrive at each content-block end, which froze the seconds counter
+        during long provider calls); scripted demo turns keep their
+        virtual-clock telemetry and only pulse the spinner.
+        """
+        turn = self._turn
+        if turn is None or turn.working_id is None:
+            return
+        turn.spinner_frame += 1
+        if turn.spec is None:
+            turn.last_ts = max(turn.last_ts, now)
+        self._update_working()
+
+    def set_activity(self, activity: str) -> None:
+        """Update the working line's current-work note (real turns only)."""
+        turn = self._turn
+        if turn is None or turn.spec is not None or turn.activity == activity:
+            return
+        turn.activity = activity
+        self._update_working()
 
     def _usage(self, event: ev.ProviderResponseUsage) -> None:
         self.total_tokens += event.output_tokens

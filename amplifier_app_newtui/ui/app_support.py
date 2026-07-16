@@ -142,6 +142,7 @@ def trim_after_checkpoint(view: TranscriptView, checkpoint_id: str) -> None:
 
 def announce_ready(app: NewTuiApp) -> None:
     """Session banner + any degraded-start notices once identity is known."""
+    app.clear_boot_progress()
     # Resume offset for checkpoint turn ids (spec §9): known only after
     # the adapter booted, before the first turn event can arrive.
     app.reducer.turn_base = app.adapter.turn_base

@@ -231,6 +231,10 @@ class WorkingStatus(_FrozenModel):
     kind: Literal["working_status"] = "working_status"
     telemetry: TurnTelemetry
     agent_count: int = 0
+    activity: str = ""
+    """What the agent is on right now (real turns): a running tool
+    (``$ uv run pytest``), ``thinking``, … — replaces the static
+    ``1 agent`` segment so the supervisor sees actual work."""
     interrupt_hint: str = "esc to interrupt"
     steer_hint: str = "type to steer"
     spinner_frame: int = 0
