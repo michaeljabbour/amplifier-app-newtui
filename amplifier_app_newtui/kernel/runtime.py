@@ -23,7 +23,7 @@ from .approval import ApprovalBroker
 from .config import ResolvedConfig, resolve_config
 from .cost import CostTracker, restore_session_cost
 from .display import DisplaySystem
-from .events import ContentBlockEnd, ContextInjected, PromptComplete, UIEvent
+from .events import ContentBlockEnd, ContextInjected, PromptComplete, PromptSubmit, UIEvent
 from .evidence import EvidenceCollector
 from .git_yield import GitDiffSnapshot, capture_git_diff
 from .governance_hook import GovernanceHook
@@ -142,11 +142,17 @@ class RealRuntime:
         self.bridge = QueueBridge(
             self.queue,
             tap=self._tap,
-            # ``prompt:complete`` is NOT hook-driven here: submit()
-            # synthesizes the close-out event itself AFTER the end-of-turn
-            # git snapshot, so it carries the turn's yield (files/diffstat/
-            # tests ✔ — DESIGN-SPEC §3) and always lands last in the queue.
-            events=tuple(e for e in CONSUMED_EVENTS if e != "prompt:complete"),
+            # Neither ``prompt:submit`` nor ``prompt:complete`` is
+            # hook-driven here: submit() emits the open itself BEFORE
+            # ``session.execute`` (overlay hooks can grind for seconds
+            # before the raw hook fires — the user's echo and the working
+            # line must not wait for them), and synthesizes the close-out
+            # AFTER the end-of-turn git snapshot so it carries the turn's
+            # yield (files/diffstat/tests ✔ — DESIGN-SPEC §3) and always
+            # lands last in the queue.
+            events=tuple(
+                e for e in CONSUMED_EVENTS if e not in ("prompt:submit", "prompt:complete")
+            ),
         )
         self.turn_yield = TurnYieldTracker()
         """Per-turn ``tests ✔`` evidence from tool results (bridge tap)."""
@@ -314,6 +320,11 @@ class RealRuntime:
         """
         if self._initialized is None:
             raise RuntimeError("RealRuntime.start() has not completed")
+        # Turn-open first: the user's echo + working line paint NOW, not
+        # after the pre-prompt hook work inside ``session.execute``.
+        self.bridge.emit(
+            PromptSubmit(session_id=self._initialized.session_id, prompt=text)
+        )
         self.turn_yield.start_turn()
         starting_diff = await self._capture_diff()
         self._executing = True

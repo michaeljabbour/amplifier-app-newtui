@@ -249,14 +249,18 @@ async def test_submit_close_out_emitted_even_when_execute_raises(tmp_path: Path)
     assert isinstance(closing, PromptComplete)  # the turn still closes
 
 
-async def test_bridge_does_not_register_raw_prompt_complete() -> None:
-    """The hook-driven prompt:complete is suppressed — submit() owns it."""
+async def test_bridge_does_not_register_raw_prompt_open_or_close() -> None:
+    """Hook-driven prompt:submit AND prompt:complete are suppressed —
+    submit() emits the open BEFORE session.execute (overlay hooks can
+    grind for seconds before the raw hook fires; the user's echo must
+    not wait) and synthesizes the enriched close-out after it."""
     runtime = RealRuntime()
     registered: list[str] = []
     hooks = SimpleNamespace(
         register=lambda event, handler, priority=10, name="": registered.append(event)
     )
     runtime.bridge.register_hooks(hooks)
-    assert "prompt:submit" in registered
+    assert "prompt:submit" not in registered
     assert "prompt:complete" not in registered
+    assert "execution:start" in registered
     await asyncio.sleep(0)  # keep pytest-asyncio happy about the async test
