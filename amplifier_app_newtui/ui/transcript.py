@@ -946,6 +946,10 @@ class TranscriptView(VerticalScroll):
         widget = self._widgets.get(block_id)
         return widget.block if widget is not None else None
 
+    def get_widget(self, block_id: str) -> TranscriptWidget | None:
+        """The mounted widget for *block_id* (None while stashed/unknown)."""
+        return self._widgets.get(block_id)
+
     def append(self, block: TranscriptBlock) -> TranscriptWidget | None:
         """Mount a new block at the end (follows the tail when anchored).
 

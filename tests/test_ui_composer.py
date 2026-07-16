@@ -216,3 +216,55 @@ async def test_palette_filter_is_trimmed_of_trailing_whitespace() -> None:
         await pilot.pause()
         opens = _of(app, Composer.OpenPalette)
         assert [m.filter for m in opens] == ["/", "/m", "/m"]
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> None:
+    """TextArea's own ctrl+c binding swallowed the key while the composer
+    had focus, so transcript drag-selections could never be copied (user
+    report: "can't copy from the terminal"). The app-level priority
+    binding copies whichever selection exists and confirms with a notice."""
+    from textual.events import MouseDown, MouseMove, MouseUp
+
+    from amplifier_app_newtui.ui.app import NewTuiApp
+    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+
+    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    copied: list[str] = []
+    app.copy_to_clipboard = lambda text: copied.append(text)  # type: ignore[method-assign]
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause(0.4)
+
+        def ev(cls, x: int, y: int):
+            return cls(widget=None, x=x, y=y, delta_x=0, delta_y=0, button=1,
+                       shift=False, meta=False, ctrl=False, screen_x=x, screen_y=y, style="")
+
+        app.screen._forward_event(ev(MouseDown, 10, 8))
+        await pilot.pause()
+        app.screen._forward_event(ev(MouseMove, 60, 8))
+        await pilot.pause()
+        app.screen._forward_event(ev(MouseUp, 60, 8))
+        await pilot.pause()
+        app.composer.focus_input()
+        await pilot.pause()
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert copied and len(copied[0]) > 10
+        assert app.notice_slot.current.startswith("copied · ")
+
+        # The composer's own selection wins over the transcript's.
+        await pilot.press("h", "i")
+        app.composer._input.select_all()
+        await pilot.pause()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert copied[-1] == "hi"
+
+        # Nothing selected → guidance, not a silent no-op.
+        app.composer._input.clear()
+        app.screen.clear_selection()
+        await pilot.pause()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app.notice_slot.current.startswith("nothing selected")

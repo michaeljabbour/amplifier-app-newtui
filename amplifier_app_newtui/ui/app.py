@@ -459,6 +459,19 @@ class NewTuiApp(App[None]):
         if self.lanes_panel.display and not self.lanes_panel.has_focus:
             self.lanes_panel.focus_selected()
 
+    def action_copy_selection(self) -> None:
+        """ctrl+c: copy the composer's own selection, else the transcript
+        drag-selection (OSC 52). Always confirms — the escape sequence is
+        invisible and terminals can silently block clipboard access."""
+        text = self.composer.selected_text or self.screen.get_selected_text()
+        if not text:
+            self.show_notice("nothing selected · drag to select transcript text")
+            return
+        self.copy_to_clipboard(text)
+        self.show_notice(
+            f"copied · {len(text)} chars · empty clipboard? allow terminal clipboard access"
+        )
+
     def on_composer_esc_pressed(self, message: Composer.EscPressed) -> None:
         message.stop()
         app_support.handle_esc(self)
@@ -554,6 +567,20 @@ class NewTuiApp(App[None]):
         if not message.links:
             self.show_notice("no evidence recorded for this answer")
             return
+        # Double-clicks (and repeat clicks) must not stack duplicate
+        # blocks (found live: 4× Evidence for one answer) — refocus the
+        # already-open block instead.
+        ids = self.transcript.block_ids
+        last = self.transcript.get_block(ids[-1]) if ids else None
+        if (
+            last is not None
+            and last.kind == "evidence"
+            and last.links == tuple(message.links)
+        ):
+            existing = self.transcript.get_widget(last.id)
+            if existing is not None:
+                existing.focus()
+                return
         widget = self.transcript.append(
             EvidenceBlock(id=self.allocator.next_id(), links=tuple(message.links))
         )

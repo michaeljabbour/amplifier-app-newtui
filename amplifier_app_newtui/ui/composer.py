@@ -254,6 +254,11 @@ class Composer(Horizontal):
     def text(self) -> str:
         return self._input.text
 
+    @property
+    def selected_text(self) -> str:
+        """The input's own selection (the ctrl+c copy source of truth)."""
+        return self._input.selected_text
+
     def clear(self) -> None:
         self._input.clear()
 

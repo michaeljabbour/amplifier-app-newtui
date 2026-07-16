@@ -348,6 +348,22 @@ class TranscriptReducer:
             return
         if turn.working_id is not None:
             self._host.remove_block(turn.working_id)
+        # Sweep tool calls that never got a post/error: a policy-denied
+        # tool (kernel fires no tool:post) left its line pulsing
+        # "Running X" forever (found live: plan-mode blocked delegate).
+        # Live ``└ $ cmd`` lines stay as-is (mockup: an interrupted turn
+        # keeps the in-flight command line in the transcript).
+        for info in turn.calls.values():
+            if info["command"]:
+                continue
+            self._host.replace_block(
+                ToolLine(
+                    id=info["block_id"],
+                    summary=f"{info['tool']} · no result (blocked or abandoned)",
+                    status="completed",
+                )
+            )
+        turn.calls.clear()
         usage = self._cost.end_turn()
         # Re-resolve at close: mid-turn events (e.g. a denied approval)
         # may have changed the adapter's close-out spec for this prompt.
@@ -591,10 +607,12 @@ class TranscriptReducer:
             if not group.pending:
                 for block_id in group.block_ids:
                     self._host.remove_block(block_id)
+                count = len(group.commands)
+                plural = "s" if count != 1 else ""
                 self._append_content(
                     ToolLine(
                         id=self._ids.next_id(),
-                        summary=f"Ran {len(group.commands)} shell commands",
+                        summary=f"Ran {count} shell command{plural}",
                         body=(f"$ {' && '.join(group.commands)}",),
                         status="completed",
                     )

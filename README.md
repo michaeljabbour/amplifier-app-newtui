@@ -19,6 +19,13 @@ uv run amplifier-newtui resume SESSION_ID      # relaunch the TUI resuming a sto
 uv run amplifier-newtui run "PROMPT"           # execute one prompt headlessly, print the response
 ```
 
+## Copying text
+
+Drag with the mouse to select transcript text (the app highlights it), then press **ctrl+c** — the selection is copied via OSC 52 and a `copied · N chars` notice confirms it. Two terminal caveats:
+
+- **iTerm2 blocks clipboard writes by default**: enable *Settings → General → Selection → "Applications in terminal may access clipboard"*, or the copy silently lands nowhere.
+- **⌘C never reaches a terminal app** on macOS — use ctrl+c inside the TUI, or hold **⌥ Option while dragging** (iTerm2) / **Shift while dragging** (most Linux terminals) to bypass the app entirely and use your terminal's native selection + ⌘C.
+
 ## Keybindings note
 
 The app requests progressive keyboard enhancement (kitty keyboard protocol + xterm modifyOtherKeys), so **shift+enter** queues a full next-turn message natively on kitty, WezTerm, foot, Ghostty, and recent iTerm2/Windows Terminal. On legacy terminals **alt+enter** is the fallback; it works everywhere (the composer hint adapts automatically). See the full keymap in [docs/tui-v3-cohesive.md](docs/tui-v3-cohesive.md).

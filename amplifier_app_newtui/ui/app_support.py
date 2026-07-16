@@ -70,6 +70,12 @@ def global_bindings() -> list[BindingType]:
     # amplifier-app-cli parity: Ctrl-D exits (its banner advertises it).
     # Textual's stock ctrl+q quit binding stays too.
     bindings.append(Binding("ctrl+d", "quit", "quit", show=False, priority=True))
+    # Copy whichever selection exists (composer text or transcript drag).
+    # Priority: TextArea's own ctrl+c binding otherwise swallows the key
+    # while the composer has focus — transcript copies silently no-oped.
+    bindings.append(
+        Binding("ctrl+c,super+c", "copy_selection", "copy", show=False, priority=True)
+    )
     return bindings
 
 
