@@ -1,0 +1,61 @@
+[project]
+name = "amplifier-app-newtui"
+version = "0.1.0"
+description = "Full-screen Textual TUI for the Amplifier AI development platform (v3 Cohesive)"
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Microsoft MADE:Explorations Team" }]
+dependencies = [
+    "textual~=8.2",
+    "amplifier-core>=1.6.0",
+    "amplifier-foundation",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "click>=8.1.0",
+    "pyyaml>=6.0.3",
+    "filelock>=3.29.6",
+    "httpx[socks]>=0.28.1",
+]
+
+[project.scripts]
+amplifier-newtui = "amplifier_app_newtui.main:main"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["amplifier_app_newtui"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.24.0",
+    "pytest-textual-snapshot>=1.0.0",
+    "ruff>=0.12.0",
+]
+
+[tool.uv.sources]
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "dc010423d010da9a52e1b49808a1865666008c25" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+asyncio_mode = "strict"
+
+[tool.pyright]
+include = ["amplifier_app_newtui"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

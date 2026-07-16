@@ -1,0 +1,71 @@
+# transcript renderer golden · width=80
+
+=== session_banner ===
+[bold $bright]Amplifier 2026.07.13-87b93ef* · core 1.6.0[/]
+[$dim]Bundle: anchors | Provider: OpenAI | gpt-5.5 · session e07de0[/]
+
+=== user_line ===
+[bold $green]❯ [/][$dim]\[chat] [/][$bright]explain what this repo is in simple terms[/]
+
+=== narration ===
+[$bright]● [/][$fg]Reading the repo layout and entry points to ground the summary.[/]
+
+=== tool_line ===
+[$dim]  ● [/][$dim]Ran 2 shell commands[/][$dimmer] · click to expand[/]
+
+=== live_command ===
+[$dimmer]  └ [/][$dim]$ ls -la[/]
+
+=== plan ===
+[$orange]· [/][$fg]Refactor session store[/][$dim]  (3.0s · ↓ 1.4k tok)[/]
+[$green]  ✔ [/][$dim]Audit persistence paths[/]
+[bold $orange]  ■ [/][bold $bright]Migrate history to durable store[/]
+[$dimmer]  □ [/][$dim]Verify and push[/]
+
+=== blocked ===
+[$red]  ⊘ blocked · [/][$red]git push --force origin main[/][$dim] · outside user authorization[/][$dim] · finding safer path[/]
+
+=== working_status ===
+[$orange]✳ [/][$dim]working · 8.0s · ↓ 3.2k tok · [/][$dimmer]esc to interrupt · type to steer[/]
+
+=== recap ===
+[$dimmer]✳ [/][italic $dim]Goal: durable session store. Next: open PR against main.[/]
+
+=== answer ===
+[$fg]This repo is the [/][bold $bright]command-line app[/][$fg] for Amplifier. If amplifier-core is the engine, this is the dashboard and steering wheel: the [/][$teal]amplifier[/][$fg] command starts sessions, configures providers, loads bundles, and renders this UI.[/]
+
+=== steer_echo ===
+[$teal]  ↳ [/][$teal]steer queued: "focus on the store tests first" [/][$dimmer]· applies at next step boundary[/]
+
+=== turn_rule ===
+[$rule]──────────────────────────────────[/][$rule] [/][$dimmer]6.1s · 83.9k tok, 91% cached · $0.17 · answer[/]
+
+=== evidence ===
+[$teal]· [/][bold $teal]Evidence[/][$fg]  1/2[/][$dimmer] · ←/→ select · enter expand · esc close[/]
+[$teal on $bg-tab]  ¹ [/][$fg on $bg-tab]"dashboard and steering wheel"[/][$dim on $bg-tab] → [/][$dim on $bg-tab]Ran 2 shell commands (pyproject entry points)[/]
+[$teal]  ² [/][$fg]"loads bundles"[/][$dim] → [/][$dim]grep amplifier_core bundle loader[/]
+
+=== ledger ===
+[$blue]· [/][bold $bright]Session ledger[/][$dim]  e07de0 · anchors[/]
+[$fg]  6 turns · $1.48 · 3 shipped · 3 answer-only · cache hit 88%[/]
+
+=== context ===
+[$blue]· [/][bold $bright]Context[/][$dim]  39% of 200k[/]
+[$dimmer]  [/][$blue]████[/][$teal]██[/][$orange]█[/][$dimmer]░░░[/]
+[$dim]  conversation · tools · memory · free[/]
+
+=== needs_you ===
+[$orange]· [/][bold $orange]Needs you[/][$fg]  1 deferred decision[/]
+[$orange]  1. [/][$fg]Push branch to origin was blocked (outside trust boundary). Push to fork mj/waypoint instead?[/][$dim] · trust boundary[/][$fg] [/][$green on $bg-tab]\[yes · push to fork][/]
+
+=== doctor ===
+[$green]  ✔ [/][$dim]bundle anchors resolves[/]
+[$green]  ✔ [/][$dim]provider OpenAI reachable[/]
+[$orange]  1. [/][$orange]uv run pytest denied 3× this session — consider a trust slot[/]
+
+=== improve ===
+[$blue]· [/][bold $bright]Improve[/][$dim]  1 proposal[/]
+[$teal]  1. [/][$fg]Add trust slot: push to fork mj/waypoint[/][$dim] · denied push repeated across turns[/]
+
+=== brainstorm_idea ===
+[$teal]  1. [/][$fg]Ambient tab color: orange while running, red when a decision waits[/]

@@ -1,0 +1,247 @@
+"""Turn-level telemetry, outcomes, checkpoints and the session ledger.
+
+Turn identity (ADR-0007 resolution 4): the app assigns a monotonic
+``turn_id`` at ``prompt:submit``. Steers rolled forward do NOT increment
+it; queued messages DO. Every turn rule records a :class:`Checkpoint`
+stamped onto the TurnRule block at emit time — rewind resolves
+checkpoints by id, never by string matching rendered labels.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class _FrozenModel(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Compact elapsed format used in telemetry suffixes/labels."""
+    if seconds < 10:
+        return f"{seconds:.1f}s"
+    if seconds < 60:
+        return f"{round(seconds)}s"
+    minutes, remainder = divmod(round(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def _format_tokens(tokens: int) -> str:
+    """``742`` / ``3.2k`` / ``1.1m`` token formatting per the mockup."""
+    if tokens < 1_000:
+        return str(tokens)
+    if tokens < 1_000_000:
+        return f"{tokens / 1_000:.1f}k"
+    return f"{tokens / 1_000_000:.1f}m"
+
+
+class TurnTelemetry(_FrozenModel):
+    """Compact per-turn (or live) telemetry (DESIGN-SPEC §3/§11).
+
+    - ``secs``: wall-clock seconds for the turn so far.
+    - ``tokens_down``: output tokens received (the ``↓ X.Xk tok`` figure).
+    - ``cached_pct``: percentage of input tokens served from cache.
+    - ``cost``: dollars, computed from provider usage (kernel/cost.py).
+    """
+
+    secs: float = Field(ge=0)
+    tokens_down: int = Field(default=0, ge=0)
+    cached_pct: int | None = Field(default=None, ge=0, le=100)
+    cost: Decimal = Field(default=Decimal("0"), ge=0)
+
+    def suffix(self) -> str:
+        """Live plan-header suffix: ``(Ns · ↓ X.Xk tok)``."""
+        parts = [_format_elapsed(self.secs), f"↓ {_format_tokens(self.tokens_down)} tok"]
+        return f"({' · '.join(parts)})"
+
+    def label(self) -> str:
+        """Turn-rule label prefix: ``<Ns> · <X.Xk> tok, <N>% cached · $<cost>``."""
+        token_part = f"{_format_tokens(self.tokens_down)} tok"
+        if self.cached_pct is not None:
+            token_part += f", {self.cached_pct}% cached"
+        return " · ".join(
+            (_format_elapsed(self.secs), token_part, f"${self.cost:.2f}")
+        )
+
+
+OutcomeKind = Literal["answer", "shipped", "interrupted", "plan_ready"]
+
+
+class TurnOutcome(_FrozenModel):
+    """What a completed turn produced (DESIGN-SPEC §3 turn-rule outcomes).
+
+    Rendered outcome strings per kind:
+
+    - ``answer``      → ``answer`` (dimmer label)
+    - ``shipped``     → ``3 files · +142/−38 · tests ✔`` (dim label)
+    - ``interrupted`` → ``· interrupted``
+    - ``plan_ready``  → ``· plan ready``
+    """
+
+    kind: OutcomeKind
+    files_changed: int = Field(default=0, ge=0)
+    diffstat: str = ""
+    """``+142/−38`` style diffstat captured from git; empty when not shipped."""
+    tests_ok: bool | None = None
+    """True/False when tests ran this turn; None when they did not."""
+
+    @property
+    def shipped(self) -> bool:
+        return self.kind == "shipped"
+
+    def outcome_label(self) -> str:
+        """The outcome fragment of the turn-rule label."""
+        if self.kind == "answer":
+            return "answer"
+        if self.kind == "interrupted":
+            return "· interrupted"
+        if self.kind == "plan_ready":
+            return "· plan ready"
+        parts = [f"{self.files_changed} file{'s' if self.files_changed != 1 else ''}"]
+        if self.diffstat:
+            parts.append(self.diffstat)
+        if self.tests_ok is not None:
+            parts.append("tests ✔" if self.tests_ok else "tests ✗")
+        return " · ".join(parts)
+
+
+class Checkpoint(_FrozenModel):
+    """One rewind target recorded at every turn rule (DESIGN-SPEC §9).
+
+    - ``id``: ``t1``, ``t2``, … (stamped on the TurnRule block at emit).
+    - ``turn_id``: app-assigned monotonic turn number.
+    - ``message_index``: transcript message index at the rule — the trim
+      point the backend fork restores to.
+    - ``cost_at``: cumulative session spend when the checkpoint was cut.
+    - ``label``: human description shown in the rewind picker.
+    """
+
+    id: str
+    turn_id: int = Field(ge=0)
+    message_index: int = Field(ge=0)
+    cost_at: Decimal = Field(default=Decimal("0"), ge=0)
+    label: str = ""
+
+
+class LedgerTurn(_FrozenModel):
+    """One completed turn as the ledger records it."""
+
+    turn_id: int
+    telemetry: TurnTelemetry
+    outcome: TurnOutcome
+    checkpoint: Checkpoint
+
+
+class OutcomeLedger:
+    """Session-scope outcome accounting (DESIGN-SPEC §10).
+
+    Backs ``/ledger``: ``N turns · $X.XX · N shipped · N answer-only ·
+    cache hit NN%``, the footer ``▲`` yield glyph (last turn shipped) and
+    the rewind picker's checkpoint list. Mutable by design — one instance
+    per session, fed by the turn lifecycle.
+    """
+
+    def __init__(self) -> None:
+        self._turns: list[LedgerTurn] = []
+
+    @property
+    def turns(self) -> tuple[LedgerTurn, ...]:
+        return tuple(self._turns)
+
+    @property
+    def turn_count(self) -> int:
+        return len(self._turns)
+
+    @property
+    def spend(self) -> Decimal:
+        """Total session cost across recorded turns."""
+        return sum((turn.telemetry.cost for turn in self._turns), Decimal("0"))
+
+    @property
+    def shipped_count(self) -> int:
+        return sum(1 for turn in self._turns if turn.outcome.shipped)
+
+    @property
+    def answer_only_count(self) -> int:
+        return sum(1 for turn in self._turns if turn.outcome.kind == "answer")
+
+    @property
+    def cache_hit_pct(self) -> int:
+        """Token-weighted aggregate cache-hit percentage across turns."""
+        weighted = 0.0
+        total = 0
+        for turn in self._turns:
+            if turn.telemetry.cached_pct is None:
+                continue
+            weighted += turn.telemetry.cached_pct * turn.telemetry.tokens_down
+            total += turn.telemetry.tokens_down
+        return round(weighted / total) if total else 0
+
+    @property
+    def last_shipped(self) -> bool:
+        """True when the most recent turn shipped (footer ``▲`` yield glyph)."""
+        return bool(self._turns) and self._turns[-1].outcome.shipped
+
+    @property
+    def checkpoints(self) -> tuple[Checkpoint, ...]:
+        return tuple(turn.checkpoint for turn in self._turns)
+
+    def next_checkpoint_id(self) -> str:
+        return f"t{len(self._turns) + 1}"
+
+    def record_turn(
+        self,
+        telemetry: TurnTelemetry,
+        outcome: TurnOutcome,
+        *,
+        turn_id: int,
+        message_index: int,
+        label: str = "",
+    ) -> LedgerTurn:
+        """Record a completed turn, cutting its checkpoint at the same time."""
+        checkpoint = Checkpoint(
+            id=self.next_checkpoint_id(),
+            turn_id=turn_id,
+            message_index=message_index,
+            cost_at=self.spend + telemetry.cost,
+            label=label,
+        )
+        turn = LedgerTurn(
+            turn_id=turn_id, telemetry=telemetry, outcome=outcome, checkpoint=checkpoint
+        )
+        self._turns.append(turn)
+        return turn
+
+    def checkpoint_by_id(self, checkpoint_id: str) -> Checkpoint | None:
+        for turn in self._turns:
+            if turn.checkpoint.id == checkpoint_id:
+                return turn.checkpoint
+        return None
+
+    def trim_to(self, checkpoint_id: str) -> None:
+        """Drop ledger turns after *checkpoint_id* (post-fork, confirm-then-trim).
+
+        Called only after the backend confirms the session fork
+        (ADR-0007 rewind contract). The checkpoint's own turn survives.
+        """
+        for index, turn in enumerate(self._turns):
+            if turn.checkpoint.id == checkpoint_id:
+                del self._turns[index + 1 :]
+                return
+        raise KeyError(f"unknown checkpoint: {checkpoint_id}")
+
+
+__all__ = [
+    "Checkpoint",
+    "LedgerTurn",
+    "OutcomeKind",
+    "OutcomeLedger",
+    "TurnOutcome",
+    "TurnTelemetry",
+]

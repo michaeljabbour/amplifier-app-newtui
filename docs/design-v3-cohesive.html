@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root { --bg-page: #12151c; --bg-term: #232937; --bg-chrome: #191d27; --bg-tab: #2b3243; --fg: #c9d1e0; --bright: #eef2f8; --dim: #6b7487; --dimmer: #4a5163; --green: #7ec699; --orange: #e0a458; --red: #e06c75; --blue: #7aa2f7; --teal: #6fc3c3; --rule: #333b4d; }
+html, body { margin: 0; padding: 0; background: var(--bg-page); }
+a { color: var(--blue); } a:hover { color: var(--teal); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+input::placeholder { color: var(--dimmer); }
+</style>
+</helmet>
+<div ref="{{ themeRef }}" style="min-height: 100vh; background: var(--bg-page, #12151c); color: var(--fg, #c9d1e0); font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.55; padding: 28px 20px 60px;">
+  <div style="max-width: 1100px; margin: 0 auto 18px; display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+    <div style="font-size: 15px; font-weight: 700; color: var(--bright, #eef2f8);">Amplifier TUI v3 <span style="color: var(--dim, #6b7487); font-weight: 400;">· cohesive design · spec + fork, unified</span></div>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+      <sc-for list="{{ buttons }}" as="btn" hint-placeholder-count="5">
+        <div onClick="{{ btn.click }}" style="font-size: 12px; background: {{ btn.bg }}; color: {{ btn.color }}; border: 1px solid {{ btn.border }}; border-radius: 6px; padding: 6px 12px; cursor: pointer;" style-hover="border-color: var(--dim); color: var(--bright);">{{ btn.label }}</div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="max-width: 1100px; margin: 0 auto; background: var(--bg-term, #232937); border-radius: 10px; box-shadow: 0 18px 50px rgba(0,0,0,0.55); overflow: hidden; border: 1px solid {{ windowBorder }}; position: relative;">
+    <div style="background: var(--bg-chrome, #191d27); padding: 10px 14px 8px; border-bottom: 1px solid rgba(0,0,0,0.35); display: flex; align-items: center; gap: 10px;">
+      <div style="display: flex; gap: 7px; flex-shrink: 0;">
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #f2555a; display: block;"></span>
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #f5b944; display: block;"></span>
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #58c264; display: block;"></span>
+      </div>
+      <div style="flex: 1; text-align: center; color: #aeb6c6; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><sc-if value="{{ running }}" hint-placeholder-val="{{ false }}"><span style="color: var(--orange);">{{ spinGlyph }} </span></sc-if>{{ title }}</div>
+      <div style="width: 52px;"></div>
+    </div>
+
+    <div ref="{{ transcriptRef }}" style="height: 470px; overflow-y: auto; padding: 16px 22px 12px;">
+      <sc-for list="{{ lines }}" as="line" hint-placeholder-count="8">
+        <sc-if value="{{ line.rule }}" hint-placeholder-val="{{ false }}">
+          <div onClick="{{ line.click }}" title="turn rule · click to open rewind picker" style="display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; cursor: pointer;">
+            <div style="flex: 1; height: 1px; background: var(--rule, #333b4d);"></div>
+            <div style="color: {{ line.ruleColor }}; font-size: 11.5px; white-space: nowrap;">{{ line.ruleLabel }}</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ line.text }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ line.click }}" style="word-break: break-word; margin-top: {{ line.mt }}px; cursor: {{ line.cursor }};"><sc-for list="{{ line.segs }}" as="seg"><span style="white-space: pre-wrap; animation: {{ seg.anim }}; color: {{ seg.c }}; font-weight: {{ seg.w }}; font-style: {{ seg.fs }}; background: {{ seg.bg }};">{{ seg.t }}</span></sc-for></div>
+        </sc-if>
+      </sc-for>
+    </div>
+
+    <div style="position: relative; height: 0;">
+      <sc-if value="{{ notice }}" hint-placeholder-val="{{ false }}">
+        <div style="position: absolute; right: 18px; bottom: 6px; color: var(--dim); font-size: 12px; background: var(--bg-term); padding: 0 6px; pointer-events: none;">{{ notice }}</div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ paletteOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="border-top: 1px solid var(--rule); background: rgba(0,0,0,0.18); max-height: 240px; overflow-y: auto; padding: 4px 0;">
+        <sc-for list="{{ paletteRows }}" as="row" hint-placeholder-count="6">
+          <sc-if value="{{ row.isGroup }}" hint-placeholder-val="{{ false }}">
+            <div style="color: var(--dimmer); font-size: 10.5px; padding: 5px 18px 1px; letter-spacing: 0.06em; text-transform: uppercase;">{{ row.label }}</div>
+          </sc-if>
+          <sc-if value="{{ row.isCmd }}" hint-placeholder-val="{{ true }}">
+            <div onClick="{{ row.click }}" style="display: flex; gap: 12px; align-items: baseline; padding: 3px 18px; cursor: pointer; font-size: 12.5px; background: {{ row.bg }};">
+              <span style="color: var(--teal); min-width: 150px;">{{ row.cmd }}</span>
+              <span style="color: {{ row.descColor }}; flex: 1;">{{ row.desc }}</span>
+              <span style="color: var(--dimmer); font-size: 10.5px; letter-spacing: 0.04em;">{{ row.tag }}</span>
+            </div>
+          </sc-if>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ lanesOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="border-top: 1px solid var(--rule); padding: 6px 18px; font-size: 12.5px;">
+        <div style="color: var(--bright); font-weight: 700;">Agent lanes <span style="color: var(--dimmer); font-weight: 400;">· ↑↓ select · enter focus · esc close</span></div>
+        <sc-for list="{{ lanes }}" as="lane" hint-placeholder-count="3">
+          <div onClick="{{ lane.click }}" style="white-space: pre; cursor: pointer; color: {{ lane.color }}; background: {{ lane.bg }};" style-hover="background: var(--bg-tab);">{{ lane.text }}</div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ rewindOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="border-top: 1px solid var(--rule); padding: 5px 18px; color: var(--orange); font-size: 12.5px; display: flex; gap: 10px; align-items: baseline;">
+        <span onClick="{{ rewindPrev }}" style="cursor: pointer;">‹</span>
+        <span style="white-space: pre;">rewind › {{ rewindLabel }}</span>
+        <span onClick="{{ rewindNext }}" style="cursor: pointer;">›</span>
+        <span onClick="{{ rewindFork }}" style="cursor: pointer; color: var(--bright); background: var(--bg-tab); padding: 0 8px; border-radius: 3px;">enter fork</span>
+        <span onClick="{{ rewindClose }}" style="cursor: pointer; color: var(--dimmer);">esc close</span>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ queuedText }}" hint-placeholder-val="{{ false }}">
+      <div style="border-top: 1px solid var(--rule); padding: 4px 18px; color: var(--orange); font-size: 12.5px;">{{ queuedText }}</div>
+    </sc-if>
+
+    <sc-if value="{{ approvalOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="border-top: 1px solid var(--rule); background: rgba(0,0,0,0.22); padding: 7px 18px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+        <span style="color: var(--orange); font-weight: 700;">Approval required ·</span>
+        <span style="color: var(--fg);">{{ approvalPrompt }}</span>
+        <sc-for list="{{ approvalOptions }}" as="opt" hint-placeholder-count="3">
+          <span onClick="{{ opt.click }}" style="cursor: pointer; padding: 1px 10px; border-radius: 3px; color: {{ opt.color }}; background: {{ opt.bg }}; font-weight: {{ opt.w }};">{{ opt.label }}</span>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ composerOpen }}" hint-placeholder-val="{{ true }}">
+      <div style="border-top: 1px solid var(--rule); border-left: 2px solid {{ modeAccent }}; padding: 8px 18px; display: flex; align-items: flex-start; gap: 8px;">
+        <span onClick="{{ cycleMode }}" title="shift+tab or click to cycle" style="flex-shrink: 0; font-size: 12px; padding-top: 2px; cursor: pointer; color: {{ modeColor }}; user-select: none;" style-hover="text-decoration: underline;">[{{ mode }}]</span>
+        <span style="color: var(--green); font-weight: 700; padding-top: 2px; flex-shrink: 0;">❯</span>
+        <input ref="{{ inputRef }}" onInput="{{ onInput }}" onKeyDown="{{ onKeyDown }}" placeholder="Message Amplifier…  ( / commands · shift+tab mode · enter send · type mid-turn to steer )" style="flex: 1; background: transparent; border: none; outline: none; color: var(--bright); font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.5; padding: 2px 0 0;"></input>
+      </div>
+    </sc-if>
+
+    <div style="display: flex; justify-content: space-between; gap: 16px; padding: 7px 18px 9px; border-top: 1px solid var(--rule); background: var(--bg-chrome); font-size: 12px; flex-wrap: wrap;">
+      <div style="color: var(--dim);">
+        <span style="color: {{ modeColor }};">mode {{ mode }}</span>
+        <span style="color: var(--dimmer); padding: 0 5px;">·</span><span>{{ trust }}</span>
+        <span style="color: var(--dimmer); padding: 0 5px;">·</span>anchors<span style="color: var(--dimmer); padding: 0 5px;">·</span>e07d<span style="color: var(--dimmer); padding: 0 5px;">·</span><span>{{ cost }}</span><span style="color: var(--green);">{{ yieldGlyph }}</span><span style="color: var(--orange);">{{ queuedBadge }}</span>
+        <sc-if value="{{ waitingBadge }}" hint-placeholder-val="{{ false }}">
+          <span style="color: var(--dimmer); padding: 0 5px;">·</span><span onClick="{{ showNeedsYou }}" style="color: var(--orange); cursor: pointer;" style-hover="text-decoration: underline;">{{ waitingBadge }}</span>
+        </sc-if>
+      </div>
+      <div style="color: var(--dimmer); text-align: right;">{{ hints }}</div>
+    </div>
+  </div>
+
+  <div style="max-width: 1100px; margin: 22px auto 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px 22px; color: var(--dim); font-size: 12px;">
+    <div><b style="color: var(--fg); font-weight: 600;">block grammar</b> — <span style="color: var(--bright);">●</span> narration · <span style="color: var(--dimmer);">● dim</span> tool (collapsed, click) · <span style="color: var(--orange);">■</span>/<span style="color: var(--green);">✔</span>/<span style="color: var(--dimmer);">□</span> plan · <span style="color: var(--red);">⊘</span> blocked · <span style="color: var(--dimmer);">✳</span> recap</div>
+    <div><b style="color: var(--fg); font-weight: 600;">modes</b> — <span style="color: var(--dim);">[chat]</span> <span style="color: var(--blue);">[plan]</span> <span style="color: var(--teal);">[brainstorm]</span> <span style="color: var(--green);">[build]</span> <span style="color: var(--orange);">[auto]</span> · badge stamps scrollback; tint = badge + footer + composer edge</div>
+    <div><b style="color: var(--fg); font-weight: 600;">outcome ledger</b> — turn rules price yield next to spend; footer ▲ = last turn shipped · ctrl-l session ledger</div>
+    <div><b style="color: var(--fg); font-weight: 600;">rewind anchors</b> — every turn rule is a checkpoint; click one (or ctrl-r) to fork from it</div>
+    <div><b style="color: var(--fg); font-weight: 600;">needs-you queue</b> — denials escalate to a batch queue, never a halt · ctrl-y or click the badge</div>
+    <div><b style="color: var(--fg); font-weight: 600;">evidence links</b> — click a final answer to trace its claims to the tool calls above</div>
+    <div><b style="color: var(--fg); font-weight: 600;">queue vs steer</b> — enter mid-turn steers this turn; shift+enter queues a full next-turn message (footer q1, auto-runs at turn end)</div>
+    <div><b style="color: var(--fg); font-weight: 600;">agent process</b> — ctrl-t lanes; click a lane to focus that subagent's own transcript, esc back to parent</div>
+    <div><b style="color: var(--fg); font-weight: 600;">calmer density</b> — tool output and internals collapse to one dim line; telemetry only ever a suffix</div>
+    <div><b style="color: var(--fg); font-weight: 600;">themes</b> — slate (current) · graphite (warm) · carbon (cool, high contrast) — in Tweaks</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;slate&quot;,&quot;graphite&quot;,&quot;carbon&quot;],&quot;default&quot;:&quot;graphite&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Palette exploration&quot;}}">
+class Component extends DCLogic {
+  state = { v: 0 };
+  bump = () => this.setState((s) => ({ v: s.v + 1 }));
+  lines = []; k = 0; running = false; interrupt = false;
+  modeIdx = 0; cost = 0.57; yieldGlyph = ""; notice = ""; palFilter = null;
+  lanesOpen = false; rewindOpen = false; rewindIdx = 0;
+  approval = null; waiting = 0; steer = null; steerLine = null;
+  queued = null; agentFocus = null; focusLines = [];
+  checkpoints = []; title = "amplifier-app-cli — Amplifier — ready — anchors — e07d"; spinIdx = 0;
+
+  componentDidMount() {
+    this.spinTimer = setInterval(() => { if (this.running) { this.spinIdx = (this.spinIdx + 1) % 4; this.bump(); } }, 260);
+    this.keyHandler = (e) => {
+      if (e.ctrlKey && e.key === "t") { e.preventDefault(); this.toggleLanes(); }
+      if (e.ctrlKey && e.key === "l") { e.preventDefault(); this.cmdLedger(); }
+      if (e.ctrlKey && e.key === "y") { e.preventDefault(); this.showNeedsYou(); }
+      if (e.ctrlKey && e.key === "r") { e.preventDefault(); this.openRewind(); }
+      if (this.approval) {
+        if (e.key === "Escape") { e.preventDefault(); this.approval.resolve("Deny"); return; }
+        if (e.key === "Enter") { e.preventDefault(); this.approval.resolve(["Allow once", "Allow always", "Deny"][this.approvalSel || 0]); return; }
+        if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "Tab") { e.preventDefault(); this.approvalSel = ((this.approvalSel || 0) + 1) % 3; this.bump(); return; }
+        if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); this.approvalSel = ((this.approvalSel || 0) + 2) % 3; this.bump(); return; }
+        return;
+      }
+      if (e.key === "Escape" && document.activeElement !== this._input) {
+        if (this.agentFocus) { this.unfocusLane(); return; }
+        if (this.rewindOpen) { this.rewindOpen = false; this.bump(); return; }
+        if (this.lanesOpen) { this.lanesOpen = false; this.bump(); return; }
+        if (this.running) { this.interrupt = true; return; }
+      }
+      if (e.key === "Tab" && e.shiftKey && document.activeElement !== this._input) { e.preventDefault(); this.cycleMode(); }
+    };
+    document.addEventListener("keydown", this.keyHandler);
+    this.seedTranscript();
+    this.applyTheme();
+  }
+  componentWillUnmount() { clearInterval(this.spinTimer); document.removeEventListener("keydown", this.keyHandler); }
+  componentDidUpdate() { this.applyTheme(); }
+
+  MODES = [
+    { id: "chat", color: "var(--dim)", trust: "ask all · auto read" },
+    { id: "plan", color: "var(--blue)", trust: "read-only" },
+    { id: "brainstorm", color: "var(--teal)", trust: "no tools" },
+    { id: "build", color: "var(--green)", trust: "auto read,test · ask write,net,spend" },
+    { id: "auto", color: "var(--orange)", trust: "auto read,write · classifier-gated" },
+  ];
+  THEMES = {
+    slate: { "--bg-page": "#12151c", "--bg-term": "#232937", "--bg-chrome": "#191d27", "--bg-tab": "#2b3243", "--fg": "#c9d1e0", "--bright": "#eef2f8", "--dim": "#6b7487", "--dimmer": "#4a5163", "--green": "#7ec699", "--orange": "#e0a458", "--red": "#e06c75", "--blue": "#7aa2f7", "--teal": "#6fc3c3", "--rule": "#333b4d" },
+    graphite: { "--bg-page": "#131110", "--bg-term": "#211e1a", "--bg-chrome": "#181512", "--bg-tab": "#2c2722", "--fg": "#d6cfc4", "--bright": "#f2ede4", "--dim": "#8a8175", "--dimmer": "#575047", "--green": "#98c28b", "--orange": "#dba15c", "--red": "#d97371", "--blue": "#90a4d8", "--teal": "#80bcae", "--rule": "#3a352e" },
+    carbon: { "--bg-page": "#0c0e12", "--bg-term": "#14171d", "--bg-chrome": "#0f1116", "--bg-tab": "#1f242e", "--fg": "#cdd6e4", "--bright": "#f4f7fc", "--dim": "#65718a", "--dimmer": "#3d4657", "--green": "#6fd39c", "--orange": "#e9b14f", "--red": "#ef6e7b", "--blue": "#6f9df2", "--teal": "#57c8c8", "--rule": "#2a3140" },
+  };
+  applyTheme() {
+    const theme = this.THEMES[this.props.theme ?? "slate"] || this.THEMES.slate;
+    if (this._root) for (const [key, val] of Object.entries(theme)) this._root.style.setProperty(key, val);
+  }
+
+  mode() { return this.MODES[this.modeIdx]; }
+  idleTitle() { return "amplifier-app-cli — Amplifier — ready — anchors — e07d"; }
+  wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
+  scroll() { setTimeout(() => { if (this._tr) this._tr.scrollTop = this._tr.scrollHeight; }, 0); }
+  showNotice(text, ms = 4000) {
+    this.notice = text; this.bump();
+    clearTimeout(this._nt);
+    this._nt = setTimeout(() => { this.notice = ""; this.bump(); }, ms);
+  }
+  S(t, c, o = {}) { return { t, c, w: o.b ? "700" : "400", fs: o.i ? "italic" : "normal", bg: o.bg || "transparent", anim: o.anim || "none" }; }
+  rm(line) { const i = this.lines.indexOf(line); if (i >= 0) this.lines.splice(i, 1); this.bump(); }
+  L(segs, o = {}) {
+    const line = { key: "l" + this.k++, segs, mt: o.mt ?? 2, cursor: o.click ? "pointer" : "default", click: o.click || null, rule: false, text: true };
+    this.lines.push(line); this.bump(); this.scroll(); return line;
+  }
+  rule(label, shipped, cpLabel) {
+    const cp = { id: "t" + (this.checkpoints.length + 1), label: cpLabel, cost: this.cost };
+    this.checkpoints.push(cp);
+    const line = { key: "l" + this.k++, rule: true, text: false, ruleLabel: label, ruleColor: shipped ? "var(--dim)" : "var(--dimmer)", click: () => this.openRewind(this.checkpoints.length - 1) };
+    this.lines.push(line); this.bump(); this.scroll(); return line;
+  }
+
+  toolLine(summary, body) {
+    let open = false; let bodyLine = null;
+    const line = this.L([this.S("  ● " + summary + " ", "var(--dim)"), this.S("· click to expand", "var(--dimmer)")], {
+      click: () => {
+        open = !open;
+        if (open) {
+          bodyLine = { key: "l" + this.k++, segs: [this.S("      " + body, "var(--dimmer)")], mt: 0, cursor: "default", click: null, rule: false, text: true };
+          this.lines.splice(this.lines.indexOf(line) + 1, 0, bodyLine);
+        } else if (bodyLine) { this.lines.splice(this.lines.indexOf(bodyLine), 1); }
+        this.bump();
+      },
+    });
+    return line;
+  }
+
+  seedTranscript() {
+    this.L([this.S("Amplifier 2026.07.13-87b93ef* · core 1.6.0", "var(--bright)", { b: true })], { mt: 0 });
+    this.L([this.S("Bundle: anchors | Provider: OpenAI | gpt-5.5 · session e07de0", "var(--dim)")], { mt: 0 });
+    this.userLine("explain what this repo is in simple terms");
+    this.L([this.S("● ", "var(--bright)"), this.S("Reading the repo layout and entry points to ground the summary.", "var(--fg)")], { mt: 8 });
+    this.toolLine("Ran 2 shell commands", "$ ls -la && cat pyproject.toml | head -40");
+    const ans = this.L([this.S("This repo is the ", "var(--fg)"), this.S("command-line app for Amplifier", "var(--bright)", { b: true }), this.S(". If amplifier-core is the engine, this is the dashboard and steering wheel: the ", "var(--fg)"), this.S("amplifier", "var(--teal)"), this.S(" command starts sessions, configures providers, loads bundles, and renders this UI.", "var(--fg)")], { mt: 8, click: () => this.showEvidence() });
+    this.rule("6.1s · 83.9k tok, 91% cached · $0.17 · answer", false, "repo explainer · answer");
+  }
+
+  userLine(text) {
+    const m = this.mode();
+    this.L([this.S("❯ ", "var(--green)", { b: true }), this.S("[" + m.id + "] ", m.color), this.S(text, "var(--bright)")], { mt: 10 });
+  }
+
+  showEvidence() {
+    this.L([this.S("· ", "var(--teal)"), this.S("Evidence", "var(--teal)", { b: true }), this.S("  1/2 · ←/→ select · enter expand · esc close", "var(--dimmer)")], { mt: 8 });
+    this.L([this.S("  ¹ ", "var(--teal)"), this.S("\"dashboard and steering wheel\"", "var(--fg)"), this.S(" → Ran 2 shell commands (pyproject entry points)", "var(--dim)")], { mt: 0 });
+    this.L([this.S("  ² ", "var(--teal)"), this.S("\"loads bundles\"", "var(--fg)"), this.S(" → grep amplifier_core bundle loader", "var(--dim)")], { mt: 0 });
+    this.showNotice("evidence revealed · every claim traces to a tool call");
+  }
+
+  setMode(idx) {
+    this.modeIdx = ((idx % this.MODES.length) + this.MODES.length) % this.MODES.length;
+    const m = this.mode();
+    this.showNotice("mode " + m.id + " · " + m.trust);
+  }
+  cycleMode = () => this.setMode(this.modeIdx + 1);
+
+  toggleLanes = () => { this.lanesOpen = !this.lanesOpen; this.bump(); };
+  openRewind(idx) {
+    if (!this.checkpoints.length) { this.showNotice("no rewind checkpoints yet"); return; }
+    this.rewindIdx = idx ?? this.checkpoints.length - 1;
+    this.rewindOpen = true; this.bump();
+  }
+  cmdLedger = () => {
+    const shipped = this.checkpoints.filter((c) => c.label.includes("shipped")).length;
+    this.L([this.S("· ", "var(--blue)"), this.S("Session ledger  e07d · anchors", "var(--fg)")], { mt: 10 });
+    this.L([this.S("  " + this.checkpoints.length + " turns · $" + this.cost.toFixed(2) + " · " + shipped + " shipped · " + (this.checkpoints.length - shipped) + " answer-only · cache hit 84%", "var(--dim)")], { mt: 0 });
+    this.showNotice("ledger printed to scrollback");
+  };
+  showNeedsYou = () => {
+    if (!this.waiting) { this.showNotice("no decisions waiting"); return; }
+    this.L([this.S("· ", "var(--orange)"), this.S("Needs you  " + this.waiting + " deferred decision", "var(--orange)")], { mt: 10 });
+    this.L([this.S("  1 ", "var(--orange)"), this.S("Push branch to origin was blocked (outside trust boundary). Push to fork ", "var(--fg)"), this.S("mj/waypoint", "var(--teal)"), this.S(" instead?  ", "var(--fg)"), this.S("[yes · push to fork]", "var(--green)", { bg: "var(--bg-tab)" })], {
+      mt: 0,
+      click: () => {
+        this.L([this.S("● ", "var(--bright)"), this.S("Applying decision: pushing to fork mj/waypoint. Trust-slot suggestion queued for /improve.", "var(--fg)")], { mt: 4 });
+        this.waiting = 0; this.bump();
+      },
+    });
+  };
+
+  requestApproval(prompt) {
+    this.showNotice("approval required · choose below the transcript", 6000);
+    this.approvalSel = 0;
+    if (this.agentFocus) { this.agentFocus = null; this.focusLines = []; this.showNotice("back to parent · approval required", 6000); }
+    return new Promise((resolve) => { this.approval = { prompt, resolve }; this.bump(); });
+  }
+
+  async runTurn(auto) {
+    if (this.running) return;
+    this.running = true; this.interrupt = false; this.steer = null;
+    const steps = ["Audit persistence paths", "Migrate history to durable store", "Verify and push"];
+    const narr = [
+      "Mapping every read and write against the current session store.",
+      "History paths found in three modules. Moving them behind one durable interface.",
+      "Tests green. Preparing the push.",
+    ];
+    const cmds = ["grep -rn \"session_store\" amplifier/ | head -12", "uv run pytest tests/store/ -q", "git push origin mj/durable-store"];
+    let secs = 0, toks = 0, blocked = false, denied = false;
+    const planHead = this.L([this.S("· ", "var(--orange)"), this.S("Refactor session store ", "var(--fg)"), this.S("", "var(--dim)")], { mt: 10 });
+    const items = steps.map((s) => this.L([this.S("  □ ", "var(--dimmer)"), this.S(s, "var(--dim)")], { mt: 0 }));
+    const status = this.L([this.S("✳ ", "var(--orange)", { anim: "pulse 1.1s ease-in-out infinite" }), this.S("working · 0s · ↓ 0.0k tok · 1 agent · ", "var(--dim)"), this.S("esc to interrupt · type to steer", "var(--dimmer)")], { mt: 8 });
+    const tick = setInterval(() => {
+      secs++; toks += 380 + Math.floor(Math.random() * 260);
+      status.segs[0].t = ["✳ ", "✦ ", "✧ ", "✦ "][secs % 4];
+      status.segs[1].t = "working · " + secs + "s · ↓ " + (toks / 1000).toFixed(1) + "k tok · 1 agent · ";
+      this.bump();
+    }, 1000);
+    const setPlanTele = () => { planHead.segs[2].t = "(" + secs + "s · ↓ " + (toks / 1000).toFixed(1) + "k tok)"; };
+
+    for (let i = 0; i < steps.length; i++) {
+      if (this.interrupt) break;
+      if (this.steer) {
+        this.L([this.S("● ", "var(--bright)"), this.S("Applying steer: " + this.steer, "var(--fg)")], { mt: 2 });
+        if (this.steerLine) { this.rm(this.steerLine); this.steerLine = null; }
+        this.steer = null;
+      }
+      items[i].segs = [this.S("  ■ ", "var(--orange)"), this.S(steps[i], "var(--bright)", { b: true })];
+      this.title = "amplifier-app-cli — Amplifier — " + steps[i].toLowerCase() + " — anchors — e07d";
+      setPlanTele(); this.bump();
+      this.L([this.S("● ", "var(--bright)"), this.S(narr[i], "var(--fg)")], { mt: 4 });
+      await this.wait(1300);
+      if (this.interrupt) break;
+
+      if (auto && i === 2) {
+        this.L([this.S("  └ ", "var(--dimmer)"), this.S("$ git push --force origin main", "var(--dim)")], { mt: 0 });
+        await this.wait(900);
+        this.L([this.S("  ⊘ blocked · git push --force origin main ", "var(--red)"), this.S("· outside user authorization · finding safer path", "var(--dim)")], { mt: 2 });
+        blocked = true;
+        await this.wait(900);
+        this.L([this.S("● ", "var(--bright)"), this.S("Force-push denied. Branch push also crosses the trust boundary; deferring the decision and finishing local verification.", "var(--fg)")], { mt: 2 });
+        this.waiting = 1; this.bump();
+        this.showNotice("decision deferred to queue · run continues");
+      } else {
+        if (this.mode().id === "chat" && i === 1) {
+          const choice = await this.requestApproval("Run uv run pytest tests/store/ -q?");
+          this.approval = null; this.bump();
+          if (choice === "Deny") {
+            this.L([this.S("  ⊘ blocked · uv run pytest ", "var(--red)"), this.S("· denied by user · continuing without test run", "var(--dim)")], { mt: 2 });
+            denied = true;
+            items[i].segs = [this.S("  ✔ ", "var(--green)"), this.S(steps[i], "var(--dim)")];
+            continue;
+          }
+        }
+        const cmdLine = this.L([this.S("  └ ", "var(--dimmer)"), this.S("$ " + cmds[i], "var(--dim)")], { mt: 0 });
+        await this.wait(1400);
+        if (this.interrupt) break;
+        this.rm(cmdLine);
+        this.toolLine("Ran 1 shell command", "$ " + cmds[i] + "  (output collapsed)");
+      }
+      items[i].segs = [this.S("  ✔ ", "var(--green)"), this.S(steps[i], "var(--dim)")];
+      setPlanTele(); this.bump();
+      await this.wait(400);
+    }
+
+    clearInterval(tick);
+    this.rm(status);
+    if (this.steerLine) { this.rm(this.steerLine); this.steerLine = null; }
+    const turnCost = 0.04 + secs * 0.01;
+    this.cost += turnCost;
+    const tele = secs + "s · " + (toks / 1000).toFixed(1) + "k tok, 88% cached · $" + turnCost.toFixed(2);
+    if (this.interrupt) {
+      this.L([this.S("✳ ", "var(--dimmer)"), this.S("Interrupted. Goal: durable session store. Context saved; resume or restate direction.", "var(--dim)", { i: true })], { mt: 8 });
+      this.rule(tele + " · interrupted", false, "store refactor · interrupted");
+      this.yieldGlyph = "";
+    } else if (blocked) {
+      this.L([this.S("Store refactor complete and verified locally: history behind one durable interface, tests green. The push crossed the trust boundary, so it is waiting in your decision queue.", "var(--fg)")], { mt: 8, click: () => this.showEvidence() });
+      this.L([this.S("✳ ", "var(--dimmer)"), this.S("Goal: durable session store. Next: answer the deferred push decision (ctrl-y).", "var(--dim)", { i: true })], { mt: 4 });
+      this.rule(tele + " · 3 files · +142/−38 · tests ✔", true, "store refactor · shipped");
+      this.yieldGlyph = " ▲";
+    } else {
+      const yielded = denied ? "3 files · +142/−38" : "3 files · +142/−38 · tests ✔";
+      this.L([this.S("Session store refactor is in: history behind one durable interface" + (denied ? " (tests skipped by your denial)" : ", tests pass") + ", branch pushed. Ready for review.", "var(--fg)")], { mt: 8, click: () => this.showEvidence() });
+      this.L([this.S("✳ ", "var(--dimmer)"), this.S("Goal: durable session store. Next: open PR against main.", "var(--dim)", { i: true })], { mt: 4 });
+      this.rule(tele + " · " + yielded, true, "store refactor · shipped");
+      this.yieldGlyph = " ▲";
+    }
+    this.title = this.idleTitle();
+    this.running = false; this.bump();
+    if (!blocked) this.showNotice(this.interrupt ? "turn interrupted · context saved" : "agents 1 done");
+    this.drainQueue();
+  }
+
+  drainQueue() {
+    if (!this.queued) return;
+    const next = this.queued; this.queued = null;
+    this.showNotice("queued message picked up");
+    setTimeout(() => { this.userLine(next); this.runTurn(false); }, 900);
+  }
+
+  focusLane(lane) {
+    this.agentFocus = lane.name;
+    this.focusLines = [];
+    const F = (segs, mt) => this.focusLines.push({ key: "f" + this.k++, segs, mt: mt ?? 2, cursor: "default", click: null, rule: false, text: true });
+    F([this.S("focused: " + lane.name + " ", "var(--bright)", { b: true }), this.S("· subagent of e07de0 · own context window · results report back to parent · esc back", "var(--dim)")], 0);
+    F([this.S("❯ ", "var(--green)", { b: true }), this.S("[delegated] ", "var(--teal)"), this.S(lane.brief, "var(--bright)")], 10);
+    lane.log.forEach((row) => {
+      if (row[0] === "n") F([this.S("● ", "var(--bright)"), this.S(row[1], "var(--fg)")], 6);
+      if (row[0] === "t") F([this.S("  ● ", "var(--dim)"), this.S(row[1], "var(--dim)")], 0);
+      if (row[0] === "c") F([this.S("  └ ", "var(--dimmer)"), this.S("$ " + row[1], "var(--dim)")], 0);
+      if (row[0] === "a") F([this.S(row[1], "var(--fg)")], 6);
+    });
+    F([this.S("✳ ", "var(--dimmer)"), this.S(lane.state, "var(--dim)", { i: true })], 8);
+    this.bump();
+  }
+  unfocusLane = () => { this.agentFocus = null; this.focusLines = []; this.bump(); this.showNotice("back to parent session"); };
+
+  LANES = [
+    { name: "researcher", glyph: "◐", color: "var(--teal)", line: "  ◐ researcher · scanning provider docs · 41s · $0.09", brief: "Scan the provider docs and list every capability the runtime does not exercise.", state: "running · 41s · $0.09", log: [["n", "Fetching the provider capability matrix and diffing it against runtime calls."], ["t", "Ran 3 web_fetch calls"], ["c", "grep -rn \"capabilities\" providers/ | head -20"], ["n", "Two undocumented streaming flags found; verifying against the SDK."]] },
+    { name: "coder", glyph: "■", color: "var(--fg)", line: "  ■ coder      · migrating store        · 2m  · $0.31", brief: "Move session history behind the durable SessionStore interface.", state: "running · 2m 04s · $0.31", log: [["n", "Extracting the SessionStore interface from three call sites."], ["c", "uv run python -m amplifier_app_cli.session_store --check"], ["t", "Ran 4 edit calls · 2 files"], ["n", "Wiring journal replay into resume; tests next."]] },
+    { name: "tester", glyph: "✔", color: "var(--dim)", line: "  ✔ tester     · done · tests ✔         · 55s · $0.07", brief: "Run the store test suite and report failures with evidence.", state: "completed · 55s · $0.07 · tests ✔", log: [["c", "uv run pytest tests/store/ -q"], ["t", "Ran 1 shell command · 41 passed"], ["a", "All 41 store tests pass. Slowest: test_journal_replay (1.2s). No flakes across 3 runs."]] },
+  ];
+
+  async runPlanTurn() {
+    if (this.running) return;
+    this.setMode(1);
+    this.userLine("how should we make session history durable?");
+    this.running = true; this.title = "amplifier-app-cli — Amplifier — planning — anchors — e07d"; this.bump();
+    this.L([this.S("● ", "var(--bright)"), this.S("Reading the store modules — plan mode, no writes.", "var(--fg)")], { mt: 8 });
+    await this.wait(1400);
+    const head = this.L([this.S("· ", "var(--orange)"), this.S("Proposed plan · durable session history ", "var(--fg)"), this.S("(read-only)", "var(--dim)")], { mt: 8 });
+    ["Extract a SessionStore interface from the three call sites", "Back it with sqlite + journal replay", "Migrate history lazily on first read"].forEach((s, i) => {
+      setTimeout(() => this.L([this.S("  □ ", "var(--dimmer)"), this.S(s, "var(--dim)")], { mt: 0 }), 500 * (i + 1));
+    });
+    await this.wait(2200);
+    this.L([this.S("✳ ", "var(--dimmer)"), this.S("Plan ready. shift+tab to build hands it over for execution.", "var(--dim)", { i: true })], { mt: 4 });
+    this.cost += 0.06; this.yieldGlyph = "";
+    this.rule("11s · 9.4k tok, 93% cached · $0.06 · answer · plan ready", false, "durable-history plan · answer");
+    this.title = this.idleTitle(); this.running = false; this.bump();
+    this.showNotice("plan mode: read-only · plan handed to build on mode switch");
+    this.drainQueue();
+  }
+  async runBrainstormTurn() {
+    if (this.running) return;
+    this.setMode(2);
+    this.userLine("how might we make long agent runs feel supervised?");
+    this.running = true; this.title = "amplifier-app-cli — Amplifier — brainstorming — anchors — e07d"; this.bump();
+    this.L([this.S("● ", "var(--bright)"), this.S("No tools in brainstorm — pure divergence, cheapest turn there is.", "var(--fg)")], { mt: 8 });
+    await this.wait(1200);
+    const ideas = ["1 Ambient tab color: orange while running, red when a decision waits", "2 A \"confidence strip\" under the plan: what the agent would bet on each step", "3 Turn rules as a film strip — scrub the session like a timeline", "4 Steer suggestions: the agent drafts the correction it suspects you want"];
+    for (const idea of ideas) { this.L([this.S("  " + idea, "var(--fg)")], { mt: 2 }); await this.wait(450); }
+    this.L([this.S("✳ ", "var(--dimmer)"), this.S("Converge with /plan when one of these sticks.", "var(--dim)", { i: true })], { mt: 4 });
+    this.cost += 0.03; this.yieldGlyph = "";
+    this.rule("8s · 4.1k tok · $0.03 · answer", false, "supervision ideas · answer");
+    this.title = this.idleTitle(); this.running = false; this.bump();
+    this.drainQueue();
+  }
+  async runAgentsTurn() {
+    if (this.running) return;
+    this.setMode(3);
+    this.userLine("run the DTU reality check across provider docs, store, and tests");
+    this.running = true; this.lanesOpen = true; this.title = "amplifier-app-cli — Amplifier — ✳ coordinating 3 agents — anchors — e07d"; this.bump();
+    this.L([this.S("● ", "var(--bright)"), this.S("Fanning out: researcher, coder, tester. Lanes above the composer track each one.", "var(--fg)")], { mt: 8 });
+    const status = this.L([this.S("✳ ", "var(--orange)", { anim: "pulse 1.1s ease-in-out infinite" }), this.S("Coordinating 3 agents · 0s · ↓ 0.0k tok · ", "var(--dim)"), this.S("esc to interrupt", "var(--dimmer)")], { mt: 4 });
+    const tree = [
+      this.L([this.S("  ├─ ● ", "var(--dimmer)"), this.S("researcher · scanning provider docs · $0.09", "var(--dim)")], { mt: 0 }),
+      this.L([this.S("  ├─ ● ", "var(--dimmer)"), this.S("coder · migrating store · $0.31", "var(--dim)")], { mt: 0 }),
+      this.L([this.S("  └─ ● ", "var(--dimmer)"), this.S("tester · uv run pytest tests/ -q · $0.07", "var(--dim)")], { mt: 0 }),
+    ];
+    let secs = 0, toks = 0;
+    const tick = setInterval(() => { secs++; toks += 900; status.segs[1].t = "Coordinating 3 agents · " + secs + "s · ↓ " + (toks / 1000).toFixed(1) + "k tok · "; this.bump(); }, 1000);
+    await this.wait(2600);
+    tree[2].segs = [this.S("  └─ ✔ ", "var(--green)"), this.S("tester · done · tests ✔ · 2s · $0.07", "var(--dim)")]; this.bump();
+    await this.wait(1800);
+    tree[0].segs = [this.S("  ├─ ✔ ", "var(--green)"), this.S("researcher · done · 3 findings · 4s · $0.11", "var(--dim)")]; this.bump();
+    await this.wait(1600);
+    tree[1].segs = [this.S("  ├─ ✔ ", "var(--green)"), this.S("coder · done · 2 files · 6s · $0.34", "var(--dim)")]; this.bump();
+    clearInterval(tick); this.rm(status);
+    this.L([this.S("Reality check passed: provider docs match runtime behavior, store migration verified, 41 tests green across three parallel agents.", "var(--fg)")], { mt: 8, click: () => this.showEvidence() });
+    this.cost += 0.52; this.yieldGlyph = " ▲";
+    this.rule(secs + "s · " + (toks / 1000).toFixed(1) + "k tok · $0.52 · 2 files · tests ✔ · 3 agents", true, "DTU reality check · shipped");
+    this.title = this.idleTitle(); this.running = false; this.bump();
+    this.showNotice("agents 3 done · click a lane to inspect its transcript");
+    this.drainQueue();
+  }
+  COMMANDS = [
+    ["During", "/mode", "cycle or jump posture: chat, plan, brainstorm, build, auto", "built-in", () => this.cycleMode()],
+    ["During", "/plan", "read-only planning; hands the plan to build", "built-in", () => this.setMode(1)],
+    ["During", "/brainstorm", "no tools, divergent output; /plan to converge", "built-in", () => this.setMode(2)],
+    ["During", "/context", "context usage grid + suggestions", "built-in", () => this.cmdContext()],
+    ["Parallel", "/tasks", "agent lanes: one line per subagent", "built-in", () => this.toggleLanes()],
+    ["Ship", "/ledger", "session outcome ledger: spend vs yield", "built-in", () => this.cmdLedger()],
+    ["Between", "/rewind", "fork from any turn-rule checkpoint", "built-in", () => this.openRewind()],
+    ["Repair", "/permissions", "edit trust slots: boundary, blocks, exceptions", "built-in", () => this.showNotice("/permissions · stub in mockup")],
+    ["Repair", "/doctor", "setup checkup; reports, then fixes on confirm", "skill", () => this.cmdDoctor()],
+    ["Repair", "/improve", "tune config from ledger + denial log", "skill", () => this.cmdImprove()],
+  ];
+  cmdContext() {
+    this.L([this.S("· ", "var(--blue)"), this.S("Context  41% of 200k", "var(--fg)")], { mt: 10 });
+    this.L([this.S("  ████████░░░░░░░░░░░░  conversation 52k · tools 18k · memory 8k · free 118k", "var(--dim)")], { mt: 0 });
+  }
+  cmdDoctor() {
+    this.L([this.S("· ", "var(--blue)"), this.S("Doctor  3 findings · nothing changed yet", "var(--fg)")], { mt: 10 });
+    this.L([this.S("  ✔ ", "var(--green)"), this.S("install healthy · PATH clean · settings parse", "var(--dim)")], { mt: 0 });
+    this.L([this.S("  1 ", "var(--orange)"), this.S("2 MCP servers unused in 30 days · cost 4.1k tok/session", "var(--dim)")], { mt: 0 });
+    this.L([this.S("  2 ", "var(--orange)"), this.S("14 identical read-only approvals this week · candidate allowlist", "var(--dim)")], { mt: 0 });
+  }
+  cmdImprove() {
+    this.L([this.S("· ", "var(--blue)"), this.S("Improve  from ledger + denial log · proposes, never applies silently", "var(--fg)")], { mt: 10 });
+    this.L([this.S("  1 allowlist: ", "var(--dim)"), this.S("uv run pytest", "var(--green)"), this.S(" approved 22/22 times · add to auto", "var(--dim)")], { mt: 0 });
+    this.L([this.S("  2 trust slot: 3 denials on push-to-fork all overridden · add fork remote to boundary", "var(--dim)")], { mt: 0 });
+  }
+  runCommand(entry) {
+    this.userLine(entry[1]);
+    this.palFilter = null;
+    if (this._input) this._input.value = "";
+    this.bump();
+    entry[4]();
+  }
+
+  onInput = (e) => {
+    const value = e.target.value;
+    this.palFilter = value.startsWith("/") ? value.trim() : null;
+    if (this.running && !value.startsWith("/")) { /* steering draft */ }
+    this.bump();
+  };
+  onKeyDown = (e) => {
+    if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); this.cycleMode(); return; }
+    if (e.key === "Escape") {
+      if (this.agentFocus) { this.unfocusLane(); return; }
+      if (this.palFilter !== null) { this.palFilter = null; this.bump(); return; }
+      if (this.rewindOpen) { this.rewindOpen = false; this.bump(); return; }
+      if (this.lanesOpen) { this.lanesOpen = false; this.bump(); return; }
+      if (this.running) { this.interrupt = true; return; }
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const rows = this.paletteEntries();
+      if (this.palFilter !== null && rows.length) { this.runCommand(rows[0]); return; }
+      const text = e.target.value.trim();
+      if (!text) return;
+      e.target.value = ""; this.palFilter = null;
+      if (this.running) {
+        if (e.shiftKey || this.steer) {
+          this.queued = text;
+          this.showNotice("message queued · runs as the next turn");
+        } else {
+          this.steer = text;
+          if (this.steerLine) this.rm(this.steerLine);
+          this.steerLine = this.L([this.S("  ↳ ", "var(--teal)"), this.S("steer queued: \"" + text + "\" ", "var(--teal)"), this.S("· applies at next step boundary", "var(--dimmer)")], { mt: 2 });
+          this.showNotice("steer queued · shift+enter queues a full next-turn message");
+        }
+      } else {
+        this.userLine(text);
+        this.runTurn(false);
+      }
+    }
+  };
+  paletteEntries() {
+    if (this.palFilter === null) return [];
+    return this.COMMANDS.filter((c) => c[1].includes(this.palFilter));
+  }
+
+  renderVals() {
+    const m = this.mode();
+    const buttons = [
+      { label: "▶ Run demo turn", click: () => { if (!this.running) { this.userLine("refactor the session store so history is durable offline and online"); this.runTurn(false); } }, bg: "rgba(47,74,58,0.6)", color: "var(--green)", border: "#3f6a50" },
+      { label: "▶ Auto-mode turn", click: () => { if (!this.running) { this.setMode(4); this.userLine("refactor the session store and push it up"); this.runTurn(true); } }, bg: "var(--bg-tab)", color: "var(--fg)", border: "var(--rule)" },
+      { label: "▶ Plan turn", click: () => this.runPlanTurn(), bg: "var(--bg-tab)", color: "var(--blue)", border: "var(--rule)" },
+      { label: "▶ Brainstorm turn", click: () => this.runBrainstormTurn(), bg: "var(--bg-tab)", color: "var(--teal)", border: "var(--rule)" },
+      { label: "▶ Multi-agent turn", click: () => this.runAgentsTurn(), bg: "var(--bg-tab)", color: "var(--fg)", border: "var(--rule)" },
+      { label: "Cycle mode (shift+tab)", click: this.cycleMode, bg: "var(--bg-tab)", color: "var(--fg)", border: "var(--rule)" },
+      { label: "Agent lanes (ctrl-t)", click: this.toggleLanes, bg: "var(--bg-tab)", color: "var(--fg)", border: "var(--rule)" },
+      { label: "Ledger (ctrl-l)", click: this.cmdLedger, bg: "var(--bg-tab)", color: "var(--fg)", border: "var(--rule)" },
+    ];
+    const palEntries = this.paletteEntries();
+    const paletteRows = [];
+    let lastGroup = null;
+    palEntries.forEach((entry, i) => {
+      if (entry[0] !== lastGroup && this.palFilter === "/") {
+        lastGroup = entry[0];
+        paletteRows.push({ isGroup: true, isCmd: false, label: entry[0], key: "g" + i });
+      }
+      paletteRows.push({
+        isGroup: false, isCmd: true, key: "c" + i,
+        cmd: entry[1], desc: entry[2], tag: entry[3],
+        bg: i === 0 ? "var(--bg-tab)" : "transparent",
+        descColor: i === 0 ? "var(--fg)" : "var(--dim)",
+        click: () => this.runCommand(entry),
+      });
+    });
+    const lanes = this.LANES.map((lane, i) => ({
+      text: lane.line, color: lane.color,
+      bg: this.agentFocus === lane.name ? "var(--bg-tab)" : i === 0 && !this.agentFocus ? "var(--bg-tab)" : "transparent",
+      click: () => this.focusLane(lane),
+    }));
+    const cp = this.checkpoints[this.rewindIdx];
+    const sel = this.approvalSel || 0;
+    const approvalOptions = this.approval ? ["Allow once", "Allow always", "Deny"].map((label, i) => ({
+      label: (i === sel ? "› " : "") + label,
+      color: i === sel ? "var(--bright)" : label === "Deny" ? "var(--red)" : "var(--dim)",
+      bg: i === sel ? "var(--bg-tab)" : "transparent",
+      w: i === sel ? "700" : "400",
+      click: () => this.approval && this.approval.resolve(label),
+    })) : [];
+    const hints = this.approval ? "arrows select · enter confirm · esc deny"
+      : this.agentFocus ? "esc back to parent · transcript is the subagent's own"
+      : this.palFilter !== null ? "↑↓ select · enter run · esc close"
+      : this.running ? "esc interrupt · enter steer · shift+enter queue"
+      : "/ commands · shift+tab mode · ctrl-t tasks";
+    return {
+      queuedText: this.queued ? "▹ queued next: \"" + this.queued + "\" · runs when this turn ends" : false,
+      queuedBadge: this.queued ? " · q1" : "",
+      focusBanner: this.agentFocus ? "◉ " + this.agentFocus : false,
+      themeRef: (el) => { this._root = el; this.applyTheme(); },
+      transcriptRef: (el) => { this._tr = el; },
+      inputRef: (el) => { this._input = el; },
+      buttons, lines: this.agentFocus ? this.focusLines.slice() : this.lines.slice(),
+      running: this.running, spinGlyph: ["✳", "✦", "✧", "✦"][this.spinIdx], title: this.title,
+      notice: this.notice,
+      paletteOpen: this.palFilter !== null && palEntries.length > 0, paletteRows,
+      lanesOpen: this.lanesOpen, lanes,
+      rewindOpen: this.rewindOpen && !!cp,
+      rewindLabel: cp ? cp.id + " · $" + cp.cost.toFixed(2) + " · " + cp.label : "",
+      rewindPrev: () => { this.rewindIdx = Math.max(0, this.rewindIdx - 1); this.bump(); },
+      rewindNext: () => { this.rewindIdx = Math.min(this.checkpoints.length - 1, this.rewindIdx + 1); this.bump(); },
+      rewindFork: () => { this.rewindOpen = false; this.showNotice("forked from " + (cp ? cp.id : "") + " · mockup stub"); },
+      rewindClose: () => { this.rewindOpen = false; this.bump(); },
+      approvalOpen: !!this.approval, approvalPrompt: this.approval ? this.approval.prompt : "", approvalOptions,
+      composerOpen: !this.approval,
+      mode: m.id, modeColor: m.color, modeAccent: m.id === "chat" ? "var(--rule)" : m.color,
+      cycleMode: this.cycleMode,
+      trust: m.trust, cost: "$" + this.cost.toFixed(2), yieldGlyph: this.yieldGlyph,
+      waitingBadge: this.waiting > 0 ? this.waiting + " decision" + (this.waiting > 1 ? "s" : "") + " waiting · ctrl-y" : false,
+      showNeedsYou: this.showNeedsYou,
+      hints,
+      windowBorder: this.props.theme === "carbon" ? "#1f2733" : "#0c0e13",
+      onInput: this.onInput, onKeyDown: this.onKeyDown,
+    };
+  }
+}
+</script>
+</body>
+</html>
