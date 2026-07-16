@@ -35,28 +35,136 @@ from ..model.evidence import EvidenceLink
 THROTTLE_SECONDS = 1 / 30
 """Minimum interval between tail repaints (30Hz — inside the 30–60Hz budget)."""
 
-_ANSWER_SPAN_RE = re.compile(r"(\*\*.+?\*\*|`[^`\n]+`)", re.DOTALL)
+_ANSWER_SPAN_RE = re.compile(
+    r"(\*\*.+?\*\*|`[^`\n]+`|\[[^\]\n]+\]\((?:https?|file)://[^)\s]+\))", re.DOTALL
+)
+_LINK_RE = re.compile(r"\[([^\]\n]+)\]\(((?:https?|file)://[^)\s]+)\)")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:\-|]+\|?\s*$")
 
 
-def answer_spans(source: str) -> tuple[Segment, ...]:
-    """Split raw streamed text into Answer segments.
-
-    ``**…**`` → bright bold, `` `…` `` → teal inline code, everything else
-    fg — the selective emphasis DESIGN-SPEC §3 specifies for final answers.
-    """
+def _inline(text: str) -> list[Segment]:
+    """Inline emphasis: ``**…**`` bright bold, `` `…` `` teal code,
+    ``[text](url)`` teal text + dimmer url, everything else fg (§3)."""
     spans: list[Segment] = []
     position = 0
-    for match in _ANSWER_SPAN_RE.finditer(source):
+    for match in _ANSWER_SPAN_RE.finditer(text):
         if match.start() > position:
-            spans.append(Segment(text=source[position : match.start()]))
+            spans.append(Segment(text=text[position : match.start()]))
         token = match.group(0)
         if token.startswith("**"):
             spans.append(Segment(text=token[2:-2], style_token="bright", bold=True))
-        else:
+        elif token.startswith("`"):
             spans.append(Segment(text=token[1:-1], style_token="teal"))
+        else:
+            link = _LINK_RE.fullmatch(token)
+            assert link is not None  # the alternation guarantees the shape
+            spans.append(Segment(text=link.group(1), style_token="teal"))
+            spans.append(Segment(text=f" ({link.group(2)})", style_token="dimmer"))
         position = match.end()
-    if position < len(source):
-        spans.append(Segment(text=source[position:]))
+    if position < len(text):
+        spans.append(Segment(text=text[position:]))
+    return spans
+
+
+def _plain_len(text: str) -> int:
+    """Visible cell width of *text* once inline markers are stripped."""
+    return sum(len(segment.text) for segment in _inline(text))
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _emit_table(spans: list[Segment], lines: list[str], start: int) -> int:
+    """Render a pipe table (header · rule · rows) with aligned columns.
+
+    Raw ``| a | b |`` lines read terribly in the transcript (user
+    report); columns are padded to their widest cell, the ``|---|``
+    separator becomes a dim rule, and the header row renders bright.
+    Returns the index of the first line after the table.
+    """
+    end = start
+    while end < len(lines) and lines[end].lstrip().startswith("|"):
+        end += 1
+    rows = [_table_cells(lines[i]) for i in range(start, end)]
+    body = [row for i, row in enumerate(rows) if not _TABLE_SEP_RE.match(lines[start + i])]
+    columns = max(len(row) for row in body)
+    widths = [
+        max((_plain_len(row[col]) for row in body if col < len(row)), default=0)
+        for col in range(columns)
+    ]
+    for index, row in enumerate(body):
+        for col in range(columns):
+            cell = row[col] if col < len(row) else ""
+            if col:
+                spans.append(Segment(text=" │ ", style_token="dimmer"))
+            if index == 0:
+                spans.append(Segment(text=cell, style_token="bright", bold=True))
+            else:
+                spans.extend(_inline(cell))
+            spans.append(Segment(text=" " * (widths[col] - _plain_len(cell))))
+        spans.append(Segment(text="\n"))
+        if index == 0:
+            rule = "─┼─".join("─" * width for width in widths)
+            spans.append(Segment(text=rule, style_token="dimmer"))
+            spans.append(Segment(text="\n"))
+    return end
+
+
+def answer_spans(source: str) -> tuple[Segment, ...]:
+    """Raw model text → Answer segments (light markdown, theme tokens only).
+
+    Inline: ``**…**`` bright bold, `` `…` `` teal code, links teal+dim —
+    the selective emphasis DESIGN-SPEC §3 specifies. Real model output
+    also carries block structure the mockup never had, rendered here so
+    it doesn't leak raw (user report): ``#`` headings → bright bold,
+    pipe tables → aligned columns with a dim rule, fenced code → teal
+    indented block (fence lines dropped), ``- `` bullets → ``• ``.
+    """
+    spans: list[Segment] = []
+    lines = source.split("\n")
+    index = 0
+    in_code = False
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_code = not in_code
+            index += 1
+            continue
+        if in_code:
+            spans.append(Segment(text=f"  {line}", style_token="teal"))
+            spans.append(Segment(text="\n"))
+            index += 1
+            continue
+        if (
+            stripped.startswith("|")
+            and index + 1 < len(lines)
+            and lines[index + 1].lstrip().startswith("|")
+            and _TABLE_SEP_RE.match(lines[index + 1])
+        ):
+            index = _emit_table(spans, lines, index)
+            continue
+        if heading := _HEADING_RE.match(line):
+            spans.append(Segment(text=heading.group(2), style_token="bright", bold=True))
+            spans.append(Segment(text="\n"))
+            index += 1
+            continue
+        if bullet := _BULLET_RE.match(line):
+            spans.append(Segment(text=f"{bullet.group(1)}• ", style_token="dim"))
+            spans.extend(_inline(bullet.group(2)))
+            spans.append(Segment(text="\n"))
+            index += 1
+            continue
+        spans.extend(_inline(line))
+        spans.append(Segment(text="\n"))
+        index += 1
+    # The per-line loop appends one newline per source line; the final one
+    # would fabricate a trailing blank line — drop it.
+    if spans and spans[-1].text == "\n" and spans[-1].style_token == "fg":
+        spans.pop()
     if not spans:
         spans.append(Segment(text=""))
     return tuple(spans)

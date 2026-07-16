@@ -569,3 +569,59 @@ def test_to_rich_text_resolves_tokens_from_mapping_only() -> None:
         isinstance(span.style, Style) and span.style.color is None
         for span in uncolored.spans
     )
+
+
+class TestAnswerMarkdown:
+    """Real-model block markdown must not leak raw (user report)."""
+
+    def _lines(self, source: str) -> list[str]:
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        text = "".join(s.text for s in answer_spans(source))
+        return text.split("\n")
+
+    def test_plain_text_round_trips(self) -> None:
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        source = "Session store refactor is in: history durable, tests pass.\nSecond line."
+        assert "".join(s.text for s in answer_spans(source)) == source
+
+    def test_heading_strips_hashes_and_renders_bright_bold(self) -> None:
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        spans = answer_spans("## Third-party libraries")
+        assert spans[0].text == "Third-party libraries"
+        assert spans[0].style_token == "bright" and spans[0].bold
+
+    def test_pipe_table_aligns_columns_and_drops_separator(self) -> None:
+        source = (
+            "| Dependency | Notes |\n"
+            "|---|---|\n"
+            "| **core** | The kernel |\n"
+            "| foundation | Bundle layer |"
+        )
+        lines = self._lines(source)
+        assert lines[0] == "Dependency │ Notes       "
+        assert lines[1] == "───────────┼─────────────"
+        assert lines[2] == "core       │ The kernel  "
+        assert lines[3] == "foundation │ Bundle layer"
+
+    def test_code_fence_drops_fences_and_indents(self) -> None:
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        spans = answer_spans("```py\nx = 1\n```\nafter")
+        code = [s for s in spans if s.style_token == "teal"]
+        assert code[0].text == "  x = 1"
+        assert "".join(s.text for s in spans).endswith("after")
+        assert "```" not in "".join(s.text for s in spans)
+
+    def test_bullets_and_links(self) -> None:
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        spans = answer_spans("- see [docs](https://example.com/d)")
+        assert spans[0].text == "• " and spans[0].style_token == "dim"
+        assert any(s.text == "docs" and s.style_token == "teal" for s in spans)
+        assert any(s.text == " (https://example.com/d)" and s.style_token == "dimmer" for s in spans)
+        # bare brackets that are not links stay verbatim
+        plain = answer_spans("[tool.uv.sources] stays")
+        assert "".join(s.text for s in plain) == "[tool.uv.sources] stays"

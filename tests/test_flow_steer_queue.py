@@ -70,12 +70,17 @@ async def test_enter_mid_turn_steers_echo_and_applies_at_step_boundary() -> None
         # Release the turn: the steer applies at the next step boundary.
         adapter.release()
         assert await wait_for(pilot, lambda: app.approval_bar is not None)
-        assert any(
-            b.text == "Applying steer: focus on the tests"
-            for b in blocks_of(app, "narration")
+        # The narration event can still be in the queue when the approval
+        # bar mounts (separate events) — poll, don't assert instantly.
+        assert await wait_for(
+            pilot,
+            lambda: any(
+                b.text == "Applying steer: focus on the tests"
+                for b in blocks_of(app, "narration")
+            ),
         )
         # Consumed steer removed: echo gone, queue empty.
-        assert not blocks_of(app, "steer_echo")
+        assert await wait_for(pilot, lambda: not blocks_of(app, "steer_echo"))
         assert not adapter.steering.pending_steers
 
         # Finish the turn; a consumed steer does NOT roll forward.
@@ -134,6 +139,9 @@ async def test_shift_enter_mid_turn_queues_strip_q1_and_auto_drains() -> None:
         await pilot.press("enter")  # Allow once
         assert await wait_for(pilot, lambda: rules(app) >= 2)
         assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
+        # The pickup notice is a deferred queue duty — poll for it before
+        # asserting its order (it can trail the last rule under load).
+        assert await wait_for(pilot, lambda: "queued message picked up" in seen)
         assert seen.index(BUILD_END_NOTICE) < seen.index("queued message picked up")
         # The drained turn runs without a setMode (mockup drainQueue), so
         # its scripted mode notice never overwrites the pickup notice.
