@@ -33,6 +33,7 @@ ALL_COMMANDS = (
     "/tasks",
     "/ledger",
     "/rewind",
+    "/quit",
     "/permissions",
     "/doctor",
     "/improve",

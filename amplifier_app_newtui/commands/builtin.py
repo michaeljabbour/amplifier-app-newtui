@@ -178,6 +178,14 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         handler=_cmd_rewind,
         key_action="open_rewind",
     ),
+    # Beyond the mockup table: exit path (amplifier-app-cli parity).
+    CommandSpec(
+        group="Between",
+        name="/quit",
+        desc="exit the app (ctrl-d works too)",
+        tag="built-in",
+        handler=_cmd_quit,
+    ),
     CommandSpec(
         group="Repair",
         name="/permissions",
@@ -207,13 +215,6 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="switch theme: slate, graphite, carbon",
         tag="built-in",
         handler=_cmd_theme,
-    ),
-    CommandSpec(
-        group="Between",
-        name="/quit",
-        desc="exit the app (ctrl-d works too)",
-        tag="built-in",
-        handler=_cmd_quit,
     ),
 )
 

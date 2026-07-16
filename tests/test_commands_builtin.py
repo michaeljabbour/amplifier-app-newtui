@@ -24,13 +24,13 @@ MOCKUP_TABLE = [
     ("Parallel", "/tasks", "agent lanes: one line per subagent", "built-in"),
     ("Ship", "/ledger", "session outcome ledger: spend vs yield", "built-in"),
     ("Between", "/rewind", "fork from any turn-rule checkpoint", "built-in"),
+    # Beyond the mockup table: exit path (amplifier-app-cli parity).
+    ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
     ("Repair", "/permissions", "edit trust slots: boundary, blocks, exceptions", "built-in"),
     ("Repair", "/doctor", "setup checkup; reports, then fixes on confirm", "skill"),
     ("Repair", "/improve", "tune config from ledger + denial log", "skill"),
     # Beyond the mockup table: runtime theme switch (DESIGN-SPEC §1).
     ("Repair", "/theme", "switch theme: slate, graphite, carbon", "built-in"),
-    # Beyond the mockup table: exit path (amplifier-app-cli parity).
-    ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
 ]
 
 

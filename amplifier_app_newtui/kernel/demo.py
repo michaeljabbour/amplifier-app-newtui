@@ -1125,6 +1125,22 @@ class DemoRuntime:
         # Mockup: the auto (blocked) turn ends with no notice at all.
         await self._end_turn(spec, response=answer, notice=None if auto else spec.end_notice)
 
+    async def _close_interrupted(self, spec: DemoTurnSpec) -> bool:
+        """Step-boundary esc check for non-store turns (DESIGN-SPEC §11).
+
+        Same close-out as the store turns: italic recap + ``· interrupted``
+        rule from the actual elapsed secs/toks; True when the turn ended.
+        """
+        if not self._interrupted:
+            return False
+        self._ticks = None
+        self.interrupted_close = interrupted_spec(
+            spec.key, self._turn_ms // 1000, self._turn_tokens
+        )
+        await self._text(INTERRUPTED_RECAP, "recap")
+        await self._end_turn(spec, status="cancelled")
+        return True
+
     async def run_plan_turn(self) -> None:
         """``runPlanTurn()``: read-only proposed plan, steps landing live."""
         spec = await self._begin_turn("plan")
@@ -1133,6 +1149,8 @@ class DemoRuntime:
         await self._plan(PLAN_TITLE, (), (), read_only=True)
         for count in range(1, len(PLAN_STEPS) + 1):
             await self._wait(500)
+            if await self._close_interrupted(spec):
+                return
             await self._plan(
                 PLAN_TITLE,
                 PLAN_STEPS[:count],
@@ -1140,6 +1158,8 @@ class DemoRuntime:
                 read_only=True,
             )
         await self._wait(700)
+        if await self._close_interrupted(spec):
+            return
         await self._text(PLAN_RECAP, "recap")
         await self._emit(
             ProviderResponseUsage(
@@ -1157,8 +1177,12 @@ class DemoRuntime:
         await self._text(BRAINSTORM_NARRATION, "narration")
         await self._wait(1200)
         for idea in BRAINSTORM_IDEAS:
+            if await self._close_interrupted(spec):
+                return
             await self._text(idea, "idea")
             await self._wait(450)
+        if await self._close_interrupted(spec):
+            return
         await self._text(BRAINSTORM_RECAP, "recap")
         await self._emit(
             ProviderResponseUsage(
@@ -1187,6 +1211,8 @@ class DemoRuntime:
         for lane in sorted(DEMO_LANES, key=lambda lane: lane.done_at_ms):
             await self._wait(lane.done_at_ms - elapsed)
             elapsed = lane.done_at_ms
+            if await self._close_interrupted(spec):
+                return
             await self._emit(
                 AgentCompleted(
                     **self._env(),
