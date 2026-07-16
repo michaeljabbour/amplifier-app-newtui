@@ -29,6 +29,8 @@ MOCKUP_TABLE = [
     ("Repair", "/improve", "tune config from ledger + denial log", "skill"),
     # Beyond the mockup table: runtime theme switch (DESIGN-SPEC §1).
     ("Repair", "/theme", "switch theme: slate, graphite, carbon", "built-in"),
+    # Beyond the mockup table: exit path (amplifier-app-cli parity).
+    ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
 ]
 
 
@@ -39,7 +41,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 11
+    assert len(registry.specs) == 12
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 

@@ -22,3 +22,5 @@ Severity: P0 broken flow · P1 spec violation · P2 jank/polish · P3 nice-to-ha
 | 15 | P2 | real | hooks-redaction redacts visible answers (number list → [REDACTED:PII]) | real: ask for 1..40 list | NOTED — overlay module behavior, parity with app-cli; not our layer |
 | 16 | P3 | real | First-turn user-line echo delayed by overlay hooks' cold pre-prompt work; warm turns echo <0.5s | real: first turn after boot | NOTED — runtime-side latency, UI no longer freezes |
 | 17 | P2 | real | TUI exit never cleaned up the session (no runtime.cleanup) | code inspection | FIXED — adapter.shutdown() on app unmount |
+| 18 | P1 | resume | Resumed session showed an empty transcript over a full context | real: resume <id> | FIXED — restored_history() replays stored prompts + assistant prose (tool traffic/system-reminders skipped); cost re-seed verified ($1.87) |
+| 19 | P1 | exit | No documented exit: no ctrl+d (amplifier parity), no /quit; only Textual's stock ctrl+q | real+demo | FIXED — ctrl+d binding + /quit command (Between group) |

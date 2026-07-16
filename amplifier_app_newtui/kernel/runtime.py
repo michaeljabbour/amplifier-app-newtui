@@ -77,6 +77,39 @@ headless ``run`` subcommand too, where the same printers double-echo.
 """
 
 
+def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
+    """Simplified (role, text) pairs from a stored transcript for replay.
+
+    A resumed TUI session replays the restored conversation into the
+    transcript (an empty screen over a full context reads as a fresh
+    session). Tool traffic and ``<system-reminder>`` injections are
+    skipped — only real user prompts and assistant prose replay.
+    """
+    pairs: list[tuple[str, str]] = []
+    for message in transcript:
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        if message.get("tool_call_id") or message.get("tool_calls"):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(
+                str(block.get("text", ""))
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        else:
+            continue
+        text = text.strip()
+        if not text or text.startswith("<system-reminder>"):
+            continue
+        pairs.append((str(role), text))
+    return tuple(pairs)
+
+
 def _strip_printing_hooks(mount_plan: dict[str, Any]) -> None:
     hooks = mount_plan.get("hooks")
     if isinstance(hooks, list):
@@ -142,6 +175,8 @@ class RealRuntime:
         the context (``session.messages.get_turn_boundaries``), so
         checkpoints recorded after a resume must offset past the restored
         history (DESIGN-SPEC §9)."""
+        self.restored_history: tuple[tuple[str, str], ...] = ()
+        """(role, text) pairs replayed into the transcript on resume."""
         self.degraded_notice: str | None = None
 
     async def start(self) -> None:
@@ -160,6 +195,7 @@ class RealRuntime:
             # Same turn semantics as foundation's fork slicing: every
             # user-role message in the restored history is one turn.
             self.turn_base = sum(1 for m in transcript if m.get("role") == "user")
+            self.restored_history = restored_history(transcript)
 
         display = DisplaySystem(self.bridge.emit)
         spawner = SessionSpawner(

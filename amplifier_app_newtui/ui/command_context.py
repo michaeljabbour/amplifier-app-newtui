@@ -100,5 +100,8 @@ class AppCommandContext:
     def open_permissions(self) -> None:
         self._app.open_permissions()
 
+    def quit_app(self) -> None:
+        self._app.exit()
+
 
 __all__ = ["AppCommandContext"]

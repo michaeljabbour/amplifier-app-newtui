@@ -26,6 +26,7 @@ from ..model.blocks import (
     Segment,
     SessionBanner,
     SteerEcho,
+    UserLine,
 )
 from ..model.queues import NeedsYouItem
 from . import keymap
@@ -66,6 +67,9 @@ def global_bindings() -> list[BindingType]:
     bindings.append(Binding("up", "palette_up", "↑", show=False, priority=True))
     bindings.append(Binding("down", "palette_down", "↓", show=False, priority=True))
     bindings.append(Binding("escape", "app_esc", "esc", show=False))
+    # amplifier-app-cli parity: Ctrl-D exits (its banner advertises it).
+    # Textual's stock ctrl+q quit binding stays too.
+    bindings.append(Binding("ctrl+d", "quit", "quit", show=False, priority=True))
     return bindings
 
 
@@ -153,6 +157,24 @@ def announce_ready(app: NewTuiApp) -> None:
         app.append_block(
             SessionBanner(id=app.allocator.next_id(), headline=headline, detail=detail)
         )
+    # Resume replay: an empty screen over a restored context reads as a
+    # fresh session — replay the stored conversation (prompts + prose;
+    # tool traffic skipped) so scrollback matches what the model knows.
+    from .live_tail import answer_spans
+
+    for role, text in app.adapter.restored_history:
+        if role == "user":
+            app.append_block(
+                UserLine(id=app.allocator.next_id(), text=text, mode=app.mode_id)
+            )
+        else:
+            app.append_block(
+                Answer(
+                    id=app.allocator.next_id(),
+                    spans=answer_spans(text),
+                    clickable=False,
+                )
+            )
     for notice in app.adapter.startup_notices:
         app.append_block(
             Answer(

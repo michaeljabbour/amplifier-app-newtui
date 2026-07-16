@@ -520,3 +520,23 @@ def test_strip_printing_hooks_removes_line_mode_printers() -> None:
     _strip_printing_hooks(plan)
     assert [h["module"] for h in plan["hooks"]] == ["hooks-approval", "hooks-mode"]
     _strip_printing_hooks({})  # tolerates missing/odd shapes
+
+
+def test_restored_history_extracts_prose_and_skips_tool_traffic() -> None:
+    from amplifier_app_newtui.kernel.runtime import restored_history
+
+    transcript = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "Reply with exactly: OK"},
+        {"role": "assistant", "content": [{"type": "text", "text": "OK"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1"}]},
+        {"role": "tool", "content": "tool result"},
+        {"role": "user", "content": "<system-reminder>injected steer</system-reminder>"},
+        {"role": "user", "content": [{"type": "text", "text": "and again"}]},
+        {"role": "assistant", "tool_calls": [{}], "content": ""},
+    ]
+    assert restored_history(transcript) == (
+        ("user", "Reply with exactly: OK"),
+        ("assistant", "OK"),
+        ("user", "and again"),
+    )

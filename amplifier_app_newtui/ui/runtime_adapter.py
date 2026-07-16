@@ -50,6 +50,8 @@ class RuntimeAdapter:
         self.turn_base: int = 0
         """Restored-history user-message count on resume (checkpoint turn
         ids offset past it — DESIGN-SPEC §9); 0 for fresh/demo sessions."""
+        self.restored_history: tuple[tuple[str, str], ...] = ()
+        """(role, text) pairs replayed into the transcript on resume."""
         self.startup_notices: tuple[str, ...] = ()
 
     def attach(self, app: Any) -> None:
@@ -184,6 +186,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.banner = runtime.banner
         self.session_cost_start = runtime.session_cost_start
         self.turn_base = runtime.turn_base
+        self.restored_history = runtime.restored_history
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
         runtime.broker.add_listener(self._on_broker_change)
@@ -216,7 +219,10 @@ class RealRuntimeAdapter(RuntimeAdapter):
             )
             await runtime.start()
         except BaseException as error:  # surface boot failures on the app loop
-            _resolve(lambda: started.set_exception(error))
+            # Bind before the except block exits — Python unbinds the
+            # handler name, and the lambda runs later on the app loop.
+            failure = error
+            _resolve(lambda: started.set_exception(failure))
             return
         self._runtime = runtime
         _resolve(lambda: started.set_result(None))

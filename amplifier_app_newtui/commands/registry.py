@@ -148,6 +148,10 @@ class CommandContext(Protocol):
         """Open the trust-slot editor (``/permissions``)."""
         ...
 
+    def quit_app(self) -> None:
+        """Exit the app (``/quit`` — ctrl-d and ctrl-q are the key paths)."""
+        ...
+
 
 CommandHandler = Callable[[CommandContext, str], None]
 """Handler signature: ``(ctx, args)`` where ``args`` is the text after the

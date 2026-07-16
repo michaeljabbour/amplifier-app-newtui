@@ -98,6 +98,12 @@ def _cmd_doctor(ctx: CommandContext, args: str) -> None:
     ctx.post_block(build_doctor_block(ctx.next_block_id(), report))
 
 
+def _cmd_quit(ctx: CommandContext, args: str) -> None:
+    """``/quit`` — exit the app (amplifier-app-cli parity: exit/quit)."""
+    del args
+    ctx.quit_app()
+
+
 def _cmd_theme(ctx: CommandContext, args: str) -> None:
     """``/theme`` — cycle; ``/theme graphite`` — jump to a theme (spec §1)."""
     ctx.set_theme(args.strip().lower())
@@ -201,6 +207,13 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="switch theme: slate, graphite, carbon",
         tag="built-in",
         handler=_cmd_theme,
+    ),
+    CommandSpec(
+        group="Between",
+        name="/quit",
+        desc="exit the app (ctrl-d works too)",
+        tag="built-in",
+        handler=_cmd_quit,
     ),
 )
 

@@ -105,6 +105,9 @@ class FakeCommandContext:
     def open_permissions(self) -> None:
         self.calls.append("open_permissions")
 
+    def quit_app(self) -> None:
+        self.calls.append("quit_app")
+
 
 @pytest.fixture
 def fake_command_context() -> FakeCommandContext:
