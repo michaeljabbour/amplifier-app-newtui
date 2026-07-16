@@ -7,13 +7,17 @@ event stream, and accepts typed input that starts a scripted turn.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from amplifier_app_newtui.kernel.demo import (
     DEMO_BANNER,
+    DEMO_SESSION_COST_START,
     DEMO_TURN_BY_KEY,
     SEED_PROMPT,
 )
+from amplifier_app_newtui.ui import app_support
 from amplifier_app_newtui.ui.app import NewTuiApp
 from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, theme_id
@@ -130,3 +134,41 @@ async def test_demo_full_sequence_all_five_turns() -> None:
         await pilot.press("ctrl+y")
         await pilot.pause()
         assert any(b.kind == "needs_you" for b in app.transcript.blocks)
+
+
+class _LateBaselineAdapter(DemoRuntimeAdapter):
+    """Demo adapter that learns its resume cost baseline inside ``start()``.
+
+    Mirrors ``RealRuntimeAdapter``: on resume, ``session_cost_start`` is
+    unknown at construction (the app builds its reducer then) and is set
+    only during the boot worker, before ``ready()``. The propagation must
+    happen through the ``announce_ready`` handoff, like ``turn_base``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(instant=True)
+        # $0.40 restored spend (mockup mount $0.57 minus the seed's $0.17).
+        self._resume_baseline = self.session_cost_start
+        self.session_cost_start = Decimal("0")  # not yet known at __init__
+
+    async def start(self, ready) -> None:  # noqa: ANN001
+        self.session_cost_start = self._resume_baseline  # learned during boot
+        await super().start(ready)
+
+
+@pytest.mark.asyncio
+async def test_resume_cost_baseline_set_in_adapter_start_reaches_reducer() -> None:
+    """Resumed prior spend learned in ``start()`` lands in footer $ and
+    checkpoint ``cost_at`` (spec §11: one session cost basis everywhere)."""
+    adapter = _LateBaselineAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=(110, 40)) as pilot:
+        assert await _wait_for(
+            pilot,
+            lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks)
+            and not app.turn_active,
+        )
+        # Seed turn cost $0.17 on top of the $0.40 resumed baseline.
+        assert app.reducer.session_cost == DEMO_SESSION_COST_START  # $0.57
+        assert app.ledger.checkpoints[0].cost_at == DEMO_SESSION_COST_START
+        assert app_support.footer_state(app).cost == DEMO_SESSION_COST_START

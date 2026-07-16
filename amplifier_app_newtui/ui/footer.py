@@ -15,7 +15,9 @@ from :func:`keymap.hint_label` so the advertised queue chord swaps to
 
 Like the mockup's ``flex-wrap: wrap`` footer, when both segments do not
 fit on one row the hints drop to their own full-width second row instead
-of clipping.
+of clipping; when the left segment plus the waiting badge still exceed
+the width, the badge drops to its own row too (separator hidden) so the
+``ctrl-y`` affordance stays fully readable.
 
 All rendering is a pure function of :class:`FooterState` — the widget is
 a dumb painter, which is what the tests assert against.
@@ -160,6 +162,11 @@ class FooterBar(Horizontal):
     }
     FooterBar.-wrapped { layout: vertical; }
     FooterBar.-wrapped > #footer-right { width: 100%; }
+    FooterBar.-badge-wrapped > #footer-left-group {
+        layout: vertical;
+        height: auto;
+    }
+    FooterBar.-badge-wrapped _WaitingBadgeSeparator { display: none; }
     """
 
     class WaitingBadgeClicked(Message):
@@ -204,13 +211,14 @@ class FooterBar(Horizontal):
         if width <= 0:
             return
         state = self._state
-        needed = cell_len(footer_left_text(state))
+        group_needed = cell_len(footer_left_text(state))
         badge_text = footer_waiting_text(state)
         if badge_text:
             # dimmer "·" separator (padding 0 1) + badge (padding-right 1)
-            needed += 3 + cell_len(badge_text) + 1
-        needed += _SEGMENT_GAP + cell_len(footer_right_text(state))
+            group_needed += 3 + cell_len(badge_text) + 1
+        needed = group_needed + _SEGMENT_GAP + cell_len(footer_right_text(state))
         self.set_class(needed > width, "-wrapped")
+        self.set_class(bool(badge_text) and group_needed > width, "-badge-wrapped")
 
     def _repaint(self) -> None:
         state = self._state

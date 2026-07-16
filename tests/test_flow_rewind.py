@@ -168,6 +168,151 @@ async def test_checkpoint_cut_while_picker_open_is_navigable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fork_during_running_turn_interrupts_then_forks() -> None:
+    """Interrupt-then-fork (s9): a fork confirmed mid-turn first interrupts
+    the running turn and awaits its close-out, THEN trims — the forked
+    transcript is exactly the checkpoint state (no orphaned blocks from the
+    dead turn) and the ledger has no dead-turn checkpoint."""
+    adapter = GatedDemoAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)  # t1 cut
+        t1_block_ids = [b.id for b in app.transcript.blocks]
+
+        # Park the brainstorm turn mid-turn (no approvals in its script).
+        app.submit_prompt(BRAINSTORM_PROMPT)
+        assert await wait_for(
+            pilot, lambda: app.turn_active and blocks_of(app, "narration")
+        )
+
+        # Opening the picker mid-turn is fine; confirming the fork triggers
+        # interrupt-then-fork.
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert app.rewind.display
+        current = app.rewind.current
+        assert current is not None and current.id == "t1"
+        await pilot.press("enter")
+        await pilot.pause()
+        # The fork is parked awaiting the turn's close-out — nothing trimmed
+        # yet (trim runs strictly AFTER close-out).
+        assert app.fork_pending and app.turn_active
+        assert app.notice_slot.current == "interrupting turn to fork …"
+        assert len(app.transcript.blocks) > len(t1_block_ids)
+
+        # Release the gate: the turn breaks at its step boundary, closes out,
+        # and only then does the fork trim ledger + transcript.
+        adapter.release()
+        assert await wait_for(pilot, lambda: not app.fork_pending)
+        assert not app.turn_active
+        # No dead-turn checkpoint in the ledger; transcript is EXACTLY t1.
+        assert [c.id for c in app.ledger.checkpoints] == ["t1"]
+        assert [b.id for b in app.transcript.blocks] == t1_block_ids
+        last = app.transcript.blocks[-1]
+        assert last.kind == "turn_rule" and last.checkpoint_id == "t1"
+        assert rules(app) == 1  # the interrupted turn's rule was trimmed away
+        assert app.notice_slot.current == "forked from t1 · repo explainer · answer"
+        assert not app.rewind.display
+
+
+@pytest.mark.asyncio
+async def test_fork_mid_turn_defers_queued_message_until_after_fork() -> None:
+    """A shift+enter-queued next-turn message is a real user prompt: an
+    interrupt-then-fork must NOT auto-run it against the abandoned pre-fork
+    context (where the trim would silently destroy its whole turn). The
+    queue drain is deferred until the fork settles — the queued prompt then
+    picks up against the post-fork state and its turn output survives."""
+    adapter = GatedDemoAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)  # t1 cut
+        seen: list[str] = []
+        orig_notice = app.show_notice
+        app.show_notice = lambda text, duration=None: (  # type: ignore[method-assign]
+            seen.append(text),
+            orig_notice(text, duration),
+        )
+
+        # Park the brainstorm turn mid-turn, queue a next-turn message.
+        app.submit_prompt(BRAINSTORM_PROMPT)
+        assert await wait_for(
+            pilot, lambda: app.turn_active and blocks_of(app, "narration")
+        )
+        await type_text(pilot, "hi")
+        await pilot.press("shift+enter")
+        await pilot.pause()
+        assert app.adapter.steering.pending_next_turn
+
+        # Confirm the fork at t1 mid-turn, then release the gate.
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.fork_pending and app.turn_active
+        adapter.release()
+        assert await wait_for(pilot, lambda: not app.fork_pending)
+
+        # The fork landed BEFORE the queued message was picked up …
+        fork_idx = next(
+            i for i, t in enumerate(seen) if t.startswith("forked from t1")
+        )
+        assert await wait_for(pilot, lambda: "queued message picked up" in seen)
+        assert fork_idx < seen.index("queued message picked up")
+
+        # … and the queued prompt runs as a REAL post-fork turn whose rule +
+        # checkpoint survive (pre-fix it was executed-and-trimmed invisibly).
+        assert await wait_for(
+            pilot, lambda: not app.turn_active and rules(app) == 2
+        )
+        checkpoints = [c.id for c in app.ledger.checkpoints]
+        assert len(checkpoints) == 2 and checkpoints[0] == "t1"
+        assert not app.adapter.steering.pending_next_turn
+        assert not app.queued_strip.display
+
+
+@pytest.mark.asyncio
+async def test_fork_chip_click_during_pending_approval_keeps_keyboard() -> None:
+    """A MOUSE click on the fork chip while an approval is pending must not
+    strand the keyboard (spec §12): the strip hides, confirm_fork parks
+    behind the approver, and the approval bar keeps keyboard ownership
+    (spec §7) — so Esc still means Deny, which lets the parked fork settle
+    cleanly (trim to t1, composer back)."""
+    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)  # t1 cut
+        t1_block_ids = [b.id for b in app.transcript.blocks]
+
+        # Park the build turn at the pytest approver.
+        await type_text(pilot, "hi")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: app.approval_bar is not None)
+
+        # Open the picker; the approval bar keeps the keyboard (§7).
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert app.rewind.display
+        assert app.focused is app.approval_bar
+
+        # Click the fork chip: interrupt-then-fork parks behind the approval.
+        await pilot.click("#rewind-fork")
+        await pilot.pause()
+        assert app.fork_pending and app.turn_active
+        assert not app.rewind.display
+        # The keyboard is NOT stranded — the approval bar still owns it.
+        assert app.focused is app.approval_bar
+
+        # Esc = Deny (§7): the turn closes out and the parked fork settles.
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: app.approval_bar is None)
+        assert await wait_for(pilot, lambda: not app.fork_pending)
+        assert not app.turn_active
+        assert [c.id for c in app.ledger.checkpoints] == ["t1"]
+        assert [b.id for b in app.transcript.blocks] == t1_block_ids
+        assert app.notice_slot.current == "forked from t1 · repo explainer · answer"
+        assert app.composer.has_focus_within
+
+
+@pytest.mark.asyncio
 async def test_fork_trims_transcript_and_ledger_to_checkpoint() -> None:
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:

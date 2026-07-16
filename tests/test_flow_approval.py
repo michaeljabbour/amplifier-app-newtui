@@ -204,3 +204,83 @@ async def test_auto_mode_deferred_decision_ctrl_y_needs_you_flow() -> None:
         assert len(applied) == 1
         line = "".join(s.text for s in render_block(applied[0], 200)[0])
         assert line == f"● {DEMO_DEFERRED_DECISION.applied_narration}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(120, 50), (160, 50)])
+async def test_needs_you_chip_stays_visible_and_clickable_after_late_wrap(size) -> None:
+    """Regression (s7/s12): the tail anchor must hold through LATE height growth.
+
+    ``ctrl-y`` appends the needs-you block, but :class:`NeedsYouList`
+    mounts its rows asynchronously and ``_DecisionRow._update_wrap``
+    grows the row 1→2 lines on its first resize — both AFTER any
+    per-append scroll ran. A one-shot ``scroll_end`` per append left the
+    chip row clipped below the viewport at 120x50 (the click then hit
+    the widget underneath and the decision was never applied). The
+    standing tail anchor keeps the view bottom-scrolled through that
+    growth, so the chip is visible and clicking IT applies the decision
+    at wrapped (120) and unwrapped (160) widths alike.
+    """
+    adapter = DemoRuntimeAdapter(instant=True)
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=size) as pilot:
+        await _reach_pytest_approval(pilot, app)
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        await type_text(pilot, "hi")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
+        assert adapter.needs_you.pending_count == 1
+
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        await pilot.pause()
+        needs_you = blocks_of(app, "needs_you")[-1]
+        entry = needs_you.items[0]
+        view = app.transcript
+
+        # The anchor re-asserted bottom scroll after the async row mount
+        # + wrap growth: the view is at its end and the chip row is fully
+        # inside the transcript viewport (not occluded by the live tail).
+        assert view.follow is True
+        assert view.is_vertical_scroll_end
+        chip = app.query_one(f"#chip-{entry.decision_id}-0")
+        assert chip.region.size.area > 0
+        assert view.region.contains_region(chip.region)
+
+        # Clicking the CHIP itself (the smallest target — off-screen
+        # before the fix) applies the decision, logs the narration and
+        # clears the footer badge.
+        await pilot.click(f"#chip-{entry.decision_id}-0")
+        await pilot.pause()
+        assert adapter.needs_you.pending_count == 0
+        assert app.footer_bar.state.waiting == 0
+        assert any(
+            b.text == DEMO_DEFERRED_DECISION.applied_narration
+            for b in blocks_of(app, "narration")
+        )
+
+
+@pytest.mark.asyncio
+async def test_tail_anchor_holds_through_wrapped_answer_growth() -> None:
+    """The standing anchor also covers generic late wrap growth: a long
+    answer line that wraps to many rows at a narrow width must not leave
+    the tail stranded above the bottom."""
+    from amplifier_app_newtui.model.blocks import Answer, Narration, Segment
+
+    adapter = DemoRuntimeAdapter(instant=True)
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=(60, 20)) as pilot:
+        await seed_done(pilot, app)
+        view = app.transcript
+        for index in range(20):
+            view.append(Narration(id=f"pad-{index}", text=f"pad line {index}"))
+        await pilot.pause()
+        long_line = "wrap me " * 60  # ~480 cells → 8+ rows at width 60
+        view.append(
+            Answer(id="long-answer", spans=(Segment(text=long_line, style_token="fg"),))
+        )
+        await pilot.pause()
+        await pilot.pause()
+        assert view.follow is True
+        assert view.is_vertical_scroll_end

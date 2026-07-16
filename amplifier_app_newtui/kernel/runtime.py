@@ -23,11 +23,13 @@ from .approval import ApprovalBroker
 from .config import ResolvedConfig, resolve_config
 from .cost import CostTracker, restore_session_cost
 from .display import DisplaySystem
-from .events import ContentBlockEnd, ContextInjected, UIEvent
+from .events import ContentBlockEnd, ContextInjected, PromptComplete, UIEvent
 from .evidence import EvidenceCollector
+from .git_yield import GitDiffSnapshot, capture_git_diff
 from .governance_hook import GovernanceHook
 from .persistence import IncrementalSaver, SessionStore
-from .queue_bridge import QueueBridge
+from .queue_bridge import CONSUMED_EVENTS, QueueBridge
+from .turn_yield import TurnYieldTracker
 from .session_factory import InitializedSession, SessionRequest, create_initialized_session
 from .spawner import SessionSpawner
 from .steering import StepBoundaryBridge
@@ -75,7 +77,17 @@ class RealRuntime:
         self.evidence = EvidenceCollector()
         """Derives §10 evidence links from the turn's tool calls — taps the
         bridge so it sees every normalized event before the UI consumes it."""
-        self.bridge = QueueBridge(self.queue, tap=self._tap)
+        self.bridge = QueueBridge(
+            self.queue,
+            tap=self._tap,
+            # ``prompt:complete`` is NOT hook-driven here: submit()
+            # synthesizes the close-out event itself AFTER the end-of-turn
+            # git snapshot, so it carries the turn's yield (files/diffstat/
+            # tests ✔ — DESIGN-SPEC §3) and always lands last in the queue.
+            events=tuple(e for e in CONSUMED_EVENTS if e != "prompt:complete"),
+        )
+        self.turn_yield = TurnYieldTracker()
+        """Per-turn ``tests ✔`` evidence from tool results (bridge tap)."""
         self.steering = steering or SteeringQueue()
         self.needs_you = needs_you or NeedsYouQueue()
         self.denial_log = denial_log or DenialLog()
@@ -86,6 +98,7 @@ class RealRuntime:
         self._mode = mode
         self._project_dir = project_dir
         self._initialized: InitializedSession | None = None
+        self._executing = False  # a submit() turn is live (fork must refuse)
         self._resolved: ResolvedConfig | None = None
         self._store: SessionStore | None = None
         self._saver: IncrementalSaver | None = None
@@ -199,6 +212,7 @@ class RealRuntime:
         Both halves are best-effort and never block the queue.
         """
         self.evidence.observe(event)
+        self.turn_yield.observe(event)
         if self._store is not None and self._initialized is not None:
             self._store.append_event(self._initialized.session_id, event)
 
@@ -224,12 +238,24 @@ class RealRuntime:
         )
 
     async def submit(self, text: str) -> str:
-        """Execute one user turn; returns the final response text."""
+        """Execute one user turn; returns the final response text.
+
+        Git-yield capture (reference: amplifier-app-cli
+        ``runtime/interactive_turn.py``): a diff snapshot is taken before
+        and after ``execute``; the delta rides on the synthesized
+        ``PromptComplete`` close-out so the reducer can label the rule
+        ``N files · +A/−D · tests ✔`` and mark the turn shipped.
+        """
         if self._initialized is None:
             raise RuntimeError("RealRuntime.start() has not completed")
+        self.turn_yield.start_turn()
+        starting_diff = await self._capture_diff()
+        self._executing = True
+        response: Any = ""
         try:
             response = await self._initialized.session.execute(text)
         finally:
+            self._executing = False
             # End-of-turn save (reference: amplifier-app-cli persists after
             # every turn) — the incremental tool:post save misses the final
             # assistant message, which lands in the context only after the
@@ -239,7 +265,38 @@ class RealRuntime:
                     await self._saver.maybe_save()
                 except Exception:  # noqa: BLE001 — persistence is best-effort
                     logger.warning("end-of-turn save failed", exc_info=True)
+            # The close-out event is emitted here — never from the raw
+            # ``prompt:complete`` hook — so it is guaranteed to (a) follow
+            # every turn event and (b) carry the end-of-turn yield.
+            await self._emit_close_out(str(response or ""), starting_diff)
         return str(response or "")
+
+    def _turn_cwd(self) -> Path:
+        resolved = self._resolved
+        if resolved is not None and resolved.project_dir is not None:
+            return Path(resolved.project_dir)
+        return self._project_dir or Path.cwd()
+
+    async def _capture_diff(self) -> GitDiffSnapshot:
+        try:
+            return await capture_git_diff(self._turn_cwd())
+        except Exception:  # noqa: BLE001 — yield capture must never kill a turn
+            logger.debug("git diff snapshot failed", exc_info=True)
+            return GitDiffSnapshot(False)
+
+    async def _emit_close_out(self, response: str, starting_diff: GitDiffSnapshot) -> None:
+        """Synthesize the enriched ``PromptComplete`` (files/diffstat/tests)."""
+        ending_diff = await self._capture_diff()
+        delta = ending_diff.delta_from(starting_diff)
+        self.bridge.emit(
+            PromptComplete(
+                session_id=self._initialized.session_id if self._initialized else "",
+                response=response,
+                files_changed=delta.files if delta else 0,
+                diffstat=delta.diff_label if delta and delta.files else "",
+                tests_ok=self.turn_yield.tests_ok,
+            )
+        )
 
     async def interrupt(self) -> bool:
         """Best-effort graceful cancellation at the next step boundary.
@@ -290,6 +347,11 @@ class RealRuntime:
         initialized = self._initialized
         if initialized is None:
             raise RewindError("RealRuntime.start() has not completed")
+        if self._executing:
+            # ``context.set_messages()`` under a live provider loop corrupts
+            # turn numbering — the UI interrupts and awaits close-out first
+            # (interrupt-then-fork); refuse if a caller ever bypasses that.
+            raise RewindError("turn still running — interrupt it first")
         context = initialized.coordinator.get("context")
         if context is None or not hasattr(context, "set_messages"):
             raise RewindError("context module lacks set_messages — cannot fork")

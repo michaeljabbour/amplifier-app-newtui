@@ -354,17 +354,34 @@ class TranscriptReducer:
             label = spec.checkpoint_label
         else:
             # Real-runtime close-out: per-turn cost and cache % come from
-            # the provider usage recorded by the CostTracker (spec §11).
+            # the provider usage recorded by the CostTracker (spec §11);
+            # the yield (files/diffstat/tests ✔) rides on the runtime's
+            # synthesized PromptComplete (git snapshot delta — spec §3).
             telemetry = TurnTelemetry(
                 secs=max(0.0, (event.ts or turn.last_ts) - turn.start_ts),
                 tokens_down=turn.tokens,
                 cached_pct=usage.cached_pct,
                 cost=usage.cost,
             )
-            shipped = False
-            kind = "interrupted" if turn.cancelled else "answer"
+            shipped = bool(event.files_changed) and not turn.cancelled
+            if turn.cancelled:
+                kind = "interrupted"
+            elif shipped:
+                kind = "shipped"
+            elif turn.mode == "plan":
+                kind = "plan_ready"
+            else:
+                kind = "answer"
             label = turn.prompt[:40]
-        outcome = TurnOutcome(kind=kind)  # type: ignore[arg-type]
+        if spec is None:
+            outcome = TurnOutcome(
+                kind=kind,  # type: ignore[arg-type]
+                files_changed=event.files_changed if shipped else 0,
+                diffstat=event.diffstat if shipped else "",
+                tests_ok=event.tests_ok if shipped else None,
+            )
+        else:
+            outcome = TurnOutcome(kind=kind)  # type: ignore[arg-type]
         # Session spend is additive per turn (mockup ``this.cost += turnCost``);
         # checkpoint $ always equals the footer $ at rule time
         # (mockup ``cp.cost = this.cost``) — one session cost basis everywhere.
@@ -384,6 +401,16 @@ class TranscriptReducer:
             # ``· interrupted``/``· plan ready`` carry their own separator.
             joiner = " " if outcome_text.startswith("·") else " · "
             rule_label = f"{telemetry.label()}{joiner}{outcome_text}"
+            if turn.cancelled:
+                # Real interrupted close-out: the italic recap the demo
+                # scripts as its own recap event (spec §11 — ``Interrupted.
+                # Goal: <goal>. Context saved; resume or restate direction.``).
+                self._host.append_block(
+                    self._recap_line(
+                        f"Interrupted. Goal: {turn.prompt[:40]}. "
+                        "Context saved; resume or restate direction."
+                    )
+                )
         self._host.append_block(
             TurnRule(
                 id=self._ids.next_id(),
@@ -464,15 +491,17 @@ class TranscriptReducer:
             return
         # Non Goal/Next recaps render as the same ✳ italic-dim line shape;
         # the mockup creates them with click: null (not evidence targets).
-        self._append_content(
-            Answer(
-                id=self._ids.next_id(),
-                spans=(
-                    Segment(text="✳ ", style_token="dimmer"),
-                    Segment(text=text, style_token="dim", italic=True),
-                ),
-                clickable=False,
-            )
+        self._append_content(self._recap_line(text))
+
+    def _recap_line(self, text: str) -> Answer:
+        """The ✳ italic-dim recap line shape (demo and real turns alike)."""
+        return Answer(
+            id=self._ids.next_id(),
+            spans=(
+                Segment(text="✳ ", style_token="dimmer"),
+                Segment(text=text, style_token="dim", italic=True),
+            ),
+            clickable=False,
         )
 
     # -- tools -------------------------------------------------------------------

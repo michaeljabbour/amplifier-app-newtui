@@ -173,6 +173,46 @@ async def test_footer_badge_shows_and_click_posts_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_footer_badge_wraps_onto_own_row_at_narrow_width() -> None:
+    """Mockup footer has flex-wrap: wrap — when the left segment plus the
+    waiting badge exceed the width, the badge drops to its own row (fully
+    readable and clickable) instead of clipping the ctrl-y hint off-screen."""
+    app = FooterApp()
+    async with app.run_test(size=(100, 24)) as pilot:
+        bar = app.query_one("#footer", FooterBar)
+        bar.update_state(
+            FooterState(
+                mode_id="build",
+                bundle="dev-bundle",
+                session_short="a1b2c3",
+                cost=Decimal("0.87"),
+                waiting=1,
+                context="idle",
+            )
+        )
+        await pilot.pause()
+        assert bar.has_class("-wrapped")
+        assert bar.has_class("-badge-wrapped")
+        badge = bar._badge
+        assert badge.region.right <= 100
+        assert badge.region.width >= len(footer_waiting_text(bar.state))
+        await pilot.click(badge)
+        await pilot.pause()
+        assert len(app.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_footer_badge_stays_inline_at_wide_width() -> None:
+    app = FooterApp()
+    async with app.run_test(size=(160, 24)) as pilot:
+        bar = app.query_one("#footer", FooterBar)
+        bar.update_state(FooterState(waiting=1))
+        await pilot.pause()
+        assert not bar.has_class("-badge-wrapped")
+        assert bar._badge.region.y == bar._left.region.y
+
+
+@pytest.mark.asyncio
 async def test_footer_hint_changes_with_context() -> None:
     app = FooterApp()
     async with app.run_test() as pilot:

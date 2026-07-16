@@ -127,6 +127,7 @@ class NewTuiApp(App[None]):
             session_cost_start=adapter.session_cost_start,
         )
         self.turn_active = False
+        self.fork_pending = False  # a confirmed fork is in flight (interrupt-then-fork)
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
@@ -175,13 +176,22 @@ class NewTuiApp(App[None]):
                 self.reducer.handle(event)
             except Exception:  # noqa: BLE001 — the render loop must survive bad events
                 self.log.error(f"reducer failed on {event.kind}")
-            if self._turn_queues_pending and self.adapter.queue.empty():
+            if self.adapter.queue.empty() and not self.fork_pending:
                 # Queue duties run once the runtime's end-of-turn burst is
                 # reduced, so the ``queued message picked up`` notice lands
                 # AFTER the end notice (mockup drainQueue order) and stays.
-                self._turn_queues_pending = False
-                app_support.finish_turn_queues(self)
+                # During an interrupt-then-fork the drain is deferred to
+                # ``confirm_fork`` — a queued next-turn prompt must not be
+                # auto-run (and trimmed away) against the pre-fork context.
+                self.drain_turn_queues()
             self._refresh_title()
+
+    def drain_turn_queues(self) -> None:
+        """Run the deferred turn-end queue duties once (idempotent)."""
+        if not self._turn_queues_pending:
+            return
+        self._turn_queues_pending = False
+        app_support.finish_turn_queues(self)
 
     def submit_prompt(self, text: str) -> None:
         self.run_worker(self.adapter.submit(text), exclusive=False)
@@ -422,6 +432,13 @@ class NewTuiApp(App[None]):
 
     def on_rewind_strip_fork_requested(self, message: RewindStrip.ForkRequested) -> None:
         message.stop()
+        # The strip hid itself on fork; hand the keyboard back NOW — the
+        # approval bar while one is open (it owns the keyboard, spec §7,
+        # so Esc still means Deny for a fork parked behind a pending
+        # approval), the composer otherwise. A fork-chip click must not
+        # strand focus on the hidden strip (spec §12).
+        self._restore_keyboard()
+        self._refresh_footer()
         app_support.handle_fork(self, message.checkpoint_id)
 
     def on_rewind_strip_type_through(self, message: RewindStrip.TypeThrough) -> None:

@@ -74,6 +74,7 @@ class QueueBridge:
         queue: asyncio.Queue[UIEvent] | None = None,
         *,
         tap: Callable[[UIEvent], None] | None = None,
+        events: tuple[str, ...] | None = None,
     ) -> None:
         self.queue: asyncio.Queue[UIEvent] = queue if queue is not None else asyncio.Queue()
         self.dropped = 0
@@ -84,6 +85,10 @@ class QueueBridge:
         kernel-side seam for evidence derivation / event logging
         (ADR-0007 resolution 9). Best-effort: a tap failure never blocks
         the queue."""
+        self._events: tuple[str, ...] = events if events is not None else CONSUMED_EVENTS
+        """Raw hook events this bridge instance registers for. The real
+        runtime excludes ``prompt:complete`` here and synthesizes its own
+        enriched close-out event after the end-of-turn git snapshot."""
 
     def emit(self, event: UIEvent) -> None:
         """Push one already-typed event (used by DisplaySystem notices and
@@ -106,7 +111,7 @@ class QueueBridge:
 
     def register_hooks(self, hooks: Any, *, priority: int = 10) -> Callable[[], None]:
         unregister_callbacks: list[Callable[..., object]] = []
-        for event in self.EVENTS:
+        for event in self._events:
             unregister = hooks.register(
                 event,
                 self.handle_event,

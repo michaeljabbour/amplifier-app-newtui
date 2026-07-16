@@ -1,0 +1,220 @@
+"""Real-runtime turn close-out outcomes (DESIGN-SPEC §3 / §11).
+
+Without a demo spec the reducer must derive the turn rule from the
+enriched ``PromptComplete`` the RealRuntime synthesizes after its
+end-of-turn git snapshot:
+
+- files changed → ``shipped`` (``N files · +A/−D · tests ✔`` label,
+  dim rule, ledger shipped count, footer ▲);
+- no files → ``answer`` (or ``· plan ready`` in plan mode);
+- cancelled → ``· interrupted`` plus the italic
+  ``Interrupted. Goal: … Context saved; resume or restate direction.``
+  recap block, exactly like the demo scripts it.
+
+Offline: fake events straight into the reducer, no Textual, no git.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+
+from amplifier_app_newtui.kernel import events as ev
+from amplifier_app_newtui.model.blocks import Answer, BlockIdAllocator, TranscriptBlock, TurnRule
+from amplifier_app_newtui.model.lanes import LaneRegistry
+from amplifier_app_newtui.model.turn import OutcomeLedger
+from amplifier_app_newtui.ui.reducer import TranscriptReducer
+
+
+class FakeHost:
+    """Minimal ReducerHost: records blocks, ignores presentation."""
+
+    def __init__(self, mode_id: str = "chat") -> None:
+        self.mode_id = mode_id
+        self.blocks: list[TranscriptBlock] = []
+        self.notices: list[str] = []
+
+    def append_block(self, block: TranscriptBlock) -> None:
+        self.blocks.append(block)
+
+    def replace_block(self, block: TranscriptBlock) -> None:
+        for i, existing in enumerate(self.blocks):
+            if existing.id == block.id:
+                self.blocks[i] = block
+                return
+
+    def remove_block(self, block_id: str) -> None:
+        self.blocks = [b for b in self.blocks if b.id != block_id]
+
+    def show_notice(self, text: str) -> None:
+        self.notices.append(text)
+
+    def set_mode_by_id(self, mode_id: str, *, notify: bool = True) -> None:
+        pass
+
+    def turn_started(self) -> None:
+        pass
+
+    def turn_finished(self) -> None:
+        pass
+
+    def lanes_changed(self) -> None:
+        pass
+
+    def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
+        pass
+
+    def decision_deferred(self, message: str) -> None:
+        pass
+
+    def stream_opened(self, block_type: str) -> None:
+        pass
+
+    def stream_delta(self, text: str) -> None:
+        pass
+
+    def stream_closed(self) -> None:
+        pass
+
+
+def make_reducer(mode_id: str = "chat") -> tuple[TranscriptReducer, FakeHost]:
+    host = FakeHost(mode_id)
+    reducer = TranscriptReducer(
+        host,
+        allocator=BlockIdAllocator(),
+        ledger=OutcomeLedger(),
+        lanes=LaneRegistry(),
+    )
+    return reducer, host
+
+
+def last_rule(host: FakeHost) -> TurnRule:
+    rules = [b for b in host.blocks if isinstance(b, TurnRule)]
+    assert rules, f"no TurnRule in {[type(b).__name__ for b in host.blocks]}"
+    return rules[-1]
+
+
+def test_real_turn_with_file_changes_ships() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(prompt="refactor the store", ts=1.0))
+    reducer.handle(
+        ev.ProviderResponseUsage(input_tokens=100, output_tokens=3200, model="fake", ts=2.0)
+    )
+    reducer.handle(
+        ev.PromptComplete(
+            response="done",
+            files_changed=3,
+            diffstat="+142/−38",
+            tests_ok=True,
+            ts=13.0,
+        )
+    )
+    rule = last_rule(host)
+    assert rule.shipped
+    assert rule.label.endswith("3 files · +142/−38 · tests ✔")
+    recorded = reducer.ledger.turns[-1]
+    assert recorded.outcome.kind == "shipped"
+    assert recorded.outcome.files_changed == 3
+    assert recorded.outcome.diffstat == "+142/−38"
+    assert recorded.outcome.tests_ok is True
+    assert reducer.ledger.last_shipped  # footer ▲ yield glyph
+
+
+def test_real_turn_failed_tests_render_tests_cross() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(prompt="fix the flake", ts=1.0))
+    reducer.handle(
+        ev.PromptComplete(response="tried", files_changed=1, diffstat="+4/−1", tests_ok=False, ts=5.0)
+    )
+    assert last_rule(host).label.endswith("1 file · +4/−1 · tests ✗")
+
+
+def test_real_turn_without_file_changes_stays_answer_only() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(prompt="explain the store", ts=1.0))
+    reducer.handle(ev.PromptComplete(response="it stores", ts=4.0))
+    rule = last_rule(host)
+    assert not rule.shipped
+    assert rule.label.endswith(" · answer")
+    assert reducer.ledger.turns[-1].outcome.kind == "answer"
+    assert not reducer.ledger.last_shipped
+
+
+def test_real_plan_mode_turn_is_plan_ready() -> None:
+    reducer, host = make_reducer(mode_id="plan")
+    reducer.handle(ev.PromptSubmit(prompt="how should we do it?", ts=1.0))
+    reducer.handle(ev.PromptComplete(response="plan", ts=3.0))
+    rule = last_rule(host)
+    assert not rule.shipped
+    assert rule.label.endswith(" · plan ready")
+    assert reducer.ledger.turns[-1].outcome.kind == "plan_ready"
+
+
+def test_real_interrupted_turn_appends_recap_and_never_ships() -> None:
+    prompt = "refactor the session store"
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(prompt=prompt, ts=1.0))
+    reducer.handle(ev.CancelCompleted(ts=6.0))
+    # Even a cancelled turn that touched files must NOT count as shipped.
+    reducer.handle(
+        ev.PromptComplete(response="", files_changed=2, diffstat="+9/−1", tests_ok=None, ts=7.0)
+    )
+    rule = last_rule(host)
+    assert not rule.shipped
+    assert rule.label.endswith(" · interrupted")
+    assert reducer.ledger.turns[-1].outcome.kind == "interrupted"
+    # The italic recap sits directly above the rule, demo shape exactly.
+    recap = host.blocks[host.blocks.index(rule) - 1]
+    assert isinstance(recap, Answer)
+    assert not recap.clickable
+    assert recap.spans[0].text == "✳ "
+    assert recap.spans[0].style_token == "dimmer"
+    assert recap.spans[1].text == (
+        f"Interrupted. Goal: {prompt[:40]}. Context saved; resume or restate direction."
+    )
+    assert recap.spans[1].style_token == "dim"
+    assert recap.spans[1].italic
+    assert host.notices[-1] == "turn interrupted · context saved"
+
+
+def test_real_interrupted_recap_comes_from_orchestrator_cancelled_too() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(prompt="build the thing", ts=1.0))
+    reducer.handle(ev.OrchestratorComplete(status="cancelled", ts=5.0))
+    reducer.handle(ev.PromptComplete(response="", ts=5.5))
+    rule = last_rule(host)
+    assert rule.label.endswith(" · interrupted")
+    recap = host.blocks[host.blocks.index(rule) - 1]
+    assert isinstance(recap, Answer)
+    assert recap.spans[1].text.startswith("Interrupted. Goal: build the thing.")
+
+
+def test_demo_spec_interrupted_close_out_adds_no_extra_recap() -> None:
+    """The demo scripts its own recap event; the spec path must not add one."""
+
+    class Spec:
+        duration_ms = 6000
+        tokens = 1000
+        cached_pct = 50
+        cost = Decimal("0.05")
+        cost_after = Decimal("0.05")
+        outcome = "interrupted"
+        shipped = False
+        rule_label = "6s · 1.0k tok, 50% cached · $0.05 · interrupted"
+        checkpoint_label = "store refactor · interrupted"
+
+    host = FakeHost()
+    reducer = TranscriptReducer(
+        host,
+        allocator=BlockIdAllocator(),
+        ledger=OutcomeLedger(),
+        lanes=LaneRegistry(),
+        spec_lookup=lambda prompt: Spec(),
+    )
+    reducer.handle(ev.PromptSubmit(prompt="refactor the store", ts=1.0))
+    reducer.handle(ev.CancelCompleted(ts=2.0))
+    reducer.handle(ev.PromptComplete(response="", ts=3.0))
+    rule = last_rule(host)
+    assert rule.label == Spec.rule_label
+    before_rule = host.blocks[host.blocks.index(rule) - 1]
+    # Directly above the rule is the user line — no synthesized recap.
+    assert not isinstance(before_rule, Answer)

@@ -114,7 +114,15 @@ def lane_focus_blocks(lane: DemoLane, allocator: BlockIdAllocator) -> list[Trans
         elif row.kind == "command":
             blocks.append(LiveCommand(id=allocator.next_id(), command=row.text))
         else:  # answer
-            blocks.append(Answer(id=allocator.next_id(), spans=answer_spans(row.text)))
+            # Mockup focusLane ``F(...)``: every focus-lane row is created
+            # with click: null — log answers are not evidence targets.
+            blocks.append(
+                Answer(
+                    id=allocator.next_id(),
+                    spans=answer_spans(row.text),
+                    clickable=False,
+                )
+            )
     blocks.append(
         Answer(
             id=allocator.next_id(),
@@ -181,6 +189,10 @@ class DemoRuntimeAdapter(RuntimeAdapter):
     async def submit(self, text: str, *, queued: bool = False) -> None:
         text = text.strip()
         key = self._key_for(text)
+        if key == "build":
+            # Mockup runTurn: ``denied`` is a per-run local — a denial in
+            # one build run must not leak into a later rerun's close-out.
+            self._build_denied = False
         self._played.add(key)
         # Mockup send()/drainQueue(): the user line echoes the typed text
         # verbatim even though the scripted turn is fixed — remember which

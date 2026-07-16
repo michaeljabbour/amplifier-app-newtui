@@ -376,6 +376,7 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
             "tool_post",
             "content_block_end",
             "orchestrator_complete",
+            "prompt_complete",
         ):
             assert expected in kinds, f"missing {expected} in {kinds}"
 
@@ -387,11 +388,17 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
         (tool_post,) = [e for e in events if e.kind == "tool_post"]
         assert tool_pre.tool_call_id == tool_post.tool_call_id == "call-1"
         assert tool_pre.tool_name == "write_file"
-        # Stream deltas precede the tool record; the turn closes last.
+        # Stream deltas precede the tool record; the synthesized close-out
+        # (post git-snapshot) is guaranteed to land last on the queue.
         assert kinds.index("stream_block_delta") < kinds.index("tool_pre")
-        assert kinds.index("orchestrator_complete") == len(kinds) - 1
+        assert kinds.index("prompt_complete") == len(kinds) - 1
+        assert kinds.index("orchestrator_complete") == len(kinds) - 2
         (complete,) = [e for e in events if e.kind == "orchestrator_complete"]
         assert complete.status == "success"
+        (closing,) = [e for e in events if e.kind == "prompt_complete"]
+        # The temp project is not a git repo and no test commands ran.
+        assert (closing.files_changed, closing.diffstat, closing.tests_ok) == (0, "", None)
+        assert closing.response == response
 
         # Persistence: transcript + metadata (incremental save on tool:post)
         # and the append-only events.jsonl (cost re-seed source).

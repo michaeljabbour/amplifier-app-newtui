@@ -33,12 +33,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from time import monotonic
+from typing import cast
 
 from rich.cells import cell_len
 from textual import events
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.message import Message
+from textual.reactive import Reactive, ReactiveType
 from textual.timer import Timer
 from textual.widgets import Static
 
@@ -626,6 +628,24 @@ class BlockWidget(Static):
     BlockWidget.kind-turn-rule {
         margin-top: 1;
     }
+    /* Every other mockup mt:10 header maps to the same 1-cell gap as the
+       user line (plan L313, ledger L279, context L502, doctor L506,
+       improve L512; needs-you lives on NeedsYouWidget). mt:8 and below
+       (narration, answer, evidence, working status) stay flush — the
+       repo's px→cell mapping rounds sub-10px margins to 0. */
+    BlockWidget.kind-plan,
+    BlockWidget.kind-ledger,
+    BlockWidget.kind-context,
+    BlockWidget.kind-doctor,
+    BlockWidget.kind-improve {
+        margin-top: 1;
+    }
+    /* Exception: the plan-mode 'Proposed plan … (read-only)' header is
+       mt:8 in the mockup (runPlanTurn L434), not mt:10 like the
+       executing-turn plan header (L313) — it stays flush. */
+    BlockWidget.kind-plan.read-only {
+        margin-top: 0;
+    }
     """
 
     BINDINGS = [
@@ -660,6 +680,8 @@ class BlockWidget(Static):
             monotonic() if block.kind == "working_status" else None
         )
         self.add_class(f"kind-{block.kind.replace('_', '-')}")
+        if isinstance(block, PlanBlock) and block.read_only:
+            self.add_class("read-only")
         if block.kind in ("tool_line", "evidence"):
             # Evidence blocks take keyboard focus so the header's
             # advertised keys work (keymap "evidence" context, spec §10).
@@ -697,6 +719,8 @@ class BlockWidget(Static):
                 f"block id mismatch: widget has {self._block.id!r}, got {block.id!r}"
             )
         self._block = block
+        if isinstance(block, PlanBlock):
+            self.set_class(block.read_only, "read-only")
         if block.kind == "working_status":
             # Fresh event telemetry: re-anchor the wall-clock secs tick.
             self._telemetry_anchor = monotonic()
@@ -845,8 +869,14 @@ def build_block_widget(
 class TranscriptView(VerticalScroll):
     """Scrollable durable-history region: one BlockWidget per block.
 
-    - **Tail-follow anchor**: sticks to the bottom on append unless the
+    - **Tail-follow anchor**: sticks to the bottom whenever content
+      height grows (append, async child mounts, wrap reflow) unless the
       user scrolled up; scrolling back to the bottom re-arms following.
+      Implemented on Textual's standing ``anchor()`` facility — the
+      compositor re-asserts bottom scroll on every arrange, so late
+      height growth (e.g. a needs-you row wrapping 1→2 lines after its
+      rows mount asynchronously) can never strand the tail mid-scroll
+      the way a one-shot ``scroll_end`` per append could.
     - **Keyed mutation**: :meth:`append` / :meth:`replace` /
       :meth:`remove_block` address blocks by stable id.
     - **Lane focus** (spec §8): :meth:`focus_lane` swaps the visible block
@@ -872,7 +902,6 @@ class TranscriptView(VerticalScroll):
         super().__init__(id=id)
         self._widgets: dict[str, TranscriptWidget] = {}
         self._order: list[str] = []
-        self._follow = True
         self._focused_lane: str | None = None
         self._main_stash: list[TranscriptBlock] | None = None
         self._streaming = False
@@ -880,6 +909,13 @@ class TranscriptView(VerticalScroll):
         self._reflow_deferred = False
         self._reflow_timer: Timer | None = None
         self._last_width: int | None = None
+
+    def on_mount(self) -> None:
+        # Standing tail anchor: the compositor re-asserts bottom scroll on
+        # EVERY arrange while anchored, so content that grows after an
+        # append settles (async needs-you row mounts, 1→2-line wrap on
+        # first row resize, long wrapped answer lines) is always followed.
+        self.anchor()
 
     # -- block CRUD --------------------------------------------------------
 
@@ -912,9 +948,11 @@ class TranscriptView(VerticalScroll):
         widget = build_block_widget(block, reflow_router=self._route_reflow)
         self._widgets[block.id] = widget
         self._order.append(block.id)
+        # No one-shot scroll here: while the tail anchor is engaged the
+        # compositor keeps the view at the bottom through this mount AND
+        # any later height growth of the mounted widget (async child rows,
+        # wrap reflow); while released (user scrolled up) it must not move.
         self.mount(widget)
-        if self._follow:
-            self.call_after_refresh(self.scroll_end, animate=False)
         return widget
 
     def replace(self, block: TranscriptBlock) -> None:
@@ -955,20 +993,40 @@ class TranscriptView(VerticalScroll):
 
     # -- tail-follow anchor --------------------------------------------------
 
+    def set_reactive(
+        self, reactive: Reactive[ReactiveType], value: ReactiveType
+    ) -> None:
+        """Clamp unvalidated scroll writes so short content stays top-aligned.
+
+        While the standing tail anchor is engaged, Textual's compositor
+        asserts ``scroll_y = content_bottom - viewport_height`` on every
+        arrange via ``set_reactive`` — which bypasses ``validate_scroll_y``
+        and goes *negative* whenever the transcript is shorter than the
+        viewport, bottom-aligning it under blank rows. The executable spec
+        (design-v3-cohesive.html: plain ``overflow-y:auto`` div whose
+        ``scrollTop = scrollHeight`` the browser clamps) keeps short
+        content at the top, so floor these writes at 0 here.
+        """
+        if reactive.name in ("scroll_y", "scroll_target_y") and isinstance(
+            value, (int, float)
+        ):
+            value = cast("ReactiveType", max(value, 0))
+        super().set_reactive(reactive, value)
+
     @property
     def follow(self) -> bool:
-        """True while the view is anchored to the bottom."""
-        return self._follow
+        """True while the view is anchored to the bottom (anchor engaged)."""
+        return self._anchored and not self._anchor_released
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        self._follow = False
+        self.release_anchor()
 
     def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         self.call_after_refresh(self._check_reanchor)
 
     def _check_reanchor(self) -> None:
         if self.is_vertical_scroll_end:
-            self._follow = True
+            self.anchor()
 
     # -- lane focus (DESIGN-SPEC §8) -----------------------------------------
 
@@ -1008,8 +1066,7 @@ class TranscriptView(VerticalScroll):
             widgets.append(widget)
         if widgets:
             await self.mount(*widgets)
-        self._follow = True
-        self.call_after_refresh(self.scroll_end, animate=False)
+        self.anchor()  # a lane swap always lands anchored at the bottom
 
     # -- resize reflow (75ms trailing debounce; streaming deferral) -----------
 

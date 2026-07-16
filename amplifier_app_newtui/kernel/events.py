@@ -187,10 +187,23 @@ class PromptSubmit(_Envelope):
 
 
 class PromptComplete(_Envelope):
-    """The prompt's turn finished (``prompt:complete``)."""
+    """The prompt's turn finished (``prompt:complete``).
+
+    The real runtime synthesizes this close-out event itself (after its
+    end-of-turn git snapshot) and enriches it with the turn's concrete
+    yield — the reducer turns these fields into the DESIGN-SPEC §3
+    shipped outcome (``3 files · +142/−38 · tests ✔``). Raw hook payloads
+    normalized here carry only ``response``; the yield fields default off.
+    """
 
     kind: Literal["prompt_complete"] = "prompt_complete"
     response: str = ""
+    files_changed: int = 0
+    """Files whose diffstat changed during the turn (git snapshot delta)."""
+    diffstat: str = ""
+    """``+142/−38`` style line-delta label; empty when nothing changed."""
+    tests_ok: bool | None = None
+    """True/False when test commands ran this turn; None when they did not."""
 
 
 class ExecutionStart(_Envelope):

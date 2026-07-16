@@ -9,6 +9,7 @@ surface — no hidden state.
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -124,6 +125,13 @@ def announce_ready(app: NewTuiApp) -> None:
     # Resume offset for checkpoint turn ids (spec §9): known only after
     # the adapter booted, before the first turn event can arrive.
     app.reducer.turn_base = app.adapter.turn_base
+    # Resume cost baseline travels the same handoff: RealRuntimeAdapter
+    # learns prior session spend inside start(), after the reducer was
+    # constructed — re-seed so footer $ and checkpoint cost_at include it
+    # (one session cost basis everywhere, spec §11). Safe to assign: the
+    # adapter contract calls ready() before any turn event, so the
+    # running total still equals its constructor seed here.
+    app.reducer.session_cost = app.adapter.session_cost_start
     headline, detail = app.adapter.banner
     if headline or detail:
         app.append_block(
@@ -242,29 +250,59 @@ def handle_fork(app: NewTuiApp, checkpoint_id: str) -> None:
     if checkpoint is None:
         app.show_notice(f"unknown checkpoint · {checkpoint_id}")
         return
+    if app.fork_pending:
+        return  # one fork at a time — a second Enter must not double-fork
+    app.fork_pending = True
     app.run_worker(confirm_fork(app, checkpoint.id, checkpoint.label), exclusive=False)
 
 
 async def confirm_fork(app: NewTuiApp, checkpoint_id: str, label: str) -> None:
     """Request the session fork from the runtime; trim only on success.
 
+    Interrupt-then-fork: a fork confirmed while a turn is running first
+    interrupts that turn (the existing Esc path — the runtime breaks at
+    the next step boundary) and awaits its close-out, so the dead turn's
+    rule + checkpoint exist BEFORE the trim and are removed BY the trim
+    (ledger ``trim_to`` + transcript trim). Forking under a live turn
+    would orphan its still-streaming blocks and, on a real session,
+    corrupt turn numbering (``context.set_messages()`` during the
+    provider loop).
+
     The adapter's ``fork`` performs the backend fork (foundation
     ``fork_session_in_memory`` + ``context.set_messages()`` for a live
     real session; immediate for the in-memory demo script) and trims
     the ledger once confirmed. Only then does the transcript trim —
     confirm-then-trim: a failed fork leaves everything untouched.
+
+    While ``fork_pending`` is up, ``_consume_events`` defers the
+    turn-end queue drain, so a shift+enter-queued next-turn message is
+    NOT auto-run against the abandoned pre-fork context (where the fork
+    would silently trim its whole turn away). The drain runs here after
+    the fork settles — the queued prompt picks up against the post-fork
+    state instead (spec §5: it auto-runs when the turn ends).
     """
     from ..kernel.rewind import RewindError
 
     try:
-        await app.adapter.fork(checkpoint_id, app.ledger)
-    except RewindError as error:
-        app.show_notice(f"fork failed · {error}")
-        return
-    trim_after_checkpoint(app.transcript, checkpoint_id)
-    app.show_notice(f"forked from {checkpoint_id} · {label}")
-    app.composer.focus_input()
-    app.refresh_status()
+        if app.turn_active:
+            app.show_notice("interrupting turn to fork …")
+            await app.adapter.interrupt()
+            while app.turn_active:  # close-out = reducer handled PromptComplete
+                await asyncio.sleep(0.05)
+        try:
+            await app.adapter.fork(checkpoint_id, app.ledger)
+        except RewindError as error:
+            app.show_notice(f"fork failed · {error}")
+            return
+        trim_after_checkpoint(app.transcript, checkpoint_id)
+        app.show_notice(f"forked from {checkpoint_id} · {label}")
+        app.composer.focus_input()
+        app.refresh_status()
+    finally:
+        app.fork_pending = False
+        # Deferred turn-end queue duties (see docstring): the queued
+        # next-turn message now picks up against the post-fork context.
+        app.drain_turn_queues()
 
 
 def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
