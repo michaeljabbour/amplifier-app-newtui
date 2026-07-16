@@ -22,6 +22,8 @@ from amplifier_app_newtui.ui.app import NewTuiApp
 from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, theme_id
 
+from .test_flow_helpers import set_mode
+
 
 async def _wait_for(pilot, predicate, *, tries: int = 80) -> bool:
     for _ in range(tries):
@@ -62,6 +64,11 @@ async def test_demo_boot_banner_seed_and_typed_turn() -> None:
         assert app.ledger.turn_count == 1
         assert not app.turn_active
 
+        # The app boots in auto (§4 amendment); switch to chat so the
+        # build turn parks at its pytest approval — a stable mid-turn
+        # state for the running assertions below.
+        await set_mode(pilot, app, "chat")
+
         # Type 'hi' + Enter → the next scripted demo turn (build) starts;
         # the user line echoes the typed text verbatim (mockup send()).
         await pilot.press("h", "i", "enter")
@@ -82,8 +89,13 @@ async def test_demo_build_turn_reaches_approval_bar() -> None:
     app = NewTuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         await _wait_for(
-            pilot, lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks)
+            pilot,
+            lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks)
+            and not app.turn_active,
         )
+        # The pytest approval only asks in chat (spec §4); the app boots
+        # in auto (§4 amendment), so put it in chat explicitly.
+        await set_mode(pilot, app, "chat")
         await pilot.press("h", "i", "enter")
         # The scripted build turn stops at the pytest approval.
         assert await _wait_for(pilot, lambda: app.approval_bar is not None)
@@ -110,7 +122,12 @@ async def test_demo_full_sequence_all_five_turns() -> None:
         def rules() -> int:
             return sum(b.kind == "turn_rule" for b in app.transcript.blocks)
 
-        await _wait_for(pilot, lambda: rules() >= 1)  # seed
+        await _wait_for(pilot, lambda: rules() >= 1 and not app.turn_active)  # seed
+        # Start from chat (the app boots in auto — §4 amendment) so the
+        # scripted sequence plays its full original path: the build turn
+        # asks the chat-mode pytest approval, then each turn's mode
+        # notice moves the posture along (auto → plan → brainstorm → build).
+        await set_mode(pilot, app, "chat")
         for expected in (2, 3, 4, 5, 6):  # build, auto, plan, brainstorm, agents
             await pilot.press("h", "i", "enter")
             if expected == 2:  # build turn stops at the pytest approval

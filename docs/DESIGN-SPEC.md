@@ -76,6 +76,10 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 | build | green | `auto read,test · ask write,net,spend` |
 | auto | orange | `auto read,write · classifier-gated` |
 
+- [ ] **Default mode is `auto`** (amendment 2026-07-16, user directive — the mockup's
+  scripted history starts in chat, but the app boots in auto with amplifier's natural
+  wide scope: read/write/test auto-allowed; net/spend/exec classifier-gated with
+  deny reserved for destructive shapes and unrequested outbound pushes).
 - [ ] shift+tab cycles modes (also when input focused); clicking `[mode]` badge cycles.
 - [ ] Mode change → notice `mode <id> · <trust>`.
 - [ ] Mode tint appears in exactly three places: composer badge + composer left edge + footer. chat's composer edge uses rule token.

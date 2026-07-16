@@ -176,8 +176,15 @@ async def test_set_mode_updates_badge_and_accent_classes() -> None:
     async with app.run_test() as pilot:
         composer = app.query_one("#composer", Composer)
         badge = app.query_one(ModeBadge)
-        # Default: chat — accent uses the rule token via the mode-chat class.
+        # Default: auto — the boot posture (§4 amendment), orange accent.
+        assert composer.has_class("mode-auto")
+        assert badge.has_class("mode-auto")
+        assert str(badge.content) == "[auto]"
+        # chat's accent uses the rule token via the mode-chat class.
+        composer.set_mode(get_mode("chat"))
+        await pilot.pause()
         assert composer.has_class("mode-chat")
+        assert not composer.has_class("mode-auto")
         assert badge.has_class("mode-chat")
         assert str(badge.content) == "[chat]"
         composer.set_mode(get_mode("build"))

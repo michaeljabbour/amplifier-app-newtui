@@ -32,12 +32,22 @@ from amplifier_app_newtui.ui.footer import (
 )
 from amplifier_app_newtui.ui.transcript import render_block
 
-from .test_flow_helpers import SIZE, blocks_of, rules, seed_done, type_text, wait_for
+from .test_flow_helpers import (
+    SIZE,
+    blocks_of,
+    rules,
+    seed_done,
+    set_mode,
+    type_text,
+    wait_for,
+)
 
 
 async def _reach_pytest_approval(pilot, app: NewTuiApp) -> None:
-    """Seed, then run the build turn up to its pytest approval."""
+    """Seed, switch to chat (the app boots in auto — §4 amendment), then
+    run the build turn up to its chat-mode pytest approval."""
     await seed_done(pilot, app)
+    await set_mode(pilot, app, "chat")
     await type_text(pilot, "hi")
     await pilot.press("enter")
     assert await wait_for(pilot, lambda: app.approval_bar is not None)

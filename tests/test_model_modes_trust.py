@@ -61,9 +61,18 @@ def test_cycle_backwards() -> None:
     assert cycle_mode("chat", -1).id == MODE_CYCLE[-1]
 
 
-def test_unknown_mode_falls_back_to_chat() -> None:
-    assert get_mode("bogus").id == "chat"
-    assert get_mode(None).id == "chat"
+def test_default_mode_is_auto() -> None:
+    """Boot posture is auto — amplifier's natural wide scope (§4 amendment,
+    ADR-0007 resolution 0)."""
+    assert DEFAULT_MODE == "auto"
+
+
+def test_unknown_mode_falls_back_to_default() -> None:
+    """get_mode falls back to the DEFAULT_MODE profile (now auto) for
+    unknown/None ids; trust *resolution* for unknown modes still uses the
+    chat posture (see test_unknown_mode_uses_chat_posture)."""
+    assert get_mode("bogus").id == DEFAULT_MODE
+    assert get_mode(None).id == DEFAULT_MODE
 
 
 # --- trust resolution (DESIGN-SPEC §4 gating) -------------------------------

@@ -59,13 +59,16 @@ class AutoClassifier(Protocol):
 
 
 class OfflineAutoClassifier:
-    """Deterministic fail-closed classifier (no provider, no network).
+    """Deterministic classifier (no provider, no network) — wide scope.
 
-    Deny destructive shapes outright; allow only actions that match an
-    explicit user request (capability verb + significant-word/target
-    overlap); deny everything else. Sees ONLY user messages — never
-    assistant reasoning (reasoning-blind by construction).
+    Deny destructive shapes outright; defer outbound publishes (``git
+    push``) unless they match an explicit user request; allow everything
+    else — amplifier's natural wide trust scope in auto mode (user
+    directive 2026-07-16). Sees ONLY user messages — never assistant
+    reasoning (reasoning-blind by construction).
     """
+
+    _BOUNDARY = re.compile(r"\bgit\s+push\b", re.IGNORECASE)
 
     _DESTRUCTIVE = re.compile(
         r"(?:\brm\s+-[^\n]*r[^\n]*f|\bgit\s+push\b[^\n]*(?:--force|-f\b)|"
@@ -104,7 +107,9 @@ class OfflineAutoClassifier:
             return (False, "action has destructive or irreversible form")
         if self._is_authorized(action, capability, target, user_messages):
             return (True, "action matches an explicit user request")
-        return (False, "action is not clearly within user authorization")
+        if self._BOUNDARY.search(action):
+            return (False, "outbound push crosses the trust boundary unrequested")
+        return (True, "within amplifier's wide trust scope")
 
     def _is_authorized(
         self,

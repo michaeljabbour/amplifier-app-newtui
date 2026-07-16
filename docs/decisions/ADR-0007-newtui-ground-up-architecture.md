@@ -34,6 +34,11 @@ Grounding: `docs/RESEARCH-BRIEF.md` (synthesis of 10 deep-readers).
 
 ## Resolutions of RESEARCH-BRIEF open questions
 
+0. **Default posture (amended 2026-07-16, user directive)**: the app boots in
+   `auto` mode — amplifier's natural wide scope. Auto statically allows
+   read/write/test; net/spend/exec run through the classifier, whose offline
+   fallback is wide (allow) except destructive shapes and unrequested
+   `git push`, which deny-and-continue into the needs-you queue.
 1. **Mode transitions**: modes are an app-layer posture. Trust gating lives entirely in
    the app's governance hook on `tool:pre` (`HookResult` ask_user/deny) + mode-specific
    system-prompt overlay injected at `provider:request`. No session teardown, no

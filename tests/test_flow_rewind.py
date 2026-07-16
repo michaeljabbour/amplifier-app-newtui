@@ -23,14 +23,19 @@ from .test_flow_helpers import (
     blocks_of,
     rules,
     seed_done,
+    set_mode,
     type_text,
     wait_for,
 )
 
 
 async def _two_turns(pilot, app: NewTuiApp) -> None:
-    """Seed (t1) + the build turn (t2, pytest approval allowed)."""
+    """Seed (t1) + the build turn (t2, chat-mode pytest approval allowed).
+
+    The app boots in auto (§4 amendment) — chat is set explicitly so the
+    build turn stops at its approval."""
     await seed_done(pilot, app)
+    await set_mode(pilot, app, "chat")
     await type_text(pilot, "hi")
     await pilot.press("enter")
     assert await wait_for(pilot, lambda: app.approval_bar is not None)
@@ -281,6 +286,10 @@ async def test_fork_chip_click_during_pending_approval_keeps_keyboard() -> None:
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)  # t1 cut
         t1_block_ids = [b.id for b in app.transcript.blocks]
+        # The approval only asks in chat (the app boots in auto — §4
+        # amendment); the ``/mode chat`` echo lands after the t1 rule and
+        # is trimmed away by the fork like the rest of the dead turn.
+        await set_mode(pilot, app, "chat")
 
         # Park the build turn at the pytest approver.
         await type_text(pilot, "hi")

@@ -164,7 +164,11 @@ _MODE_POLICY: dict[str, dict[CapabilityClass, Decision]] = {
     },
 }
 
-_AUTO_STATIC_ALLOW = frozenset({CapabilityClass.READ, CapabilityClass.WRITE})
+# Auto is a strict superset of build's auto set (read+test) plus write —
+# amplifier's natural wide scope. NET/SPEND/EXEC stay classifier-gated.
+_AUTO_STATIC_ALLOW = frozenset(
+    {CapabilityClass.READ, CapabilityClass.WRITE, CapabilityClass.TEST}
+)
 
 
 def resolve(

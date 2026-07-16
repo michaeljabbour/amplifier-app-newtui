@@ -24,14 +24,17 @@ from .test_flow_helpers import (
     blocks_of,
     rules,
     seed_done,
+    set_mode,
     type_text,
     wait_for,
 )
 
 
 async def _start_gated_turn(pilot, app: NewTuiApp) -> None:
-    """Seed, then start the build turn and park it mid-turn on the gate."""
+    """Seed, switch to chat (the app boots in auto — §4 amendment) so the
+    build turn keeps its pytest approval, then park it mid-turn on the gate."""
     await seed_done(pilot, app)
+    await set_mode(pilot, app, "chat")
     await type_text(pilot, "hi")
     await pilot.press("enter")
     assert await wait_for(
@@ -202,6 +205,10 @@ async def test_idle_shift_enter_just_sends() -> None:
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
+        # chat mode: the build turn parks at its pytest approval, giving a
+        # stable mid-turn state for the assertions below (§4 amendment:
+        # the app boots in auto, where the instant turn races to done).
+        await set_mode(pilot, app, "chat")
         await type_text(pilot, "hi")
         await pilot.press("shift+enter")
         # Mockup send(): the typed text is echoed verbatim as the user line.

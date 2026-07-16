@@ -36,6 +36,19 @@ async def type_text(pilot, text: str) -> None:
     await pilot.press(*("space" if ch == " " else ch for ch in text))
 
 
+async def set_mode(pilot, app: NewTuiApp, mode_id: str) -> None:
+    """Put the idle app in *mode_id* via the real ``/mode`` command (§4).
+
+    The app now BOOTS in auto mode (DESIGN-SPEC §4 amendment, ADR-0007
+    resolution 0); flows that exercise a specific mode's posture (e.g.
+    the chat-mode pytest approval on the build turn) must set it
+    explicitly rather than relying on the boot default.
+    """
+    await type_text(pilot, f"/mode {mode_id}")
+    await pilot.press("enter")
+    assert await wait_for(pilot, lambda: app.mode_id == mode_id)
+
+
 def blocks_of(app: NewTuiApp, kind: str) -> list:
     return [b for b in app.transcript.blocks if b.kind == kind]
 

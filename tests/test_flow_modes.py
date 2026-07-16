@@ -29,12 +29,14 @@ async def test_shift_tab_cycles_modes_with_notice_and_three_place_tint() -> None
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
-        assert app.mode_id == "chat"
-        # chat's composer edge uses the rule token (spec §4) via mode-chat.
-        assert app.composer.has_class("mode-chat")
+        # Boot posture is auto (§4 amendment) — orange badge/edge/footer.
+        assert app.mode_id == "auto"
+        assert app.composer.has_class("mode-auto")
 
-        # Mockup shift+tab cycle: chat → plan → brainstorm → build → auto → chat.
-        for expected in ("plan", "brainstorm", "build", "auto", "chat"):
+        # Mockup shift+tab cycle order is unchanged (chat → plan →
+        # brainstorm → build → auto); from the auto boot mode one
+        # shift+tab wraps to chat, then the cycle walks back to auto.
+        for expected in ("chat", "plan", "brainstorm", "build", "auto"):
             await pilot.press("shift+tab")
             await pilot.pause()
             profile = MODE_PROFILES[expected]
@@ -58,11 +60,11 @@ async def test_mode_badge_click_cycles() -> None:
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
-        assert app.mode_id == "chat"
+        assert app.mode_id == "auto"  # boot posture (§4 amendment)
         await pilot.click(ModeBadge)
         await pilot.pause()
-        assert app.mode_id == "plan"
-        assert app.notice_slot.current == "mode plan · read-only"
+        assert app.mode_id == "chat"  # auto wraps to chat in the cycle
+        assert app.notice_slot.current == "mode chat · ask all · auto read"
 
 
 @pytest.mark.asyncio

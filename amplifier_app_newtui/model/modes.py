@@ -87,11 +87,14 @@ MODE_PROFILES: dict[ModeId, ModeProfile] = {
 MODE_CYCLE: tuple[ModeId, ...] = ("chat", "plan", "brainstorm", "build", "auto")
 """shift+tab cycle order (mockup Component.MODES array order, DESIGN-SPEC §4)."""
 
-DEFAULT_MODE: ModeId = "chat"
+DEFAULT_MODE: ModeId = "auto"
+"""Boot posture. The mockup demo *starts* its scripted history in chat, but the
+app defaults to auto — amplifier's natural wide scope (user directive
+2026-07-16): auto read/write/test, classifier-gated for the rest."""
 
 
 def get_mode(mode_id: str | None) -> ModeProfile:
-    """Look up a mode profile, falling back to chat for unknown/None ids."""
+    """Look up a mode profile, falling back to DEFAULT_MODE for unknown/None ids."""
     if mode_id in MODE_PROFILES:
         return MODE_PROFILES[mode_id]  # type: ignore[index]
     return MODE_PROFILES[DEFAULT_MODE]
