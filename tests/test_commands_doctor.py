@@ -131,6 +131,7 @@ def test_build_doctor_block() -> None:
     )
     block = build_doctor_block("b3", report)
     assert block.kind == "doctor"
+    assert block.headline == "1 finding · nothing changed yet"
     assert block.healthy == ("install healthy",)
     assert block.findings[0].number == 1
     assert block.findings[0].text == "unused"

@@ -85,6 +85,15 @@ THEME_TOKENS: dict[str, dict[str, str]] = {
 }
 """Theme name → {token name → exact spec hex}."""
 
+TITLE_FG = "#aeb6c6"
+"""Title bar text color — hardcoded in the mockup's window chrome
+(design-v3-cohesive.html line 39, ``color: #aeb6c6; font-weight: 600``)
+for every theme; deliberately NOT part of the §1 token table."""
+
+EXTRA_VARIABLES: dict[str, str] = {"title-fg": TITLE_FG}
+"""Mockup-mandated colors outside the §1 token table, exposed as theme
+variables (``$title-fg`` in TCSS) so hex still lives only in this module."""
+
 DEFAULT_THEME = "slate"
 THEME_NAME_PREFIX = "amplifier-"
 
@@ -115,7 +124,7 @@ def _build_theme(name: str, tokens: dict[str, str]) -> Theme:
         error=tokens["red"],
         accent=tokens["orange"],
         dark=True,
-        variables=dict(tokens),
+        variables={**tokens, **EXTRA_VARIABLES},
     )
 
 
@@ -142,6 +151,8 @@ def register_themes(app) -> None:  # type: ignore[no-untyped-def]
 
 __all__ = [
     "DEFAULT_THEME",
+    "EXTRA_VARIABLES",
+    "TITLE_FG",
     "THEME_NAME_PREFIX",
     "THEME_TOKENS",
     "THEMES",

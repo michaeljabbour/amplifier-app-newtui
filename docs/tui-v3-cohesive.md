@@ -221,7 +221,7 @@ with a bracketed suggested action in green on `bg-tab`.
 
 | Key        | Action |
 |------------|--------|
-| shift+tab  | cycle mode (chat → build → plan → auto → brainstorm → chat) |
+| shift+tab  | cycle mode (chat → plan → brainstorm → build → auto → chat) |
 | ctrl-p     | cycle permission posture (chat → build → plan → auto → bypass → chat), independent of mode |
 | ctrl-t     | toggle agent lanes |
 | ctrl-l     | print session ledger to scrollback |

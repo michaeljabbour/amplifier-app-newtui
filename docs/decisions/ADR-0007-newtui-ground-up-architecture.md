@@ -91,8 +91,9 @@ verbatim "Allow once" / "Allow always" / "Deny" (Rust fail-closed string matchin
 
 Exactly one path: bounded `SteeringQueue` (32 items / 32KB), consumed one-per-
 `provider:request` returning `HookResult(action="inject_context",
-context_injection_role="user")`, root session only. Leftover steers roll forward as a
-follow-up turn with a visible notice.
+context_injection_role="user")`, root session only. Leftover steers are silently
+discarded at turn end (mockup state machine: `runTurn` resets `this.steer = null` and
+never replays an unconsumed steer — it must not become a turn the user never sent).
 
 ## Rewind
 

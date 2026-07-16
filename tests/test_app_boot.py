@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from amplifier_app_newtui.kernel.demo import (
-    BUILD_PROMPT,
     DEMO_BANNER,
     DEMO_TURN_BY_KEY,
     SEED_PROMPT,
@@ -59,12 +58,13 @@ async def test_demo_boot_banner_seed_and_typed_turn() -> None:
         assert app.ledger.turn_count == 1
         assert not app.turn_active
 
-        # Type 'hi' + Enter → the next scripted demo turn (build) starts.
+        # Type 'hi' + Enter → the next scripted demo turn (build) starts;
+        # the user line echoes the typed text verbatim (mockup send()).
         await pilot.press("h", "i", "enter")
         assert await _wait_for(
             pilot,
             lambda: any(
-                b.kind == "user_line" and b.text == BUILD_PROMPT
+                b.kind == "user_line" and b.text == "hi"
                 for b in app.transcript.blocks
             ),
         )

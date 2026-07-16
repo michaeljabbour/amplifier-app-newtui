@@ -47,6 +47,9 @@ class RuntimeAdapter:
         self.session_short: str = ""
         self.banner: tuple[str, str] = ("", "")
         self.session_cost_start: Decimal = Decimal("0")
+        self.turn_base: int = 0
+        """Restored-history user-message count on resume (checkpoint turn
+        ids offset past it — DESIGN-SPEC §9); 0 for fresh/demo sessions."""
         self.startup_notices: tuple[str, ...] = ()
 
     def attach(self, app: Any) -> None:
@@ -60,9 +63,31 @@ class RuntimeAdapter:
     async def submit(self, text: str) -> None:
         """Run *text* as a new user turn."""
 
+    async def submit_queued(self, text: str) -> None:
+        """Run a queue-drained message as the next turn (spec §5).
+
+        Default: same as :meth:`submit`. The demo adapter overrides it
+        to skip its scripted mode notice — mockup ``drainQueue`` runs
+        the drained turn without ``setMode``, so nothing overwrites the
+        ``queued message picked up`` notice.
+        """
+        await self.submit(text)
+
     async def interrupt(self) -> bool:
         """Request an interrupt; True when the runtime accepted it."""
         return False
+
+    async def fork(self, checkpoint_id: str, ledger: Any) -> None:
+        """Fork the session at *checkpoint_id*, then trim *ledger* (spec §9).
+
+        Confirm-then-trim (ADR-0007 §Rewind): the ledger trims only
+        after the backend confirms the fork; raise
+        :class:`~amplifier_app_newtui.kernel.rewind.RewindError` on
+        failure and leave everything untouched. The base/demo runtime
+        keeps its conversation in memory only, so confirmation is
+        immediate.
+        """
+        ledger.trim_to(checkpoint_id)
 
     def answer_approval(self, ticket_id: str, choice: str) -> None:
         """Route an approval-bar resolution back to the runtime."""
@@ -83,13 +108,16 @@ class RuntimeAdapter:
         """The focused-lane transcript block list (spec §8), if known."""
         return None
 
-    def evidence_links(self) -> tuple[EvidenceLink, ...]:
-        """Evidence links to attach to final answers (spec §10)."""
+    def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
+        """Evidence links grounding the final answer *answer_text* (spec §10)."""
         return ()
 
-    def deferred_decision(self, message: str) -> tuple[str, str, tuple[str, ...]]:
-        """(question, reason, choices) for a deferred-decision event."""
-        return (message, "", ())
+    def deferred_decision(
+        self, message: str
+    ) -> tuple[str, str, tuple[str, ...], str]:
+        """(question, reason, choices, highlight) for a deferred-decision
+        event — ``highlight`` is the question substring rendered teal."""
+        return (message, "", (), "")
 
     def decision_narration(self, choice: str) -> str:
         """The ``Applying decision: …`` narration for an acted-on choice."""
@@ -124,6 +152,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.session_short = runtime.session_short
         self.banner = runtime.banner
         self.session_cost_start = runtime.session_cost_start
+        self.turn_base = runtime.turn_base
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
         runtime.broker.add_listener(self._on_broker_change)
@@ -148,12 +177,27 @@ class RealRuntimeAdapter(RuntimeAdapter):
     async def interrupt(self) -> bool:
         return await self._runtime.interrupt() if self._runtime else False
 
+    async def fork(self, checkpoint_id: str, ledger: Any) -> None:
+        """Real fork: foundation in-memory fork + ``context.set_messages()``."""
+        from ..kernel.rewind import RewindError
+
+        if self._runtime is None:
+            raise RewindError("session not started")
+        await self._runtime.fork(checkpoint_id, ledger)
+
     def answer_approval(self, ticket_id: str, choice: str) -> None:
         if self._runtime is not None:
             try:
                 self._runtime.broker.answer(ticket_id, choice)
             except KeyError:
                 pass  # ticket already timed out / resolved
+
+    def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
+        """Claims derived from the turn's tool calls (spec §10; ADR-0007
+        resolution 9 — same normalized stream events.jsonl records)."""
+        if self._runtime is None:
+            return ()
+        return self._runtime.evidence.links_for(answer_text)
 
 
 __all__ = ["RealRuntimeAdapter", "RuntimeAdapter"]

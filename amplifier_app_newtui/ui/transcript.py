@@ -32,6 +32,7 @@ and exactly one forced reflow runs when streaming ends
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
+from time import monotonic
 
 from rich.cells import cell_len
 from textual import events
@@ -54,6 +55,7 @@ from ..model.blocks import (
     LiveCommand,
     Narration,
     NeedsYouBlock,
+    NeedsYouEntry,
     PlanBlock,
     Recap,
     Segment,
@@ -67,13 +69,17 @@ from ..model.blocks import (
 )
 from ..model.evidence import EvidenceLink
 from ..model.modes import get_mode
+from .keymap import KEYMAP
+from .needs_you import NeedsYouList
 from .segments import Line, lines_markup
 
 REFLOW_DEBOUNCE_SECONDS = 0.075
 """Trailing debounce for resize reflow (per ADR-0007 / codex precedent)."""
 
-SPINNER_INTERVAL_SECONDS = 0.26
-"""Working-status spinner pulse period (DESIGN-SPEC §2 title spinner cadence)."""
+SPINNER_INTERVAL_SECONDS = 1.0
+"""Working-line glyph cadence: the mockup advances ✳/✦/✧/✦ inside the
+1000ms telemetry tick (design-v3-cohesive.html runTurn, ``secs % 4``) —
+the faster 260ms spinTimer is the §2 TITLE-bar spinner only."""
 
 TOOL_EXPAND_HINT = " · click to expand"
 """Exact collapsed-tool-line hint (DESIGN-SPEC §3)."""
@@ -83,9 +89,8 @@ FALLBACK_WIDTH = 80
 
 _SUPERSCRIPTS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
 
-# Context-bar segment colors, cycled in order conversation/tools/memory;
-# the "free" segment always renders ░ in dimmer.
-_CONTEXT_BAR_TOKENS = ("blue", "teal", "orange", "green")
+IMPROVE_HEADER = "from ledger + denial log · proposes, never applies silently"
+"""Exact ``/improve`` header suffix (mockup cmdImprove, verbatim)."""
 
 
 # --------------------------------------------------------------------------
@@ -119,25 +124,30 @@ class ToolLineToggled(Message):
         self.expanded = expanded
 
 
+class ExpandEvidenceClaim(Message):
+    """Enter on a focused evidence block (spec §10 ``enter expand``) —
+    deep-link the selected claim to the tool call that grounds it."""
+
+    def __init__(self, block_id: str, link: EvidenceLink) -> None:
+        super().__init__()
+        self.block_id = block_id
+        self.link = link
+
+
+class CloseEvidence(Message):
+    """Esc on a focused evidence block (spec §10 ``esc close``)."""
+
+    def __init__(self, block_id: str) -> None:
+        super().__init__()
+        self.block_id = block_id
+
+
 class LaneFocusChanged(Message):
     """The transcript swapped to a subagent lane (or back: ``lane_id=None``)."""
 
     def __init__(self, lane_id: str | None) -> None:
         super().__init__()
         self.lane_id = lane_id
-
-
-class NeedsYouDecision(Message):
-    """A needs-you block was activated → act on its first pending choice.
-
-    (v1 limitation: the transcript-rendered needs-you block is one click
-    target; per-chip hit testing lives in ``ui/needs_you.NeedsYouList``.)
-    """
-
-    def __init__(self, decision_id: str, answer: str) -> None:
-        super().__init__()
-        self.decision_id = decision_id
-        self.answer = answer
 
 
 # --------------------------------------------------------------------------
@@ -162,12 +172,18 @@ def _superscript(number: int) -> str:
     return "".join(_SUPERSCRIPTS[int(digit)] for digit in str(number))
 
 
-def _plural(count: int, noun: str) -> str:
-    return f"{count} {noun}{'' if count == 1 else 's'}"
-
-
 def _render_session_banner(block: SessionBanner, width: int) -> tuple[Line, ...]:
     if block.focus_note:
+        # Mockup focusLane: 'focused: <name> ' bright bold + '· subagent of
+        # …' dim — split at the first '·' of the joined banner string.
+        head, sep, tail = block.focus_note.partition("·")
+        if sep:
+            return (
+                (
+                    Segment(text=head, style_token="bright", bold=True),
+                    Segment(text=f"{sep}{tail}", style_token="dim"),
+                ),
+            )
         return ((Segment(text=block.focus_note, style_token="dim"),),)
     lines: list[Line] = [
         (Segment(text=block.headline, style_token="bright", bold=True),)
@@ -178,8 +194,9 @@ def _render_session_banner(block: SessionBanner, width: int) -> tuple[Line, ...]
 
 
 def _render_user_line(block: UserLine, width: int) -> tuple[Line, ...]:
-    # get_mode falls back to chat (dim) for non-mode badges like [delegated].
-    mode_token = get_mode(block.mode).color_token
+    # '[delegated]' (focused-subagent brief) is teal per the mockup;
+    # any other non-mode badge falls back to the chat profile (dim).
+    mode_token = "teal" if block.mode == "delegated" else get_mode(block.mode).color_token
     return (
         (
             Segment(text="❯ ", style_token="green", bold=True),
@@ -204,7 +221,9 @@ def _render_tool_line(block: ToolLine, width: int) -> tuple[Line, ...]:
         Segment(text="  ● ", style_token=summary_token),
         Segment(text=block.summary, style_token=summary_token),
     ]
-    if block.body and not block.expanded:
+    # The mockup never mutates the head on toggle: the hint stays visible
+    # while the body is expanded.
+    if block.body:
         head.append(Segment(text=TOOL_EXPAND_HINT, style_token="dimmer"))
     lines: list[Line] = [tuple(head)]
     if block.expanded:
@@ -230,7 +249,7 @@ def _render_plan(block: PlanBlock, width: int) -> tuple[Line, ...]:
     if block.read_only:
         header.append(Segment(text=" (read-only)", style_token="dim"))
     if block.telemetry is not None:
-        header.append(Segment(text=f"  {block.telemetry.suffix()}", style_token="dim"))
+        header.append(Segment(text=f" {block.telemetry.suffix()}", style_token="dim"))
     lines: list[Line] = [tuple(header)]
     for item in block.items:
         if item.state == "done":
@@ -241,9 +260,11 @@ def _render_plan(block: PlanBlock, width: int) -> tuple[Line, ...]:
                 )
             )
         elif item.state == "active":
+            # Mockup L331: the '  ■ ' prefix is plain orange (weight 400);
+            # only the step text is bright bold.
             lines.append(
                 (
-                    Segment(text="  ■ ", style_token="orange", bold=True),
+                    Segment(text="  ■ ", style_token="orange"),
                     Segment(text=item.text, style_token="bright", bold=True),
                 )
             )
@@ -272,13 +293,23 @@ def _render_blocked(block: Blocked, width: int) -> tuple[Line, ...]:
 def _render_working_status(block: WorkingStatus, width: int) -> tuple[Line, ...]:
     frame = GLYPH_SPINNER_FRAMES[block.spinner_frame % len(GLYPH_SPINNER_FRAMES)]
     inner = block.telemetry.suffix()[1:-1]  # "(8s · ↓ 3.2k tok)" -> "8s · ↓ 3.2k tok"
-    working = f"working · {inner}"
-    if block.agent_count:
-        working += f" · {_plural(block.agent_count, 'agent')}"
+    if block.agent_count > 1:
+        # Fan-out turn (mockup runAgentsTurn): 'Coordinating N agents · …'
+        # dim + 'esc to interrupt' dimmer — no 'working ·', no steer hint.
+        return (
+            (
+                Segment(text=f"{frame} ", style_token="orange"),
+                Segment(
+                    text=f"Coordinating {block.agent_count} agents · {inner} · ",
+                    style_token="dim",
+                ),
+                Segment(text=block.interrupt_hint, style_token="dimmer"),
+            ),
+        )
     return (
         (
             Segment(text=f"{frame} ", style_token="orange"),
-            Segment(text=f"{working} · ", style_token="dim"),
+            Segment(text=f"working · {inner} · 1 agent · ", style_token="dim"),
             Segment(
                 text=f"{block.interrupt_hint} · {block.steer_hint}",
                 style_token="dimmer",
@@ -345,21 +376,22 @@ def _render_evidence(block: EvidenceBlock, width: int) -> tuple[Line, ...]:
         (
             Segment(text="· ", style_token="teal"),
             Segment(text="Evidence", style_token="teal", bold=True),
-            Segment(text=f"  {block.selected + 1}/{total}", style_token="fg"),
             Segment(
-                text=" · ←/→ select · enter expand · esc close",
+                text=(
+                    f"  {block.selected + 1}/{total}"
+                    " · ←/→ select · enter expand · esc close"
+                ),
                 style_token="dimmer",
             ),
         )
     ]
     for index, link in enumerate(block.links):
-        bg = "bg-tab" if index == block.selected else None
         lines.append(
             (
-                Segment(text=f"  {_superscript(index + 1)} ", style_token="teal", bg_token=bg),
-                Segment(text=f'"{link.claim_quote}"', style_token="fg", bg_token=bg),
-                Segment(text=" → ", style_token="dim", bg_token=bg),
-                Segment(text=link.tool_ref, style_token="dim", bg_token=bg),
+                Segment(text=f"  {_superscript(index + 1)} ", style_token="teal"),
+                Segment(text=f'"{link.claim_quote}"', style_token="fg"),
+                Segment(text=" → ", style_token="dim"),
+                Segment(text=link.tool_ref, style_token="dim"),
             )
         )
     return tuple(lines)
@@ -369,8 +401,10 @@ def _render_ledger(block: LedgerBlock, width: int) -> tuple[Line, ...]:
     return (
         (
             Segment(text="· ", style_token="blue"),
-            Segment(text="Session ledger", style_token="bright", bold=True),
-            Segment(text=f"  {block.session} · {block.bundle}", style_token="dim"),
+            Segment(
+                text=f"Session ledger  {block.session} · {block.bundle}",
+                style_token="fg",
+            ),
         ),
         (
             Segment(
@@ -379,7 +413,7 @@ def _render_ledger(block: LedgerBlock, width: int) -> tuple[Line, ...]:
                     f"{block.shipped} shipped · {block.answer_only} answer-only · "
                     f"cache hit {block.cache_hit_pct}%"
                 ),
-                style_token="fg",
+                style_token="dim",
             ),
         ),
     )
@@ -389,53 +423,59 @@ def _render_context(block: ContextBlock, width: int) -> tuple[Line, ...]:
     lines: list[Line] = [
         (
             Segment(text="· ", style_token="blue"),
-            Segment(text="Context", style_token="bright", bold=True),
             Segment(
-                text=f"  {block.used_pct}% of {block.window_label}",
-                style_token="dim",
+                text=f"Context  {block.used_pct}% of {block.window_label}",
+                style_token="fg",
             ),
         )
     ]
     if block.segments:
-        bar: list[Segment] = [Segment(text="  ", style_token="dimmer")]
-        color_index = 0
-        for label, cells in block.segments:
-            if cells <= 0:
-                continue
-            # Labels carry the legend value ("free 116k"); the first word
-            # is the bucket name — free renders ░, used buckets █.
-            if label.split(" ", 1)[0] == "free":
-                bar.append(Segment(text="░" * cells, style_token="dimmer"))
-            else:
-                token = _CONTEXT_BAR_TOKENS[color_index % len(_CONTEXT_BAR_TOKENS)]
-                color_index += 1
-                bar.append(Segment(text="█" * cells, style_token=token))  # type: ignore[arg-type]
-        lines.append(tuple(bar))
+        # Mockup cmdContext: ONE dim line — '  ████████░░░░  <legend>'.
+        # Labels carry the legend value ("free 116k"); the first word is
+        # the bucket name — free renders ░, used buckets █.
+        bar = "".join(
+            ("░" if label.split(" ", 1)[0] == "free" else "█") * cells
+            for label, cells in block.segments
+            if cells > 0
+        )
         legend = " · ".join(label for label, _cells in block.segments)
-        lines.append((Segment(text=f"  {legend}", style_token="dim"),))
+        lines.append((Segment(text=f"  {bar}  {legend}", style_token="dim"),))
     return tuple(lines)
 
 
+def _needs_you_question_segments(entry: NeedsYouEntry) -> list[Segment]:
+    """The fg question text, with the entry's highlight run in teal
+    (mockup: 'Push to fork ' fg + 'mj/waypoint' teal + ' instead?' fg)."""
+    question = entry.question
+    if entry.highlight and entry.highlight in question:
+        before, _, after = question.partition(entry.highlight)
+        segments: list[Segment] = []
+        if before:
+            segments.append(Segment(text=before, style_token="fg"))
+        segments.append(Segment(text=entry.highlight, style_token="teal"))
+        if after:
+            segments.append(Segment(text=after, style_token="fg"))
+        return segments
+    return [Segment(text=question, style_token="fg")]
+
+
 def _render_needs_you(block: NeedsYouBlock, width: int) -> tuple[Line, ...]:
+    # Header is ONE plain orange run, count never pluralized (mockup
+    # showNeedsYou: 'Needs you  N deferred decision').
     count = len(block.items)
     lines: list[Line] = [
         (
             Segment(text="· ", style_token="orange"),
-            Segment(text="Needs you", style_token="orange", bold=True),
-            Segment(
-                text=f"  {_plural(count, 'deferred decision')}", style_token="fg"
-            ),
+            Segment(text=f"Needs you  {count} deferred decision", style_token="orange"),
         )
     ]
     for index, entry in enumerate(block.items, start=1):
-        row: list[Segment] = [
-            Segment(text=f"  {index}. ", style_token="orange"),
-            Segment(text=entry.question, style_token="fg"),
-        ]
+        row: list[Segment] = [Segment(text=f"  {index} ", style_token="orange")]
+        row.extend(_needs_you_question_segments(entry))
         if entry.reason:
             row.append(Segment(text=f" · {entry.reason}", style_token="dim"))
         for choice in entry.choices:
-            row.append(Segment(text=" ", style_token="fg"))
+            row.append(Segment(text="  ", style_token="fg"))
             row.append(
                 Segment(
                     text=f"[{choice.label}]",
@@ -449,6 +489,13 @@ def _render_needs_you(block: NeedsYouBlock, width: int) -> tuple[Line, ...]:
 
 def _render_doctor(block: DoctorBlock, width: int) -> tuple[Line, ...]:
     lines: list[Line] = []
+    if block.headline:
+        lines.append(
+            (
+                Segment(text="· ", style_token="blue"),
+                Segment(text=f"Doctor  {block.headline}", style_token="fg"),
+            )
+        )
     for healthy in block.healthy:
         lines.append(
             (
@@ -459,8 +506,8 @@ def _render_doctor(block: DoctorBlock, width: int) -> tuple[Line, ...]:
     for finding in block.findings:
         lines.append(
             (
-                Segment(text=f"  {finding.number}. ", style_token="orange"),
-                Segment(text=finding.text, style_token="orange"),
+                Segment(text=f"  {finding.number} ", style_token="orange"),
+                Segment(text=finding.text, style_token="dim"),
             )
         )
     return tuple(lines)
@@ -470,32 +517,37 @@ def _render_improve(block: ImproveBlock, width: int) -> tuple[Line, ...]:
     lines: list[Line] = [
         (
             Segment(text="· ", style_token="blue"),
-            Segment(text="Improve", style_token="bright", bold=True),
-            Segment(
-                text=f"  {_plural(len(block.proposals), 'proposal')}",
-                style_token="dim",
-            ),
+            Segment(text=f"Improve  {IMPROVE_HEADER}", style_token="fg"),
         )
     ]
     for index, proposal in enumerate(block.proposals, start=1):
-        lines.append(
-            (
-                Segment(text=f"  {index}. ", style_token="teal"),
-                Segment(text=proposal.title, style_token="fg"),
-                Segment(text=f" · {proposal.rationale}", style_token="dim"),
+        if proposal.action:
+            # 'allowlist:' rows name the action once, in green (mockup
+            # cmdImprove: dim '  1 allowlist: ' + green action + dim tail).
+            lines.append(
+                (
+                    Segment(text=f"  {index} {proposal.title} ", style_token="dim"),
+                    Segment(text=proposal.action, style_token="green"),
+                    Segment(text=f" {proposal.rationale}", style_token="dim"),
+                )
             )
-        )
+        else:
+            lines.append(
+                (
+                    Segment(
+                        text=f"  {index} {proposal.title} {proposal.rationale}",
+                        style_token="dim",
+                    ),
+                )
+            )
     return tuple(lines)
 
 
 def _render_brainstorm_idea(block: BrainstormIdea, width: int) -> tuple[Line, ...]:
-    marker = f"  {block.number}. " if block.number > 0 else "  · "
-    return (
-        (
-            Segment(text=marker, style_token="teal"),
-            Segment(text=block.text, style_token="fg"),
-        ),
-    )
+    # Mockup brainstorm ideas are single fg runs: '  1 Ambient tab color: …'
+    # (number + space, no period, no accent color).
+    prefix = f"  {block.number} " if block.number > 0 else "  "
+    return ((Segment(text=f"{prefix}{block.text}", style_token="fg"),),)
 
 
 _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
@@ -541,14 +593,25 @@ def render_block_markup(block: TranscriptBlock, width: int) -> str:
 # Widgets
 # --------------------------------------------------------------------------
 
+_EVIDENCE_BINDINGS: tuple = tuple(
+    binding for binding in KEYMAP if binding.contexts == frozenset({"evidence"})
+)
+"""Evidence-context chords sourced from the keymap table (single source:
+the keys that work and the keys the header advertises can never drift)."""
+
+_EVIDENCE_ACTIONS = frozenset(binding.action for binding in _EVIDENCE_BINDINGS)
+
 
 class BlockWidget(Static):
     """One transcript block as a widget (ADR-0007 open-q 6: widget-per-block).
 
     State is the block itself; the widget re-derives its content from
     ``render_block(block, width)`` on every repaint. In-place mutation
-    (tool expand/collapse, live plan updates, per-second working text)
-    happens via :meth:`update_block` keyed by the block's stable id.
+    (tool expand/collapse, live plan updates, working-line telemetry)
+    happens via :meth:`update_block` keyed by the block's stable id; the
+    working line's own 1s timer pulses the spinner AND keeps its
+    wall-clock seconds counting between event-driven updates (mockup
+    1000ms tick — spec §3 "Updates every second", §11 live counting).
     """
 
     DEFAULT_CSS = """
@@ -558,9 +621,24 @@ class BlockWidget(Static):
     BlockWidget.kind-user-line {
         margin-top: 1;
     }
+    /* Mockup rhythm: the turn rule carries the largest vertical margin
+       of any block (14px top vs the user line's 10px). */
+    BlockWidget.kind-turn-rule {
+        margin-top: 1;
+    }
     """
 
-    BINDINGS = [Binding("enter", "activate", "activate", show=False)]
+    BINDINGS = [
+        Binding("enter", "activate", "activate", show=False),
+        # Evidence-context chords (←/→ select · enter expand · esc close,
+        # spec §10) from the keymap table; :meth:`check_action` gates them
+        # to focused evidence blocks so they never leak to other kinds.
+        *(
+            Binding(key, binding.action, binding.label, show=False)
+            for binding in _EVIDENCE_BINDINGS
+            for key in binding.keys
+        ),
+    ]
 
     def __init__(
         self,
@@ -574,9 +652,22 @@ class BlockWidget(Static):
         self._reflow_router = reflow_router
         self._spinner_offset = 0
         self._spin_timer: Timer | None = None
+        # Wall-clock anchor for the working line's seconds (spec §3
+        # "Updates every second" / §11 live counting — mockup 1000ms tick):
+        # event-driven replaces reset it; between events (silent tool
+        # calls, open approval bars) the displayed secs keep advancing.
+        self._telemetry_anchor: float | None = (
+            monotonic() if block.kind == "working_status" else None
+        )
         self.add_class(f"kind-{block.kind.replace('_', '-')}")
-        if block.kind == "tool_line":
+        if block.kind in ("tool_line", "evidence"):
+            # Evidence blocks take keyboard focus so the header's
+            # advertised keys work (keymap "evidence" context, spec §10).
             self.can_focus = True
+        elif block.kind == "turn_rule":
+            # Mockup line 46: the rule row advertises its rewind anchor
+            # via a hover title (verbatim).
+            self.tooltip = "turn rule · click to open rewind picker"
 
     @property
     def block(self) -> TranscriptBlock:
@@ -595,7 +686,7 @@ class BlockWidget(Static):
             self._spin_timer = None
 
     def _advance_spinner(self) -> None:
-        """Pulse ✳/✦/✧ between per-second block replacements."""
+        """Pulse ✳/✦/✧ (and tick wall-clock secs) between event replaces."""
         self._spinner_offset += 1
         self.repaint_block()
 
@@ -606,6 +697,9 @@ class BlockWidget(Static):
                 f"block id mismatch: widget has {self._block.id!r}, got {block.id!r}"
             )
         self._block = block
+        if block.kind == "working_status":
+            # Fresh event telemetry: re-anchor the wall-clock secs tick.
+            self._telemetry_anchor = monotonic()
         self.repaint_block()
 
     def repaint_block(self) -> None:
@@ -613,10 +707,21 @@ class BlockWidget(Static):
         width = self.size.width or FALLBACK_WIDTH
         self._painted_width = width
         block = self._block
-        if block.kind == "working_status" and self._spinner_offset:
-            block = block.model_copy(
-                update={"spinner_frame": block.spinner_frame + self._spinner_offset}
-            )
+        if block.kind == "working_status":
+            update: dict[str, object] = {}
+            if self._spinner_offset:
+                update["spinner_frame"] = block.spinner_frame + self._spinner_offset
+            if self._telemetry_anchor is not None:
+                # Whole wall-clock seconds since the last event-driven
+                # replace — the working line keeps counting while the
+                # runtime is silent (mockup setInterval secs++, spec §11).
+                elapsed = int(monotonic() - self._telemetry_anchor)
+                if elapsed > 0:
+                    update["telemetry"] = block.telemetry.model_copy(
+                        update={"secs": block.telemetry.secs + elapsed}
+                    )
+            if update:
+                block = block.model_copy(update=update)
         self.update(render_block_markup(block, width))
 
     def on_resize(self, event: events.Resize) -> None:
@@ -630,8 +735,42 @@ class BlockWidget(Static):
     def on_click(self, event: events.Click) -> None:
         self._activate()
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Gate kind-specific bindings: evidence chords fire only on a
+        focused evidence block; enter there means expand, not activate."""
+        if action in _EVIDENCE_ACTIONS:
+            return self._block.kind == "evidence"
+        if action == "activate":
+            return self._block.kind != "evidence"
+        return True
+
     def action_activate(self) -> None:
         self._activate()
+
+    def action_evidence_prev(self) -> None:
+        self._move_evidence_selection(-1)
+
+    def action_evidence_next(self) -> None:
+        self._move_evidence_selection(1)
+
+    def action_evidence_expand(self) -> None:
+        block = self._block
+        if block.kind == "evidence" and block.links:
+            self.post_message(ExpandEvidenceClaim(block.id, block.links[block.selected]))
+
+    def action_close_evidence(self) -> None:
+        if self._block.kind == "evidence":
+            self.post_message(CloseEvidence(self._block.id))
+
+    def _move_evidence_selection(self, delta: int) -> None:
+        """←/→ move the highlighted claim; the header 1/N tracks it."""
+        block = self._block
+        if block.kind != "evidence" or not block.links:
+            return
+        selected = max(0, min(len(block.links) - 1, block.selected + delta))
+        if selected != block.selected:
+            self._block = block.model_copy(update={"selected": selected})
+            self.repaint_block()
 
     def _activate(self) -> None:
         block = self._block
@@ -640,14 +779,67 @@ class BlockWidget(Static):
             self._block = toggled
             self.repaint_block()
             self.post_message(ToolLineToggled(toggled.id, toggled.expanded))
-        elif block.kind == "answer":
+        elif block.kind == "answer" and block.clickable:
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
         elif block.kind == "turn_rule":
             self.post_message(OpenRewind(block.checkpoint_id))
-        elif block.kind == "needs_you" and block.items:
-            entry = block.items[0]
-            if entry.choices:
-                self.post_message(NeedsYouDecision(entry.decision_id, entry.choices[0].answer))
+
+
+class NeedsYouBlockWidget(NeedsYouList):
+    """A needs-you block mounted in the transcript flow (DESIGN-SPEC §7).
+
+    The mockup attaches the click handler *per decision row*
+    (design-v3-cohesive.html:286-292) — acting on one decision applies
+    THAT decision, so the transcript mounts the per-row hit-testing
+    :class:`~amplifier_app_newtui.ui.needs_you.NeedsYouList` instead of a
+    single flat :class:`BlockWidget`. Chip/row clicks post
+    :class:`NeedsYouList.DecisionTaken`; the header is not a click target.
+    """
+
+    DEFAULT_CSS = """
+    NeedsYouBlockWidget {
+        /* Mockup showNeedsYou header: mt 10 — the user-line gap. */
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, block: NeedsYouBlock) -> None:
+        super().__init__(block, id=f"block-{block.id}")
+        self._needs_you_block = block
+
+    @property
+    def block(self) -> NeedsYouBlock:
+        return self._needs_you_block
+
+    def update_block(self, block: TranscriptBlock) -> None:
+        """Replace this widget's block in place (same stable id)."""
+        if block.id != self._needs_you_block.id:
+            raise ValueError(
+                f"block id mismatch: widget has {self._needs_you_block.id!r},"
+                f" got {block.id!r}"
+            )
+        if not isinstance(block, NeedsYouBlock):  # pragma: no cover - defensive
+            raise TypeError(f"needs_you widget got block kind {block.kind!r}")
+        self._needs_you_block = block
+        super().update_block(block)
+
+    def repaint_block(self) -> None:
+        """Width-pure rows re-layout themselves; nothing to re-derive."""
+
+
+TranscriptWidget = BlockWidget | NeedsYouBlockWidget
+"""One mounted transcript block (needs-you blocks get per-row widgets)."""
+
+
+def build_block_widget(
+    block: TranscriptBlock,
+    *,
+    reflow_router: Callable[[BlockWidget], bool] | None = None,
+) -> TranscriptWidget:
+    """The widget for one block: per-row needs-you list, else BlockWidget."""
+    if isinstance(block, NeedsYouBlock):
+        return NeedsYouBlockWidget(block)
+    return BlockWidget(block, reflow_router=reflow_router)
 
 
 class TranscriptView(VerticalScroll):
@@ -659,8 +851,10 @@ class TranscriptView(VerticalScroll):
       :meth:`remove_block` address blocks by stable id.
     - **Lane focus** (spec §8): :meth:`focus_lane` swaps the visible block
       list to a subagent's transcript; :meth:`restore_main` (the app's esc
-      handler) swaps back. While focused, append/replace address the
-      *visible* (subagent) list.
+      handler) swaps back. While focused, append/replace/remove address
+      the *stashed parent* list (mockup: ``this.lines`` keeps accumulating
+      separately from ``focusLines``), so a turn that keeps running during
+      focus is fully up to date when esc restores the parent transcript.
     - **Resize reflow**: 75ms trailing debounce; deferred during streaming
       with one forced reflow at :meth:`set_streaming` (False).
     """
@@ -670,10 +864,13 @@ class TranscriptView(VerticalScroll):
         scrollbar-size-vertical: 1;
     }
     """
+    # Scrollbar COLORS are set from the app stylesheet (ui/app.py) with the
+    # §1 token variables — DEFAULT_CSS here must stay token-free so the
+    # widget mounts in hosts that never registered the spec themes (tests).
 
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002
         super().__init__(id=id)
-        self._widgets: dict[str, BlockWidget] = {}
+        self._widgets: dict[str, TranscriptWidget] = {}
         self._order: list[str] = []
         self._follow = True
         self._focused_lane: str | None = None
@@ -698,11 +895,21 @@ class TranscriptView(VerticalScroll):
         widget = self._widgets.get(block_id)
         return widget.block if widget is not None else None
 
-    def append(self, block: TranscriptBlock) -> BlockWidget:
-        """Mount a new block at the end (follows the tail when anchored)."""
+    def append(self, block: TranscriptBlock) -> TranscriptWidget | None:
+        """Mount a new block at the end (follows the tail when anchored).
+
+        While a lane is focused the append lands in the stashed *parent*
+        list (spec §8: the parent turn keeps accumulating during focus)
+        and returns ``None`` — nothing is mounted until esc restores.
+        """
+        if self._focused_lane is not None and self._main_stash is not None:
+            if any(stashed.id == block.id for stashed in self._main_stash):
+                raise ValueError(f"duplicate block id: {block.id!r}")
+            self._main_stash.append(block)
+            return None
         if block.id in self._widgets:
             raise ValueError(f"duplicate block id: {block.id!r}")
-        widget = BlockWidget(block, reflow_router=self._route_reflow)
+        widget = build_block_widget(block, reflow_router=self._route_reflow)
         self._widgets[block.id] = widget
         self._order.append(block.id)
         self.mount(widget)
@@ -711,14 +918,35 @@ class TranscriptView(VerticalScroll):
         return widget
 
     def replace(self, block: TranscriptBlock) -> None:
-        """Swap a block's content in place, keyed by its stable id."""
+        """Swap a block's content in place, keyed by its stable id.
+
+        While a lane is focused the replace addresses the stashed parent
+        list — the focused child transcript is a read-only snapshot.
+        """
+        if self._focused_lane is not None and self._main_stash is not None:
+            for index, stashed in enumerate(self._main_stash):
+                if stashed.id == block.id:
+                    self._main_stash[index] = block
+                    return
+            raise KeyError(f"unknown block id: {block.id!r}")
         widget = self._widgets.get(block.id)
         if widget is None:
             raise KeyError(f"unknown block id: {block.id!r}")
         widget.update_block(block)
 
     def remove_block(self, block_id: str) -> None:
-        """Unmount a block (e.g. the working status line at turn end)."""
+        """Unmount a block (e.g. the working status line at turn end).
+
+        While a lane is focused the removal addresses the stashed parent
+        list, so e.g. the working line dropped at turn end never survives
+        into the restored parent transcript.
+        """
+        if self._focused_lane is not None and self._main_stash is not None:
+            for index, stashed in enumerate(self._main_stash):
+                if stashed.id == block_id:
+                    del self._main_stash[index]
+                    return
+            raise KeyError(f"unknown block id: {block_id!r}")
         widget = self._widgets.pop(block_id, None)
         if widget is None:
             raise KeyError(f"unknown block id: {block_id!r}")
@@ -772,9 +1000,9 @@ class TranscriptView(VerticalScroll):
         await self.remove_children()
         self._widgets.clear()
         self._order.clear()
-        widgets: list[BlockWidget] = []
+        widgets: list[TranscriptWidget] = []
         for block in blocks:
-            widget = BlockWidget(block, reflow_router=self._route_reflow)
+            widget = build_block_widget(block, reflow_router=self._route_reflow)
             self._widgets[block.id] = widget
             self._order.append(block.id)
             widgets.append(widget)
@@ -849,12 +1077,16 @@ __all__ = [
     "SPINNER_INTERVAL_SECONDS",
     "TOOL_EXPAND_HINT",
     "BlockWidget",
+    "CloseEvidence",
+    "ExpandEvidenceClaim",
     "LaneFocusChanged",
-    "NeedsYouDecision",
+    "NeedsYouBlockWidget",
     "OpenRewind",
     "ShowEvidence",
     "ToolLineToggled",
     "TranscriptView",
+    "TranscriptWidget",
+    "build_block_widget",
     "render_block",
     "render_block_markup",
 ]

@@ -10,12 +10,15 @@ nothing here blocks the engine.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import Any
 
 from amplifier_core import HookResult
 
 from .events import UIEvent, normalize
+
+logger = logging.getLogger(__name__)
 
 CONSUMED_EVENTS: tuple[str, ...] = (
     # Channel A — live deltas
@@ -66,15 +69,30 @@ class QueueBridge:
 
     EVENTS = CONSUMED_EVENTS
 
-    def __init__(self, queue: asyncio.Queue[UIEvent] | None = None) -> None:
+    def __init__(
+        self,
+        queue: asyncio.Queue[UIEvent] | None = None,
+        *,
+        tap: Callable[[UIEvent], None] | None = None,
+    ) -> None:
         self.queue: asyncio.Queue[UIEvent] = queue if queue is not None else asyncio.Queue()
         self.dropped = 0
         """Events lost to a full (bounded) queue — should stay 0 with the
         default unbounded queue; surfaced for tests/diagnostics."""
+        self._tap = tap
+        """Optional synchronous observer of every emitted event — the
+        kernel-side seam for evidence derivation / event logging
+        (ADR-0007 resolution 9). Best-effort: a tap failure never blocks
+        the queue."""
 
     def emit(self, event: UIEvent) -> None:
         """Push one already-typed event (used by DisplaySystem notices and
         app-synthesized events)."""
+        if self._tap is not None:
+            try:
+                self._tap(event)
+            except Exception:  # noqa: BLE001 — taps are best-effort observers
+                logger.warning("event tap failed", exc_info=True)
         try:
             self.queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -87,7 +105,7 @@ class QueueBridge:
         return HookResult(action="continue")
 
     def register_hooks(self, hooks: Any, *, priority: int = 10) -> Callable[[], None]:
-        unregister_callbacks: list[Callable[[], None]] = []
+        unregister_callbacks: list[Callable[..., object]] = []
         for event in self.EVENTS:
             unregister = hooks.register(
                 event,

@@ -49,11 +49,11 @@ Ground truth for all of these: `docs/design-v3-cohesive.html` + DESIGN-SPEC chec
 
 ## Contract observations (no change made)
 
-- `MODE_CYCLE` is chat → build → plan → auto → brainstorm per ADR-0005 (the
-  mockup's MODES array is chat/plan/brainstorm/build/auto). ADR wins per the
-  build instructions; flow tests assert the ADR order. The §4 "plan → build
-  handoff" is exercised via `/mode build` (direct plan→build transition),
-  which fires the `plan handed to build` notice.
+- `MODE_CYCLE` is chat → plan → brainstorm → build → auto, matching the
+  mockup's MODES array (executable spec); the ADR-0005 amendment text was
+  corrected to the same order. The §4 "plan → build handoff" is exercised
+  via `/mode build` (direct plan→build transition), which fires the
+  `plan handed to build` notice.
 - DemoRuntime has no interrupt path (§11): Esc-while-running shows the
   `turn interrupted · context saved` notice but the scripted turn plays on.
   Flow tests only assert the §5 esc-chain priority, not §11 semantics.

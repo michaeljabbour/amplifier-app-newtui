@@ -9,7 +9,10 @@ reflow with streaming deferral.
 
 from __future__ import annotations
 
+from typing import TypeVar, cast
+
 import pytest
+from textual import events
 from textual.app import App, ComposeResult
 
 from amplifier_app_newtui.model.blocks import (
@@ -18,12 +21,14 @@ from amplifier_app_newtui.model.blocks import (
     Segment,
     SessionBanner,
     ToolLine,
+    TranscriptBlock,
     TurnRule,
     UserLine,
 )
 from amplifier_app_newtui.model.evidence import EvidenceLink
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 from amplifier_app_newtui.ui.transcript import (
+    BlockWidget,
     LaneFocusChanged,
     OpenRewind,
     ShowEvidence,
@@ -66,6 +71,23 @@ def _view(app: Harness) -> TranscriptView:
     return app.query_one("#transcript", TranscriptView)
 
 
+BlockT = TypeVar("BlockT")
+
+
+def _block(view: TranscriptView, block_id: str, kind: type[BlockT]) -> BlockT:
+    """The stored block, asserted to be the expected kind (type-narrowed)."""
+    block = view.get_block(block_id)
+    assert isinstance(block, kind)
+    return block
+
+
+def _mounted(view: TranscriptView, block: TranscriptBlock) -> BlockWidget:
+    """Append a block and return its mounted flat BlockWidget."""
+    widget = view.append(block)
+    assert isinstance(widget, BlockWidget)
+    return widget
+
+
 TOOL = ToolLine(
     id="b2",
     summary="Ran 2 shell commands",
@@ -86,7 +108,7 @@ async def test_append_replace_remove_keyed_by_block_id() -> None:
 
         view.replace(Narration(id="b2", text="revised narration"))
         await pilot.pause()
-        assert view.get_block("b2").text == "revised narration"
+        assert _block(view, "b2", Narration).text == "revised narration"
         assert view.block_ids == ("b1", "b2")  # replace is in place
 
         view.remove_block("b1")
@@ -103,18 +125,18 @@ async def test_tool_line_click_toggles_body_in_place() -> None:
     app = Harness()
     async with app.run_test(size=(80, 24)) as pilot:
         view = _view(app)
-        widget = view.append(TOOL)
+        widget = _mounted(view, TOOL)
         await pilot.pause()
-        assert view.get_block("b2").expanded is False
+        assert _block(view, "b2", ToolLine).expanded is False
 
         await pilot.click(widget)
-        assert view.get_block("b2").expanded is True
+        assert _block(view, "b2", ToolLine).expanded is True
         assert app.toggles[-1].block_id == "b2" and app.toggles[-1].expanded is True
         # Same widget, same block id — toggled IN PLACE.
         assert view.block_ids == ("b2",)
 
         await pilot.click(widget)
-        assert view.get_block("b2").expanded is False
+        assert _block(view, "b2", ToolLine).expanded is False
         assert app.toggles[-1].expanded is False
 
 
@@ -123,11 +145,11 @@ async def test_tool_line_enter_toggles_when_focused() -> None:
     app = Harness()
     async with app.run_test(size=(80, 24)) as pilot:
         view = _view(app)
-        widget = view.append(TOOL)
+        widget = _mounted(view, TOOL)
         await pilot.pause()
         widget.focus()
         await pilot.press("enter")
-        assert view.get_block("b2").expanded is True
+        assert _block(view, "b2", ToolLine).expanded is True
         assert app.toggles[-1].expanded is True
 
 
@@ -145,6 +167,39 @@ async def test_answer_click_posts_show_evidence() -> None:
         assert len(app.evidence) == 1
         assert app.evidence[0].block_id == "b3"
         assert app.evidence[0].links == links
+
+
+@pytest.mark.asyncio
+async def test_inert_answer_lines_ignore_clicks() -> None:
+    """Mockup click: null lines (agent tree rows, ✳ recap-shaped lines)
+    are NOT evidence click targets — clicking them posts nothing."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        tree = view.append(
+            Answer(
+                id="b5",
+                spans=(
+                    Segment(text="  ├─ ✔ ", style_token="green"),
+                    Segment(text="researcher · done", style_token="dim"),
+                ),
+                clickable=False,
+            )
+        )
+        recap = view.append(
+            Answer(
+                id="b6",
+                spans=(
+                    Segment(text="✳ ", style_token="dimmer"),
+                    Segment(text="Plan ready.", style_token="dim", italic=True),
+                ),
+                clickable=False,
+            )
+        )
+        await pilot.pause()
+        await pilot.click(tree)
+        await pilot.click(recap)
+        assert app.evidence == []
 
 
 @pytest.mark.asyncio
@@ -186,15 +241,22 @@ async def test_lane_focus_swaps_block_list_and_restore_brings_main_back() -> Non
         assert view.block_ids == ("c1", "c2")
         assert app.lane_changes[-1].lane_id == "lane-1"
 
-        # Updates while focused address the visible (subagent) list.
-        view.replace(UserLine(id="c2", text="write MORE tests", mode="delegated"))
-        assert view.get_block("c2").text == "write MORE tests"
+        # Mutations while focused address the stashed PARENT list (spec §8:
+        # the parent turn keeps accumulating during focus; the child view
+        # is a read-only snapshot) — mockup this.lines vs focusLines.
+        view.replace(Narration(id="b2", text="agents finishing up"))
+        view.append(Narration(id="b3", text="final answer landed"))
+        view.remove_block("b1")
+        with pytest.raises(KeyError):
+            view.replace(UserLine(id="c2", text="child ids are not addressable", mode="delegated"))
+        assert view.block_ids == ("c1", "c2")  # visible child list untouched
 
         await view.restore_main()  # the app's esc handler
         await pilot.pause()
         assert view.focused_lane is None
-        assert view.block_ids == ("b1", "b2")
-        assert view.get_block("b1").text == "parent turn"
+        assert view.block_ids == ("b2", "b3")
+        assert _block(view, "b2", Narration).text == "agents finishing up"
+        assert _block(view, "b3", Narration).text == "final answer landed"
         assert app.lane_changes[-1].lane_id is None
 
 
@@ -212,7 +274,8 @@ async def test_tail_follow_sticks_to_bottom_until_user_scrolls_up() -> None:
 
         # User scrolls up: follow disengages, appends stop moving the view.
         view.scroll_to(y=0, animate=False)
-        view.on_mouse_scroll_up(None)  # the user-scroll signal
+        # The handlers never read the event — a cast None stands in.
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
         await pilot.pause()
         assert view.follow is False
         view.append(Narration(id="b99", text="new line while scrolled up"))
@@ -222,7 +285,7 @@ async def test_tail_follow_sticks_to_bottom_until_user_scrolls_up() -> None:
 
         # Scrolling back to the bottom re-arms following.
         view.scroll_end(animate=False)
-        view.on_mouse_scroll_down(None)
+        view.on_mouse_scroll_down(cast(events.MouseScrollDown, None))
         await pilot.pause()
         assert view.follow is True
 
@@ -232,8 +295,9 @@ async def test_resize_reflow_debounced_and_width_pure() -> None:
     app = Harness()
     async with app.run_test(size=(100, 24)) as pilot:
         view = _view(app)
-        widget = view.append(
-            TurnRule(id="b1", checkpoint_id="t1", label="1s · 10 tok · $0.01 · answer")
+        widget = _mounted(
+            view,
+            TurnRule(id="b1", checkpoint_id="t1", label="1s · 10 tok · $0.01 · answer"),
         )
         await pilot.pause()
         first_width = widget._painted_width
@@ -250,8 +314,9 @@ async def test_resize_reflow_deferred_while_streaming_then_forced_once() -> None
     app = Harness()
     async with app.run_test(size=(100, 24)) as pilot:
         view = _view(app)
-        widget = view.append(
-            TurnRule(id="b1", checkpoint_id="t1", label="1s · 10 tok · $0.01 · answer")
+        widget = _mounted(
+            view,
+            TurnRule(id="b1", checkpoint_id="t1", label="1s · 10 tok · $0.01 · answer"),
         )
         await pilot.pause()
         streamed_width = widget._painted_width
@@ -274,16 +339,22 @@ async def test_working_status_widget_pulses_spinner() -> None:
 
     from amplifier_app_newtui.model.blocks import WorkingStatus
     from amplifier_app_newtui.model.turn import TurnTelemetry
+    from amplifier_app_newtui.ui.transcript import SPINNER_INTERVAL_SECONDS
+
+    # Mockup runTurn: the working-line glyph advances once per second
+    # inside the 1000ms tick (the 260ms spinTimer is the title bar's).
+    assert SPINNER_INTERVAL_SECONDS == pytest.approx(1.0)
 
     app = Harness()
     async with app.run_test(size=(80, 24)) as pilot:
         view = _view(app)
-        widget = view.append(
+        widget = _mounted(
+            view,
             WorkingStatus(
                 id="b1", telemetry=TurnTelemetry(secs=1, tokens_down=100), agent_count=0
-            )
+            ),
         )
-        await pilot.pause(0.6)  # > one 260ms spinner interval
+        await pilot.pause(SPINNER_INTERVAL_SECONDS + 0.2)  # > one 1s glyph interval
         assert widget._spinner_offset >= 1
         # Removing the block (turn end) also stops the pulse timer.
         view.remove_block("b1")

@@ -18,8 +18,10 @@ parent · esc back`` tail.
 
 from __future__ import annotations
 
+from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
+from textual import events
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Static
@@ -103,7 +105,8 @@ class _ChoiceChip(Static):
         self.entry = entry
         self.choice = choice
 
-    def on_click(self) -> None:
+    def on_click(self, event: events.Click) -> None:
+        event.stop()  # the row would otherwise re-fire its first choice
         self.post_message(
             NeedsYouList.DecisionTaken(self.entry.decision_id, self.choice.answer)
         )
@@ -130,7 +133,18 @@ class _DecisionText(Static):
         text.append(
             decision_number_text(self.number), style=Style(color=tokens.get("orange"))
         )
-        text.append(self.entry.question, style=Style(color=tokens.get("fg")))
+        question = self.entry.question
+        highlight = self.entry.highlight
+        if highlight and highlight in question:
+            # Mockup: 'Push to fork ' fg + 'mj/waypoint' teal + ' instead?' fg.
+            before, _, after = question.partition(highlight)
+            if before:
+                text.append(before, style=Style(color=tokens.get("fg")))
+            text.append(highlight, style=Style(color=tokens.get("teal")))
+            if after:
+                text.append(after, style=Style(color=tokens.get("fg")))
+        else:
+            text.append(question, style=Style(color=tokens.get("fg")))
         if self.entry.reason:
             text.append(f" · {self.entry.reason}", style=Style(color=tokens.get("dim")))
         return text
@@ -144,6 +158,8 @@ class _DecisionRow(Horizontal):
         width: 100%;
         height: auto;
     }
+    _DecisionRow.-wrapped { layout: vertical; }
+    _DecisionRow.-wrapped _DecisionText { width: 100%; height: auto; }
     """
 
     def __init__(self, entry: NeedsYouEntry, number: int) -> None:
@@ -155,6 +171,40 @@ class _DecisionRow(Horizontal):
         yield _DecisionText(self.entry, self.number)
         for index, choice in enumerate(self.entry.choices):
             yield _ChoiceChip(self.entry, choice, index)
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_wrap()
+
+    def _update_wrap(self) -> None:
+        """Drop the chips onto their own rows when one row can't fit all.
+
+        Mirrors the mockup's showNeedsYou row (normal HTML flow — it
+        wraps, so chips never clip) and the ApprovalBar ``-wrapped``
+        treatment: every chip stays visible and clickable at narrow
+        terminal widths (spec §7 inline actionable chips, §12 mouse
+        click targets).
+        """
+        width = self.container_size.width
+        if width <= 0:
+            return
+        needed = cell_len(decision_number_text(self.number)) + cell_len(self.entry.question)
+        if self.entry.reason:
+            needed += cell_len(f" · {self.entry.reason}")
+        # each chip carries ``margin-left: 2``
+        needed += sum(cell_len(chip_text(choice)) + 2 for choice in self.entry.choices)
+        self.set_class(needed > width, "-wrapped")
+
+    def on_click(self, event: events.Click) -> None:
+        # Mockup showNeedsYou (html:286-292): the click handler is attached
+        # per decision row — clicking anywhere on the row acts on THIS
+        # decision (its first choice); the header is not a click target.
+        event.stop()
+        if self.entry.choices:
+            self.post_message(
+                NeedsYouList.DecisionTaken(
+                    self.entry.decision_id, self.entry.choices[0].answer
+                )
+            )
 
 
 class NeedsYouList(Vertical):

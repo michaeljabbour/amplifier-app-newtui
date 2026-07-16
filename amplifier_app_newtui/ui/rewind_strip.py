@@ -84,7 +84,10 @@ class RewindStrip(Horizontal):
         Binding("left", "prev", "‹ ›", show=False),
         Binding("right", "next", "‹ ›", show=False),
         Binding("enter", "fork", "enter fork", show=False),
-        Binding("escape", "close", "esc close", show=False),
+        # No local escape binding: Esc must bubble to the app so it resolves
+        # via keymap.ESC_CHAIN (spec §5 — lane-focus/palette close before
+        # rewind even while this strip holds keyboard focus). The chain
+        # calls ``action_close`` when the rewind step is reached.
     ]
 
     class ForkRequested(Message):
@@ -96,6 +99,20 @@ class RewindStrip(Horizontal):
 
     class Closed(Message):
         """Esc pressed / ``esc close`` clicked."""
+
+    class TypeThrough(Message):
+        """A printable key pressed while the strip held focus.
+
+        Mockup ground truth (document-level keydown, composer input keeps
+        focus while ``rewindOpen``): typing is never swallowed by the
+        rewind picker — the app forwards the character to the composer,
+        so ``/`` opens the palette live-filtered and the text lands in
+        the input (spec §5).
+        """
+
+        def __init__(self, character: str) -> None:
+            self.character = character
+            super().__init__()
 
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002
         super().__init__(id=id)
@@ -149,6 +166,22 @@ class RewindStrip(Horizontal):
         self.display = True
         self.focus()
 
+    def sync_checkpoints(self, checkpoints: Sequence[Checkpoint]) -> None:
+        """Refresh the open picker's list in place (mockup openRewind /
+        rewindNext read the live ``this.checkpoints`` array — a checkpoint
+        cut while the picker is open is immediately navigable with ›).
+
+        The cursor position is preserved (clamped); focus is untouched.
+        """
+        if not self.display:
+            return
+        self._checkpoints = tuple(checkpoints)
+        if not self._checkpoints:
+            self.display = False
+            return
+        self._index = max(0, min(len(self._checkpoints) - 1, self._index))
+        self._refresh_label()
+
     def nav(self, delta: int) -> None:
         """Move the checkpoint cursor by *delta*, clamped at both ends."""
         if not self._checkpoints:
@@ -169,6 +202,15 @@ class RewindStrip(Horizontal):
         self.post_message(self.Closed())
 
     # -- key actions ----------------------------------------------------
+
+    def on_key(self, event: events.Key) -> None:
+        """Printable keys pass through to the composer (mockup: the
+        composer keeps typing rights while ``rewindOpen``); ←→/enter stay
+        with the strip via BINDINGS, esc bubbles to the app's ESC_CHAIN."""
+        if event.is_printable and event.character:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.TypeThrough(event.character))
 
     def action_prev(self) -> None:
         self.nav(-1)

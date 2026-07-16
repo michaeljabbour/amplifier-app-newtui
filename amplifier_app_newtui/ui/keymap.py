@@ -126,9 +126,11 @@ KEYMAP: tuple[Binding, ...] = (
     _b("evidence_prev", ("left",), "←/→", _EVIDENCE),
     _b("evidence_next", ("right",), "←/→", _EVIDENCE),
     _b("evidence_expand", ("enter",), "enter", _EVIDENCE),
-    # Approval bar (owns the keyboard while open, spec §7).
+    # Approval bar (owns the keyboard while open, spec §7). Mockup
+    # keydown: ``e.key === "Tab"`` matches with or without shift, so
+    # shift+tab cycles the selection here — never the mode.
     _b("approval_prev", ("left", "up"), "arrows", _APPROVAL),
-    _b("approval_next", ("right", "down", "tab"), "arrows", _APPROVAL),
+    _b("approval_next", ("right", "down", "tab", "shift+tab"), "arrows", _APPROVAL),
     _b("approval_confirm", ("enter",), "enter", _APPROVAL),
     # Esc chain — one binding per context; the app resolves priority via
     # ESC_CHAIN, never ad-hoc if/else ladders (spec §5).

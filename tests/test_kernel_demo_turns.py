@@ -170,6 +170,28 @@ def test_build_turn_approval_contract() -> None:
     assert granted.choice == "Allow always"
 
 
+def test_build_turn_skips_approval_outside_chat_mode() -> None:
+    """Spec §4 / mockup ``if (this.mode().id === "chat" && i === 1)``:
+    the pytest approval is gated on the LIVE mode — build trust is
+    ``auto read,test``, so pytest auto-runs with no ask."""
+
+    async def go() -> list[Any]:
+        runtime = DemoRuntime(sleep=_instant, mode_source=lambda: "build")
+        await runtime.run_build_turn()
+        events = []
+        while not runtime.queue.empty():
+            events.append(runtime.queue.get_nowait())
+        return events
+
+    events = asyncio.run(go())
+    assert not [e for e in events if e.kind in ("approval_required", "approval_granted")]
+    # pytest still runs (auto read,test) — all three commands execute.
+    bash_cmds = [
+        e.tool_input["command"] for e in events if e.kind == "tool_pre" and e.tool_name == "bash"
+    ]
+    assert bash_cmds == list(STORE_COMMANDS)
+
+
 def test_build_turn_deny_path() -> None:
     async def deny(prompt: str, options: tuple[str, ...]) -> str:
         return "Deny"

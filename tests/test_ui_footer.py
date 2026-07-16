@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
 
@@ -121,6 +122,27 @@ async def test_footer_renders_left_and_right_segments() -> None:
         assert _plain(app.query_one("#footer-right", Static)) == footer_right_text(
             FULL_STATE
         )
+
+
+@pytest.mark.asyncio
+async def test_footer_left_separators_use_dimmer_token() -> None:
+    """Mockup footer-left: every inline ``·`` between segments is its own
+    ``--dimmer`` span while segment text stays dim (§2)."""
+    app = FooterApp()
+    async with app.run_test() as pilot:
+        bar = app.query_one("#footer", FooterBar)
+        bar.update_state(FULL_STATE)
+        await pilot.pause()
+        content = app.query_one("#footer-left", Static).content
+        assert isinstance(content, Content)
+        dimmer_runs = [
+            content.plain[span.start : span.end]
+            for span in content.spans
+            if span.style == "$dimmer"
+        ]
+        # mode·trust, trust·bundle, bundle·session, session·cost = 4 separators
+        # (the orange "· q1" queue badge separator is NOT dimmer).
+        assert dimmer_runs == [" · "] * 4
 
 
 @pytest.mark.asyncio

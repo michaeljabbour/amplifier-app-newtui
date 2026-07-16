@@ -23,6 +23,7 @@ from collections.abc import Sequence
 
 from rich.style import Style
 from rich.text import Text
+from textual import events
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
@@ -138,7 +139,10 @@ class LanesPanel(Vertical):
         Binding("up", "cursor_up", "↑↓ select", show=False),
         Binding("down", "cursor_down", "↑↓ select", show=False),
         Binding("enter", "focus_lane", "enter focus", show=False),
-        Binding("escape", "close", "esc close", show=False),
+        # No local escape binding: Esc must bubble to the app so it resolves
+        # via keymap.ESC_CHAIN (spec §5 — palette/rewind close before lanes
+        # even while this panel holds keyboard focus). The chain calls
+        # ``action_close`` when the lanes step is reached.
     ]
 
     class FocusLane(Message):
@@ -151,6 +155,19 @@ class LanesPanel(Vertical):
 
     class Closed(Message):
         """Esc pressed while the lanes panel was open."""
+
+    class TypeThrough(Message):
+        """A printable key pressed while the panel held focus.
+
+        Mockup ground truth (document-level keydown, composer input keeps
+        focus while ``lanesOpen``): typing is never swallowed by the lanes
+        panel — the app forwards the character to the composer, so ``/``
+        opens the palette and mid-turn steering text lands in the input.
+        """
+
+        def __init__(self, character: str) -> None:
+            self.character = character
+            super().__init__()
 
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002
         super().__init__(id=id)
@@ -212,6 +229,15 @@ class LanesPanel(Vertical):
             )
 
     # -- key actions ----------------------------------------------------
+
+    def on_key(self, event: events.Key) -> None:
+        """Printable keys pass through to the composer (mockup: the
+        composer keeps typing rights while ``lanesOpen``); ↑↓/enter stay
+        with the panel via BINDINGS, esc bubbles to the app's ESC_CHAIN."""
+        if event.is_printable and event.character:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.TypeThrough(event.character))
 
     def action_cursor_up(self) -> None:
         self.move_selection(-1)

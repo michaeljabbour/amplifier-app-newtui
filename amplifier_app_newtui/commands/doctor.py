@@ -219,11 +219,15 @@ def run_checks(
 
 
 def build_doctor_block(block_id: str, report: DoctorReport) -> DoctorBlock:
-    """Assemble the ``/doctor`` transcript block: one joined ✔ healthy line
-    plus the numbered findings (the ``Doctor  <headline>`` header line is
-    the renderer's, via :meth:`DoctorReport.headline`)."""
+    """Assemble the ``/doctor`` transcript block: the ``Doctor  <headline>``
+    header, one joined ✔ healthy line, plus the numbered findings."""
     healthy = (report.healthy_summary,) if report.healthy_summary else ()
-    return DoctorBlock(id=block_id, healthy=healthy, findings=report.findings)
+    return DoctorBlock(
+        id=block_id,
+        headline=report.headline(),
+        healthy=healthy,
+        findings=report.findings,
+    )
 
 
 # --- standalone CLI surface ---------------------------------------------

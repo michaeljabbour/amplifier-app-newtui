@@ -139,6 +139,21 @@ async def test_notice_is_single_slot_and_replaces() -> None:
 
 
 @pytest.mark.asyncio
+async def test_notice_per_call_duration_overrides_default() -> None:
+    """Mockup showNotice(text, ms): approval notices pass 6000 over the 4000 default."""
+    app = ChromeApp()
+    async with app.run_test() as pilot:
+        slot = app.query_one("#notice", NoticeSlot)
+        slot.show_notice(
+            "approval required · choose below the transcript", duration=0.4
+        )
+        await pilot.pause(0.2)  # past the 0.05s default, before the override
+        assert slot.current == "approval required · choose below the transcript"
+        await pilot.pause(0.4)
+        assert slot.current is None
+
+
+@pytest.mark.asyncio
 async def test_notice_manual_dismiss() -> None:
     app = ChromeApp()
     async with app.run_test() as pilot:

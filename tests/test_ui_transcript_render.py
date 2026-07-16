@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import pytest
 from rich.cells import cell_len
+from rich.style import Style
 from textual.content import Content
 
 from amplifier_app_newtui.model.blocks import (
@@ -37,6 +38,7 @@ from amplifier_app_newtui.model.blocks import (
     SessionBanner,
     SteerEcho,
     ToolLine,
+    TranscriptBlock,
     TurnRule,
     UserLine,
     WorkingStatus,
@@ -62,7 +64,7 @@ TEL = TurnTelemetry(secs=68, tokens_down=83_900, cached_pct=91, cost=Decimal("0.
 LIVE_TEL = TurnTelemetry(secs=8, tokens_down=3_200)
 
 
-def _blocks() -> dict[str, object]:
+def _blocks() -> dict[str, TranscriptBlock]:
     return {
         "session_banner": SessionBanner(
             id="b1",
@@ -176,6 +178,7 @@ def _blocks() -> dict[str, object]:
         ),
         "doctor": DoctorBlock(
             id="b21",
+            headline="1 finding · nothing changed yet",
             healthy=("provider mounted", "bundle resolves"),
             findings=(DoctorFinding(number=1, text="bundle override unused"),),
         ),
@@ -183,7 +186,16 @@ def _blocks() -> dict[str, object]:
             id="b22",
             proposals=(
                 ImproveProposal(
-                    title="auto-allow pytest", rationale="denied 4x this session"
+                    title="allowlist:",
+                    action="uv run pytest",
+                    rationale="approved 22/22 times · add to auto",
+                ),
+                ImproveProposal(
+                    title="trust slot:",
+                    rationale=(
+                        "3 denials on push-to-fork all overridden"
+                        " · add fork remote to boundary"
+                    ),
                 ),
             ),
         ),
@@ -202,7 +214,7 @@ GOLDEN_MARKERS: dict[str, tuple[str, ...]] = {
     "plan": ("·", "Refactor session store", "✔", "■", "□", "↓ 83.9k tok"),
     "plan_read_only": ("(read-only)",),
     "blocked": ("⊘", "git push --force", "continuing without push"),
-    "working": ("✳", "working", "3 agents", "esc to interrupt", "type to steer"),
+    "working": ("✳", "Coordinating 3 agents", "esc to interrupt"),
     "recap": ("✳", "Goal:", "Next:"),
     "answer": ("pytest", "done", "Second line."),
     "steer": ("↳", "steer queued:", "applies at next step boundary"),
@@ -212,9 +224,9 @@ GOLDEN_MARKERS: dict[str, tuple[str, ...]] = {
     "ledger": ("Session ledger", "a1b2c3", "$1.24", "cache hit 91%"),
     "context": ("Context", "42% of 200k", "████████░░"),
     "needs_you": ("Needs you", "1 deferred decision", "[yes · push to fork]"),
-    "doctor": ("✔", "provider mounted", "1. bundle override unused"),
-    "improve": ("Improve", "auto-allow pytest"),
-    "brainstorm": ("2.", "event-sourced transcript"),
+    "doctor": ("Doctor", "✔", "provider mounted", "1 bundle override unused"),
+    "improve": ("Improve", "allowlist:", "uv run pytest", "trust slot:"),
+    "brainstorm": ("2 event-sourced transcript",),
 }
 
 
@@ -246,7 +258,7 @@ def test_user_line_mode_badge_colors() -> None:
         "brainstorm": "teal",
         "build": "green",
         "auto": "orange",
-        "delegated": "dim",  # focused-subagent brief falls back to dim
+        "delegated": "teal",  # focused-subagent brief badge (mockup §8)
     }
     for mode, token in cases.items():
         line = render_block(UserLine(id="x", text="t", mode=mode), 80)[0]
@@ -267,9 +279,11 @@ def test_tool_line_collapsed_exact() -> None:
     assert TOOL_EXPAND_HINT == " · click to expand"
 
 
-def test_tool_line_expanded_shows_indented_body_and_drops_hint() -> None:
+def test_tool_line_expanded_shows_indented_body_and_keeps_hint() -> None:
+    # Mockup toolLine never mutates its head on toggle: the '· click to
+    # expand' hint stays visible while the body is expanded.
     lines = render_block(_blocks()["tool_expanded"], 80)
-    assert line_plain(lines[0]) == "  ● Ran 2 shell commands"
+    assert line_plain(lines[0]) == "  ● Ran 2 shell commands · click to expand"
     assert line_plain(lines[1]) == "      1214 passed"
     assert line_plain(lines[2]) == "      build succeeded"
     assert all(seg.style_token == "dimmer" for seg in lines[1])
@@ -289,12 +303,15 @@ def test_live_command_exact() -> None:
 
 def test_plan_exact() -> None:
     lines = render_block(_blocks()["plan"], 80)
-    assert line_plain(lines[0]) == f"· Refactor session store  {TEL.suffix()}"
+    # One space between the title and the telemetry paren (mockup: the
+    # title segment carries the trailing space).
+    assert line_plain(lines[0]) == f"· Refactor session store {TEL.suffix()}"
     assert lines[0][0].style_token == "orange"
     assert line_plain(lines[1]) == "  ✔ Audit persistence paths"
     assert lines[1][0].style_token == "green"
     assert line_plain(lines[2]) == "  ■ Migrate durable history"
-    assert lines[2][0] == Segment(text="  ■ ", style_token="orange", bold=True)
+    # Mockup L331: plain orange prefix — only the step text is bright bold.
+    assert lines[2][0] == Segment(text="  ■ ", style_token="orange")
     assert lines[2][1].bold and lines[2][1].style_token == "bright"
     assert line_plain(lines[3]) == "  □ Add reconciliation"
     assert lines[3][0].style_token == "dimmer"
@@ -316,16 +333,30 @@ def test_blocked_exact() -> None:
 
 
 def test_working_status_exact_and_spinner_frames() -> None:
+    # Fan-out turn (mockup runAgentsTurn): 'Coordinating N agents · Ns ·
+    # ↓ X.Xk tok · esc to interrupt' — integer secs, always one-decimal k.
     line = render_block(_blocks()["working"], 80)[0]
     assert line_plain(line) == (
-        "✳ working · 8.0s · ↓ 3.2k tok · 3 agents"
-        " · esc to interrupt · type to steer"
+        "✳ Coordinating 3 agents · 8s · ↓ 3.2k tok · esc to interrupt"
     )
     assert line[0].style_token == "orange"
     assert line[-1].style_token == "dimmer"
     for frame, glyph in enumerate(("✳", "✦", "✧", "✦", "✳")):
         block = _blocks()["working"].model_copy(update={"spinner_frame": frame})
         assert render_block(block, 80)[0][0].text == f"{glyph} "
+
+
+def test_working_status_single_agent_exact() -> None:
+    # Single-agent turns always show '· 1 agent ·' (mockup runTurn line).
+    block = _blocks()["working"].model_copy(update={"agent_count": 1})
+    line = render_block(block, 80)[0]
+    assert line_plain(line) == (
+        "✳ working · 8s · ↓ 3.2k tok · 1 agent"
+        " · esc to interrupt · type to steer"
+    )
+    assert render_block(
+        block.model_copy(update={"agent_count": 0}), 80
+    ) == render_block(block, 80)
 
 
 def test_recap_exact_italic_dim() -> None:
@@ -348,6 +379,7 @@ def test_steer_echo_exact() -> None:
 def test_turn_rule_fills_width_exactly(width: int) -> None:
     for name in ("rule_shipped", "rule_answer"):
         block = _blocks()[name]
+        assert isinstance(block, TurnRule)
         lines = render_block(block, width)
         if len(lines) == 1:
             assert cell_len(line_plain(lines[0])) == width
@@ -370,45 +402,97 @@ def test_evidence_exact() -> None:
     assert line_plain(lines[0]) == (
         "· Evidence  1/2 · ←/→ select · enter expand · esc close"
     )
+    # Header counter + hints are ONE dimmer run (mockup showEvidence).
+    assert lines[0][-1].style_token == "dimmer"
     assert line_plain(lines[1]) == '  ¹ "all tests pass" → pytest run · 34 passed'
     assert line_plain(lines[2]) == '  ² "3 files changed" → git diff --stat'
-    # Selected claim is highlighted on bg-tab; the other is not.
-    assert all(seg.bg_token == "bg-tab" for seg in lines[1])
-    assert all(seg.bg_token is None for seg in lines[2])
+    # No background highlight on claims (mockup renders them plain).
+    assert all(seg.bg_token is None for line in lines for seg in line)
 
 
 def test_ledger_exact() -> None:
     lines = render_block(_blocks()["ledger"], 80)
     assert line_plain(lines[0]) == "· Session ledger  a1b2c3 · dev-bundle"
+    # Header after the blue '· ' is one plain fg run; stats line is dim.
+    assert lines[0][1].style_token == "fg" and not lines[0][1].bold
     assert line_plain(lines[1]) == (
         "  3 turns · $1.24 · 2 shipped · 1 answer-only · cache hit 91%"
     )
+    assert lines[1][0].style_token == "dim"
 
 
 def test_context_exact_bar() -> None:
     lines = render_block(_blocks()["context"], 80)
     assert line_plain(lines[0]) == "· Context  42% of 200k"
-    assert line_plain(lines[1]) == "  ████████░░"
-    # free segment renders ░ in dimmer; filled cells use accent tokens
-    assert lines[1][-1].style_token == "dimmer"
-    assert line_plain(lines[2]) == "  conversation · tools · memory · free"
+    assert lines[0][1].style_token == "fg" and not lines[0][1].bold
+    # ONE dim line combining bar + legend (mockup cmdContext).
+    assert len(lines) == 2
+    assert line_plain(lines[1]) == "  ████████░░  conversation · tools · memory · free"
+    assert all(seg.style_token == "dim" for seg in lines[1])
 
 
 def test_needs_you_exact_chip_styling() -> None:
     lines = render_block(_blocks()["needs_you"], 80)
+    # Header is one plain orange run, count never pluralized (mockup).
     assert line_plain(lines[0]) == "· Needs you  1 deferred decision"
-    assert lines[0][1].style_token == "orange" and lines[0][1].bold
+    assert lines[0][1].style_token == "orange" and not lines[0][1].bold
+    # Row number: '  1 ' orange, no period; two spaces before the chip.
+    assert lines[1][0] == Segment(text="  1 ", style_token="orange")
+    assert line_plain(lines[1]) == (
+        "  1 push branch to fork? · net access denied  [yes · push to fork]"
+    )
     chip = lines[1][-1]
     assert chip.text == "[yes · push to fork]"
     assert chip.style_token == "green" and chip.bg_token == "bg-tab"
 
 
+def test_needs_you_highlight_renders_teal() -> None:
+    block = NeedsYouBlock(
+        id="x",
+        items=(
+            NeedsYouEntry(
+                decision_id="d1",
+                question="Push to fork mj/waypoint instead?",
+                highlight="mj/waypoint",
+            ),
+        ),
+    )
+    row = render_block(block, 80)[1]
+    assert line_plain(row) == "  1 Push to fork mj/waypoint instead?"
+    accent = row[2]
+    assert accent.text == "mj/waypoint" and accent.style_token == "teal"
+
+
 def test_doctor_exact() -> None:
     lines = render_block(_blocks()["doctor"], 80)
-    assert line_plain(lines[0]) == "  ✔ provider mounted"
-    assert lines[0][0].style_token == "green"
-    assert line_plain(lines[2]) == "  1. bundle override unused"
-    assert lines[2][1].style_token == "orange"
+    assert line_plain(lines[0]) == "· Doctor  1 finding · nothing changed yet"
+    assert lines[0][0].style_token == "blue"
+    assert lines[0][1].style_token == "fg"
+    assert line_plain(lines[1]) == "  ✔ provider mounted"
+    assert lines[1][0].style_token == "green"
+    # Finding rows: orange number (no period) + dim text.
+    assert line_plain(lines[3]) == "  1 bundle override unused"
+    assert lines[3][0].style_token == "orange"
+    assert lines[3][1].style_token == "dim"
+
+
+def test_improve_exact() -> None:
+    lines = render_block(_blocks()["improve"], 80)
+    assert line_plain(lines[0]) == (
+        "· Improve  from ledger + denial log · proposes, never applies silently"
+    )
+    assert lines[0][1].style_token == "fg"
+    # Allowlist row: dim '  1 allowlist: ' + green action + dim tail.
+    assert line_plain(lines[1]) == (
+        "  1 allowlist: uv run pytest approved 22/22 times · add to auto"
+    )
+    assert lines[1][1] == Segment(text="uv run pytest", style_token="green")
+    # Trust-slot row: one dim run, the action named exactly once.
+    assert line_plain(lines[2]) == (
+        "  2 trust slot: 3 denials on push-to-fork all overridden"
+        " · add fork remote to boundary"
+    )
+    assert all(seg.style_token == "dim" for seg in lines[2])
 
 
 def test_answer_splits_newlines_and_keeps_span_styles() -> None:
@@ -434,7 +518,11 @@ def test_session_banner_focus_note_replaces_headline() -> None:
     lines = render_block(banner, 80)
     assert len(lines) == 1
     assert line_plain(lines[0]).startswith("focused: test-writer · subagent of")
-    assert lines[0][0].style_token == "dim"
+    # 'focused: <name> ' bright bold, the remainder dim (mockup focusLane).
+    assert lines[0][0] == Segment(
+        text="focused: test-writer ", style_token="bright", bold=True
+    )
+    assert lines[0][1].style_token == "dim"
 
 
 # -- segments: markup + rich bridges ------------------------------------------
@@ -471,7 +559,13 @@ def test_to_rich_text_resolves_tokens_from_mapping_only() -> None:
     line = render_block(_blocks()["user"], 80)[0]
     text = to_rich_text(line, variables)
     assert text.plain == "❯ [build] Please verify the persistence boundary"
-    assert text.spans[0].style.color.name == "cyan"  # token resolved via mapping
+    first_style = text.spans[0].style
+    assert isinstance(first_style, Style)
+    assert first_style.color is not None
+    assert first_style.color.name == "cyan"  # token resolved via mapping
     # Without a mapping, no colors at all.
     uncolored = to_rich_text(line)
-    assert all(span.style.color is None for span in uncolored.spans)
+    assert all(
+        isinstance(span.style, Style) and span.style.color is None
+        for span in uncolored.spans
+    )

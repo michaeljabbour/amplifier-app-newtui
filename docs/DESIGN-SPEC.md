@@ -59,7 +59,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 - [ ] **Live command line**: `  └ ` dimmer + `$ <cmd>` dim while executing; replaced by collapsed tool line when done.
 - [ ] **Plan checklist**: header `· ` orange + title + trailing dim telemetry `(Ns · ↓ X.Xk tok)` updated live; items `  □ ` dimmer/pending, `  ■ ` orange bold/active, `  ✔ ` green + dim text/done.
 - [ ] **Blocked**: `  ⊘ blocked · <cmd> ` red + `· <reason> · <continuation>` dim. Never halts the turn by itself.
-- [ ] **Working status line** (while running): pulsing spinner `✳/✦/✧` orange + `working · Ns · ↓ X.Xk tok · N agent(s) · ` dim + `esc to interrupt · type to steer` dimmer. Updates every second; removed at turn end.
+- [ ] **Working status line** (while running): pulsing spinner `✳/✦/✧` orange + `working · Ns · ↓ X.Xk tok · 1 agent · ` dim + `esc to interrupt · type to steer` dimmer. A fan-out turn renders `Coordinating N agents · Ns · ↓ X.Xk tok · ` dim + `esc to interrupt` dimmer instead (mockup runAgentsTurn — no `working ·` prefix, no steer hint). Updates every second; removed at turn end.
 - [ ] **Recap line** (turn end): `✳ ` dimmer + italic dim `Goal: <goal>. Next: <next>.`
 - [ ] **Final answer**: fg text with selective bright/bold and teal inline code; clickable → evidence.
 - [ ] **Steer echo**: `  ↳ ` teal + `steer queued: "<text>" ` teal + `· applies at next step boundary` dimmer; steer application logged as narration `Applying steer: <text>`.

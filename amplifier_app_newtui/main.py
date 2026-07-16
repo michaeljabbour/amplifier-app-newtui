@@ -26,6 +26,7 @@ async def _launch_tui(
     *, demo: bool, bundle: str | None = None, resume_id: str | None = None
 ) -> int:
     from .ui.app import NewTuiApp
+    from .ui.term_probe import probe_kitty_protocol
 
     if demo:
         from .ui.demo_wiring import DemoRuntimeAdapter
@@ -35,7 +36,7 @@ async def _launch_tui(
         from .ui.runtime_adapter import RealRuntimeAdapter
 
         adapter = RealRuntimeAdapter(bundle=bundle, resume_id=resume_id)
-    app = NewTuiApp(adapter)
+    app = NewTuiApp(adapter, kitty_protocol=probe_kitty_protocol())
     await app.run_async()
     return app.return_code or 0
 

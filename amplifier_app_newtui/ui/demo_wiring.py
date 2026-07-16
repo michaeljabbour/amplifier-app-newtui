@@ -25,6 +25,7 @@ from ..kernel.demo import (
     DEMO_SESSION_COST_START,
     DEMO_SESSION_ID,
     DEMO_SESSION_SHORT,
+    DEMO_TURN_BY_KEY,
     DEMO_TURNS,
     DemoLane,
     DemoRuntime,
@@ -44,6 +45,7 @@ from ..model.blocks import (
     UserLine,
 )
 from ..model.evidence import EvidenceLink
+from ..model.lanes import LaneStateName
 from .live_tail import answer_spans
 from .needs_you import focused_lane_banner
 from .reducer import LaneSeed
@@ -63,6 +65,14 @@ def _parse_elapsed(text: str) -> float:
     return 0.0
 
 
+_GLYPH_STATE: dict[str, LaneStateName] = {
+    "◐": "running",
+    "■": "working",
+    "✔": "done",
+}
+"""Mockup LANES glyph → lane state (DESIGN-SPEC §8 tri-state panel)."""
+
+
 def lane_seed_for(name: str) -> LaneSeed | None:
     """Reducer LaneSeed from the mockup lane's verbatim panel line."""
     lane = DEMO_LANE_BY_NAME.get(name)
@@ -78,6 +88,7 @@ def lane_seed_for(name: str) -> LaneSeed | None:
         activity=activity,
         elapsed=elapsed,
         cost=cost,
+        state=_GLYPH_STATE.get(lane.glyph, "running"),
         tree_spawn=lane.tree_spawn,
         tree_done=lane.tree_done,
     )
@@ -107,7 +118,13 @@ def lane_focus_blocks(lane: DemoLane, allocator: BlockIdAllocator) -> list[Trans
     blocks.append(
         Answer(
             id=allocator.next_id(),
-            spans=(Segment(text=lane.state_recap, style_token="dim", italic=True),),
+            # Mockup focusLane: ``✳ `` dimmer + lane state dim italic;
+            # focus-lane lines are created with click: null.
+            spans=(
+                Segment(text="✳ ", style_token="dimmer"),
+                Segment(text=lane.state_recap, style_token="dim", italic=True),
+            ),
+            clickable=False,
         )
     )
     return blocks
@@ -128,7 +145,11 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         self.bundle_name = DEMO_BUNDLE
         self.session_short = DEMO_SESSION_SHORT
         self.banner = DEMO_BANNER
-        self.session_cost_start = DEMO_SESSION_COST_START
+        # Session cost accumulates per turn (mockup ``this.cost += turnCost``);
+        # the mount-time $0.57 already includes the seed turn's $0.17, and the
+        # adapter replays the seed as a live turn — start below it so the
+        # footer lands on $0.57 once the seed rule is cut.
+        self.session_cost_start = DEMO_SESSION_COST_START - DEMO_TURN_BY_KEY["seed"].cost
         sleep: Callable[[float], object] | None = None
         if instant:
 
@@ -141,8 +162,10 @@ class DemoRuntimeAdapter(RuntimeAdapter):
             approver=self._approve,
             sleep=sleep,  # type: ignore[arg-type]
             steer_source=self._consume_steer,
+            mode_source=self._current_mode,
         )
         self._by_prompt: dict[str, DemoTurnSpec] = {spec.prompt: spec for spec in DEMO_TURNS}
+        self._prompt_alias: dict[str, TurnKey] = {}
         self._played: set[TurnKey] = set()
         self._pending: dict[str, asyncio.Future[str]] = {}
         self._ticket_seq = 0
@@ -155,10 +178,26 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         self._played.add("seed")
         await self._runtime.run_seed()
 
-    async def submit(self, text: str) -> None:
+    async def submit(self, text: str, *, queued: bool = False) -> None:
+        text = text.strip()
         key = self._key_for(text)
         self._played.add(key)
-        await self._runtime.run_turn(key)
+        # Mockup send()/drainQueue(): the user line echoes the typed text
+        # verbatim even though the scripted turn is fixed — remember which
+        # spec the echo stands for so close-out lookups still resolve.
+        self._prompt_alias[text] = key
+        await self._runtime.run_turn(key, prompt=text, queued=queued)
+
+    async def submit_queued(self, text: str) -> None:
+        """Queue-drained turn: no scripted mode notice (mockup
+        ``drainQueue`` runs without ``setMode``), so the ``queued
+        message picked up`` notice stays visible (spec §5)."""
+        await self.submit(text, queued=True)
+
+    async def interrupt(self) -> bool:
+        """Esc while running: DemoRuntime breaks at the next step boundary
+        (spec §11: interrupted recap + ``· interrupted`` rule)."""
+        return self._runtime.interrupt()
 
     def _key_for(self, text: str) -> TurnKey:
         spec = self._by_prompt.get(text.strip())
@@ -198,10 +237,26 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         message = self.steering.consume_next_steer()
         return message.text if message is not None else None
 
+    # -- trust gating -------------------------------------------------------------
+
+    def _current_mode(self) -> str:
+        """LIVE mode for the store turn's approval gate (spec §4 — mockup
+        ``this.mode().id === "chat"`` checked at the step boundary)."""
+        return self.app.mode_id if self.app is not None else "chat"
+
     # -- data hooks ------------------------------------------------------------------
 
     def turn_spec(self, prompt: str) -> DemoTurnSpec | None:
-        spec = self._by_prompt.get(prompt.strip())
+        text = prompt.strip()
+        spec = self._by_prompt.get(text)
+        if spec is None:
+            # The user line echoes the typed text verbatim (mockup
+            # userLine(text)); resolve it back to the scripted spec.
+            key = self._prompt_alias.get(text)
+            spec = DEMO_TURN_BY_KEY[key] if key is not None else None
+        interrupted = self._runtime.interrupted_close
+        if interrupted is not None and spec is not None and interrupted.key == spec.key:
+            return interrupted
         if spec is not None and spec.key == "build" and self._build_denied:
             return build_denied_spec()
         return spec
@@ -222,12 +277,21 @@ class DemoRuntimeAdapter(RuntimeAdapter):
             return None
         return lane_focus_blocks(lane, allocator)
 
-    def evidence_links(self) -> tuple[EvidenceLink, ...]:
+    def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
+        # Mockup: every final-answer click reveals the same scripted
+        # showEvidence block, regardless of which answer was clicked.
         return demo_evidence_links()
 
-    def deferred_decision(self, message: str) -> tuple[str, str, tuple[str, ...]]:
+    def deferred_decision(
+        self, message: str
+    ) -> tuple[str, str, tuple[str, ...], str]:
         del message
-        return (DEMO_DEFERRED_DECISION.text, "", (DEMO_DEFERRED_DECISION.chip_label,))
+        return (
+            DEMO_DEFERRED_DECISION.text,
+            "",
+            (DEMO_DEFERRED_DECISION.chip_label,),
+            DEMO_DEFERRED_DECISION.highlight,
+        )
 
     def decision_narration(self, choice: str) -> str:
         if choice == DEMO_DEFERRED_DECISION.chip_label:

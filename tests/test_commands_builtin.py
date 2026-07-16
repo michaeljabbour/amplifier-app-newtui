@@ -27,6 +27,8 @@ MOCKUP_TABLE = [
     ("Repair", "/permissions", "edit trust slots: boundary, blocks, exceptions", "built-in"),
     ("Repair", "/doctor", "setup checkup; reports, then fixes on confirm", "skill"),
     ("Repair", "/improve", "tune config from ledger + denial log", "skill"),
+    # Beyond the mockup table: runtime theme switch (DESIGN-SPEC §1).
+    ("Repair", "/theme", "switch theme: slate, graphite, carbon", "built-in"),
 ]
 
 
@@ -35,11 +37,20 @@ def test_table_matches_mockup_exactly() -> None:
     assert actual == MOCKUP_TABLE
 
 
-def test_registry_holds_all_ten() -> None:
+def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 10
+    assert len(registry.specs) == 11
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
+
+
+def test_theme_command_dispatches_set_theme(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/theme", ctx)
+    assert ctx.calls == ["set_theme:"]  # empty arg cycles
+    registry.run("/theme", ctx, "Graphite")
+    assert ctx.calls[-1] == "set_theme:graphite"
 
 
 def test_mode_cycles_without_args_and_jumps_with_mode_arg(fake_command_context) -> None:
@@ -87,6 +98,9 @@ def test_tasks_rewind_permissions_dispatch_actions(fake_command_context) -> None
 def test_ledger_posts_ledger_block_with_aggregates(fake_command_context) -> None:
     registry = build_registry()
     ctx = fake_command_context
+    # /ledger prints the session cost (mockup ``this.cost`` — the footer $),
+    # which includes any pre-session baseline, not the recorded-turn sum.
+    ctx.session_cost = Decimal("0.76")
     ctx.ledger.record_turn(
         TurnTelemetry(secs=12, tokens_down=3_200, cached_pct=80, cost=Decimal("0.31")),
         TurnOutcome(kind="shipped", files_changed=3, diffstat="+142/−38", tests_ok=True),
@@ -106,7 +120,7 @@ def test_ledger_posts_ledger_block_with_aggregates(fake_command_context) -> None
     assert block.session == "a1b2c3"
     assert block.bundle == "dev-bundle"
     assert block.turns == 2
-    assert block.spend == Decimal("0.36")
+    assert block.spend == Decimal("0.76")
     assert block.shipped == 1
     assert block.answer_only == 1
     assert block.cache_hit_pct == 72  # token-weighted
@@ -142,9 +156,10 @@ def test_improve_posts_proposals_and_never_mutates(fake_command_context) -> None
     registry.run("/improve", ctx)
     (block,) = ctx.blocks
     assert isinstance(block, ImproveBlock)
-    assert [p.title for p in block.proposals] == [
-        "allowlist: uv run pytest",
-        "trust slot: push-to-fork",
+    # Mockup rows: dim title prefix + the action named once in green.
+    assert [(p.title, p.action) for p in block.proposals] == [
+        ("allowlist:", "uv run pytest"),
+        ("trust slot:", ""),
     ]
     assert block.proposals[0].rationale == "approved 22/22 times · add to auto"
     # Proposals only — nothing was applied to any surface.

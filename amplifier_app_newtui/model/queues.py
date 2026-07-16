@@ -3,7 +3,8 @@
 Steering contract (ADR-0007): exactly ONE steering path — a bounded
 :class:`SteeringQueue` (32 items / 32KB per item) consumed one-per-
 ``provider:request`` step boundary on the root session. Leftover steers
-roll forward as a follow-up turn with a visible notice.
+are discarded at turn end (mockup: a steer the runtime never consumed
+must not become a turn the user never sent).
 
 Needs-you contract (DESIGN-SPEC §7, ADR-0007 resolution 5): deferred
 decisions never halt the turn. A deferred approval resolves to its
@@ -105,12 +106,19 @@ class SteeringQueue(_ListenerMixin):
         self, text: object, *, kind: Literal["steer", "next_turn"] = "steer"
     ) -> QueuedMessage:
         """Queue a steer or next-turn message; raises ``ValueError`` when
-        full or empty after sanitizing."""
-        if len(self._pending) >= MAX_QUEUE_ITEMS:
-            raise ValueError("steering queue limit reached")
+        full or empty after sanitizing.
+
+        The next-turn slot holds exactly ONE message (mockup single slot,
+        ``this.queued = text``): a second ``next_turn`` enqueue REPLACES
+        the queued one, so the footer badge is only ever ``· q1``.
+        """
         clean = _clean_multiline(text)
         if not clean.strip():
             raise ValueError("queued text cannot be empty")
+        if kind == "next_turn":
+            self._pending = [m for m in self._pending if m.kind != "next_turn"]
+        if len(self._pending) >= MAX_QUEUE_ITEMS:
+            raise ValueError("steering queue limit reached")
         message = QueuedMessage(
             message_id=f"q-{self._next_id}",
             text=clean,
@@ -142,7 +150,7 @@ class SteeringQueue(_ListenerMixin):
 
     def drain_steers(self) -> tuple[QueuedMessage, ...]:
         """Remove and return all leftover steers (turn ended before they
-        applied) — they roll forward as a follow-up turn with a notice."""
+        applied) — the app discards them at turn end (mockup §5)."""
         leftover = tuple(m for m in self._pending if m.kind == "steer")
         if leftover:
             self._pending = [m for m in self._pending if m.kind != "steer"]
@@ -166,6 +174,8 @@ class NeedsYouItem(BaseModel):
     question: str
     reason: str = ""
     choices: tuple[str, ...] = ()
+    highlight: str = ""
+    """Substring of ``question`` the UI accents teal (mockup ``mj/waypoint``)."""
     status: NeedsYouStatus = "pending"
     answer: str = ""
     created_at: float = 0.0
@@ -206,7 +216,12 @@ class NeedsYouQueue(_ListenerMixin):
         return tuple(item for item in self._items if item.status == "answered")
 
     def defer(
-        self, question: object, reason: object = "", *, choices: tuple[str, ...] = ()
+        self,
+        question: object,
+        reason: object = "",
+        *,
+        choices: tuple[str, ...] = (),
+        highlight: object = "",
     ) -> NeedsYouItem:
         """Park a decision for later; raises ``ValueError`` when full/empty."""
         active = [i for i in self._items if i.status in {"pending", "answered"}]
@@ -220,6 +235,7 @@ class NeedsYouQueue(_ListenerMixin):
             question=clean_question,
             reason=_clean_line(reason, 4_096),
             choices=tuple(_clean_line(c, 200) for c in choices if _clean_line(c, 200)),
+            highlight=_clean_line(highlight, 200),
             created_at=self._clock(),
         )
         self._next_id += 1

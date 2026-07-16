@@ -1,7 +1,7 @@
 """Flow tests — DESIGN-SPEC §4: modes & trust (shift+tab, notices, tint).
 
-End-to-end over DemoRuntime + Pilot: the shift+tab cycle (ADR-0005 order
-chat → build → plan → auto → brainstorm), the ``mode <id> · <trust>``
+End-to-end over DemoRuntime + Pilot: the shift+tab cycle (mockup MODES
+order chat → plan → brainstorm → build → auto), the ``mode <id> · <trust>``
 notice, the mode tint in exactly three places (composer badge, composer
 left edge, footer), badge-click cycling, and the plan turn's read-only
 block + plan→build handoff.
@@ -33,8 +33,8 @@ async def test_shift_tab_cycles_modes_with_notice_and_three_place_tint() -> None
         # chat's composer edge uses the rule token (spec §4) via mode-chat.
         assert app.composer.has_class("mode-chat")
 
-        # ADR-0005 shift+tab cycle: chat → build → plan → auto → brainstorm → chat.
-        for expected in ("build", "plan", "auto", "brainstorm", "chat"):
+        # Mockup shift+tab cycle: chat → plan → brainstorm → build → auto → chat.
+        for expected in ("plan", "brainstorm", "build", "auto", "chat"):
             await pilot.press("shift+tab")
             await pilot.pause()
             profile = MODE_PROFILES[expected]
@@ -61,8 +61,8 @@ async def test_mode_badge_click_cycles() -> None:
         assert app.mode_id == "chat"
         await pilot.click(ModeBadge)
         await pilot.pause()
-        assert app.mode_id == "build"
-        assert app.notice_slot.current == "mode build · auto read,test · ask write,net,spend"
+        assert app.mode_id == "plan"
+        assert app.notice_slot.current == "mode plan · read-only"
 
 
 @pytest.mark.asyncio
@@ -86,9 +86,13 @@ async def test_plan_turn_read_only_block_and_handoff_to_build() -> None:
         rule = blocks_of(app, "turn_rule")[-1]
         assert rule.label.endswith("· plan ready")
 
-        # Switching plan → build offers/executes the handoff.
+        # Switching plan → build executes the handoff; the visible notice
+        # is the plain mode notice (mockup setMode — the only handoff
+        # string is the plan-turn end notice, already asserted above).
         await type_text(pilot, "/mode build")
         await pilot.press("enter")
         await pilot.pause()
         assert app.mode_id == "build"
-        assert app.notice_slot.current == "plan handed to build"
+        assert app.notice_slot.current == (
+            "mode build · auto read,test · ask write,net,spend"
+        )

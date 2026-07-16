@@ -330,6 +330,8 @@ class AgentCompleted(_Envelope):
     sub_session_id: str = ""
     parent_session_id: str = ""
     success: bool = True
+    result: str = ""
+    """Short result summary for the lane line (e.g. ``tests ✔``)."""
 
 
 class Notification(_Envelope):
@@ -339,6 +341,19 @@ class Notification(_Envelope):
     message: str = ""
     level: str = "info"
     source: str = ""
+
+
+class ContextInjected(_Envelope):
+    """A persistent user-role context message was injected mid-turn.
+
+    Emitted by the runtime when the StepBoundaryBridge applies a steer
+    and/or answered deferred decisions (one combined injection message
+    per step boundary). Foundation's fork slicing counts EVERY user-role
+    message as a turn boundary, so checkpoint turn ids must advance past
+    these injections (DESIGN-SPEC §9)."""
+
+    kind: Literal["context_injected"] = "context_injected"
+    source: str = "steering"
 
 
 UIEvent = Annotated[
@@ -369,7 +384,8 @@ UIEvent = Annotated[
     | CancelCompleted
     | AgentSpawned
     | AgentCompleted
-    | Notification,
+    | Notification
+    | ContextInjected,
     Field(discriminator="kind"),
 ]
 """Discriminated union of every normalized UI event (on ``kind``)."""
@@ -641,6 +657,7 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 sub_session_id=_str(payload, "sub_session_id", "child_session_id"),
                 parent_session_id=_str(payload, "parent_session_id"),
                 success=True if success is None else bool(success),
+                result=_str(payload, "result", "summary"),
             )
         case "user:notification":
             return Notification(
@@ -663,6 +680,7 @@ __all__ = [
     "CancelRequested",
     "ContentBlockEnd",
     "ContentBlockStart",
+    "ContextInjected",
     "ExecutionEnd",
     "ExecutionStart",
     "Notification",

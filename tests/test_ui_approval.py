@@ -116,6 +116,7 @@ async def test_escape_resolves_to_deny() -> None:
 async def test_click_confirms_that_option() -> None:
     app = ApprovalApp()
     async with app.run_test() as pilot:
+        await pilot.pause()  # let the initial resize settle the wrap layout
         options = list(app.query(ApprovalOption))
         await pilot.click(options[2])
         await pilot.pause()
@@ -138,3 +139,41 @@ async def test_selecting_deny_swaps_red_for_selected_styling() -> None:
 def test_empty_options_rejected() -> None:
     with pytest.raises(ValueError):
         ApprovalBar(TICKET, PROMPT, options=())
+
+
+@pytest.mark.asyncio
+async def test_selected_option_is_bold() -> None:
+    """Mockup approvalOptions: selected renders font-weight 700."""
+    app = ApprovalApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        options = list(app.query(ApprovalOption))
+        assert options[0].styles.text_style.bold
+        assert not options[1].styles.text_style.bold
+
+
+@pytest.mark.asyncio
+async def test_options_wrap_onto_second_row_at_narrow_width() -> None:
+    """Mockup approval strip has flex-wrap: wrap — at 80 cols every option
+    stays on-screen (visible and clickable) instead of clipping (spec §7)."""
+    app = ApprovalApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        bar = app.query_one("#approval", ApprovalBar)
+        assert bar.has_class("-wrapped")
+        options = list(app.query(ApprovalOption))
+        for option in options:
+            assert option.region.right <= 80
+        await pilot.click(options[2])
+        await pilot.pause()
+        assert app.resolved and app.resolved[0].choice == "Deny"
+
+
+@pytest.mark.asyncio
+async def test_options_stay_on_one_row_at_wide_width() -> None:
+    app = ApprovalApp()
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        bar = app.query_one("#approval", ApprovalBar)
+        assert not bar.has_class("-wrapped")
+        assert bar.size.height == 1

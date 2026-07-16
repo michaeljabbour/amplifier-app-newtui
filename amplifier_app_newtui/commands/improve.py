@@ -9,7 +9,7 @@ Mines two evidence streams (DESIGN-SPEC §6):
 - **Trust-slot suggestions** from overridden denials: an action denied by
   policy but overridden by the human every time is a candidate for a
   wider trust boundary — mockup: ``trust slot: 3 denials on push-to-fork
-  all overridden · add to trust boundary``.
+  all overridden · add fork remote to boundary``.
 
 Everything here is pure data-in/data-out. ``/improve`` **proposes and
 never applies silently**: the output is an
@@ -148,13 +148,28 @@ def allowlist_proposals(
         if tally.always_approved and tally.asked >= min_approvals:
             proposals.append(
                 ImproveProposal(
-                    title=f"allowlist: {tally.action}",
+                    title="allowlist:",
+                    action=tally.action,
                     rationale=(
                         f"approved {tally.approved}/{tally.asked} times · add to auto"
                     ),
                 )
             )
     return tuple(proposals)
+
+
+def _trust_remedy(action: str) -> str:
+    """Action-specific remedy tail for a trust-slot suggestion.
+
+    Overridden denials on pushing to a remote mean that remote belongs in
+    the trust boundary — mockup (design-v3-cohesive.html:514):
+    ``push-to-fork`` → ``add fork remote to boundary``. Anything else
+    falls back to the generic ``add to trust boundary``.
+    """
+    prefix = "push-to-"
+    if action.startswith(prefix) and (target := action[len(prefix) :]):
+        return f"add {target} remote to boundary"
+    return "add to trust boundary"
 
 
 def trust_slot_proposals(
@@ -168,10 +183,10 @@ def trust_slot_proposals(
         if row.all_overridden and row.overridden >= min_overridden:
             proposals.append(
                 ImproveProposal(
-                    title=f"trust slot: {row.action}",
+                    title="trust slot:",
                     rationale=(
                         f"{row.denied} denials on {row.action} all overridden "
-                        "· add to trust boundary"
+                        f"· {_trust_remedy(row.action)}"
                     ),
                 )
             )

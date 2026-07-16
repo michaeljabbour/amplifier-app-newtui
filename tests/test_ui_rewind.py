@@ -111,13 +111,15 @@ async def test_enter_requests_fork_for_current_checkpoint_and_closes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_escape_posts_closed_and_hides() -> None:
+async def test_close_action_posts_closed_and_hides() -> None:
+    # Esc is resolved by the app via keymap.ESC_CHAIN (spec §5) — the strip
+    # has no local escape binding; the chain invokes ``action_close``.
     app = RewindHost()
     async with app.run_test() as pilot:
         strip = app.query_one(RewindStrip)
         strip.show_checkpoints(CHECKPOINTS)
         await pilot.pause()
-        await pilot.press("escape")
+        strip.action_close()
         await pilot.pause()
         assert app.closed == 1
         assert not strip.display

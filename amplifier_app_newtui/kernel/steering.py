@@ -9,7 +9,7 @@ Registered at priority ~950 so it runs just before the provider call.
 Answered needs-you decisions ride the same boundary (the mockup's
 "Applying decision: …" flow). Leftover steers at turn end are NOT this
 module's job: the app drains them via ``SteeringQueue.drain_steers()``
-and rolls them forward as a follow-up turn with a visible notice.
+and discards them (mockup: an unconsumed steer never becomes a turn).
 """
 
 from __future__ import annotations
@@ -35,12 +35,14 @@ class StepBoundaryBridge:
         needs_you: NeedsYouQueue | None = None,
         on_applied: Callable[[QueuedMessage], None] | None = None,
         on_answers: Callable[[tuple[NeedsYouItem, ...]], None] | None = None,
+        on_inject: Callable[[], None] | None = None,
     ) -> None:
         self._root_session_id = root_session_id
         self._steering = steering
         self._needs_you = needs_you
         self._on_applied = on_applied
         self._on_answers = on_answers
+        self._on_inject = on_inject
 
     async def handle_event(self, event: str, data: dict[str, Any]) -> HookResult:
         if event != "provider:request":
@@ -71,6 +73,12 @@ class StepBoundaryBridge:
                 "The user answered deferred decisions. Apply these answers to "
                 "dependent work:\n" + "\n".join(answer_lines)
             )
+        if self._on_inject is not None:
+            # Exactly ONE persistent user-role message enters the context
+            # below (steer + answers are joined into a single injection).
+            # Foundation's fork slicing counts it as a turn boundary, so
+            # the runtime must advance checkpoint turn accounting (§9).
+            self._on_inject()
         return HookResult(
             action="inject_context",
             context_injection="\n\n".join(injections),
@@ -86,7 +94,13 @@ class StepBoundaryBridge:
             priority=priority,
             name="newtui-step-boundary-steering",
         )
-        return unregister if callable(unregister) else lambda: None
+        if not callable(unregister):
+            return lambda: None
+
+        def unregister_hook() -> None:
+            unregister()
+
+        return unregister_hook
 
 
 __all__ = ["StepBoundaryBridge"]

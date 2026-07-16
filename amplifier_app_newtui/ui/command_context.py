@@ -8,6 +8,7 @@ public surface — no widget objects cross the boundary.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from ..commands.context import ContextUsage
@@ -42,6 +43,10 @@ class AppCommandContext:
     @property
     def needs_you(self) -> NeedsYouQueue:
         return self._app.adapter.needs_you
+
+    @property
+    def session_cost(self) -> Decimal:
+        return self._app.reducer.session_cost
 
     @property
     def session_short(self) -> str:
@@ -82,6 +87,9 @@ class AppCommandContext:
 
     def set_mode(self, mode_id: str) -> None:
         self._app.set_mode_by_id(mode_id)
+
+    def set_theme(self, name: str) -> None:
+        self._app.set_theme_by_name(name)
 
     def toggle_lanes(self) -> None:
         self._app.action_toggle_lanes()

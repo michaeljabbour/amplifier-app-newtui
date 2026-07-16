@@ -145,14 +145,16 @@ async def test_click_focuses_that_lane() -> None:
 
 
 @pytest.mark.asyncio
-async def test_escape_closes_and_posts_closed() -> None:
+async def test_close_action_hides_and_posts_closed() -> None:
+    # Esc is resolved by the app via keymap.ESC_CHAIN (spec §5) — the panel
+    # has no local escape binding; the chain invokes ``action_close``.
     app = LanesHost()
     async with app.run_test() as pilot:
         panel = app.query_one(LanesPanel)
         panel.update_lanes(RECORDS)
         panel.show_panel()
         await pilot.pause()
-        await pilot.press("escape")
+        panel.action_close()
         await pilot.pause()
         assert app.closed == 1
         assert not panel.display

@@ -7,6 +7,8 @@ tests (no Textual involved).
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from amplifier_app_newtui.commands.context import ContextUsage
@@ -26,6 +28,7 @@ class FakeCommandContext:
         self._needs_you = NeedsYouQueue()
         self._ids = BlockIdAllocator()
         self._usage = ContextUsage(conversation=52_000, tools=18_000, memory=8_000)
+        self.session_cost = Decimal("0")
         self.mcp_stats: tuple = ()
         self.tallies: tuple = ()
         self.overrides: tuple = ()
@@ -89,6 +92,9 @@ class FakeCommandContext:
 
     def set_mode(self, mode_id: str) -> None:
         self.calls.append(f"set_mode:{mode_id}")
+
+    def set_theme(self, name: str) -> None:
+        self.calls.append(f"set_theme:{name}")
 
     def toggle_lanes(self) -> None:
         self.calls.append("toggle_lanes")

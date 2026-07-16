@@ -47,7 +47,7 @@ class FakeCoordinator:
         self.cancellation = FakeCancellation()
         self.capabilities: dict[str, Any] = {}
         self.approval_system = object()
-        self.display_system = None
+        self.display_system: Any = None
 
     def get(self, name: str) -> Any:
         return self.hooks if name == "hooks" else None

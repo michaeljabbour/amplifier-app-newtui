@@ -67,7 +67,13 @@ async def test_approval_bar_replaces_composer_arrows_and_confirm() -> None:
         assert bar.option_texts() == ("Allow once", "› Allow always", "Deny")
         await pilot.press("tab")
         assert bar.option_texts() == ("Allow once", "Allow always", "› Deny")
-        await pilot.press("left")
+        # Shift+tab also cycles the selection (mockup: e.key === "Tab"
+        # matches with or without shift) — it must NOT cycle the mode.
+        mode_before = app.mode_id
+        await pilot.press("shift+tab")
+        assert bar.option_texts() == ("› Allow once", "Allow always", "Deny")
+        assert app.mode_id == mode_before
+        await pilot.press("right")
         assert bar.option_texts() == ("Allow once", "› Allow always", "Deny")
         await pilot.press("left")
 
@@ -82,6 +88,28 @@ async def test_approval_bar_replaces_composer_arrows_and_confirm() -> None:
         state = app.footer_bar.state
         assert state.shipped
         assert " ▲" in footer_left_text(state)
+
+
+@pytest.mark.asyncio
+async def test_approval_keeps_keyboard_when_lanes_toggle_while_open() -> None:
+    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=SIZE) as pilot:
+        await _reach_pytest_approval(pilot, app)
+
+        # ctrl+t may open the lanes panel (mockup fires it during an
+        # approval) but the approval bar keeps the keyboard (spec §7)…
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        assert app.lanes_panel.display
+        assert app.approval_bar is not None
+
+        # …so Esc still resolves Deny (mockup: the approval branch runs
+        # before the esc chain), not close-lanes.
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        assert app.approval_bar is None
+        blocked = blocks_of(app, "blocked")[-1]
+        assert blocked.cmd == DENY_BLOCKED_CMD
 
 
 @pytest.mark.asyncio
@@ -155,13 +183,24 @@ async def test_auto_mode_deferred_decision_ctrl_y_needs_you_flow() -> None:
         assert header == "· Needs you  1 deferred decision"
 
         # Acting on the decision logs "Applying decision: …" and clears
-        # the badge + the block.
-        await pilot.click(f"#block-{needs_you.id}")
+        # the badge; scrollback is append-only (mockup §7), so the
+        # Needs-you listing stays in the transcript. The click handler is
+        # per decision row (mockup html:286-292), never the header.
+        await pilot.click(f"#needs-you-row-{entry.decision_id}")
         await pilot.pause()
         assert adapter.needs_you.pending_count == 0
         assert app.footer_bar.state.waiting == 0
-        assert not blocks_of(app, "needs_you")
-        assert any(
-            DEMO_DEFERRED_DECISION.applied_narration in "".join(s.text for s in b.spans)
-            for b in blocks_of(app, "answer")
-        )
+        assert blocks_of(app, "needs_you") == [needs_you]
+        # Spec §12: transcript clicks never strand the keyboard — the
+        # composer keeps keyboard focus through the row/chip click.
+        await pilot.press("z")
+        assert app.composer.text == "z"
+        # The applied decision is a narration line: bright "● " marker +
+        # the verbatim mockup text (design-v3-cohesive.html:289).
+        applied = [
+            b for b in blocks_of(app, "narration")
+            if b.text == DEMO_DEFERRED_DECISION.applied_narration
+        ]
+        assert len(applied) == 1
+        line = "".join(s.text for s in render_block(applied[0], 200)[0])
+        assert line == f"● {DEMO_DEFERRED_DECISION.applied_narration}"

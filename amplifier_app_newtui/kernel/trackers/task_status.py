@@ -70,7 +70,7 @@ class TaskStatusTracker:
         return HookResult(action="continue")
 
     def register_hooks(self, hooks: Any, *, priority: int = 50) -> Callable[[], None]:
-        unregister_callbacks: list[Callable[[], None]] = []
+        unregister_callbacks: list[Callable[..., object]] = []
         for event in self.EVENTS:
             unregister = hooks.register(
                 event,

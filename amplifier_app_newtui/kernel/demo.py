@@ -106,6 +106,11 @@ DEMO_BANNER: tuple[str, str] = (
 DEMO_SESSION_COST_START = Decimal("0.57")
 """Session spend at mount time (mockup ``this.cost = 0.57``); the seed
 turn's $0.17 is already baked into it."""
+DEMO_MEMORY_TOKENS = 8_000
+"""Persistent cached prefix (system prompt + memory files + tool defs)
+every demo provider call reads back — carried as ``cache_read`` on each
+usage event so ``/context`` shows the mockup's populated memory bucket
+(cmdContext legend ``memory 8k``)."""
 
 APPROVAL_OPTIONS: tuple[str, str, str] = ("Allow once", "Allow always", "Deny")
 
@@ -115,6 +120,7 @@ DemoRole = Literal["narration", "answer", "recap", "idea"]
 SleepFn = Callable[[float], Awaitable[None]]
 ApproverFn = Callable[[str, tuple[str, ...]], Awaitable[str]]
 SteerSourceFn = Callable[[], str | None]
+ModeSourceFn = Callable[[], str]
 
 
 class _FrozenModel(BaseModel):
@@ -175,9 +181,10 @@ SEED_NARRATION = "Reading the repo layout and entry points to ground the summary
 SEED_COMMANDS: tuple[str, str] = ("ls -la", "cat pyproject.toml | head -40")
 SEED_TOOL_BODY = "$ ls -la && cat pyproject.toml | head -40"
 SEED_ANSWER = (
-    "This repo is the command-line app for Amplifier. If amplifier-core is the "
-    "engine, this is the dashboard and steering wheel: the amplifier command "
-    "starts sessions, configures providers, loads bundles, and renders this UI."
+    "This repo is the **command-line app for Amplifier**. If amplifier-core is "
+    "the engine, this is the dashboard and steering wheel: the `amplifier` "
+    "command starts sessions, configures providers, loads bundles, and renders "
+    "this UI."
 )
 
 STORE_PLAN_TITLE = "Refactor session store"
@@ -223,6 +230,11 @@ AUTO_ANSWER = (
     "waiting in your decision queue."
 )
 AUTO_RECAP = "Goal: durable session store. Next: answer the deferred push decision (ctrl-y)."
+
+INTERRUPTED_RECAP = (
+    "Interrupted. Goal: durable session store. Context saved; resume or restate direction."
+)
+"""Mockup interrupt close-out: ``✳ `` dimmer + this text dim italic."""
 
 PLAN_PROMPT = "how should we make session history durable?"
 PLAN_MODE_NOTICE = "mode plan · read-only"
@@ -295,6 +307,8 @@ class DemoLane(_FrozenModel):
     """The delegated brief shown as the ``[delegated]`` user line on focus."""
     state_recap: str
     """State recap line at the bottom of the focus transcript."""
+    result: str
+    """Completion result summary (``tests ✔`` / ``3 findings`` / ``2 files``)."""
     tree_spawn: str
     """Live-tree label while running: ``<name> · <activity> · $<cost>``."""
     tree_done: str
@@ -317,6 +331,7 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         panel_line="  ◐ researcher · scanning provider docs · 41s · $0.09",
         brief="Scan the provider docs and list every capability the runtime does not exercise.",
         state_recap="running · 41s · $0.09",
+        result="3 findings",
         tree_spawn="researcher · scanning provider docs · $0.09",
         tree_done="researcher · done · 3 findings · 4s · $0.11",
         done_at_ms=4400,
@@ -341,6 +356,7 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         panel_line="  ■ coder      · migrating store        · 2m  · $0.31",
         brief="Move session history behind the durable SessionStore interface.",
         state_recap="running · 2m 04s · $0.31",
+        result="2 files",
         tree_spawn="coder · migrating store · $0.31",
         tree_done="coder · done · 2 files · 6s · $0.34",
         done_at_ms=6000,
@@ -365,6 +381,7 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         panel_line="  ✔ tester     · done · tests ✔         · 55s · $0.07",
         brief="Run the store test suite and report failures with evidence.",
         state_recap="completed · 55s · $0.07 · tests ✔",
+        result="tests ✔",
         tree_spawn="tester · uv run pytest tests/ -q · $0.07",
         tree_done="tester · done · tests ✔ · 2s · $0.07",
         done_at_ms=2600,
@@ -407,6 +424,8 @@ class DemoDeferredDecision(_FrozenModel):
     text: str
     chip_label: str
     applied_narration: str
+    highlight: str = ""
+    """Question substring the UI renders teal (mockup: ``mj/waypoint``)."""
 
 
 DEMO_DEFERRED_DECISION = DemoDeferredDecision(
@@ -415,6 +434,7 @@ DEMO_DEFERRED_DECISION = DemoDeferredDecision(
         "Push to fork mj/waypoint instead?"
     ),
     chip_label="yes · push to fork",
+    highlight="mj/waypoint",
     applied_narration=(
         "Applying decision: pushing to fork mj/waypoint. "
         "Trust-slot suggestion queued for /improve."
@@ -623,6 +643,35 @@ def build_denied_spec() -> DemoTurnSpec:
     )
 
 
+def interrupted_spec(key: TurnKey, secs: int, tokens: int) -> DemoTurnSpec:
+    """Close-out for an esc-interrupted store turn.
+
+    Mockup ``runTurn``: the rule is ``tele + " · interrupted"`` where
+    ``tele`` uses the *actual* elapsed secs/toks at the break and
+    ``turnCost = 0.04 + secs * 0.01``; the checkpoint is labeled
+    ``store refactor · interrupted`` and nothing ships.
+    """
+    base = DEMO_TURN_BY_KEY[key]
+    cost = store_turn_cost(secs)
+    stem = base.checkpoint_label.rsplit(" · ", 1)[0]
+    return base.model_copy(
+        update={
+            "duration_ms": secs * 1000,
+            "secs_text": f"{secs}s",
+            "tokens": tokens,
+            "cost": cost,
+            "cost_after": base.cost_after - base.cost + cost,
+            "outcome": "interrupted",
+            "shipped": False,
+            "rule_label": rule_label(f"{secs}s", tokens, base.cached_pct, cost, "interrupted"),
+            "checkpoint_label": f"{stem} · interrupted",
+            "answer": None,
+            "recap": INTERRUPTED_RECAP,
+            "end_notice": None,
+        }
+    )
+
+
 # --------------------------------------------------------------------------
 # The runtime
 # --------------------------------------------------------------------------
@@ -652,6 +701,12 @@ class DemoRuntime:
         applied as the ``Applying steer: <text>`` narration — the caller
         removes it from its queue when handing it over (DESIGN-SPEC §5:
         consumed steer removed).
+    mode_source:
+        ``() -> mode_id`` consulted at the store turn's approval step —
+        the mockup's LIVE mode check (``if (this.mode().id === "chat"
+        && i === 1)``): only chat mode asks for the pytest approval;
+        build trust is ``auto read,test`` so pytest auto-runs. Defaults
+        to the turn spec's scripted mode.
     sleep:
         ``async (seconds) -> None`` used for pacing. Inject a no-op for
         instant, zero-sleep test runs; virtual time is unaffected.
@@ -666,20 +721,37 @@ class DemoRuntime:
         approver: ApproverFn | None = None,
         sleep: SleepFn | None = None,
         steer_source: SteerSourceFn | None = None,
+        mode_source: ModeSourceFn | None = None,
         start_ts: float = 0.0,
     ) -> None:
         self.queue: asyncio.Queue[UIEvent] = queue if queue is not None else asyncio.Queue()
         self._approver: ApproverFn = approver or _auto_allow
         self._sleep: SleepFn = sleep or asyncio.sleep
         self._steer_source: SteerSourceFn | None = steer_source
+        self._mode_source: ModeSourceFn | None = mode_source
         self._clock_ms: int = round(start_ts * 1000)
         self._seq = 0
         self._tool_seq = 0
         self._group_seq = 0
         self._turn_ms = 0
+        self._turn_tokens = 0
         self._block_index = 0
         self._request_id = ""
         self._ticks: list[int] | None = None
+        self._running = False
+        self._interrupted = False
+        self._prompt_override: str | None = None
+        """Verbatim user text echoed as this turn's user line (mockup
+        ``send()``/``drainQueue()``: ``this.userLine(text)`` keeps the
+        typed text even though the turn script is fixed)."""
+        self._suppress_mode_notice = False
+        """One-shot: drop the next turn's scripted mode notice (mockup
+        ``drainQueue`` runs a drained turn without any ``setMode``, so
+        no mode notice may overwrite ``queued message picked up``)."""
+        self.interrupted_close: DemoTurnSpec | None = None
+        """Set when a store turn breaks on esc: the live-telemetry
+        close-out spec the adapter serves for that prompt (mockup
+        ``tele + " · interrupted"``). Cleared at the next turn start."""
 
     # -- plumbing ---------------------------------------------------------
 
@@ -711,10 +783,13 @@ class DemoRuntime:
             self._clock_ms += step
             ms -= step
             if self._ticks and self._turn_ms % 1000 == 0:
+                tick = self._ticks.pop(0)
+                self._turn_tokens += tick
                 await self._emit(
                     ProviderResponseUsage(
                         **self._env(),
-                        output_tokens=self._ticks.pop(0),
+                        output_tokens=tick,
+                        cache_read=DEMO_MEMORY_TOKENS,
                         model=DEMO_MODEL,
                     )
                 )
@@ -814,27 +889,51 @@ class DemoRuntime:
         if text:
             await self._text(f"Applying steer: {text}", "narration")
 
+    def interrupt(self) -> bool:
+        """Esc while running (mockup ``if (this.running) this.interrupt = true``).
+
+        The store turns honor the flag at their next step boundary;
+        returns False when no turn is running.
+        """
+        if not self._running:
+            return False
+        self._interrupted = True
+        return True
+
     async def _begin_turn(self, key: TurnKey) -> DemoTurnSpec:
         spec = DEMO_TURN_BY_KEY[key]
         self._turn_ms = 0
+        self._turn_tokens = 0
+        self._running = True
+        self._interrupted = False
+        self.interrupted_close = None
         self._block_index = 0
         self._request_id = f"demo-req-{key}"
         self._ticks = list(tick_tokens(key)) if key in _TICK_COUNTS else None
-        if spec.mode_notice:
+        if spec.mode_notice and not self._suppress_mode_notice:
             await self._emit(
                 Notification(**self._env(), message=spec.mode_notice, source="mode")
             )
-        await self._emit(PromptSubmit(**self._env(), prompt=spec.prompt))
+        self._suppress_mode_notice = False
+        prompt = self._prompt_override or spec.prompt
+        self._prompt_override = None
+        await self._emit(PromptSubmit(**self._env(), prompt=prompt))
         await self._emit(ExecutionStart(**self._env()))
         return spec
 
     async def _end_turn(
-        self, spec: DemoTurnSpec, *, response: str = "", notice: str | None = None
+        self,
+        spec: DemoTurnSpec,
+        *,
+        response: str = "",
+        notice: str | None = None,
+        status: Literal["success", "cancelled", "incomplete"] = "success",
     ) -> None:
         self._ticks = None
+        self._running = False
         await self._emit(
             OrchestratorComplete(
-                **self._env(), orchestrator="demo", turn_count=1, status="success"
+                **self._env(), orchestrator="demo", turn_count=1, status=status
             )
         )
         await self._emit(ExecutionEnd(**self._env()))
@@ -855,8 +954,20 @@ class DemoRuntime:
         await self.run_agents_turn()
         await self._emit(SessionEnd(**self._env()))
 
-    async def run_turn(self, key: TurnKey) -> None:
-        """Dispatch a single scripted turn by key."""
+    async def run_turn(
+        self, key: TurnKey, *, prompt: str | None = None, queued: bool = False
+    ) -> None:
+        """Dispatch a single scripted turn by key.
+
+        ``prompt`` echoes the user's own text as the turn's user line
+        (mockup ``send()``/``drainQueue()`` call ``userLine(text)`` with
+        the typed text verbatim before the fixed script runs).
+        ``queued`` marks a queue-drained turn: the mockup ``drainQueue``
+        never calls ``setMode``, so the scripted mode notice is skipped
+        and the ``queued message picked up`` notice stays visible.
+        """
+        self._prompt_override = prompt
+        self._suppress_mode_notice = queued
         await {
             "seed": self.run_seed,
             "build": self.run_build_turn,
@@ -883,7 +994,10 @@ class DemoRuntime:
         await self._text(SEED_ANSWER, "answer")
         await self._emit(
             ProviderResponseUsage(
-                **self._env(), output_tokens=spec.tokens, model=DEMO_MODEL
+                **self._env(),
+                output_tokens=spec.tokens,
+                cache_read=DEMO_MEMORY_TOKENS,
+                model=DEMO_MODEL,
             )
         )
         await self._end_turn(spec, response=SEED_ANSWER)
@@ -904,11 +1018,15 @@ class DemoRuntime:
         for i, (step, narration, command) in enumerate(
             zip(STORE_STEPS, STORE_NARRATIONS, STORE_COMMANDS, strict=True)
         ):
+            if self._interrupted:  # mockup: step-boundary break
+                break
             await self._apply_steer()
             statuses[i] = "active"
             await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
             await self._text(narration, "narration")
             await self._wait(1300)
+            if self._interrupted:
+                break
             if auto and i == 2:
                 tool_input = {"command": FORCE_PUSH_COMMAND}
                 call_id = await self._tool_pre("bash", tool_input)
@@ -939,7 +1057,12 @@ class DemoRuntime:
                     )
                 )
             else:
-                if not auto and i == 1:
+                # Mockup: LIVE mode at the step boundary gates the pytest
+                # approval (``if (this.mode().id === "chat" && i === 1)``)
+                # — spec §4: build trust is ``auto read,test``, so any
+                # non-chat mode auto-runs pytest with no ask.
+                live_mode = self._mode_source() if self._mode_source else spec.mode
+                if not auto and i == 1 and live_mode == "chat":
                     await self._emit(
                         ApprovalRequired(
                             **self._env(),
@@ -970,6 +1093,10 @@ class DemoRuntime:
                 tool_input = {"command": command}
                 call_id = await self._tool_pre("bash", tool_input)
                 await self._wait(1400)
+                if self._interrupted:
+                    # Mockup breaks before rm(cmdLine): the live ``└ $ cmd``
+                    # line stays in the transcript, no collapsed tool line.
+                    break
                 await self._tool_post(
                     call_id, "bash", tool_input, {"output": "(output collapsed)"}
                 )
@@ -977,6 +1104,16 @@ class DemoRuntime:
             await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
             await self._wait(400)
         self._ticks = None
+        if self._interrupted:
+            # Mockup interrupt close-out: italic recap + ``· interrupted``
+            # rule from the actual elapsed secs/toks; the end notice
+            # (``turn interrupted · context saved``) comes from the UI.
+            self.interrupted_close = interrupted_spec(
+                "auto" if auto else "build", self._turn_ms // 1000, self._turn_tokens
+            )
+            await self._text(INTERRUPTED_RECAP, "recap")
+            await self._end_turn(spec, status="cancelled")
+            return
         answer = AUTO_ANSWER if auto else build_answer(denied)
         recap = AUTO_RECAP if auto else BUILD_RECAP
         await self._text(answer, "answer")
@@ -1001,7 +1138,12 @@ class DemoRuntime:
         await self._wait(700)
         await self._text(PLAN_RECAP, "recap")
         await self._emit(
-            ProviderResponseUsage(**self._env(), output_tokens=spec.tokens, model=DEMO_MODEL)
+            ProviderResponseUsage(
+                **self._env(),
+                output_tokens=spec.tokens,
+                cache_read=DEMO_MEMORY_TOKENS,
+                model=DEMO_MODEL,
+            )
         )
         await self._end_turn(spec, notice=spec.end_notice)
 
@@ -1015,7 +1157,12 @@ class DemoRuntime:
             await self._wait(450)
         await self._text(BRAINSTORM_RECAP, "recap")
         await self._emit(
-            ProviderResponseUsage(**self._env(), output_tokens=spec.tokens, model=DEMO_MODEL)
+            ProviderResponseUsage(
+                **self._env(),
+                output_tokens=spec.tokens,
+                cache_read=DEMO_MEMORY_TOKENS,
+                model=DEMO_MODEL,
+            )
         )
         await self._end_turn(spec)
 
@@ -1043,6 +1190,7 @@ class DemoRuntime:
                     sub_session_id=lane.sub_session_id,
                     parent_session_id=DEMO_SESSION_ID,
                     success=True,
+                    result=lane.result,
                 )
             )
         self._ticks = None
@@ -1079,6 +1227,7 @@ __all__ = [
     "DEMO_EVIDENCE",
     "DEMO_LANES",
     "DEMO_LANE_BY_NAME",
+    "DEMO_MEMORY_TOKENS",
     "DEMO_MODEL",
     "DEMO_PROVIDER",
     "DEMO_SEED",
@@ -1097,6 +1246,7 @@ __all__ = [
     "DemoRuntime",
     "DemoTurnSpec",
     "FORCE_PUSH_COMMAND",
+    "INTERRUPTED_RECAP",
     "PLAN_END_NOTICE",
     "PLAN_MODE_NOTICE",
     "PLAN_NARRATION",
@@ -1118,6 +1268,7 @@ __all__ = [
     "build_answer",
     "build_denied_spec",
     "format_k_tokens",
+    "interrupted_spec",
     "rule_label",
     "store_turn_cost",
     "tick_tokens",

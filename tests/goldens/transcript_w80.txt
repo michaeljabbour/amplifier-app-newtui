@@ -17,22 +17,22 @@
 [$dimmer]  └ [/][$dim]$ ls -la[/]
 
 === plan ===
-[$orange]· [/][$fg]Refactor session store[/][$dim]  (3.0s · ↓ 1.4k tok)[/]
+[$orange]· [/][$fg]Refactor session store[/][$dim] (3s · ↓ 1.4k tok)[/]
 [$green]  ✔ [/][$dim]Audit persistence paths[/]
-[bold $orange]  ■ [/][bold $bright]Migrate history to durable store[/]
+[$orange]  ■ [/][bold $bright]Migrate history to durable store[/]
 [$dimmer]  □ [/][$dim]Verify and push[/]
 
 === blocked ===
 [$red]  ⊘ blocked · [/][$red]git push --force origin main[/][$dim] · outside user authorization[/][$dim] · finding safer path[/]
 
 === working_status ===
-[$orange]✳ [/][$dim]working · 8.0s · ↓ 3.2k tok · [/][$dimmer]esc to interrupt · type to steer[/]
+[$orange]✳ [/][$dim]working · 8s · ↓ 3.2k tok · 1 agent · [/][$dimmer]esc to interrupt · type to steer[/]
 
 === recap ===
 [$dimmer]✳ [/][italic $dim]Goal: durable session store. Next: open PR against main.[/]
 
 === answer ===
-[$fg]This repo is the [/][bold $bright]command-line app[/][$fg] for Amplifier. If amplifier-core is the engine, this is the dashboard and steering wheel: the [/][$teal]amplifier[/][$fg] command starts sessions, configures providers, loads bundles, and renders this UI.[/]
+[$fg]This repo is the [/][bold $bright]command-line app for Amplifier[/][$fg]. If amplifier-core is the engine, this is the dashboard and steering wheel: the [/][$teal]amplifier[/][$fg] command starts sessions, configures providers, loads bundles, and renders this UI.[/]
 
 === steer_echo ===
 [$teal]  ↳ [/][$teal]steer queued: "focus on the store tests first" [/][$dimmer]· applies at next step boundary[/]
@@ -41,31 +41,32 @@
 [$rule]──────────────────────────────────[/][$rule] [/][$dimmer]6.1s · 83.9k tok, 91% cached · $0.17 · answer[/]
 
 === evidence ===
-[$teal]· [/][bold $teal]Evidence[/][$fg]  1/2[/][$dimmer] · ←/→ select · enter expand · esc close[/]
-[$teal on $bg-tab]  ¹ [/][$fg on $bg-tab]"dashboard and steering wheel"[/][$dim on $bg-tab] → [/][$dim on $bg-tab]Ran 2 shell commands (pyproject entry points)[/]
+[$teal]· [/][bold $teal]Evidence[/][$dimmer]  1/2 · ←/→ select · enter expand · esc close[/]
+[$teal]  ¹ [/][$fg]"dashboard and steering wheel"[/][$dim] → [/][$dim]Ran 2 shell commands (pyproject entry points)[/]
 [$teal]  ² [/][$fg]"loads bundles"[/][$dim] → [/][$dim]grep amplifier_core bundle loader[/]
 
 === ledger ===
-[$blue]· [/][bold $bright]Session ledger[/][$dim]  e07de0 · anchors[/]
-[$fg]  6 turns · $1.48 · 3 shipped · 3 answer-only · cache hit 88%[/]
+[$blue]· [/][$fg]Session ledger  e07de0 · anchors[/]
+[$dim]  6 turns · $1.48 · 3 shipped · 3 answer-only · cache hit 88%[/]
 
 === context ===
-[$blue]· [/][bold $bright]Context[/][$dim]  39% of 200k[/]
-[$dimmer]  [/][$blue]████[/][$teal]██[/][$orange]█[/][$dimmer]░░░[/]
-[$dim]  conversation · tools · memory · free[/]
+[$blue]· [/][$fg]Context  39% of 200k[/]
+[$dim]  ███████░░░  conversation · tools · memory · free[/]
 
 === needs_you ===
-[$orange]· [/][bold $orange]Needs you[/][$fg]  1 deferred decision[/]
-[$orange]  1. [/][$fg]Push branch to origin was blocked (outside trust boundary). Push to fork mj/waypoint instead?[/][$dim] · trust boundary[/][$fg] [/][$green on $bg-tab]\[yes · push to fork][/]
+[$orange]· [/][$orange]Needs you  1 deferred decision[/]
+[$orange]  1 [/][$fg]Push branch to origin was blocked (outside trust boundary). Push to fork [/][$teal]mj/waypoint[/][$fg] instead?[/][$dim] · trust boundary[/][$fg]  [/][$green on $bg-tab]\[yes · push to fork][/]
 
 === doctor ===
+[$blue]· [/][$fg]Doctor  1 finding · nothing changed yet[/]
 [$green]  ✔ [/][$dim]bundle anchors resolves[/]
 [$green]  ✔ [/][$dim]provider OpenAI reachable[/]
-[$orange]  1. [/][$orange]uv run pytest denied 3× this session — consider a trust slot[/]
+[$orange]  1 [/][$dim]uv run pytest denied 3× this session — consider a trust slot[/]
 
 === improve ===
-[$blue]· [/][bold $bright]Improve[/][$dim]  1 proposal[/]
-[$teal]  1. [/][$fg]Add trust slot: push to fork mj/waypoint[/][$dim] · denied push repeated across turns[/]
+[$blue]· [/][$fg]Improve  from ledger + denial log · proposes, never applies silently[/]
+[$dim]  1 allowlist: [/][$green]uv run pytest[/][$dim] approved 22/22 times · add to auto[/]
+[$dim]  2 trust slot: 3 denials on push-to-fork all overridden · add fork remote to boundary[/]
 
 === brainstorm_idea ===
-[$teal]  1. [/][$fg]Ambient tab color: orange while running, red when a decision waits[/]
+[$fg]  1 Ambient tab color: orange while running, red when a decision waits[/]

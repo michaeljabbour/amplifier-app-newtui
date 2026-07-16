@@ -237,6 +237,54 @@ async def test_fork_in_memory_context_failure_leaves_ledger() -> None:
 
 
 @pytest.mark.asyncio
+async def test_real_runtime_fork_rewinds_live_context_confirm_then_trim() -> None:
+    """RealRuntime.fork: in-memory fork + context.set_messages(), then trim."""
+    from amplifier_app_newtui.kernel.runtime import RealRuntime
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.messages = live_messages(3)
+
+        async def get_messages(self) -> list[dict[str, Any]]:
+            return list(self.messages)
+
+        async def set_messages(self, messages: list[dict[str, Any]]) -> None:
+            self.messages = list(messages)
+
+    class FakeCoordinator:
+        def __init__(self, context: FakeContext) -> None:
+            self._context = context
+
+        def get(self, name: str) -> Any:
+            return self._context if name == "context" else None
+
+    class FakeInitialized:
+        def __init__(self, context: FakeContext) -> None:
+            self.session_id = "live-session"
+            self.coordinator = FakeCoordinator(context)
+
+    runtime = RealRuntime()
+    context = FakeContext()
+    ledger = make_ledger([1, 2, 3])
+
+    with pytest.raises(RewindError, match="not completed"):
+        await runtime.fork("t1", ledger)  # no session yet → nothing trimmed
+    assert ledger.turn_count == 3
+
+    runtime._initialized = FakeInitialized(context)  # type: ignore[assignment]
+    outcome = await runtime.fork("t1", ledger)
+
+    assert outcome.in_memory and outcome.forked_from_turn == 1
+    # The live context really rewound: only turn 1 survives.
+    assert context.messages == [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "answer 1"},
+    ]
+    # …and the ledger trimmed only after the context confirmed.
+    assert [cp.id for cp in ledger.checkpoints] == ["t1"]
+
+
+@pytest.mark.asyncio
 async def test_injected_fork_fn_receives_contract_arguments(tmp_path: Path) -> None:
     """The fork seam passes exactly the ADR-0007 contract arguments."""
     calls: dict[str, Any] = {}

@@ -84,8 +84,8 @@ MODE_PROFILES: dict[ModeId, ModeProfile] = {
 }
 """All five mode profiles keyed by id (DESIGN-SPEC §4 table, verbatim)."""
 
-MODE_CYCLE: tuple[ModeId, ...] = ("chat", "build", "plan", "auto", "brainstorm")
-"""shift+tab cycle order (ported from amplifier-app-cli mode_profiles.py)."""
+MODE_CYCLE: tuple[ModeId, ...] = ("chat", "plan", "brainstorm", "build", "auto")
+"""shift+tab cycle order (mockup Component.MODES array order, DESIGN-SPEC §4)."""
 
 DEFAULT_MODE: ModeId = "chat"
 

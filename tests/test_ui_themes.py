@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from amplifier_app_newtui.ui.themes import (
     DEFAULT_THEME,
     THEME_TOKENS,
@@ -126,3 +128,47 @@ def test_hex_values_live_only_in_themes_module() -> None:
             if hex_pattern.search(line):
                 offenders.append(f"{path.relative_to(package_root)}:{number}: {line.strip()}")
     assert not offenders, f"hex colors outside themes.py: {offenders}"
+
+
+def test_theme_command_is_registered() -> None:
+    """DESIGN-SPEC §1: theme switchable at runtime via a command surface."""
+    from amplifier_app_newtui.commands.builtin import build_registry
+
+    spec = build_registry().get("/theme")
+    assert spec is not None
+    assert spec.desc == "switch theme: slate, graphite, carbon"
+
+
+@pytest.mark.asyncio
+async def test_theme_switch_at_runtime_via_command() -> None:
+    from amplifier_app_newtui.ui.app import NewTuiApp
+    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+
+    from .test_flow_helpers import SIZE, seed_done, type_text
+
+    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        assert app.theme == theme_id(DEFAULT_THEME)  # default slate
+
+        # /theme <name> jumps straight to that theme.
+        await type_text(pilot, "/theme graphite")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.theme == theme_id("graphite")
+        assert app.notice_slot.current == "theme graphite"
+
+        # Bare /theme cycles graphite → carbon.
+        await type_text(pilot, "/theme")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.theme == theme_id("carbon")
+
+        # Unknown names change nothing and explain the choices.
+        await type_text(pilot, "/theme neon")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.theme == theme_id("carbon")
+        assert app.notice_slot.current == (
+            "unknown theme · neon · themes: slate, graphite, carbon"
+        )

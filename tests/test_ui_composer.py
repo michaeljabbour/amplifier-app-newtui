@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.message import Message
@@ -52,7 +54,10 @@ class ComposerApp(App[None]):
         self.messages.append(message)
 
 
-def _of(app: ComposerApp, kind: type[Message]) -> list[Message]:
+MessageT = TypeVar("MessageT", bound=Message)
+
+
+def _of(app: ComposerApp, kind: type[MessageT]) -> list[MessageT]:
     return [m for m in app.messages if isinstance(m, kind)]
 
 
@@ -181,3 +186,26 @@ async def test_set_mode_updates_badge_and_accent_classes() -> None:
         assert not composer.has_class("mode-chat")
         assert badge.has_class("mode-build")
         assert str(badge.content) == "[build]"
+
+
+@pytest.mark.asyncio
+async def test_placeholder_uses_dimmer_token() -> None:
+    """Mockup CSS: input::placeholder { color: var(--dimmer); } (§1/§2)."""
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        del pilot
+        composer_input = app.query_one(ComposerInput)
+        style = composer_input.get_visual_style("text-area--placeholder")
+        assert style.foreground is not None
+        assert style.foreground.hex.lower() == app.theme_variables["dimmer"].lower()
+
+
+@pytest.mark.asyncio
+async def test_palette_filter_is_trimmed_of_trailing_whitespace() -> None:
+    """Mockup onInput: palFilter = value.trim() — '/m ' still filters '/m'."""
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        await pilot.press("slash", "m", "space")
+        await pilot.pause()
+        opens = _of(app, Composer.OpenPalette)
+        assert [m.filter for m in opens] == ["/", "/m", "/m"]

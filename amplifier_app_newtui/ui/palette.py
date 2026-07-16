@@ -9,7 +9,8 @@ Rows: teal command (min-width aligned column) + description + right-
 aligned dimmer tag (``built-in``/``skill``). The selected row (first by
 default) is highlighted ``bg-tab`` with its description brightened to
 ``fg``. ``↑``/``↓`` move the selection, Enter runs the selected row,
-click runs any row, Esc closes.
+click runs any row. Esc closes — but is resolved by the app via
+``keymap.ESC_CHAIN`` (spec §5), never by a local binding here.
 
 The palette is data-driven and *controlled*: it consumes a list of
 :class:`CommandSpec` objects (provided by the commands package) and a
@@ -57,12 +58,22 @@ class CommandSpec(Protocol):
       ``commands.registry.CommandSpec``).
     - ``tag``: right-aligned dimmer origin tag (``built-in``/``skill``).
     - ``group``: spec §6 group header (one of :data:`PALETTE_GROUPS`).
+
+    Read-only properties so narrower registry types (``Literal`` tags and
+    groups) satisfy the protocol.
     """
 
-    name: str
-    desc: str
-    tag: str
-    group: str
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def desc(self) -> str: ...
+
+    @property
+    def tag(self) -> str: ...
+
+    @property
+    def group(self) -> str: ...
 
 
 def filter_commands(
@@ -153,8 +164,8 @@ class PaletteStrip(VerticalScroll):
     string closes it). It posts messages instead of acting:
 
     - :class:`CommandRun` — Enter on the selection or click on any row.
-    - :class:`Closed` — Esc pressed (host clears the composer's ``/`` text
-      and calls ``apply_filter(None)``).
+    - :class:`Closed` — :meth:`action_close` ran (Esc itself is resolved
+      by the app via ``keymap.ESC_CHAIN``, spec §5).
     """
 
     can_focus = True
@@ -169,6 +180,13 @@ class PaletteStrip(VerticalScroll):
         background: $bg-page;
         padding: 0;
         scrollbar-size-vertical: 1;
+        /* All UI color comes from the §1 tokens — never Textual-derived. */
+        scrollbar-color: $rule;
+        scrollbar-color-hover: $dim;
+        scrollbar-color-active: $dim;
+        scrollbar-background: $bg-page;
+        scrollbar-background-hover: $bg-page;
+        scrollbar-background-active: $bg-page;
     }
     """
 
@@ -176,7 +194,10 @@ class PaletteStrip(VerticalScroll):
         Binding("up", "cursor_up", "↑↓ select", show=False),
         Binding("down", "cursor_down", "↑↓ select", show=False),
         Binding("enter", "run", "enter run", show=False),
-        Binding("escape", "close", "esc close", show=False),
+        # No local escape binding: Esc must bubble to the app so it resolves
+        # via keymap.ESC_CHAIN (spec §5 — lane-focus closes before the
+        # palette even while this strip holds keyboard focus). The chain
+        # calls the app's ``close_palette`` when the palette step is reached.
     ]
 
     class CommandRun(Message):
@@ -187,7 +208,7 @@ class PaletteStrip(VerticalScroll):
             super().__init__()
 
     class Closed(Message):
-        """Esc pressed while the palette was open."""
+        """:meth:`action_close` ran while the palette was open."""
 
     def __init__(
         self,

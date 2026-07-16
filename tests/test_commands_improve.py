@@ -23,7 +23,8 @@ def test_allowlist_requires_every_ask_approved() -> None:
         ApprovalTally(action="rare thing", approved=2, asked=2),  # below min → out
     )
     proposals = allowlist_proposals(tallies)
-    assert [p.title for p in proposals] == ["allowlist: uv run pytest"]
+    # Mockup row: dim 'allowlist: ' title + the action named once in green.
+    assert [(p.title, p.action) for p in proposals] == [("allowlist:", "uv run pytest")]
     assert proposals[0].rationale == "approved 22/22 times · add to auto"
 
 
@@ -33,7 +34,7 @@ def test_allowlist_orders_by_ask_volume() -> None:
         ApprovalTally(action="b", approved=9, asked=9),
     )
     proposals = allowlist_proposals(tallies)
-    assert [p.title for p in proposals] == ["allowlist: b", "allowlist: a"]
+    assert [p.action for p in proposals] == ["b", "a"]
 
 
 def test_trust_slot_requires_all_denials_overridden() -> None:
@@ -43,10 +44,12 @@ def test_trust_slot_requires_all_denials_overridden() -> None:
         OverriddenDenial(action="once", denied=1, overridden=1),  # below min → out
     )
     proposals = trust_slot_proposals(overrides)
-    assert [p.title for p in proposals] == ["trust slot: push-to-fork"]
+    # Trust-slot rows name the action once, inside the rationale.
+    assert [p.title for p in proposals] == ["trust slot:"]
+    assert proposals[0].action == ""
     assert (
         proposals[0].rationale
-        == "3 denials on push-to-fork all overridden · add to trust boundary"
+        == "3 denials on push-to-fork all overridden · add fork remote to boundary"
     )
 
 
@@ -55,10 +58,8 @@ def test_improve_proposals_combines_both_kinds_allowlist_first() -> None:
         tallies=(ApprovalTally(action="uv run pytest", approved=3, asked=3),),
         overrides=(OverriddenDenial(action="push-to-fork", denied=2, overridden=2),),
     )
-    assert [p.title for p in proposals] == [
-        "allowlist: uv run pytest",
-        "trust slot: push-to-fork",
-    ]
+    assert [p.title for p in proposals] == ["allowlist:", "trust slot:"]
+    assert [p.action for p in proposals] == ["uv run pytest", ""]
 
 
 def test_no_evidence_no_proposals() -> None:

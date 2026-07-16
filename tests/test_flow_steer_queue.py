@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import AUTO_PROMPT, BUILD_PROMPT
+from amplifier_app_newtui.kernel.demo import AUTO_MODE_NOTICE, BUILD_END_NOTICE
 from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.app_support import STEER_NOTICE
+from amplifier_app_newtui.ui.app_support import QUEUED_NOTICE, STEER_NOTICE
 from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
 from amplifier_app_newtui.ui.footer import footer_left_text, footer_right_text
 from amplifier_app_newtui.ui.transcript import render_block
@@ -90,7 +90,7 @@ async def test_shift_enter_mid_turn_queues_strip_q1_and_auto_drains() -> None:
     async with app.run_test(size=SIZE) as pilot:
         await _start_gated_turn(pilot, app)
 
-        # Running + Shift+Enter → full next-turn message queued.
+        # Running + Shift+Enter → full next-turn message queued + notice.
         await type_text(pilot, "ship the follow-up")
         await pilot.press("shift+enter")
         await pilot.pause()
@@ -98,22 +98,79 @@ async def test_shift_enter_mid_turn_queues_strip_q1_and_auto_drains() -> None:
         assert app.queued_strip.text == (
             '▹ queued next: "ship the follow-up" · runs when this turn ends'
         )
+        assert app.notice_slot.current == QUEUED_NOTICE
         state = app.footer_bar.state
         assert state.queued == 1
         assert footer_left_text(state).endswith(" · q1")
 
-        # Turn end → the queued message auto-runs as its own turn.
+        # A second Shift+Enter REPLACES the queued message (mockup single
+        # slot, ``this.queued = text``) — the badge never exceeds q1.
+        await type_text(pilot, "actually, this instead")
+        await pilot.press("shift+enter")
+        await pilot.pause()
+        assert app.queued_strip.text == (
+            '▹ queued next: "actually, this instead" · runs when this turn ends'
+        )
+        state = app.footer_bar.state
+        assert state.queued == 1
+        assert footer_left_text(state).endswith(" · q1")
+
+        # Turn end → the queued message auto-runs as its own turn. Record
+        # the notice order: the pickup notice must land AFTER the
+        # runtime's end notice (mockup drainQueue), so it stays visible.
+        seen: list[str] = []
+        original_show = app.notice_slot.show_notice
+
+        def _spy(text: str, duration: float | None = None) -> None:
+            seen.append(text)
+            original_show(text, duration)
+
+        app.notice_slot.show_notice = _spy  # type: ignore[method-assign]
         adapter.release()
         assert await wait_for(pilot, lambda: app.approval_bar is not None)
         await pilot.press("enter")  # Allow once
         assert await wait_for(pilot, lambda: rules(app) >= 2)
         assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
+        assert seen.index(BUILD_END_NOTICE) < seen.index("queued message picked up")
+        # The drained turn runs without a setMode (mockup drainQueue), so
+        # its scripted mode notice never overwrites the pickup notice.
+        assert AUTO_MODE_NOTICE not in seen
         # Auto-drained: strip cleared, footer back to q0.
         assert app.queued_strip.queued is None and not app.queued_strip.display
         assert app.footer_bar.state.queued == 0
         assert not adapter.steering.pending
-        # The drained message ran as the next scripted turn.
-        assert any(b.text == AUTO_PROMPT for b in blocks_of(app, "user_line"))
+        # The drained message is echoed verbatim as the user line (mockup
+        # drainQueue: ``this.userLine(next)``) before the scripted turn runs.
+        assert any(
+            b.text == "actually, this instead" for b in blocks_of(app, "user_line")
+        )
+
+
+@pytest.mark.asyncio
+async def test_leftover_steer_discarded_at_turn_end() -> None:
+    """Mockup state machine: a steer not consumed by a step boundary is
+    silently discarded at turn end (runTurn start resets ``this.steer``)
+    — it never rolls forward as a turn the user never sent."""
+    adapter = GatedDemoAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await _start_gated_turn(pilot, app)
+        await type_text(pilot, "never applied")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(blocks_of(app, "steer_echo")) == 1
+
+        # Interrupt: the turn ends before any boundary consumes the steer.
+        await pilot.press("escape")
+        adapter.release()
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        await pilot.pause(0.2)
+
+        # Discarded silently: nothing queued, no auto-run, echo removed.
+        assert not adapter.steering.pending
+        assert not blocks_of(app, "steer_echo")
+        assert rules(app) == 2 and not app.turn_active
+        assert app.footer_bar.state.queued == 0
 
 
 @pytest.mark.asyncio
@@ -147,9 +204,10 @@ async def test_idle_shift_enter_just_sends() -> None:
         await seed_done(pilot, app)
         await type_text(pilot, "hi")
         await pilot.press("shift+enter")
+        # Mockup send(): the typed text is echoed verbatim as the user line.
         assert await wait_for(
             pilot,
-            lambda: any(b.text == BUILD_PROMPT for b in blocks_of(app, "user_line")),
+            lambda: any(b.text == "hi" for b in blocks_of(app, "user_line")),
         )
         assert app.turn_active
         assert not app.adapter.steering.pending  # nothing queued

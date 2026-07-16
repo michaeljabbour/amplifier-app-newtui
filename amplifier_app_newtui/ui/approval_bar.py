@@ -13,6 +13,7 @@ back to the kernel approval broker.
 
 from __future__ import annotations
 
+from rich.cells import cell_len
 from textual import events
 from textual.containers import Horizontal
 from textual.content import Content
@@ -28,7 +29,8 @@ SELECTED_PREFIX = "› "
 DENY_OPTION = "Deny"
 
 _PREV_KEYS = frozenset({"left", "up"})
-_NEXT_KEYS = frozenset({"right", "down", "tab"})
+# Mockup keydown: ``e.key === "Tab"`` cycles with or without shift.
+_NEXT_KEYS = frozenset({"right", "down", "tab", "shift+tab"})
 
 
 class ApprovalOption(Static):
@@ -45,6 +47,7 @@ class ApprovalOption(Static):
     ApprovalOption.-selected {
         color: $bright;
         background: $bg-tab;
+        text-style: bold;
     }
     """
 
@@ -72,23 +75,26 @@ class ApprovalBar(Horizontal):
     DEFAULT_CSS = """
     ApprovalBar {
         width: 100%;
-        height: 1;
+        height: auto;
         background: $bg-chrome;
         padding: 0 1;
     }
-    ApprovalBar > .approval-label {
+    ApprovalBar #approval-head { width: auto; height: 1; }
+    ApprovalBar #approval-options { width: auto; height: 1; }
+    ApprovalBar .approval-label {
         width: auto;
         height: 1;
         color: $orange;
         text-style: bold;
         padding: 0 1 0 0;
     }
-    ApprovalBar > .approval-prompt {
+    ApprovalBar .approval-prompt {
         width: auto;
         height: 1;
         color: $fg;
         padding: 0 2 0 0;
     }
+    ApprovalBar.-wrapped { layout: vertical; }
     """
 
     selected: reactive[int] = reactive(0)
@@ -128,15 +134,37 @@ class ApprovalBar(Horizontal):
         ]
 
     def compose(self):
-        yield Static(APPROVAL_LABEL, classes="approval-label")
-        yield Static(
-            Content.from_markup("$prompt", prompt=self.prompt),
-            classes="approval-prompt",
-        )
-        yield from self._option_widgets
+        with Horizontal(id="approval-head"):
+            yield Static(APPROVAL_LABEL, classes="approval-label")
+            yield Static(
+                Content.from_markup("$prompt", prompt=self.prompt),
+                classes="approval-prompt",
+            )
+        with Horizontal(id="approval-options"):
+            yield from self._option_widgets
 
     def on_mount(self) -> None:
         self._paint_options()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._update_wrap()
+
+    def _update_wrap(self) -> None:
+        """Drop the options onto their own row when one row can't fit all.
+
+        Mirrors the mockup approval strip's ``flex-wrap: wrap`` — every
+        option stays visible and clickable instead of clipping off-screen
+        at narrow terminal widths (spec §7: options are clickable).
+        """
+        width = self.container_size.width
+        if width <= 0:
+            return
+        # label (padding-right 1) + prompt (padding-right 2)
+        needed = cell_len(APPROVAL_LABEL) + 1 + cell_len(self.prompt) + 2
+        # each option chip has ``padding: 0 1``; exactly one carries "› "
+        needed += sum(cell_len(label) + 2 for label in self.options)
+        needed += cell_len(SELECTED_PREFIX)
+        self.set_class(needed > width, "-wrapped")
 
     # -- rendered strings (tests assert on these) ----------------------------
 

@@ -23,6 +23,8 @@ foundation is imported lazily inside the async body only.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -180,6 +182,61 @@ def apply_module_overrides(
         _merge_module_entries(mount_plan, "tools", tool_overrides)
 
     return mount_plan
+
+
+_ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?\}")
+"""``${VAR}`` / ``${VAR:default}`` placeholders in config string values."""
+
+
+def expand_env_placeholders(config: dict[str, Any]) -> dict[str, Any]:
+    """Expand ``${VAR}``/``${VAR:default}`` in every config string, IN PLACE.
+
+    Ported from amplifier-app-cli ``runtime/config_merge.expand_env_vars``
+    (applied to the effective bundle config there), with one fail-safe
+    refinement: a dict value that is EXACTLY one unset ``${VAR}`` with no
+    default is *dropped* rather than expanded to ``""`` — providers treat
+    an absent key as "use my default" but pass ``""`` straight to their
+    SDK (e.g. ``AsyncAnthropic(base_url="")`` → invalid request URL,
+    surfaced as a bare "Connection error"). This mirrors the reference's
+    ``_resolve_env_placeholder(...) or <default>`` pattern in
+    ``provider_loader.py``.
+
+    In place (mutating dicts/lists) because ``mount_plan`` must remain
+    ``prepared.mount_plan`` itself — never a copy (risk #9).
+    """
+
+    def _replace_match(match: re.Match[str]) -> str:
+        default = match.group(2)
+        return os.environ.get(match.group(1), default if default is not None else "")
+
+    def _is_unset_placeholder(value: str) -> bool:
+        match = _ENV_PATTERN.fullmatch(value)
+        return (
+            match is not None
+            and match.group(2) is None
+            and os.environ.get(match.group(1)) is None
+        )
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return _ENV_PATTERN.sub(_replace_match, value)
+        if isinstance(value, dict):
+            for key in [
+                k
+                for k, v in value.items()
+                if isinstance(v, str) and _is_unset_placeholder(v)
+            ]:
+                del value[key]
+            for key in value:
+                value[key] = _walk(value[key])
+            return value
+        if isinstance(value, list):
+            for index in range(len(value)):
+                value[index] = _walk(value[index])
+            return value
+        return value
+
+    return _walk(config)
 
 
 def _entry_key(entry: dict[str, Any]) -> str:
@@ -359,8 +416,11 @@ async def resolve_config(
         progress_callback=progress,
     )
 
-    # 4. Settings overrides — applied to prepared.mount_plan in place.
+    # 4. Settings overrides — applied to prepared.mount_plan in place —
+    #    then ${VAR} placeholder expansion (reference: amplifier-app-cli
+    #    expands the effective bundle config before session creation).
     mount_plan = apply_module_overrides(prepared.mount_plan, settings)
+    expand_env_placeholders(mount_plan)
 
     return ResolvedConfig(
         bundle_name=bundle_name,
@@ -397,6 +457,7 @@ __all__ = [
     "bundle_search_paths",
     "deep_merge",
     "discover_bundle",
+    "expand_env_placeholders",
     "get_project_slug",
     "is_bundle_uri",
     "list_available_bundles",

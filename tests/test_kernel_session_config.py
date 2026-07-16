@@ -21,6 +21,7 @@ from amplifier_app_newtui.kernel.config import (
     bundle_search_paths,
     deep_merge,
     discover_bundle,
+    expand_env_placeholders,
     get_project_slug,
     is_bundle_uri,
     list_available_bundles,
@@ -179,6 +180,39 @@ def test_apply_generic_overrides_before_specific() -> None:
 # --------------------------------------------------------------------------
 # project slug
 # --------------------------------------------------------------------------
+
+
+def test_expand_env_placeholders_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``${VAR}``/``${VAR:default}`` expand in place (amplifier-app-cli
+    ``expand_env_vars`` parity); a whole-value unset ``${VAR}`` is DROPPED
+    so providers fall back to their SDK defaults instead of getting ""."""
+    monkeypatch.setenv("NEWTUI_TEST_URL", "https://example.test")
+    monkeypatch.delenv("NEWTUI_TEST_UNSET", raising=False)
+    plan = {
+        "providers": [
+            {
+                "module": "provider-anthropic",
+                "config": {
+                    "base_url": "${NEWTUI_TEST_URL}",
+                    "unset_whole": "${NEWTUI_TEST_UNSET}",
+                    "unset_partial": "prefix-${NEWTUI_TEST_UNSET}",
+                    "with_default": "${NEWTUI_TEST_UNSET:https://default.test}",
+                    "nested": ["${NEWTUI_TEST_URL}/v1", 7],
+                },
+            }
+        ],
+        "untouched": 42,
+    }
+    inner = plan["providers"][0]["config"]
+    result = expand_env_placeholders(plan)
+    assert result is plan  # in place — mount_plan identity preserved
+    assert plan["providers"][0]["config"] is inner
+    assert inner["base_url"] == "https://example.test"
+    assert "unset_whole" not in inner  # dropped, not ""
+    assert inner["unset_partial"] == "prefix-"  # embedded stays reference-compatible
+    assert inner["with_default"] == "https://default.test"
+    assert inner["nested"] == ["https://example.test/v1", 7]
+    assert plan["untouched"] == 42
 
 
 def test_get_project_slug(tmp_path: Path) -> None:

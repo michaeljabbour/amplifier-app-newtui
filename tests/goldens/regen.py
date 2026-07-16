@@ -34,6 +34,7 @@ from amplifier_app_newtui.kernel.demo import (
     DEMO_SESSION_ID,
     DEMO_TURN_BY_KEY,
     FORCE_PUSH_COMMAND,
+    SEED_ANSWER,
     SEED_COMMANDS,
     SEED_NARRATION,
     SEED_PROMPT,
@@ -80,15 +81,10 @@ WIDTHS: tuple[int, ...] = (40, 80, 97, 120)
 
 _SEED = DEMO_TURN_BY_KEY["seed"]
 
-# Answer source: the seed answer with the mockup's selective emphasis
+# Answer source: the seed answer carries the mockup's selective emphasis
 # (`amplifier` inline code + one bright-bold run) so the span splitter
 # is exercised by the golden.
-_ANSWER_SOURCE = (
-    "This repo is the **command-line app** for Amplifier. If amplifier-core "
-    "is the engine, this is the dashboard and steering wheel: the `amplifier` "
-    "command starts sessions, configures providers, loads bundles, and "
-    "renders this UI."
-)
+_ANSWER_SOURCE = SEED_ANSWER
 
 _EVIDENCE_LINKS: tuple[EvidenceLink, ...] = tuple(
     EvidenceLink(claim_quote=claim.quote, tool_ref=claim.source)
@@ -128,7 +124,7 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
         WorkingStatus(
             id="g8",
             telemetry=TurnTelemetry(secs=8, tokens_down=3_200),
-            agent_count=0,
+            agent_count=1,
         ),
         Recap(id="g9", goal="durable session store", next="open PR against main"),
         Answer(
@@ -173,11 +169,13 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
                             answer="push to fork",
                         ),
                     ),
+                    highlight=DEMO_DEFERRED_DECISION.highlight,
                 ),
             ),
         ),
         DoctorBlock(
             id="g17",
+            headline="1 finding · nothing changed yet",
             healthy=("bundle anchors resolves", "provider OpenAI reachable"),
             findings=(
                 DoctorFinding(
@@ -190,8 +188,16 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
             id="g18",
             proposals=(
                 ImproveProposal(
-                    title="Add trust slot: push to fork mj/waypoint",
-                    rationale="denied push repeated across turns",
+                    title="allowlist:",
+                    action="uv run pytest",
+                    rationale="approved 22/22 times · add to auto",
+                ),
+                ImproveProposal(
+                    title="trust slot:",
+                    rationale=(
+                        "3 denials on push-to-fork all overridden"
+                        " · add fork remote to boundary"
+                    ),
                 ),
             ),
         ),

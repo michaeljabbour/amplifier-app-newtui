@@ -120,7 +120,7 @@ class StreamStatusTracker:
         return HookResult(action="continue")
 
     def register_hooks(self, hooks: Any, *, priority: int = 60) -> Callable[[], None]:
-        unregister_callbacks: list[Callable[[], None]] = []
+        unregister_callbacks: list[Callable[..., object]] = []
         for event in self.EVENTS:
             unregister = hooks.register(
                 event,

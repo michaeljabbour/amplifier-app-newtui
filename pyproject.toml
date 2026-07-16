@@ -52,7 +52,7 @@ addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
 
 [tool.pyright]
-include = ["amplifier_app_newtui"]
+include = ["amplifier_app_newtui", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "basic"
 

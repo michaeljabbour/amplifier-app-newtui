@@ -64,12 +64,16 @@ def _cmd_ledger(ctx: CommandContext, args: str) -> None:
             session=ctx.session_short,
             bundle=ctx.bundle_name,
             turns=ledger.turn_count,
-            spend=Decimal(ledger.spend),
+            # Mockup cmdLedger prints ``this.cost`` — the session cost the
+            # footer shows (includes any pre-session baseline).
+            spend=Decimal(ctx.session_cost),
             shipped=ledger.shipped_count,
             answer_only=ledger.answer_only_count,
             cache_hit_pct=ledger.cache_hit_pct,
         )
     )
+    # Mockup cmdLedger ends with this exact notice.
+    ctx.show_notice("ledger printed to scrollback")
 
 
 def _cmd_rewind(ctx: CommandContext, args: str) -> None:
@@ -92,6 +96,11 @@ def _cmd_doctor(ctx: CommandContext, args: str) -> None:
     )
     report = run_checks(mcp_stats=mcp_stats, approval_tallies=tallies)
     ctx.post_block(build_doctor_block(ctx.next_block_id(), report))
+
+
+def _cmd_theme(ctx: CommandContext, args: str) -> None:
+    """``/theme`` — cycle; ``/theme graphite`` — jump to a theme (spec §1)."""
+    ctx.set_theme(args.strip().lower())
 
 
 def _cmd_improve(ctx: CommandContext, args: str) -> None:
@@ -183,6 +192,15 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="tune config from ledger + denial log",
         tag="skill",
         handler=_cmd_improve,
+    ),
+    # Runtime theme switch (DESIGN-SPEC §1) — the one command beyond the
+    # mockup COMMANDS table ("themes … in Tweaks" has no TUI equivalent).
+    CommandSpec(
+        group="Repair",
+        name="/theme",
+        desc="switch theme: slate, graphite, carbon",
+        tag="built-in",
+        handler=_cmd_theme,
     ),
 )
 

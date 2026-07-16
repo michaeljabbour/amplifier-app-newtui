@@ -1,8 +1,11 @@
 """Turn-level telemetry, outcomes, checkpoints and the session ledger.
 
-Turn identity (ADR-0007 resolution 4): the app assigns a monotonic
-``turn_id`` at ``prompt:submit``. Steers rolled forward do NOT increment
-it; queued messages DO. Every turn rule records a :class:`Checkpoint`
+Turn identity (ADR-0007 resolution 4): the app assigns ``turn_id`` at
+``prompt:submit`` as the 1-indexed user-message position in the live
+context (resume history base + recorded ledger turns — rewound
+automatically when a confirmed fork trims the ledger, spec §9). Steers
+never increment it (leftover steers are discarded at turn end); queued
+messages DO. Every turn rule records a :class:`Checkpoint`
 stamped onto the TurnRule block at emit time — rewind resolves
 checkpoints by id, never by string matching rendered labels.
 """
@@ -20,25 +23,23 @@ class _FrozenModel(BaseModel):
 
 
 def _format_elapsed(seconds: float) -> str:
-    """Compact elapsed format used in telemetry suffixes/labels."""
-    if seconds < 10:
-        return f"{seconds:.1f}s"
-    if seconds < 60:
-        return f"{round(seconds)}s"
-    minutes, remainder = divmod(round(seconds), 60)
-    if minutes < 60:
-        return f"{minutes}m {remainder:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes:02d}m"
+    """Elapsed format used in telemetry suffixes/labels.
+
+    Mockup: always raw integer seconds (``secs + "s"`` — working line,
+    plan suffix and rule telemetry alike), so a 75-second turn reads
+    ``75s``, never ``1m 15s``.
+    """
+    return f"{int(seconds)}s"
 
 
 def _format_tokens(tokens: int) -> str:
-    """``742`` / ``3.2k`` / ``1.1m`` token formatting per the mockup."""
-    if tokens < 1_000:
-        return str(tokens)
-    if tokens < 1_000_000:
-        return f"{tokens / 1_000:.1f}k"
-    return f"{tokens / 1_000_000:.1f}m"
+    """``0.0k`` / ``3.2k`` / ``1200.0k`` token formatting per the mockup.
+
+    Mockup always renders ``(toks/1000).toFixed(1) + "k"`` — sub-1k
+    counts included (``↓ 0.0k tok`` at turn start, ``0.6k`` at 608)
+    and never switches to m-units, so 1.2M tokens reads ``1200.0k``.
+    """
+    return f"{tokens / 1_000:.1f}k"
 
 
 class TurnTelemetry(_FrozenModel):
@@ -115,7 +116,8 @@ class Checkpoint(_FrozenModel):
     """One rewind target recorded at every turn rule (DESIGN-SPEC §9).
 
     - ``id``: ``t1``, ``t2``, … (stamped on the TurnRule block at emit).
-    - ``turn_id``: app-assigned monotonic turn number.
+    - ``turn_id``: 1-indexed user-message turn in the live context (the
+      fork point foundation's ``fork_session[_in_memory]`` slices at).
     - ``message_index``: transcript message index at the rule — the trim
       point the backend fork restores to.
     - ``cost_at``: cumulative session spend when the checkpoint was cut.
@@ -169,7 +171,12 @@ class OutcomeLedger:
 
     @property
     def answer_only_count(self) -> int:
-        return sum(1 for turn in self._turns if turn.outcome.kind == "answer")
+        """Mockup cmdLedger math: every non-shipped turn is answer-only.
+
+        ``turns − shipped`` so the ledger line always sums
+        (plan-ready and interrupted turns count as answer-only).
+        """
+        return self.turn_count - self.shipped_count
 
     @property
     def cache_hit_pct(self) -> int:
@@ -203,13 +210,20 @@ class OutcomeLedger:
         turn_id: int,
         message_index: int,
         label: str = "",
+        cost_at: Decimal | None = None,
     ) -> LedgerTurn:
-        """Record a completed turn, cutting its checkpoint at the same time."""
+        """Record a completed turn, cutting its checkpoint at the same time.
+
+        ``cost_at`` is the cumulative SESSION cost at the rule (mockup
+        ``cp.cost = this.cost`` — the footer $ at that moment, including
+        any pre-session baseline). Falls back to recorded-turn spend when
+        the caller has no session baseline.
+        """
         checkpoint = Checkpoint(
             id=self.next_checkpoint_id(),
             turn_id=turn_id,
             message_index=message_index,
-            cost_at=self.spend + telemetry.cost,
+            cost_at=self.spend + telemetry.cost if cost_at is None else cost_at,
             label=label,
         )
         turn = LedgerTurn(

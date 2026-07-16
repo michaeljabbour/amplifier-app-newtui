@@ -164,7 +164,7 @@ class SessionSpawner:
                     unregister()
                 except Exception:
                     logger.debug("Tracker unregister failed", exc_info=True)
-            if cancellation_linked:
+            if cancellation_linked and parent_cancellation is not None:
                 try:
                     parent_cancellation.unregister_child(child_cancellation)
                 except Exception:

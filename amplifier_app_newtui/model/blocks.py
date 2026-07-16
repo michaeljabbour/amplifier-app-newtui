@@ -219,9 +219,12 @@ class Blocked(_FrozenModel):
 class WorkingStatus(_FrozenModel):
     """Pulsing working line shown while a turn runs (DESIGN-SPEC §3).
 
-    ``✳/✦/✧`` orange spinner + ``working · Ns · ↓ X.Xk tok · N agent(s)``
-    dim + ``esc to interrupt · type to steer`` dimmer. Updated every second
-    via the live tail; removed at turn end (never persisted to history).
+    ``✳/✦/✧`` orange spinner + ``working · Ns · ↓ X.Xk tok · 1 agent · ``
+    dim + ``esc to interrupt · type to steer`` dimmer. A fan-out turn
+    (``agent_count > 1``) renders ``Coordinating N agents · Ns ·
+    ↓ X.Xk tok · `` dim + ``esc to interrupt`` dimmer instead (mockup
+    runAgentsTurn). Updated every second via the live tail; removed at
+    turn end (never persisted to history).
     """
 
     id: str
@@ -248,12 +251,17 @@ class Answer(_FrozenModel):
     ``spans`` carry selective bright/bold and teal code runs; a click on
     the answer opens the evidence block for ``evidence_refs``
     (DESIGN-SPEC §10).
+
+    ``clickable`` is False for answer-shaped lines the mockup creates
+    with ``click: null`` (agent tree lines, non-Goal/Next ✳ recap
+    lines) — only true final answers are evidence click targets.
     """
 
     id: str
     kind: Literal["answer"] = "answer"
     spans: tuple[Segment, ...]
     evidence_refs: tuple[EvidenceLink, ...] = ()
+    clickable: bool = True
 
 
 class SteerEcho(_FrozenModel):
@@ -347,6 +355,8 @@ class NeedsYouEntry(_FrozenModel):
     question: str
     reason: str = ""
     choices: tuple[NeedsYouChoice, ...] = ()
+    highlight: str = ""
+    """Substring of ``question`` rendered teal (mockup: ``mj/waypoint``)."""
 
 
 class NeedsYouBlock(_FrozenModel):
@@ -370,19 +380,28 @@ class DoctorFinding(_FrozenModel):
 
 
 class DoctorBlock(_FrozenModel):
-    """``/doctor`` checkup: ``✔`` green healthy lines + numbered orange findings."""
+    """``/doctor`` checkup: ``· Doctor  <headline>`` header + ``✔`` green
+    healthy lines + numbered findings (orange number, dim text)."""
 
     id: str
     kind: Literal["doctor"] = "doctor"
+    headline: str = ""
     healthy: tuple[str, ...] = ()
     findings: tuple[DoctorFinding, ...] = ()
 
 
 class ImproveProposal(_FrozenModel):
-    """One ``/improve`` proposal derived from the ledger + denial log."""
+    """One ``/improve`` proposal derived from the ledger + denial log.
+
+    ``action`` (when set) is the concrete command named once in green
+    after the dim ``title`` prefix (mockup: ``allowlist: `` +
+    ``uv run pytest`` green + rationale); rows without an action render
+    as one dim run ``<title> <rationale>``.
+    """
 
     title: str
     rationale: str
+    action: str = ""
 
 
 class ImproveBlock(_FrozenModel):

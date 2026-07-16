@@ -27,6 +27,14 @@ def test_telemetry_suffix_and_label() -> None:
     assert telemetry.label() == "24s · 3.2k tok, 80% cached · $0.12"
 
 
+def test_telemetry_elapsed_stays_raw_seconds_past_a_minute() -> None:
+    # Mockup renders `secs + "s"` everywhere — no m/h rollover (75s, not 1m 15s).
+    telemetry = TurnTelemetry(secs=75, tokens_down=3200)
+    assert telemetry.suffix() == "(75s · ↓ 3.2k tok)"
+    long_turn = TurnTelemetry(secs=3725, tokens_down=3200, cost=Decimal("0.50"))
+    assert long_turn.label() == "3725s · 3.2k tok · $0.50"
+
+
 def test_outcome_labels_match_spec_examples() -> None:
     assert TurnOutcome(kind="answer").outcome_label() == "answer"
     assert TurnOutcome(kind="interrupted").outcome_label() == "· interrupted"
@@ -109,6 +117,19 @@ def test_steering_queue_steer_vs_next_turn() -> None:
     assert follow_up is not None and follow_up.text == "then update docs"
 
 
+def test_next_turn_slot_replaces_on_second_enqueue() -> None:
+    # Mockup single slot (``this.queued = text``): a second next-turn
+    # message replaces the first — the footer badge is only ever q1.
+    queue = SteeringQueue()
+    queue.enqueue("first follow-up", kind="next_turn")
+    queue.enqueue("second follow-up", kind="next_turn")
+    assert len(queue.pending_next_turn) == 1
+    assert queue.pending_next_turn[0].text == "second follow-up"
+    picked = queue.consume_next_turn_message()
+    assert picked is not None and picked.text == "second follow-up"
+    assert queue.consume_next_turn_message() is None
+
+
 def test_steering_queue_bounds() -> None:
     queue = SteeringQueue()
     for i in range(MAX_QUEUE_ITEMS):
@@ -124,7 +145,7 @@ def test_steering_queue_truncates_oversized_text() -> None:
     assert len(message.text) == 32_768
 
 
-def test_drain_steers_rolls_leftovers_forward() -> None:
+def test_drain_steers_removes_leftovers_for_discard() -> None:
     queue = SteeringQueue()
     queue.enqueue("a", kind="steer")
     queue.enqueue("b", kind="next_turn")
@@ -214,6 +235,30 @@ def test_lane_registry_register_is_idempotent() -> None:
     second = registry.register("s1", parent_id=None, name="renamed")
     assert first == second
     assert len(registry.lanes) == 1
+    # A done lane stays done by default (a completion that raced ahead of
+    # its spawn must not be re-opened by the late spawn event).
+    registry.complete("s1", result="ok")
+    third = registry.register("s1", parent_id=None, name="a")
+    assert third.lane.state == "done"
+
+
+def test_lane_registry_reopen_resets_done_lane() -> None:
+    """A replayed demo turn reuses sub-session ids: reopen=True resets the
+    finished lane to a fresh spawned state so the panel shows live glyphs."""
+    registry = LaneRegistry()
+    registry.register("s1", parent_id=None, name="researcher")
+    registry.update("s1", elapsed=30.0, cost=Decimal("0.12"))
+    registry.complete("s1", result="3 findings")
+    reopened = registry.register(
+        "s1", parent_id=None, name="researcher", activity="running", reopen=True
+    )
+    assert reopened.lane.state == "running"
+    assert (reopened.lane.glyph, reopened.lane.color_token) == ("◐", "teal")
+    assert reopened.lane.activity == "running"
+    assert reopened.lane.elapsed == 0.0
+    assert reopened.lane.cost == Decimal("0")
+    assert len(registry.lanes) == 1
+    assert registry.active_count == 1
 
 
 def test_lane_update_unknown_session_is_dropped() -> None:

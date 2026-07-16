@@ -123,6 +123,36 @@ async def test_chip_click_posts_decision_taken() -> None:
 
 
 @pytest.mark.asyncio
+async def test_row_wraps_at_narrow_width_so_chip_stays_visible() -> None:
+    """Spec §7/§12: chips are inline actionable click targets — the row
+    wraps (mockup: normal HTML flow) instead of clipping the chip off
+    the right edge at narrow terminal widths."""
+    from amplifier_app_newtui.ui.needs_you import _DecisionRow  # test-only
+
+    app = NeedsYouHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        row = app.query_one(_DecisionRow)
+        chip = app.query_one("#chip-decision-1-0")
+        assert row.has_class("-wrapped")
+        assert chip.region.width == len("[yes · push to fork]")
+        assert chip.region.right <= 80  # fully visible → clickable
+        await pilot.click("#chip-decision-1-0")
+        await pilot.pause()
+        assert app.decisions == [("decision-1", "push to fork mj/waypoint")]
+
+
+@pytest.mark.asyncio
+async def test_row_stays_single_line_when_it_fits() -> None:
+    from amplifier_app_newtui.ui.needs_you import _DecisionRow  # test-only
+
+    app = NeedsYouHost()
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause()
+        assert not app.query_one(_DecisionRow).has_class("-wrapped")
+
+
+@pytest.mark.asyncio
 async def test_take_decision_programmatic_path() -> None:
     app = NeedsYouHost()
     async with app.run_test() as pilot:

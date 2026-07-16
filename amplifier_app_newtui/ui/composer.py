@@ -84,6 +84,7 @@ class ComposerInput(TextArea):
         background: transparent;
     }
     ComposerInput:focus { border: none; }
+    ComposerInput .text-area--placeholder { color: $dimmer; }
     """
 
     def __init__(self) -> None:
@@ -225,6 +226,11 @@ class Composer(Horizontal):
     def clear(self) -> None:
         self._input.clear()
 
+    def insert_text(self, text: str) -> None:
+        """Insert *text* at the cursor (key pass-through from overlay
+        strips — e.g. typing while the lanes panel holds focus)."""
+        self._input.insert(text)
+
     def focus_input(self) -> None:
         self._input.focus()
 
@@ -259,7 +265,9 @@ class Composer(Horizontal):
         text = self._input.text
         if text.startswith("/"):
             self._palette_open = True
-            self.post_message(self.OpenPalette(filter=text))
+            # Mockup onInput: the live filter is the TRIMMED value, so
+            # "/mode " (trailing space) still matches /mode.
+            self.post_message(self.OpenPalette(filter=text.strip()))
         elif self._palette_open:
             self._palette_open = False
             self.post_message(self.PaletteFilterCleared())

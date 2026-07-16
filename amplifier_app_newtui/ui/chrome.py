@@ -43,7 +43,8 @@ class TitleBar(Static):
         width: 100%;
         height: 1;
         background: $bg-chrome;
-        color: $dim;
+        color: $title-fg;
+        text-style: bold;
         text-align: center;
     }
     """

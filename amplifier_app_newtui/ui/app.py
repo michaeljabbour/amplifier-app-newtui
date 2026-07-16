@@ -27,6 +27,7 @@ outside the chain:
 
 from __future__ import annotations
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 
@@ -51,16 +52,19 @@ from .composer import Composer
 from .footer import FooterBar
 from .lanes_panel import LanesPanel
 from .live_tail import LiveTail
+from .needs_you import NeedsYouList
 from .notices import NoticeSlot
 from .palette import PaletteStrip
 from .queued_strip import QueuedStrip
 from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
 from .runtime_adapter import RuntimeAdapter
-from .themes import DEFAULT_THEME, register_themes, theme_id
+from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
+    BlockWidget,
+    CloseEvidence,
+    ExpandEvidenceClaim,
     LaneFocusChanged,
-    NeedsYouDecision,
     OpenRewind,
     ShowEvidence,
     TranscriptView,
@@ -72,7 +76,25 @@ class NewTuiApp(App[None]):
 
     CSS = """
     Screen { background: $bg-term; }
+    /* The notice floats on its own layer over the bottom-right of the
+       region's last row (mockup: absolute overlay in a height-0
+       container, right: 18px) so showing or hiding it never resizes the
+       transcript and blanks only its own box. `align` applies per layer;
+       the base layer (transcript 1fr + live tail) always fills the
+       region exactly, so only the auto-width notice moves. */
+    #transcript-region { height: 1fr; layers: base notice; align: right bottom; }
     #transcript { height: 1fr; padding: 0 1; }
+    /* Scrollbar colors from the §1 tokens only (never Textual-derived);
+       set here (not widget DEFAULT_CSS) so the token variables are
+       guaranteed registered before the stylesheet parses. */
+    #transcript {
+        scrollbar-color: $rule;
+        scrollbar-color-hover: $dim;
+        scrollbar-color-active: $dim;
+        scrollbar-background: $bg-term;
+        scrollbar-background-hover: $bg-term;
+        scrollbar-background-active: $bg-term;
+    }
     #live-tail { padding: 0 1; }
     #composer-slot { height: auto; }
     """
@@ -105,9 +127,10 @@ class NewTuiApp(App[None]):
             session_cost_start=adapter.session_cost_start,
         )
         self.turn_active = False
+        self._turn_queues_pending = False  # drain queues once end-of-turn events settle
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
-        self._needs_you_block_id: str | None = None
+        self._lanes_fanout_open = False  # active-lane edge for the auto-open
         self.title_bar = TitleBar(id="title-bar")
         self.transcript = TranscriptView(id="transcript")
         self.live_tail = LiveTail(id="live-tail")
@@ -121,9 +144,10 @@ class NewTuiApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield self.title_bar
-        yield self.transcript
-        yield self.live_tail
-        yield self.notice_slot
+        with Container(id="transcript-region"):
+            yield self.transcript
+            yield self.live_tail
+            yield self.notice_slot
         yield self.palette
         yield self.lanes_panel
         yield self.rewind
@@ -151,6 +175,12 @@ class NewTuiApp(App[None]):
                 self.reducer.handle(event)
             except Exception:  # noqa: BLE001 — the render loop must survive bad events
                 self.log.error(f"reducer failed on {event.kind}")
+            if self._turn_queues_pending and self.adapter.queue.empty():
+                # Queue duties run once the runtime's end-of-turn burst is
+                # reduced, so the ``queued message picked up`` notice lands
+                # AFTER the end notice (mockup drainQueue order) and stays.
+                self._turn_queues_pending = False
+                app_support.finish_turn_queues(self)
             self._refresh_title()
 
     def submit_prompt(self, text: str) -> None:
@@ -177,17 +207,15 @@ class NewTuiApp(App[None]):
         except KeyError:
             pass
 
-    def show_notice(self, text: str) -> None:
-        self.notice_slot.show_notice(text)
+    def show_notice(self, text: str, duration: float | None = None) -> None:
+        self.notice_slot.show_notice(text, duration)
 
     def set_mode_by_id(self, mode_id: str, *, notify: bool = True) -> None:
-        previous, self._mode = self._mode, get_mode(mode_id)
+        self._mode = get_mode(mode_id)
         self.permissions.set_mode(self._mode.id)
         self.composer.set_mode(self._mode)
         if notify:
             self.show_notice(self._mode.notice())
-        if previous.id == "plan" and self._mode.id == "build":
-            self.show_notice("plan handed to build")
         self.refresh_status()
 
     def turn_started(self) -> None:
@@ -200,11 +228,22 @@ class NewTuiApp(App[None]):
         self.turn_active = False
         self.composer.running = False
         self.title_bar.running = False
-        app_support.finish_turn_queues(self)
+        self._turn_queues_pending = True  # drained in _consume_events (§5)
+        # Mockup openRewind/rewindNext read the live this.checkpoints
+        # array — a checkpoint cut while the picker is open is
+        # immediately navigable with › (spec §9).
+        self.rewind.sync_checkpoints(self.ledger.checkpoints)
         self.refresh_status()
 
     def lanes_changed(self) -> None:
         self.lanes_panel.update_lanes(self.lanes.lanes)
+        active = self.lanes.active_count > 0
+        if active and not self._lanes_fanout_open and not self.lanes_panel.display:
+            # Mockup runAgentsTurn: the panel opens automatically at fan-out.
+            # Display only — the composer keeps focus (type to steer).
+            self.lanes_panel.display = True
+            self._refresh_footer()
+        self._lanes_fanout_open = active
         self._refresh_title()
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
@@ -212,8 +251,10 @@ class NewTuiApp(App[None]):
         self._refresh_footer()
 
     def decision_deferred(self, message: str) -> None:
-        question, reason, choices = self.adapter.deferred_decision(message)
-        self.adapter.needs_you.defer(question, reason, choices=choices)
+        question, reason, choices, highlight = self.adapter.deferred_decision(message)
+        self.adapter.needs_you.defer(
+            question, reason, choices=choices, highlight=highlight
+        )
         self._refresh_footer()
 
     def stream_opened(self, block_type: str) -> None:
@@ -258,17 +299,28 @@ class NewTuiApp(App[None]):
         selected = self.palette.selected_command if self.palette.is_open else None
         self.palette.apply_filter(None)
         if text.startswith("/"):
-            if not self._commands.parse_and_run(self._ctx, text):
-                if selected is not None:
-                    self._commands.run(selected.name, self._ctx)
-                else:
-                    self.show_notice(f"unknown command · {text.split()[0]}")
-            self._refresh_footer()
-            return
+            if self._commands.parse_and_run(self._ctx, text):
+                self._refresh_footer()
+                return
+            if selected is not None:
+                self._commands.run(selected.name, self._ctx)
+                self._refresh_footer()
+                return
+            # Mockup onKeyDown Enter: with zero palette matches the slash
+            # text falls through and is sent as a normal user turn (§5/§6).
         self.submit_prompt(text)
 
     def on_composer_steer(self, message: Composer.Steer) -> None:
         message.stop()
+        # Mockup onKeyDown: an open palette match runs BEFORE the steer
+        # branch — a slash command typed mid-turn runs, never steers (§6).
+        selected = self.palette.selected_command if self.palette.is_open else None
+        if selected is not None:
+            self.palette.apply_filter(None)
+            if not self._commands.parse_and_run(self._ctx, message.text):
+                self._commands.run(selected.name, self._ctx)
+            self._refresh_footer()
+            return
         if self.adapter.steering.pending_steers:
             self._queue_message(message.text)  # second steer queues (spec §5)
             return
@@ -276,6 +328,15 @@ class NewTuiApp(App[None]):
 
     def on_composer_queue_message(self, message: Composer.QueueMessage) -> None:
         message.stop()
+        # Mockup onKeyDown: every Enter — shift held or not — runs an open
+        # palette's top match BEFORE the queue/submit branch (§5/§6).
+        selected = self.palette.selected_command if self.palette.is_open else None
+        if selected is not None:
+            self.palette.apply_filter(None)
+            if not self._commands.parse_and_run(self._ctx, message.text):
+                self._commands.run(selected.name, self._ctx)
+            self._refresh_footer()
+            return
         if not self.turn_active:
             self.submit_prompt(message.text)
             return
@@ -288,6 +349,7 @@ class NewTuiApp(App[None]):
             self.show_notice(str(error))
             return
         self.queued_strip.show_queued(text)
+        self.show_notice(app_support.QUEUED_NOTICE)
         self._refresh_footer()
 
     def on_composer_open_palette(self, message: Composer.OpenPalette) -> None:
@@ -326,19 +388,33 @@ class NewTuiApp(App[None]):
 
     def on_lanes_panel_focus_lane(self, message: LanesPanel.FocusLane) -> None:
         message.stop()
-        self.lanes_panel.hide_panel()
         blocks = self.adapter.lane_blocks(message.name, message.session_id, self.allocator)
         if blocks is None:
             self.show_notice(f"no transcript for lane · {message.name}")
             return
+        # The panel stays open while a lane is focused (mockup focusLane
+        # never touches lanesOpen); its row snaps to the focused lane.
+        self.lanes_panel.set_focused(message.name)
+        # Esc must resolve via ESC_CHAIN (lane_focus first, lanes later),
+        # so the keyboard returns to the composer, not the panel.
+        self.composer.focus_input()
         self.run_worker(
             self.transcript.focus_lane(message.session_id or message.name, blocks),
             exclusive=False,
         )
 
-    def on_lanes_panel_closed(self, message: LanesPanel.Closed) -> None:
+    def on_lanes_panel_type_through(self, message: LanesPanel.TypeThrough) -> None:
+        # Mockup: the composer input keeps focus while lanesOpen — a
+        # printable key typed "at" the panel lands in the composer ("/"
+        # opens the palette via the composer's normal edit path) and the
+        # keyboard returns to the composer for the rest of the typing.
         message.stop()
         self.composer.focus_input()
+        self.composer.insert_text(message.character)
+
+    def on_lanes_panel_closed(self, message: LanesPanel.Closed) -> None:
+        message.stop()
+        self._restore_keyboard()
         self._refresh_footer()
 
     def on_lane_focus_changed(self, message: LaneFocusChanged) -> None:
@@ -348,9 +424,18 @@ class NewTuiApp(App[None]):
         message.stop()
         app_support.handle_fork(self, message.checkpoint_id)
 
-    def on_rewind_strip_closed(self, message: RewindStrip.Closed) -> None:
+    def on_rewind_strip_type_through(self, message: RewindStrip.TypeThrough) -> None:
+        # Mockup: the composer input keeps focus while rewindOpen — a
+        # printable key typed "at" the strip lands in the composer ("/"
+        # opens the palette live-filtered, §5) and the keyboard returns
+        # to the composer for the rest of the typing.
         message.stop()
         self.composer.focus_input()
+        self.composer.insert_text(message.character)
+
+    def on_rewind_strip_closed(self, message: RewindStrip.Closed) -> None:
+        message.stop()
+        self._restore_keyboard()
         self._refresh_footer()
 
     def on_open_rewind(self, message: OpenRewind) -> None:
@@ -361,15 +446,72 @@ class NewTuiApp(App[None]):
         self.open_rewind_strip(index)
 
     def on_show_evidence(self, message: ShowEvidence) -> None:
+        # A click on the answer block must not strand focus on the
+        # transcript scroll container.
+        self._restore_keyboard()
         if not message.links:
             self.show_notice("no evidence recorded for this answer")
             return
-        self.append_block(
+        widget = self.transcript.append(
             EvidenceBlock(id=self.allocator.next_id(), links=tuple(message.links))
         )
+        # The block owns the keyboard while open so its advertised keys
+        # (←/→ select · enter expand · esc close, spec §10) work; esc
+        # hands the keyboard back via CloseEvidence.
+        if widget is not None:
+            widget.focus()
+        # Mockup revealEvidence ends with this exact notice.
+        self.show_notice("evidence revealed · every claim traces to a tool call")
 
-    def on_needs_you_decision(self, message: NeedsYouDecision) -> None:
-        app_support.apply_decision(self, message.decision_id, message.answer)
+    def on_expand_evidence_claim(self, message: ExpandEvidenceClaim) -> None:
+        """Enter on the evidence block: deep-link the selected claim to
+        the tool line that grounds it (correlation key, spec §10)."""
+        link = message.link
+        if link.tool_call_id:
+            for block in self.transcript.blocks:
+                if block.kind == "tool_line" and link.tool_call_id in block.tool_call_ids:
+                    if block.body and not block.expanded:
+                        self.transcript.replace(block.model_copy(update={"expanded": True}))
+                    self.query_one(f"#block-{block.id}").scroll_visible(animate=False)
+                    return
+        # No correlated tool line in the transcript: surface the grounding
+        # reference itself instead of silently doing nothing.
+        self.show_notice(f"grounded by {link.tool_ref}")
+
+    def on_close_evidence(self, message: CloseEvidence) -> None:
+        """Esc on the evidence block: close it and hand the keyboard back."""
+        if self.transcript.get_block(message.block_id) is not None:
+            self.transcript.remove_block(message.block_id)
+        self._restore_keyboard()
+
+    def on_needs_you_list_decision_taken(self, message: NeedsYouList.DecisionTaken) -> None:
+        message.stop()
+        # Decision rows/chips stop their Click events (a row click must not
+        # double-fire through the app's generic transcript-click handler),
+        # so restore the keyboard here: transcript clicks never strand it
+        # (DESIGN-SPEC §12; the composer keeps focus through every click).
+        self._restore_keyboard()
+        app_support.apply_decision(self, message.item_id, message.choice)
+
+    def on_click(self, event: events.Click) -> None:
+        """Transcript clicks never strand the keyboard (DESIGN-SPEC §12).
+
+        Mockup ground truth: the composer input keeps keyboard focus
+        through every transcript click (document-level keydown handler;
+        clicks on transcript divs never blur the input). A click may
+        still *open* a strip that then takes the keyboard — e.g. turn
+        rule → rewind picker — because that message is processed after
+        this synchronous bubble.
+        """
+        widget = event.widget
+        if widget is None:
+            return
+        if isinstance(widget, BlockWidget) and widget.block.kind == "evidence":
+            # Exception: the evidence block keeps the keyboard it took on
+            # click so its advertised ←/→/enter/esc keys work (spec §10).
+            return
+        if widget is self.transcript or self.transcript in widget.ancestors:
+            self._restore_keyboard()
 
     def on_footer_bar_waiting_badge_clicked(
         self, message: FooterBar.WaitingBadgeClicked
@@ -377,16 +519,20 @@ class NewTuiApp(App[None]):
         message.stop()
         self.action_show_needs_you()
 
-    def clear_needs_you_block(self) -> None:
-        if self._needs_you_block_id is not None:
-            self.remove_block(self._needs_you_block_id)
-            self._needs_you_block_id = None
-
     # -- key actions ------------------------------------------------------------------------
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action in ("palette_up", "palette_down"):
-            return self.palette.is_open
+            # Mockup onKeyDown: the approval branch consumes ArrowUp/Down
+            # before any palette handling — arrows always cycle a pending
+            # approval's selection (spec §7).
+            return self.approval_bar is None and self.palette.is_open
+        if self.approval_bar is not None and action in ("cycle_mode", "cycle_permission"):
+            # Mockup keydown: while an approval is open, Tab (with or
+            # without shift) cycles the approval selection and returns —
+            # cycleMode is unreachable, and the trust posture must not
+            # change under a pending approval (spec §7).
+            return False
         return True
 
     def action_cycle_mode(self) -> None:
@@ -398,10 +544,12 @@ class NewTuiApp(App[None]):
     def action_toggle_lanes(self) -> None:
         if self.lanes_panel.display:
             self.lanes_panel.hide_panel()
-            self.composer.focus_input()
+            self._restore_keyboard()
         else:
             self.lanes_panel.update_lanes(self.lanes.lanes)
             self.lanes_panel.show_panel()
+            if self.approval_bar is not None:
+                self.approval_bar.focus()  # approval owns the keyboard (spec §7)
         self._refresh_footer()
 
     def action_show_ledger(self) -> None:
@@ -414,7 +562,6 @@ class NewTuiApp(App[None]):
         if block is None:
             self.show_notice("no decisions waiting")
             return
-        self._needs_you_block_id = block.id
         self.append_block(block)
 
     def action_open_rewind(self) -> None:
@@ -435,16 +582,29 @@ class NewTuiApp(App[None]):
             self.show_notice("no rewind checkpoints yet")
             return
         self.rewind.show_checkpoints(checkpoints, index)
+        if self.approval_bar is not None:
+            self.approval_bar.focus()  # approval owns the keyboard (spec §7)
         self._refresh_footer()
 
     def close_palette(self) -> None:
-        self.composer.clear()
+        # Mockup Esc only clears the filter (palFilter = null); the typed
+        # "/…" text stays in the input.
         self.palette.apply_filter(None)
         self.composer.focus_input()
         self._refresh_footer()
 
+    def _restore_keyboard(self) -> None:
+        """Refocus after a strip closes: the approval bar while one is
+        open (it owns the keyboard, spec §7), the composer otherwise."""
+        if self.approval_bar is not None:
+            self.approval_bar.focus()
+        else:
+            self.composer.focus_input()
+
     def interrupt_turn(self) -> None:
-        self.show_notice("turn interrupted · context saved")
+        # Esc only requests the break (mockup ``this.interrupt = true``);
+        # the ``turn interrupted · context saved`` notice is shown by the
+        # reducer at the actual turn close-out (mockup end of runTurn).
         self.run_worker(self.adapter.interrupt(), exclusive=False)
 
     # -- command-context surface ------------------------------------------------------------
@@ -456,9 +616,31 @@ class NewTuiApp(App[None]):
 
     def context_usage(self) -> ContextUsage:
         window = 200_000
+        memory = min(self.reducer.memory_tokens, window)
+        tools = min(self.reducer.tool_tokens, window - memory)
         return ContextUsage(
-            conversation=min(self.reducer.total_tokens, window), window=window
+            conversation=min(self.reducer.total_tokens, window - memory - tools),
+            tools=tools,
+            memory=memory,
+            window=window,
         )
+
+    def set_theme_by_name(self, name: str) -> None:
+        """Switch the spec theme at runtime (``/theme``, DESIGN-SPEC §1).
+
+        Empty *name* cycles slate → graphite → carbon; unknown names get
+        a notice listing the valid themes.
+        """
+        names = tuple(THEME_TOKENS)
+        if not name:
+            current = self.theme.removeprefix(THEME_NAME_PREFIX)
+            index = names.index(current) if current in names else -1
+            name = names[(index + 1) % len(names)]
+        if name not in THEME_TOKENS:
+            self.show_notice(f"unknown theme · {name} · themes: {', '.join(names)}")
+            return
+        self.theme = theme_id(name)
+        self.show_notice(f"theme {name}")
 
     def open_permissions(self) -> None:
         self.append_block(

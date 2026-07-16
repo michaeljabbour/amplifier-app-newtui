@@ -126,17 +126,37 @@ class LaneRegistry:
         parent_id: str | None,
         name: str,
         activity: str = "",
+        state: LaneStateName = "running",
+        reopen: bool = False,
     ) -> LaneRecord:
-        """Open (or re-open idempotently) a lane for a spawned subagent."""
+        """Open a lane for a spawned subagent.
+
+        Idempotent for known session ids by default (``session:start`` can
+        race ``task:agent_spawned``, and a completion that raced ahead of
+        its spawn must stay done). With ``reopen=True`` a *finished* lane
+        spawned again (a replayed demo turn reuses its sub-session ids) is
+        reset to a fresh spawned state so the panel shows the live
+        tri-state glyphs instead of a stale ``✔ done``.
+        """
         existing = self._records.get(session_id)
         if existing is not None:
+            if reopen and existing.lane.state == "done" and state != "done":
+                fresh = existing.model_copy(
+                    update={
+                        "lane": LaneState.for_state(
+                            name=name, state=state, activity=activity
+                        )
+                    }
+                )
+                self._records[session_id] = fresh
+                return fresh
             return existing
         parent = self._records.get(parent_id) if parent_id else None
         record = LaneRecord(
             session_id=session_id,
             parent_id=parent_id,
             depth=(parent.depth + 1) if parent else 1,
-            lane=LaneState.for_state(name=name, state="running", activity=activity),
+            lane=LaneState.for_state(name=name, state=state, activity=activity),
         )
         self._records[session_id] = record
         self._order.append(session_id)

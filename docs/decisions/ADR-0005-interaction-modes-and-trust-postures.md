@@ -71,9 +71,9 @@ reach `brainstorm`, because the special-case for `auto` always won.
 Mode and trust posture are independent policy dimensions per the Decision
 above; they now have independent controls to match:
 
-- Shift-Tab cycles mode only (chat → build → plan → auto → brainstorm →
-  chat) via `InteractionController.cycle()`. It never reads or writes
-  permission posture.
+- Shift-Tab cycles mode only (chat → plan → brainstorm → build → auto →
+  chat, the mockup's MODES array order) via `InteractionController.cycle()`.
+  It never reads or writes permission posture.
 - Ctrl-P cycles permission posture only (chat → build → plan → auto →
   bypass → chat) via the new `InteractionController.cycle_permission()`,
   which reuses the mode-independent `TrustState.cycle()` that already

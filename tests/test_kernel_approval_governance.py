@@ -77,6 +77,7 @@ async def test_build_mode_asks_for_writes_with_standard_options() -> None:
     )
     assert result.action == "ask_user"
     assert result.approval_prompt == "Allow /repo/a.py?"
+    assert result.approval_options is not None
     assert tuple(result.approval_options) == STANDARD_OPTIONS
     assert result.approval_default == "deny"
     # The structured detail was staged end-to-end on the broker.
@@ -93,6 +94,7 @@ async def test_plan_mode_denies_writes_and_continues() -> None:
         "tool:pre", tool_pre("write_file", {"file_path": "a.py"})
     )
     assert result.action == "deny"
+    assert result.reason is not None
     assert "Continue without" in result.reason
     assert result.user_message == "blocked · a.py"
     assert result.suppress_output is True

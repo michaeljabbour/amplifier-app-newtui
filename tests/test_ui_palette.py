@@ -204,7 +204,9 @@ async def test_click_runs_that_row() -> None:
 
 
 @pytest.mark.asyncio
-async def test_escape_posts_closed() -> None:
+async def test_close_action_posts_closed_and_escape_is_not_bound_locally() -> None:
+    # Esc is resolved by the app via keymap.ESC_CHAIN (spec §5) — the strip
+    # has no local escape binding, so Esc bubbles even while it holds focus.
     app = PaletteHost()
     async with app.run_test() as pilot:
         strip = app.query_one(PaletteStrip)
@@ -213,5 +215,8 @@ async def test_escape_posts_closed() -> None:
         strip.focus()
         await pilot.pause()
         await pilot.press("escape")
+        await pilot.pause()
+        assert app.closed == 0  # bubbled: no local handling
+        strip.action_close()
         await pilot.pause()
         assert app.closed == 1

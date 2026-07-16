@@ -21,6 +21,7 @@ Palette semantics (DESIGN-SPEC §6):
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -76,6 +77,11 @@ class CommandContext(Protocol):
         ...
 
     @property
+    def session_cost(self) -> Decimal:
+        """Cumulative session cost — the footer $ (mockup ``this.cost``)."""
+        ...
+
+    @property
     def session_short(self) -> str:
         """Short session id shown in the ledger header/footer."""
         ...
@@ -124,6 +130,10 @@ class CommandContext(Protocol):
 
     def set_mode(self, mode_id: str) -> None:
         """Jump directly to a mode by id."""
+        ...
+
+    def set_theme(self, name: str) -> None:
+        """Switch the UI theme (``/theme``); empty name cycles (spec §1)."""
         ...
 
     def toggle_lanes(self) -> None:

@@ -8,6 +8,7 @@ from amplifier_app_newtui.model.modes import (
     DEFAULT_MODE,
     MODE_CYCLE,
     MODE_PROFILES,
+    ModeId,
     cycle_mode,
     get_mode,
 )
@@ -22,7 +23,7 @@ from amplifier_app_newtui.model.trust import (
 
 
 def test_mode_table_matches_spec_exactly() -> None:
-    expected = {
+    expected: dict[ModeId, tuple[str, str]] = {
         "chat": ("dim", "ask all · auto read"),
         "plan": ("blue", "read-only"),
         "brainstorm": ("teal", "no tools"),
