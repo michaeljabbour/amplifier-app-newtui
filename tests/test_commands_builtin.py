@@ -27,6 +27,8 @@ MOCKUP_TABLE = [
     ("Ship", "/ledger", "session outcome ledger: spend vs yield", "built-in"),
     # Beyond the mockup table: transcript markdown export.
     ("Ship", "/export", "write transcript markdown to exports/", "built-in"),
+    # Beyond the mockup table: last-answer clipboard copy.
+    ("Ship", "/copy", "copy last answer to clipboard (OSC 52)", "built-in"),
     ("Between", "/rewind", "fork from any turn-rule checkpoint", "built-in"),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
@@ -45,7 +47,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 14  # includes the in-flight /export
+    assert len(registry.specs) == 15  # includes the in-flight /export + /copy
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -150,6 +152,25 @@ def test_export_writes_via_context_and_notices_the_path(fake_command_context) ->
     assert ctx.calls == ["export_transcript"]
     # The handler surfaces the path the context impl returns.
     assert ctx.notices == ["transcript exported · exports/a1b2c3-20260101-000000.md"]
+
+
+def test_copy_copies_via_context_and_notices_char_count(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/copy", ctx)
+    assert ctx.user_lines == ["/copy"]
+    assert ctx.calls == ["copy_answer"]
+    # The handler surfaces the char count the context impl returns.
+    assert ctx.notices == ["copied · 42 chars · empty clipboard? allow terminal clipboard access"]
+
+
+def test_copy_with_no_answer_notices_nothing_to_copy(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    ctx.answer_chars = 0
+    registry.run("/copy", ctx)
+    assert ctx.calls == ["copy_answer"]
+    assert ctx.notices == ["no answer to copy yet"]
 
 
 def test_doctor_posts_doctor_block_with_findings(fake_command_context) -> None:

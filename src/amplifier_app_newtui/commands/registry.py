@@ -157,6 +157,11 @@ class CommandContext(Protocol):
         (the ``/export`` handler surfaces it in the notice)."""
         ...
 
+    def copy_answer(self) -> int:
+        """Copy the last assistant answer to the clipboard (OSC 52);
+        returns the number of chars copied (0 = no answer yet)."""
+        ...
+
     def show_modes(self) -> None:
         """Print the bundle-composed native mode catalog (``/modes``)."""
         ...

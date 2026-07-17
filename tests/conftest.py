@@ -32,6 +32,7 @@ class FakeCommandContext:
         self.mcp_stats: tuple = ()
         self.tallies: tuple = ()
         self.overrides: tuple = ()
+        self.answer_chars: int = 42
         self.user_lines: list[str] = []
         self.blocks: list = []
         self.notices: list[str] = []
@@ -108,6 +109,10 @@ class FakeCommandContext:
     def export_transcript(self) -> str:
         self.calls.append("export_transcript")
         return "exports/a1b2c3-20260101-000000.md"
+
+    def copy_answer(self) -> int:
+        self.calls.append("copy_answer")
+        return self.answer_chars
 
     def quit_app(self) -> None:
         self.calls.append("quit_app")

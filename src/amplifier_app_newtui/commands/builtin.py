@@ -117,6 +117,16 @@ def _cmd_export(ctx: CommandContext, args: str) -> None:
     ctx.show_notice(f"transcript exported · {ctx.export_transcript()}")
 
 
+def _cmd_copy(ctx: CommandContext, args: str) -> None:
+    """``/copy`` — copy the last answer to the clipboard, notice the char count."""
+    del args
+    n = ctx.copy_answer()
+    if n == 0:
+        ctx.show_notice("no answer to copy yet")
+        return
+    ctx.show_notice(f"copied · {n} chars · empty clipboard? allow terminal clipboard access")
+
+
 def _cmd_quit(ctx: CommandContext, args: str) -> None:
     """``/quit`` — exit the app (amplifier-app-cli parity: exit/quit)."""
     del args
@@ -205,6 +215,14 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="write transcript markdown to exports/",
         tag="built-in",
         handler=_cmd_export,
+    ),
+    # Beyond the mockup table: last-answer clipboard copy.
+    CommandSpec(
+        group="Ship",
+        name="/copy",
+        desc="copy last answer to clipboard (OSC 52)",
+        tag="built-in",
+        handler=_cmd_copy,
     ),
     CommandSpec(
         group="Between",
