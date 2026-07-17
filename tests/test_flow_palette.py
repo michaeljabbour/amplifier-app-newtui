@@ -27,11 +27,13 @@ from .test_flow_helpers import (
 
 ALL_COMMANDS = (
     "/mode",
+    "/modes",
     "/plan",
     "/brainstorm",
     "/context",
     "/tasks",
     "/ledger",
+    "/export",
     "/rewind",
     "/quit",
     "/permissions",
@@ -108,10 +110,10 @@ async def test_arrow_selection_and_click_runs_any_row() -> None:
         await pilot.press("down")
         await pilot.pause()
         assert app.palette.selected_command is not None
-        assert app.palette.selected_command.name == "/plan"
+        assert app.palette.selected_command.name == "/modes"
 
-        # Click any row runs it: row 3 = /context.
-        await pilot.click("#palette-row-3")
+        # Click any row runs it: row 4 = /context.
+        await pilot.click("#palette-row-4")
         await pilot.pause()
         assert any(b.text == "/context" for b in blocks_of(app, "user_line"))
         assert blocks_of(app, "context")
@@ -258,9 +260,11 @@ async def test_trailing_space_keeps_palette_open_with_trimmed_filter() -> None:
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "/mode ")
+        # substring filter: "/mode" matches both /mode and /modes
         assert await wait_for(
             pilot,
-            lambda: tuple(c.name for c in app.palette.filtered_commands) == ("/mode",),
+            lambda: tuple(c.name for c in app.palette.filtered_commands)
+            == ("/mode", "/modes"),
         )
         assert app.palette.is_open
         assert app.palette.filter_text == "/mode"

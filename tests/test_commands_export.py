@@ -85,9 +85,7 @@ def test_blocks_separated_by_blank_lines() -> None:
         Answer(id="b2", spans=(Segment(text="hi there"),)),
         ToolLine(id="b3", summary="Ran ls", status="completed"),
     )
-    assert render_transcript_markdown(blocks) == (
-        "> hello\n\nhi there\n\n```\nRan ls\n```\n"
-    )
+    assert render_transcript_markdown(blocks) == ("> hello\n\nhi there\n\n```\nRan ls\n```\n")
 
 
 def test_empty_transcript_renders_empty_string() -> None:

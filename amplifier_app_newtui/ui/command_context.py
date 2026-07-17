@@ -103,5 +103,26 @@ class AppCommandContext:
     def quit_app(self) -> None:
         self._app.exit()
 
+    def export_transcript(self) -> str:
+        from datetime import datetime
+        from pathlib import Path
+
+        from ..commands.export import write_export
+
+        return str(
+            write_export(
+                self._app.transcript.blocks,
+                self._app.adapter.session_short or "session",
+                datetime.now(),
+                Path("exports"),
+            )
+        )
+
+    def show_modes(self) -> None:
+        self._app.show_native_modes()
+
+    def set_native_mode(self, name: str | None) -> None:
+        self._app.activate_native_mode(name)
+
 
 __all__ = ["AppCommandContext"]

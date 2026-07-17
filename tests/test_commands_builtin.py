@@ -18,11 +18,15 @@ from amplifier_app_newtui.model.turn import TurnOutcome, TurnTelemetry
 # The mockup COMMANDS table, verbatim: (group, name, desc, tag).
 MOCKUP_TABLE = [
     ("During", "/mode", "cycle or jump posture: chat, plan, brainstorm, build, auto", "built-in"),
+    # Beyond the mockup table: bundle-composed native modes (dynamic).
+    ("During", "/modes", "list native bundle modes; /mode <name> activates", "built-in"),
     ("During", "/plan", "read-only planning; hands the plan to build", "built-in"),
     ("During", "/brainstorm", "no tools, divergent output; /plan to converge", "built-in"),
     ("During", "/context", "context usage grid + suggestions", "built-in"),
     ("Parallel", "/tasks", "agent lanes: one line per subagent", "built-in"),
     ("Ship", "/ledger", "session outcome ledger: spend vs yield", "built-in"),
+    # Beyond the mockup table: transcript markdown export.
+    ("Ship", "/export", "write transcript markdown to exports/", "built-in"),
     ("Between", "/rewind", "fork from any turn-rule checkpoint", "built-in"),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
@@ -41,7 +45,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 12
+    assert len(registry.specs) == 14  # includes the in-flight /export
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -62,9 +66,19 @@ def test_mode_cycles_without_args_and_jumps_with_mode_arg(fake_command_context) 
     assert ctx.calls == ["cycle_mode"]
     registry.run("/mode", ctx, "plan")
     assert ctx.calls == ["cycle_mode", "set_mode:plan"]
-    # Unknown mode arg falls back to cycling, never crashes.
-    registry.run("/mode", ctx, "warp")
-    assert ctx.calls[-1] == "cycle_mode"
+    # Non-posture args route to the NATIVE bundle-composed mode system
+    # (superpowers, careful, audit, …) — never an app-local list.
+    registry.run("/mode", ctx, "debug")
+    assert ctx.calls[-1] == "set_native_mode:debug"
+    registry.run("/mode", ctx, "off")
+    assert ctx.calls[-1] == "set_native_mode:None"
+
+
+def test_modes_lists_native_catalog(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/modes", ctx)
+    assert ctx.calls == ["show_modes"]
 
 
 def test_plan_and_brainstorm_jump_modes(fake_command_context) -> None:
@@ -126,6 +140,16 @@ def test_ledger_posts_ledger_block_with_aggregates(fake_command_context) -> None
     assert block.shipped == 1
     assert block.answer_only == 1
     assert block.cache_hit_pct == 72  # token-weighted
+
+
+def test_export_writes_via_context_and_notices_the_path(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/export", ctx)
+    assert ctx.user_lines == ["/export"]
+    assert ctx.calls == ["export_transcript"]
+    # The handler surfaces the path the context impl returns.
+    assert ctx.notices == ["transcript exported · exports/a1b2c3-20260101-000000.md"]
 
 
 def test_doctor_posts_doctor_block_with_findings(fake_command_context) -> None:

@@ -380,6 +380,42 @@ def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
     app.refresh_status()
 
 
+def native_modes_segments(catalog: object) -> tuple[Segment, ...]:
+    """Render the mode tool's catalog output grouped by source bundle.
+
+    The mounted mode tool reports ``{"modes": [{name, description,
+    source}, …]}`` — dynamically composed (superpowers, modes, llm-wiki,
+    …), so this formats whatever arrives rather than any fixed list.
+    Non-mapping payloads fall back to plain text.
+    """
+    from collections.abc import Mapping as _Mapping
+
+    modes: list[_Mapping] = []
+    if isinstance(catalog, _Mapping):
+        raw = catalog.get("modes")
+        if isinstance(raw, list):
+            modes = [m for m in raw if isinstance(m, _Mapping)]
+    if not modes:
+        text = str(catalog).strip()
+        return (Segment(text=f"  {text}\n", style_token="dim"),) if text else ()
+    by_source: dict[str, list[_Mapping]] = {}
+    for mode in modes:
+        by_source.setdefault(str(mode.get("source", "")), []).append(mode)
+    segments: list[Segment] = []
+    width = max(len(str(m.get("name", ""))) for m in modes)
+    for source in sorted(by_source):
+        segments.append(Segment(text=f"  {source or 'bundle'}\n", style_token="dimmer"))
+        for mode in sorted(by_source[source], key=lambda m: str(m.get("name", ""))):
+            name = str(mode.get("name", ""))
+            desc = str(mode.get("description", "")).split("\n")[0][:90]
+            segments.append(Segment(text=f"    {name.ljust(width)}  ", style_token="teal"))
+            segments.append(Segment(text=f"{desc}\n", style_token="dim"))
+    segments.append(
+        Segment(text="  /mode <name> activates · /mode off clears", style_token="dimmer")
+    )
+    return tuple(segments)
+
+
 def handle_esc(app: NewTuiApp) -> None:
     """Resolve one Esc press via ``keymap.ESC_CHAIN`` (spec §5 table)."""
     checks = {

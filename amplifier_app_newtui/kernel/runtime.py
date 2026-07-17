@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -402,6 +402,58 @@ class RealRuntime:
                 tests_ok=self.turn_yield.tests_ok,
             )
         )
+
+    def _mode_tool(self) -> Any | None:
+        """The bundle-mounted ``mode`` tool (tool-mode), when composed in."""
+        if self._initialized is None:
+            return None
+        tools = self._initialized.coordinator.get("tools") or {}
+        return tools.get("mode")
+
+    async def list_native_modes(self) -> Any:
+        """Native mode catalog via the mounted mode tool (``operation=list``).
+
+        Modes are dynamically composed through the bundle system
+        (superpowers, modes, occams-machete, …) — the app never hardcodes
+        them. Returns the tool's raw output (typically a mapping with a
+        ``modes`` list of ``{name, description, source}``); "" when no
+        mode system is mounted.
+        """
+        tool = self._mode_tool()
+        if tool is None:
+            return ""
+        try:
+            result = await tool.execute({"operation": "list"})
+        except Exception:  # noqa: BLE001 — a broken mode tool must not kill the UI
+            logger.warning("mode list failed", exc_info=True)
+            return ""
+        output = getattr(result, "output", None)
+        return output if getattr(result, "success", False) and output else ""
+
+    async def set_native_mode(self, name: str | None) -> tuple[bool, str]:
+        """Activate (or clear, ``name=None``) a bundle-provided mode.
+
+        Transitions can be gate-confirmed (hooks-mode ``warn`` policy
+        denies the first ``set`` so agents confirm intent) — one retry
+        covers the confirm handshake.
+        """
+        tool = self._mode_tool()
+        if tool is None:
+            return (False, "no native mode system mounted")
+        payload: dict[str, Any] = (
+            {"operation": "clear"} if name is None else {"operation": "set", "name": name}
+        )
+        try:
+            result = await tool.execute(payload)
+            if not getattr(result, "success", False):
+                result = await tool.execute(payload)  # gate confirm
+        except Exception as error:  # noqa: BLE001
+            return (False, str(error))
+        ok = bool(getattr(result, "success", False))
+        output: Any = getattr(result, "output", None) or getattr(result, "error", None)
+        if isinstance(output, Mapping):
+            output = output.get("message") or output.get("error") or str(dict(output))
+        return (ok, str(output) if output else "")
 
     async def interrupt(self) -> bool:
         """Best-effort graceful cancellation at the next step boundary.

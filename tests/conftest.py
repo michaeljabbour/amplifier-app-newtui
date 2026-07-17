@@ -105,8 +105,18 @@ class FakeCommandContext:
     def open_permissions(self) -> None:
         self.calls.append("open_permissions")
 
+    def export_transcript(self) -> str:
+        self.calls.append("export_transcript")
+        return "exports/a1b2c3-20260101-000000.md"
+
     def quit_app(self) -> None:
         self.calls.append("quit_app")
+
+    def show_modes(self) -> None:
+        self.calls.append("show_modes")
+
+    def set_native_mode(self, name: str | None) -> None:
+        self.calls.append(f"set_native_mode:{name}")
 
 
 @pytest.fixture

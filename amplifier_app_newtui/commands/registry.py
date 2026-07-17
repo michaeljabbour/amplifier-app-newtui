@@ -152,6 +152,20 @@ class CommandContext(Protocol):
         """Exit the app (``/quit`` — ctrl-d and ctrl-q are the key paths)."""
         ...
 
+    def export_transcript(self) -> str:
+        """Write the transcript markdown export; returns the written path
+        (the ``/export`` handler surfaces it in the notice)."""
+        ...
+
+    def show_modes(self) -> None:
+        """Print the bundle-composed native mode catalog (``/modes``)."""
+        ...
+
+    def set_native_mode(self, name: str | None) -> None:
+        """Activate (or clear with ``None``) a bundle-provided mode —
+        actioned through the mounted mode tool, never an app-local list."""
+        ...
+
 
 CommandHandler = Callable[[CommandContext, str], None]
 """Handler signature: ``(ctx, args)`` where ``args`` is the text after the

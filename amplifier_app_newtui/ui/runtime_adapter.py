@@ -79,6 +79,17 @@ class RuntimeAdapter:
         """Request an interrupt; True when the runtime accepted it."""
         return False
 
+    async def list_native_modes(self) -> Any:
+        """Bundle-composed mode catalog (real sessions); "" when absent.
+        Typically a mapping with a ``modes`` list of {name, description,
+        source} dicts — whatever the mounted mode tool reports."""
+        return ""
+
+    async def set_native_mode(self, name: str | None) -> tuple[bool, str]:
+        """Activate/clear a bundle-provided mode via the native mode tool."""
+        del name
+        return (False, "native modes need a real session")
+
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Fork the session at *checkpoint_id*, then trim *ledger* (spec §9).
 
@@ -270,6 +281,16 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is None:
             return False
         return await self._in_runtime(self._runtime.interrupt())
+
+    async def list_native_modes(self) -> Any:
+        if self._runtime is None:
+            return ""
+        return await self._in_runtime(self._runtime.list_native_modes())
+
+    async def set_native_mode(self, name: str | None) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.set_native_mode(name))
 
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Real fork: foundation in-memory fork + ``context.set_messages()``."""

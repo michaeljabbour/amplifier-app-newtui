@@ -136,6 +136,7 @@ class NewTuiApp(App[None]):
         self.fork_pending = False  # a confirmed fork is in flight (interrupt-then-fork)
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
         self._boot_block_id: str | None = None  # boot-progress transcript line
+        self._auto_native_mode: str | None = None  # posture-bridged native mode
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
@@ -257,7 +258,68 @@ class NewTuiApp(App[None]):
         self.composer.set_mode(self._mode)
         if notify:
             self.show_notice(self._mode.notice())
+        # Action through amplifier-foundation (user directive): a posture
+        # with a same-named bundle-composed mode activates it natively —
+        # kernel-side gating and per-turn context come from hooks-mode,
+        # not this app. Postures without a native twin clear only what
+        # this bridge itself activated (an explicitly chosen native mode
+        # is never clobbered).
+        self.run_worker(self._sync_native_mode(mode_id), exclusive=False)
         self.refresh_status()
+
+    _NATIVE_POSTURES = frozenset({"plan", "brainstorm"})
+
+    async def _sync_native_mode(self, mode_id: str) -> None:
+        if mode_id in self._NATIVE_POSTURES:
+            ok, _detail = await self.adapter.set_native_mode(mode_id)
+            if ok:
+                self._auto_native_mode = mode_id
+        elif self._auto_native_mode is not None:
+            await self.adapter.set_native_mode(None)
+            self._auto_native_mode = None
+
+    def show_native_modes(self) -> None:
+        """``/modes``: the bundle-composed catalog + this app's postures."""
+        self.run_worker(self._show_native_modes(), exclusive=False)
+
+    async def _show_native_modes(self) -> None:
+        if self._boot_block_id is not None:
+            self.show_notice("session still starting · /modes once the banner lands")
+            return
+        catalog = await self.adapter.list_native_modes()
+        spans = [
+            Segment(text="· ", style_token="blue"),
+            Segment(text="Modes", style_token="bright", bold=True),
+            Segment(
+                text="  postures: chat plan brainstorm build auto · shift+tab cycles"
+                " · trust layer\n",
+                style_token="dim",
+            ),
+        ]
+        native = app_support.native_modes_segments(catalog) if catalog else ()
+        if native:
+            spans.extend(native)
+        else:
+            spans.append(
+                Segment(
+                    text="  no bundle-composed modes (demo or minimal session)",
+                    style_token="dimmer",
+                )
+            )
+        self.append_block(Answer(id=self.allocator.next_id(), spans=tuple(spans)))
+
+    def activate_native_mode(self, name: str | None) -> None:
+        """``/mode <bundle-mode>`` / ``/mode off``: native activation."""
+        self.run_worker(self._activate_native_mode(name), exclusive=False)
+
+    async def _activate_native_mode(self, name: str | None) -> None:
+        ok, detail = await self.adapter.set_native_mode(name)
+        if ok:
+            self._auto_native_mode = None  # explicit choice — never auto-cleared
+            label = name or "off"
+            self.show_notice(f"mode {label} · native (bundle)")
+        else:
+            self.show_notice(detail or f"no such mode · {name}")
 
     def turn_started(self) -> None:
         self.turn_active = True

@@ -25,12 +25,25 @@ from .registry import CommandContext, CommandRegistry, CommandSpec
 
 
 def _cmd_mode(ctx: CommandContext, args: str) -> None:
-    """``/mode`` — cycle; ``/mode plan`` — jump straight to a mode."""
+    """``/mode`` — cycle postures; ``/mode plan`` — jump to a posture;
+    ``/mode <bundle-mode>`` — activate a native, bundle-composed mode
+    (superpowers, careful, audit, …) through the mounted mode tool;
+    ``/mode off`` — clear the native mode."""
     target = args.strip().lower()
-    if target in MODE_PROFILES:
-        ctx.set_mode(target)
-    else:
+    if not target:
         ctx.cycle_mode()
+    elif target in MODE_PROFILES:
+        ctx.set_mode(target)
+    elif target == "off":
+        ctx.set_native_mode(None)
+    else:
+        ctx.set_native_mode(target)
+
+
+def _cmd_modes(ctx: CommandContext, args: str) -> None:
+    """``/modes`` — list the bundle-composed native modes + postures."""
+    del args
+    ctx.show_modes()
 
 
 def _cmd_plan(ctx: CommandContext, args: str) -> None:
@@ -98,6 +111,12 @@ def _cmd_doctor(ctx: CommandContext, args: str) -> None:
     ctx.post_block(build_doctor_block(ctx.next_block_id(), report))
 
 
+def _cmd_export(ctx: CommandContext, args: str) -> None:
+    """``/export`` — write the transcript markdown, notice the path."""
+    del args
+    ctx.show_notice(f"transcript exported · {ctx.export_transcript()}")
+
+
 def _cmd_quit(ctx: CommandContext, args: str) -> None:
     """``/quit`` — exit the app (amplifier-app-cli parity: exit/quit)."""
     del args
@@ -132,6 +151,15 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         tag="built-in",
         handler=_cmd_mode,
         key_action="cycle_mode",
+    ),
+    # Beyond the mockup table: bundle-composed native modes (superpowers
+    # et al) — discovered from the session, never hardcoded here.
+    CommandSpec(
+        group="During",
+        name="/modes",
+        desc="list native bundle modes; /mode <name> activates",
+        tag="built-in",
+        handler=_cmd_modes,
     ),
     CommandSpec(
         group="During",
@@ -169,6 +197,14 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         tag="built-in",
         handler=_cmd_ledger,
         key_action="show_ledger",
+    ),
+    # Beyond the mockup table: transcript markdown export.
+    CommandSpec(
+        group="Ship",
+        name="/export",
+        desc="write transcript markdown to exports/",
+        tag="built-in",
+        handler=_cmd_export,
     ),
     CommandSpec(
         group="Between",

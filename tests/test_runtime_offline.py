@@ -540,3 +540,48 @@ def test_restored_history_extracts_prose_and_skips_tool_traffic() -> None:
         ("assistant", "OK"),
         ("user", "and again"),
     )
+
+
+def test_native_modes_go_through_the_mounted_mode_tool() -> None:
+    """User directive: action modes through amplifier-foundation (the
+    bundle-mounted mode tool), never an app-local mode engine. Covers the
+    hooks-mode warn gate: a denied first ``set`` is retried once."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from amplifier_app_newtui.kernel.runtime import RealRuntime
+
+    class FakeModeTool:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+            self.gate_armed = True
+
+        async def execute(self, payload: dict):
+            self.calls.append(payload)
+            if payload.get("operation") == "list":
+                return SimpleNamespace(success=True, output="superpowers:\n  debug ...")
+            if self.gate_armed:
+                self.gate_armed = False  # warn gate: deny once, confirm on retry
+                return SimpleNamespace(success=False, output=None, error="confirm transition")
+            return SimpleNamespace(success=True, output={"message": "mode set: debug"})
+
+    async def run() -> None:
+        runtime = RealRuntime()
+        tool = FakeModeTool()
+        runtime._initialized = SimpleNamespace(  # type: ignore[assignment]
+            coordinator=SimpleNamespace(get=lambda point: {"mode": tool})
+        )
+        catalog = await runtime.list_native_modes()
+        assert "superpowers" in catalog
+        ok, detail = await runtime.set_native_mode("debug")
+        assert ok and detail == "mode set: debug"
+        # deny-once gate consumed exactly one retry
+        assert [c.get("operation") for c in tool.calls] == ["list", "set", "set"]
+
+        bare = RealRuntime()
+        assert asyncio.iscoroutine(bare.list_native_modes()) or True
+        assert (await bare.list_native_modes()) == ""
+        ok, detail = await bare.set_native_mode("debug")
+        assert not ok and "no native mode system" in detail
+
+    asyncio.run(run())
