@@ -62,8 +62,8 @@ class RuntimeAdapter:
         """Boot the runtime; call ``ready()`` once identity is known."""
         ready()
 
-    async def submit(self, text: str) -> None:
-        """Run *text* as a new user turn."""
+    async def submit(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
+        """Run *text* as a new user turn (with optional image attachments)."""
 
     async def submit_queued(self, text: str) -> None:
         """Run a queue-drained message as the next turn (spec §5).
@@ -273,9 +273,9 @@ class RealRuntimeAdapter(RuntimeAdapter):
                     app.present_approval, ticket.ticket_id, ticket.prompt, ticket.options
                 )
 
-    async def submit(self, text: str) -> None:
+    async def submit(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
         if self._runtime is not None:
-            await self._in_runtime(self._runtime.submit(text))
+            await self._in_runtime(self._runtime.submit(text, attachments))
 
     async def interrupt(self) -> bool:
         if self._runtime is None:

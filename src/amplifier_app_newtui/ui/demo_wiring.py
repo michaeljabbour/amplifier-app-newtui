@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
+from typing import Any
 from decimal import Decimal
 
 from ..kernel.demo import (
@@ -186,7 +187,10 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         self._played.add("seed")
         await self._runtime.run_seed()
 
-    async def submit(self, text: str, *, queued: bool = False) -> None:
+    async def submit(
+        self, text: str, attachments: tuple[Any, ...] = (), *, queued: bool = False
+    ) -> None:
+        del attachments  # scripted demo has no real provider; images are a no-op
         text = text.strip()
         key = self._key_for(text)
         if key == "build":

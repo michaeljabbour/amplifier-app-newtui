@@ -154,6 +154,39 @@ def test_long_paste_collapses_to_stub_and_expands() -> None:
 
 
 @pytest.mark.asyncio
+async def test_staged_image_rides_submit_and_drops_when_placeholder_deleted() -> None:
+    from amplifier_app_newtui.kernel.clipboard import ImageAttachment
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer.add_image(ImageAttachment(png, "image/png"))
+        await pilot.pause()
+        assert "[Image #1]" in composer.text
+        await pilot.press("h", "i", "enter")
+        await pilot.pause()
+        submits = _of(app, Composer.Submit)
+        assert len(submits) == 1
+        assert len(submits[0].attachments) == 1  # carried with the surviving placeholder
+        assert "[Image #1]" in submits[0].text
+
+    # Deleting the placeholder drops the attachment.
+    app2 = ComposerApp()
+    async with app2.run_test() as pilot:
+        composer = app2.query_one("#composer", Composer)
+        composer.add_image(ImageAttachment(png, "image/png"))
+        await pilot.pause()
+        composer._input.clear()  # placeholder gone
+        composer._input.insert("just text")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        submits = _of(app2, Composer.Submit)
+        assert len(submits) == 1 and submits[0].attachments == ()
+
+
+@pytest.mark.asyncio
 async def test_paste_event_collapses_long_block_and_submits_full_text() -> None:
     from textual import events
 

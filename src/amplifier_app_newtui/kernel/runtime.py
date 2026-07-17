@@ -21,6 +21,7 @@ from ..model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
 from ..model.trust import DenialLog
 from .approval import ApprovalBroker
 from .config import ResolvedConfig, resolve_config
+from .clipboard import ClipboardImageInjector, ImageAttachment
 from .cost import CostTracker, restore_session_cost
 from .display import DisplaySystem
 from .events import ContentBlockEnd, ContextInjected, PromptComplete, PromptSubmit, UIEvent
@@ -224,6 +225,7 @@ class RealRuntime:
         self._resolved: ResolvedConfig | None = None
         self._store: SessionStore | None = None
         self._saver: IncrementalSaver | None = None
+        self._image_injector: ClipboardImageInjector | None = None
         self.bundle_name = ""
         self.session_short = ""
         self.banner: tuple[str, str] = ("", "")
@@ -323,6 +325,26 @@ class RealRuntime:
         initialized.unregister_handles.append(saver.register(hooks))
         self._saver = saver
 
+        # Clipboard images: execute() stays text-only; a provider:request
+        # hook rewrites the just-submitted user message to multimodal
+        # content right before the provider call (amplifier-app-cli parity).
+        context = initialized.coordinator.get("context")
+        if context is not None:
+            injector = ClipboardImageInjector(context)
+            unregister = hooks.register(
+                "provider:request",
+                injector.handle_provider_request,
+                priority=900,
+                name="newtui-clipboard-images",
+            )
+            if callable(unregister):
+
+                def _drop_injector() -> None:
+                    unregister()
+
+                initialized.unregister_handles.append(_drop_injector)
+            self._image_injector = injector
+
         if self._resume_id:
             restore_session_cost(self.cost, store.events_path(initialized.session_id))
             self.session_cost_start = self.cost.session_cost
@@ -379,7 +401,9 @@ class RealRuntime:
             )
         )
 
-    async def submit(self, text: str) -> str:
+    async def submit(
+        self, text: str, attachments: tuple[ImageAttachment, ...] = ()
+    ) -> str:
         """Execute one user turn; returns the final response text.
 
         Git-yield capture (reference: amplifier-app-cli
@@ -387,9 +411,17 @@ class RealRuntime:
         and after ``execute``; the delta rides on the synthesized
         ``PromptComplete`` close-out so the reducer can label the rule
         ``N files · +A/−D · tests ✔`` and mark the turn shipped.
+
+        Clipboard images ride ``attachments``: ``execute`` stays text-only
+        and the injector's ``provider:request`` hook upgrades the pending
+        user message to multimodal content just before the provider call.
         """
         if self._initialized is None:
             raise RuntimeError("RealRuntime.start() has not completed")
+        if attachments:
+            if self._image_injector is None:
+                raise RuntimeError("session context cannot accept image attachments")
+            self._image_injector.prepare(text, attachments)
         # Turn-open first: the user's echo + working line paint NOW, not
         # after the pre-prompt hook work inside ``session.execute``.
         self.bridge.emit(
@@ -403,6 +435,8 @@ class RealRuntime:
             response = await self._initialized.session.execute(text)
         finally:
             self._executing = False
+            if self._image_injector is not None:
+                self._image_injector.clear()
             # End-of-turn save (reference: amplifier-app-cli persists after
             # every turn) — the incremental tool:post save misses the final
             # assistant message, which lands in the context only after the

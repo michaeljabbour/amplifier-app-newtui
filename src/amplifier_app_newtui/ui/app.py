@@ -254,14 +254,14 @@ class NewTuiApp(App[None]):
         self._turn_queues_pending = False
         app_support.finish_turn_queues(self)
 
-    def submit_prompt(self, text: str) -> None:
+    def submit_prompt(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
         if self._boot_block_id is not None:
             # Mid-boot submits used to vanish silently (the runtime isn't
             # up yet) — keep the supervisor's words instead of eating them.
             self.composer.insert_text(text)
             self.show_notice("session still starting · message kept in the composer")
             return
-        self.run_worker(self.adapter.submit(text), exclusive=False)
+        self.run_worker(self.adapter.submit(text, attachments), exclusive=False)
 
     # -- ReducerHost ---------------------------------------------------------------
 
@@ -487,7 +487,29 @@ class NewTuiApp(App[None]):
                 return
             # Mockup onKeyDown Enter: with zero palette matches the slash
             # text falls through and is sent as a normal user turn (§5/§6).
-        self.submit_prompt(text)
+        self.submit_prompt(text, message.attachments)
+
+    def on_composer_paste_image(self, message: Composer.PasteImage) -> None:
+        message.stop()
+        self.run_worker(self._paste_clipboard_image(), exclusive=False)
+
+    async def _paste_clipboard_image(self) -> None:
+        """Read the system clipboard image off-thread, stage it on the
+        composer as an ``[Image #N]`` placeholder (amplifier-app-cli parity)."""
+        import asyncio
+
+        from ..kernel.clipboard import read_clipboard_image
+
+        try:
+            attachment = await asyncio.to_thread(read_clipboard_image)
+        except Exception:  # noqa: BLE001 — clipboard read is best-effort
+            attachment = None
+        if attachment is None:
+            self.show_notice("no image in clipboard")
+            return
+        self.composer.add_image(attachment)
+        kb = len(attachment.data) // 1024
+        self.show_notice(f"image attached · {attachment.media_type.split('/')[-1]} · {kb} KB")
 
     def on_composer_steer(self, message: Composer.Steer) -> None:
         message.stop()

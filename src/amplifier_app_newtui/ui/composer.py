@@ -32,6 +32,7 @@ from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
+from ..kernel.clipboard import ImageAttachment
 from ..model.modes import DEFAULT_MODE, ModeProfile, get_mode
 from .keymap import COMPOSER_PLACEHOLDER, hint_label
 
@@ -130,6 +131,13 @@ class ComposerInput(TextArea):
             composer.post_message(
                 Composer.NavKey(-1 if event.key == "up" else 1)
             )
+        elif event.key == "ctrl+v":
+            # Clipboard image paste (amplifier-app-cli parity): the app
+            # reads the system clipboard off-thread; text paste stays on
+            # the terminal's bracketed-paste path (_on_paste).
+            event.stop()
+            event.prevent_default()
+            composer.post_message(Composer.PasteImage())
         elif event.key == "escape":
             event.stop()
             event.prevent_default()
@@ -189,11 +197,16 @@ class Composer(Horizontal):
     # -- messages ------------------------------------------------------------
 
     class Submit(Message):
-        """Idle Enter: send *text* as a new user turn."""
+        """Idle Enter: send *text* as a new user turn, with any staged
+        clipboard images whose ``[Image #N]`` token survives in *text*."""
 
-        def __init__(self, text: str) -> None:
+        def __init__(self, text: str, attachments: tuple[ImageAttachment, ...] = ()) -> None:
             self.text = text
+            self.attachments = attachments
             super().__init__()
+
+    class PasteImage(Message):
+        """Ctrl+V: the app reads the system clipboard image off-thread."""
 
     class Steer(Message):
         """Running Enter: steer the current turn with *text*."""
@@ -256,6 +269,8 @@ class Composer(Horizontal):
         self._input = ComposerInput()
         self._pastes: dict[str, str] = {}  # stub → full retained payload
         self._paste_seq = 0
+        self._attachments: list[tuple[str, ImageAttachment]] = []  # (placeholder, image)
+        self._image_seq = 0
 
     def compose(self):
         yield self._badge
@@ -288,6 +303,22 @@ class Composer(Horizontal):
     def clear(self) -> None:
         self._input.clear()
         self._pastes.clear()
+        self._attachments.clear()
+        self._image_seq = 0
+
+    def add_image(self, attachment: ImageAttachment) -> None:
+        """Stage a clipboard image and insert its ``[Image #N]`` placeholder
+        (deleting the placeholder before submit drops the image)."""
+        self._image_seq += 1
+        placeholder = f"[Image #{self._image_seq}]"
+        self._attachments.append((placeholder, attachment))
+        prefix = "" if not self._input.text or self._input.text.endswith((" ", "\n")) else " "
+        self._input.insert(f"{prefix}{placeholder} ")
+
+    def _staged_attachments(self, text: str) -> tuple[ImageAttachment, ...]:
+        """Images whose placeholder survives in *text* (spec: a deleted
+        ``[Image #N]`` token drops that attachment)."""
+        return tuple(image for placeholder, image in self._attachments if placeholder in text)
 
     def register_paste(self, text: str) -> str | None:
         """Retain a long paste and return its stub; ``None`` to insert
@@ -329,14 +360,16 @@ class Composer(Horizontal):
     def handle_enter(self) -> None:
         # Stubs are expanded to their full payloads for submission while
         # the composer only ever showed the compact placeholder.
-        text = self._expand(self._input.text).strip()
+        raw = self._input.text
+        text = self._expand(raw).strip()
         if not text:
             self.post_message(self.EnterEmpty())
             return
         if self.running:
+            # Steering is text-only (images ride a fresh submit only).
             self.post_message(self.Steer(text))
         else:
-            self.post_message(self.Submit(text))
+            self.post_message(self.Submit(text, self._staged_attachments(raw)))
         self.clear()
 
     def handle_queue(self) -> None:
