@@ -138,6 +138,8 @@ class NewTuiApp(App[None]):
         self._boot_block_id: str | None = None  # boot-progress transcript line
         self._auto_native_mode: str | None = None  # posture-bridged native mode
         self._os_clipboard_copied = False  # last copy reached an OS clipboard tool
+        self._selection_timer: Any = None  # copy-on-select debounce
+        self._last_selection_copied = ""  # suppress duplicate auto-copies
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
@@ -179,6 +181,25 @@ class NewTuiApp(App[None]):
         self.refresh_status()
         self.run_worker(self._consume_events(), exclusive=False)
         self.run_worker(self._boot_runtime(), exclusive=False)
+        # Copy-on-select (tmux-style): the ⌘C reflex never reaches a
+        # terminal app, so a settled drag-selection lands on the clipboard
+        # by itself — select, then paste anywhere. ctrl+c stays as the
+        # explicit path (composer selections, re-copy).
+        self.watch(self.screen, "selections", self._selection_changed, init=False)
+
+    def _selection_changed(self) -> None:
+        if self._selection_timer is not None:
+            self._selection_timer.stop()
+        self._selection_timer = self.set_timer(0.4, self._copy_settled_selection)
+
+    def _copy_settled_selection(self) -> None:
+        self._selection_timer = None
+        text = self.screen.get_selected_text()
+        if not text or text == self._last_selection_copied:
+            return
+        self._last_selection_copied = text
+        self.copy_to_clipboard(text)
+        self.show_notice(f"copied on select · {len(text)} chars")
 
     def on_unmount(self) -> None:
         shutdown = getattr(self.adapter, "shutdown", None)

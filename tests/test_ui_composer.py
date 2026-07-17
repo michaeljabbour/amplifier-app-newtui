@@ -273,3 +273,35 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
         await pilot.press("ctrl+c")
         await pilot.pause()
         assert app.notice_slot.current.startswith("nothing selected")
+
+
+@pytest.mark.asyncio
+async def test_settled_drag_selection_copies_automatically() -> None:
+    """Copy-on-select: the ⌘C reflex never reaches a terminal app (user
+    report: 'copy and paste still not working'), so a settled transcript
+    drag-selection must land on the clipboard by itself."""
+    from textual.events import MouseDown, MouseMove, MouseUp
+
+    from amplifier_app_newtui.ui.app import NewTuiApp
+    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+
+    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    copied: list[str] = []
+    app.copy_to_clipboard = lambda text: copied.append(text)  # type: ignore[method-assign]
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause(0.4)
+
+        def ev(cls, x: int, y: int):
+            return cls(widget=None, x=x, y=y, delta_x=0, delta_y=0, button=1,
+                       shift=False, meta=False, ctrl=False, screen_x=x, screen_y=y, style="")
+
+        app.screen._forward_event(ev(MouseDown, 10, 8))
+        await pilot.pause()
+        app.screen._forward_event(ev(MouseMove, 60, 8))
+        await pilot.pause()
+        app.screen._forward_event(ev(MouseUp, 60, 8))
+        await pilot.pause(0.7)  # let the 0.4s settle timer fire
+        assert copied and len(copied[0]) > 10
+        assert app.notice_slot.current.startswith("copied on select · ")
+        # No duplicate copy for the same settled selection.
+        assert len(copied) == 1
