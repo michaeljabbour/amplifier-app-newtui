@@ -274,3 +274,13 @@ async def test_resolve_config_unknown_bundle_raises(
             amplifier_home=tmp_path / "home",
         )
     assert "definitely-not-a-bundle" in str(excinfo.value)
+
+
+def test_packaged_bundle_matches_repo_root_bundle() -> None:
+    """The packaged default bundle is a byte-for-byte copy of the repo-root
+    bundle.md (NOTES-kernel-runtime contract: edit one → re-copy the other)."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    packaged = root / "src" / "amplifier_app_newtui" / "data" / "bundles" / "newtui.md"
+    assert packaged.read_bytes() == (root / "bundle.md").read_bytes()

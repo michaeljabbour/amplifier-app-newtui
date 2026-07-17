@@ -25,7 +25,7 @@ amplifier-newtui = "amplifier_app_newtui.main:main"
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["amplifier_app_newtui"]
+packages = ["src/amplifier_app_newtui"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -52,7 +52,10 @@ addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
 
 [tool.pyright]
-include = ["amplifier_app_newtui", "tests"]
+include = ["src", "tests"]
+venvPath = "."
+venv = ".venv"
+exclude = ["**/__pycache__"]
 pythonVersion = "3.12"
 typeCheckingMode = "basic"
 

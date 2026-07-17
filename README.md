@@ -30,6 +30,15 @@ Drag with the mouse to select transcript text (the app highlights it), then pres
 
 The app requests progressive keyboard enhancement (kitty keyboard protocol + xterm modifyOtherKeys), so **shift+enter** queues a full next-turn message natively on kitty, WezTerm, foot, Ghostty, and recent iTerm2/Windows Terminal. On legacy terminals **alt+enter** is the fallback; it works everywhere (the composer hint adapts automatically). See the full keymap in [docs/tui-v3-cohesive.md](docs/tui-v3-cohesive.md).
 
+## Layout
+
+```
+src/amplifier_app_newtui/   the installable app (kernel / model / ui / commands)
+tests/                      offline test suite (no credentials required)
+docs/                       design spec, executable mockup, ADRs (docs/notes/ is local scratch, gitignored)
+bundle.md                   the repo's amplifier bundle (packaged copy kept byte-identical)
+```
+
 ## Development
 
 ```sh
