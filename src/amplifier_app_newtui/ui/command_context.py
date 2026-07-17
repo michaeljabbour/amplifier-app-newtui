@@ -118,6 +118,15 @@ class AppCommandContext:
             )
         )
 
+    def copy_answer(self) -> int:
+        from ..commands.copy import last_answer_text
+
+        text = last_answer_text(self._app.transcript.blocks)
+        if not text:
+            return 0
+        self._app.copy_to_clipboard(text)
+        return len(text)
+
     def show_modes(self) -> None:
         self._app.show_native_modes()
 
