@@ -35,6 +35,7 @@ ALL_COMMANDS = (
     "/ledger",
     "/export",
     "/copy",
+    "/about",
     "/rewind",
     "/quit",
     "/permissions",

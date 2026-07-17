@@ -114,6 +114,10 @@ class FakeCommandContext:
         self.calls.append("copy_answer")
         return self.answer_chars
 
+    def about_info(self) -> tuple[str, str, str, str]:
+        self.calls.append("about_info")
+        return ("0.1.0", "1.2.3", self.bundle_name, self.session_short)
+
     def quit_app(self) -> None:
         self.calls.append("quit_app")
 

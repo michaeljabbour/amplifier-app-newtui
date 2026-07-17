@@ -162,6 +162,12 @@ class CommandContext(Protocol):
         returns the number of chars copied (0 = no answer yet)."""
         ...
 
+    def about_info(self) -> tuple[str, str, str, str]:
+        """The identity data the session banner shows —
+        ``(app_version, core_version, bundle_name, session_short)``;
+        the ``/about`` handler posts it as a transcript block."""
+        ...
+
     def show_modes(self) -> None:
         """Print the bundle-composed native mode catalog (``/modes``)."""
         ...

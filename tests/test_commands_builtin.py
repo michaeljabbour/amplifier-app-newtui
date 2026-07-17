@@ -12,6 +12,7 @@ from amplifier_app_newtui.model.blocks import (
     DoctorBlock,
     ImproveBlock,
     LedgerBlock,
+    SessionBanner,
 )
 from amplifier_app_newtui.model.turn import TurnOutcome, TurnTelemetry
 
@@ -29,6 +30,8 @@ MOCKUP_TABLE = [
     ("Ship", "/export", "write transcript markdown to exports/", "built-in"),
     # Beyond the mockup table: last-answer clipboard copy.
     ("Ship", "/copy", "copy last answer to clipboard (OSC 52)", "built-in"),
+    # Beyond the mockup table: app/core/bundle/session identity block.
+    ("Ship", "/about", "app, core, bundle + session identity", "built-in"),
     ("Between", "/rewind", "fork from any turn-rule checkpoint", "built-in"),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
@@ -47,7 +50,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 15  # includes the in-flight /export + /copy
+    assert len(registry.specs) == 16  # includes the in-flight /export + /copy + /about
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -162,6 +165,20 @@ def test_copy_copies_via_context_and_notices_char_count(fake_command_context) ->
     assert ctx.calls == ["copy_answer"]
     # The handler surfaces the char count the context impl returns.
     assert ctx.notices == ["copied · 42 chars · empty clipboard? allow terminal clipboard access"]
+
+
+def test_about_posts_session_banner_block(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/about", ctx)
+    assert ctx.user_lines == ["/about"]
+    assert ctx.calls == ["about_info"]
+    # The handler posts the same identity data the session banner shows.
+    (block,) = ctx.blocks
+    assert isinstance(block, SessionBanner)
+    assert block.headline == "Amplifier 0.1.0 · core 1.2.3"
+    assert block.detail == "Bundle: dev-bundle | session a1b2c3"
+    assert ctx.notices == []
 
 
 def test_copy_with_no_answer_notices_nothing_to_copy(fake_command_context) -> None:

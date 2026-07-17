@@ -127,6 +127,13 @@ class AppCommandContext:
         self._app.copy_to_clipboard(text)
         return len(text)
 
+    def about_info(self) -> tuple[str, str, str, str]:
+        from .. import __version__
+        from ..kernel.runtime import _core_version
+
+        adapter = self._app.adapter
+        return (__version__, _core_version(), adapter.bundle_name, adapter.session_short)
+
     def show_modes(self) -> None:
         self._app.show_native_modes()
 

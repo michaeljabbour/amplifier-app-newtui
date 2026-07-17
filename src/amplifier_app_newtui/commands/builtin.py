@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from ..model.blocks import LedgerBlock
+from ..model.blocks import LedgerBlock, SessionBanner
 from ..model.modes import MODE_PROFILES
 from .context import ContextUsage, build_context_block
 from .doctor import McpServerStats, build_doctor_block, run_checks
@@ -127,6 +127,20 @@ def _cmd_copy(ctx: CommandContext, args: str) -> None:
     ctx.show_notice(f"copied · {n} chars · empty clipboard? allow terminal clipboard access")
 
 
+def _cmd_about(ctx: CommandContext, args: str) -> None:
+    """``/about`` — post the app/core/bundle/session identity as a block
+    (the same data the session banner shows)."""
+    del args
+    app_version, core_version, bundle, session = ctx.about_info()
+    ctx.post_block(
+        SessionBanner(
+            id=ctx.next_block_id(),
+            headline=f"Amplifier {app_version} · core {core_version}",
+            detail=f"Bundle: {bundle} | session {session}",
+        )
+    )
+
+
 def _cmd_quit(ctx: CommandContext, args: str) -> None:
     """``/quit`` — exit the app (amplifier-app-cli parity: exit/quit)."""
     del args
@@ -223,6 +237,14 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="copy last answer to clipboard (OSC 52)",
         tag="built-in",
         handler=_cmd_copy,
+    ),
+    # Beyond the mockup table: app/core/bundle/session identity block.
+    CommandSpec(
+        group="Ship",
+        name="/about",
+        desc="app, core, bundle + session identity",
+        tag="built-in",
+        handler=_cmd_about,
     ),
     CommandSpec(
         group="Between",
