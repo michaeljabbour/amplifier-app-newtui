@@ -16,13 +16,17 @@ import binascii
 import os
 import re
 import selectors
+import shlex
 import shutil
+import stat
 import subprocess  # nosec B404 — fixed clipboard helpers, never a shell
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, TypeAlias
+from urllib.parse import unquote, urlsplit
 
 from amplifier_core import HookResult
 
@@ -235,6 +239,72 @@ def _decode_macos_png(output: bytes, *, max_bytes: int) -> bytes | None:
         return None
 
 
+def read_image_file(
+    path: str | os.PathLike[str], *, max_bytes: int = MAX_CLIPBOARD_IMAGE_BYTES
+) -> ImageAttachment | None:
+    """Read a local image file within the same bounds as clipboard input."""
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    try:
+        with open(path, "rb") as image_file:
+            file_stat = os.fstat(image_file.fileno())
+            if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > max_bytes:
+                return None
+            data = image_file.read(max_bytes + 1)
+    except (OSError, TypeError, ValueError):
+        return None
+    if len(data) > max_bytes:
+        return None
+    media_type = _detect_image_media_type(data)
+    if media_type is None:
+        return None
+    return ImageAttachment(data=data, media_type=media_type)
+
+
+def pasted_image_attachments(text: str) -> tuple[ImageAttachment, ...]:
+    """Interpret pasted/dragged text as local image path(s) → attachments.
+
+    Cmd+V of an image file and drag-and-drop both arrive as a bracketed
+    text paste of the file path (the terminal can't deliver image bytes to
+    a TTY), so the composer routes pasted text through here first."""
+    value = text.strip()
+    if not value:
+        return ()
+    direct = _read_image_path(value.strip("'\""))
+    if direct is not None:
+        return (direct,)
+    try:
+        tokens = shlex.split(value)
+    except ValueError:
+        return ()
+    if not 1 <= len(tokens) <= MAX_CLIPBOARD_ATTACHMENTS:
+        return ()
+    attachments: list[ImageAttachment] = []
+    total_bytes = 0
+    for token in tokens:
+        attachment = _read_image_path(token)
+        if attachment is None:
+            return ()
+        total_bytes += len(attachment.data)
+        if total_bytes > MAX_CLIPBOARD_TOTAL_BYTES:
+            return ()
+        attachments.append(attachment)
+    return tuple(attachments)
+
+
+def _read_image_path(value: str) -> ImageAttachment | None:
+    parsed = urlsplit(value)
+    if parsed.scheme:
+        if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+            return None
+        candidate = unquote(parsed.path)
+    else:
+        if not value.startswith(("/", "~/", "./", "../")):
+            return None
+        candidate = value
+    return read_image_file(Path(candidate).expanduser())
+
+
 def _detect_image_media_type(data: bytes) -> ImageMediaType | None:
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
@@ -255,5 +325,7 @@ __all__ = [
     "MAX_CLIPBOARD_IMAGE_BYTES",
     "MAX_CLIPBOARD_TOTAL_BYTES",
     "build_image_message",
+    "pasted_image_attachments",
     "read_clipboard_image",
+    "read_image_file",
 ]

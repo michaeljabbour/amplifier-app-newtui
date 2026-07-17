@@ -187,6 +187,27 @@ async def test_staged_image_rides_submit_and_drops_when_placeholder_deleted() ->
 
 
 @pytest.mark.asyncio
+async def test_pasting_an_image_file_path_attaches_it(tmp_path) -> None:
+    # Cmd+V of an image file / drag-and-drop arrives as a bracketed paste of
+    # the path — it must attach as an image, not insert the path as text.
+    from textual import events
+
+    png = tmp_path / "shot.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40)
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        composer._input.post_message(events.Paste(str(png)))
+        await pilot.pause()
+        assert "[Image #1]" in composer.text
+        assert str(png) not in composer.text  # path not left as literal text
+        await pilot.press("enter")
+        await pilot.pause()
+        submits = _of(app, Composer.Submit)
+        assert len(submits) == 1 and len(submits[0].attachments) == 1
+
+
+@pytest.mark.asyncio
 async def test_paste_event_collapses_long_block_and_submits_full_text() -> None:
     from textual import events
 

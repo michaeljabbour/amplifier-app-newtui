@@ -32,7 +32,7 @@ from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
-from ..kernel.clipboard import ImageAttachment
+from ..kernel.clipboard import ImageAttachment, pasted_image_attachments
 from ..model.modes import DEFAULT_MODE, ModeProfile, get_mode
 from .keymap import COMPOSER_PLACEHOLDER, hint_label
 
@@ -152,6 +152,15 @@ class ComposerInput(TextArea):
         composer = self._composer()
         if composer is None or not event.text:
             await super()._on_paste(event)
+            return
+        # Cmd+V of an image file and drag-and-drop both arrive here as a
+        # bracketed paste of the file path — attach them, don't insert text.
+        images = pasted_image_attachments(event.text)
+        if images:
+            event.stop()
+            event.prevent_default()
+            for image in images:
+                composer.add_image(image)
             return
         stub = composer.register_paste(event.text)
         if stub is None:
