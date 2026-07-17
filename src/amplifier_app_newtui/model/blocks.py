@@ -216,25 +216,38 @@ class Blocked(_FrozenModel):
     continuation: str = ""
 
 
+class ActivityBranch(_FrozenModel):
+    """One row of the live activity tree beneath the working pulse.
+
+    ``running=True`` is the in-flight op (brighter, ``●``); completed ops
+    are dim. The reducer keeps a small bounded ring of the most recent
+    branches so the supervisor feels the action without the transcript
+    accumulating a durable line per tool (DESIGN-SPEC §3)."""
+
+    text: str
+    running: bool = False
+
+
 class WorkingStatus(_FrozenModel):
     """Pulsing working line shown while a turn runs (DESIGN-SPEC §3).
 
-    ``✳/✦/✧`` orange spinner + ``working · Ns · ↓ X.Xk tok · 1 agent · ``
-    dim + ``esc to interrupt · type to steer`` dimmer. A fan-out turn
-    (``agent_count > 1``) renders ``Coordinating N agents · Ns ·
-    ↓ X.Xk tok · `` dim + ``esc to interrupt`` dimmer instead (mockup
+    ``✳/✦/✧`` orange spinner + ``working · Ns · ↓ X.Xk tok · `` dim +
+    ``esc to interrupt · type to steer`` dimmer, with a bounded live
+    activity tree of recent ops rendered as ``└``/``├`` branches beneath.
+    A fan-out turn (``agent_count > 1``) renders ``Coordinating N agents ·
+    Ns · ↓ X.Xk tok · `` dim + ``esc to interrupt`` dimmer instead (mockup
     runAgentsTurn). Updated every second via the live tail; removed at
-    turn end (never persisted to history).
-    """
+    turn end (never persisted to history)."""
 
     id: str
     kind: Literal["working_status"] = "working_status"
     telemetry: TurnTelemetry
     agent_count: int = 0
     activity: str = ""
-    """What the agent is on right now (real turns): a running tool
-    (``$ uv run pytest``), ``thinking``, … — replaces the static
-    ``1 agent`` segment so the supervisor sees actual work."""
+    """Legacy single-op note (kept for compatibility); the live tree in
+    ``activity_lines`` is the primary activity surface now."""
+    activity_lines: tuple[ActivityBranch, ...] = ()
+    """Bounded live tree of recent ops (newest last) — single-agent turns."""
     interrupt_hint: str = "esc to interrupt"
     steer_hint: str = "type to steer"
     spinner_frame: int = 0
@@ -451,6 +464,7 @@ TranscriptBlock = Annotated[
 
 
 __all__ = [
+    "ActivityBranch",
     "Answer",
     "Blocked",
     "BlockIdAllocator",

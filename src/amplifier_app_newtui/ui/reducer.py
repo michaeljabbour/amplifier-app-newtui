@@ -25,11 +25,11 @@ from typing import Any, Protocol, cast
 from ..kernel import events as ev
 from ..kernel.cost import CostTracker
 from ..model.blocks import (
+    ActivityBranch,
     Answer,
     BlockIdAllocator,
     Blocked,
     BrainstormIdea,
-    LiveCommand,
     Narration,
     PlanBlock,
     PlanItem,
@@ -72,6 +72,99 @@ def _approx_tokens(*parts: object) -> int:
     """
     total = sum(len(str(part)) for part in parts if part)
     return max(1, total // _CHARS_PER_TOKEN) if total else 0
+
+
+# -- activity humanization (rolling burst digest + live tree) ------------------
+
+# tool name -> (verb, singular noun | None). ``None`` renders "verb N×".
+_TOOL_VERBS: dict[str, tuple[str, str | None]] = {
+    "bash": ("ran", "shell command"),
+    "shell": ("ran", "shell command"),
+    "read_file": ("read", "file"),
+    "write_file": ("wrote", "file"),
+    "edit_file": ("edited", "file"),
+    "apply_patch": ("edited", "file"),
+    "multi_edit": ("edited", "file"),
+    "grep": ("searched", None),
+    "glob": ("searched", None),
+    "search": ("searched", None),
+    "web_fetch": ("fetched", "page"),
+    "web_search": ("searched web", None),
+    "load_skill": ("loaded", "skill"),
+    "todo": ("updated", "plan"),
+}
+# Reading order for the digest so it scans naturally, whatever order the
+# model actually ran the tools in.
+_VERB_ORDER = ("read", "searched", "searched web", "ran", "edited", "wrote", "fetched", "loaded")
+_ACTIVITY_TAIL = 3  # live-tree rows kept beneath the pulse
+_OP_LABEL_MAX = 52
+
+
+def _verb_noun(tool: str) -> tuple[str, str | None]:
+    return _TOOL_VERBS.get(tool, ("used", tool.replace("_", " ")))
+
+
+def _basename(path: str) -> str:
+    path = path.rstrip("/")
+    return path.rsplit("/", 1)[-1] if "/" in path else path
+
+
+def _op_target(tool: str, tool_input: dict[str, Any]) -> str:
+    """Short human target for a tool call (for the live tree)."""
+    if tool in ("bash", "shell"):
+        cmd = str(tool_input.get("command", "")).strip().replace("\n", " ")
+        return f"$ {cmd}"
+    for key in ("file_path", "path", "filename", "notebook_path"):
+        if tool_input.get(key):
+            return _basename(str(tool_input[key]))
+    for key in ("pattern", "query", "url", "skill", "name"):
+        if tool_input.get(key):
+            return str(tool_input[key])
+    return ""
+
+
+def _op_detail(tool: str, tool_input: dict[str, Any], result: dict[str, Any]) -> str:
+    """One full detail line for the expandable digest body."""
+    if tool in ("bash", "shell"):
+        cmd = str(tool_input.get("command", "")).strip()
+        return f"$ {cmd}" if cmd else "$ (command)"
+    verb = _verb_noun(tool)[0]
+    target = _op_target(tool, tool_input)
+    return f"{verb} {target}".strip() if target else verb
+
+
+def _truncate(text: str, width: int = _OP_LABEL_MAX) -> str:
+    text = text.replace("\n", " ").strip()
+    return text if len(text) <= width else f"{text[: width - 1]}…"
+
+
+def _op_label(tool: str, tool_input: dict[str, Any]) -> str:
+    """Compact one-liner for the live activity tree."""
+    if tool in ("bash", "shell"):
+        return _truncate(_op_target(tool, tool_input))
+    verb = _verb_noun(tool)[0]
+    target = _op_target(tool, tool_input)
+    return _truncate(f"{verb} {_basename(target)}".strip() if target else verb)
+
+
+def _digest_summary(counts: dict[tuple[str, str | None], int]) -> str:
+    """``{('read','file'):4, ('ran','command'):6}`` -> ``Read 4 files · ran
+    6 commands``. First segment capitalized; ordered for natural reading."""
+
+    def sort_key(item: tuple[tuple[str, str | None], int]) -> int:
+        verb = item[0][0]
+        return _VERB_ORDER.index(verb) if verb in _VERB_ORDER else len(_VERB_ORDER)
+
+    parts: list[str] = []
+    for (verb, noun), n in sorted(counts.items(), key=sort_key):
+        if noun is None:
+            parts.append(f"{verb} {n}×")
+        else:
+            parts.append(f"{verb} {n} {noun}{'s' if n != 1 else ''}")
+    if not parts:
+        return ""
+    summary = " · ".join(parts)
+    return summary[0].upper() + summary[1:]
 
 
 class TurnSpecLike(Protocol):
@@ -130,13 +223,6 @@ class ReducerHost(Protocol):
 
 
 @dataclass
-class _Group:
-    pending: set[str] = field(default_factory=set)
-    commands: list[str] = field(default_factory=list)
-    block_ids: list[str] = field(default_factory=list)
-
-
-@dataclass
 class _Turn:
     turn_id: int
     prompt: str
@@ -148,7 +234,6 @@ class _Turn:
     plan_ids: dict[str, str] = field(default_factory=dict)
     active_step: str | None = None
     calls: dict[str, dict[str, Any]] = field(default_factory=dict)
-    groups: dict[str, _Group] = field(default_factory=dict)
     blocked: set[str] = field(default_factory=set)
     deferred: bool = False
     """Turn hit the trust boundary and deferred a decision to the queue."""
@@ -161,6 +246,15 @@ class _Turn:
     activity: str = ""
     """Current work item for the working line (real turns): running
     tool / ``thinking`` — supervisor-facing context."""
+    # -- rolling activity burst (DESIGN-SPEC §3) --------------------------
+    digest_id: str | None = None
+    """The current burst's in-place digest ToolLine (``Read 4 files · …``);
+    reset when the model speaks or the turn ends so the next run of tools
+    opens a fresh digest below the answer."""
+    burst_counts: dict[tuple[str, str | None], int] = field(default_factory=dict)
+    burst_detail: list[str] = field(default_factory=list)
+    activity_ring: list[ActivityBranch] = field(default_factory=list)
+    """Bounded newest-last live tree beneath the pulse (single-agent)."""
 
 
 class TranscriptReducer:
@@ -348,22 +442,12 @@ class TranscriptReducer:
             return
         if turn.working_id is not None:
             self._host.remove_block(turn.working_id)
-        # Sweep tool calls that never got a post/error: a policy-denied
-        # tool (kernel fires no tool:post) left its line pulsing
-        # "Running X" forever (found live: plan-mode blocked delegate).
-        # Live ``└ $ cmd`` lines stay as-is (mockup: an interrupted turn
-        # keeps the in-flight command line in the transcript).
-        for info in turn.calls.values():
-            if info["command"]:
-                continue
-            self._host.replace_block(
-                ToolLine(
-                    id=info["block_id"],
-                    summary=f"{info['tool']} · no result (blocked or abandoned)",
-                    status="completed",
-                )
-            )
+        # Tool calls that never got a post/error (a policy-denied tool
+        # fires no tool:post; an interrupted turn abandons in-flight ops)
+        # just close out the burst — the digest already reflects whatever
+        # completed, and the ephemeral live tree vanished with the pulse.
         turn.calls.clear()
+        self._flush_burst()
         usage = self._cost.end_turn()
         # Re-resolve at close: mid-turn events (e.g. a denied approval)
         # may have changed the adapter's close-out spec for this prompt.
@@ -496,6 +580,9 @@ class TranscriptReducer:
         text = str(event.block.get("text", ""))
         if not text:
             return
+        # The model spoke: freeze the preceding tool burst into its digest
+        # above this text, and start a fresh burst below it (spec §3).
+        self._flush_burst()
         role = str(event.block.get("demo_role") or "answer")
         if role == "narration":
             self._append_content(Narration(id=self._ids.next_id(), text=text))
@@ -543,40 +630,35 @@ class TranscriptReducer:
         if event.tool_name == "update_plan":
             self._update_plan(event)
             return
-        block_id = self._ids.next_id()
-        command = str(event.tool_input.get("command", "")) if event.tool_input else ""
-        if event.tool_name == "bash" and command:
-            head = command if len(command) <= 40 else f"{command[:39]}…"
-            self.set_activity(f"$ {head}")
-            self._append_content(LiveCommand(id=block_id, command=command))
-        else:
-            self.set_activity(event.tool_name)
-            self._append_content(
-                ToolLine(
-                    id=block_id,
-                    summary=f"Running {event.tool_name}",
-                    status="running",
-                    tool_call_ids=(event.tool_call_id,),
-                )
-            )
+        tool_input = event.tool_input or {}
+        command = str(tool_input.get("command", ""))
+        # No durable per-tool line: the in-flight op shows as the active
+        # branch in the live tree beneath the pulse, and rolls into the
+        # burst digest on completion (DESIGN-SPEC §3).
+        label = _op_label(event.tool_name, tool_input)
+        self.set_activity(label)
         if turn is not None:
-            # Parallel groups are a BASH-BATCH rendering concept (mockup
-            # "Ran 2 shell commands"). The real kernel stamps EVERY call
-            # with its own parallel_group_id — honoring those turned
-            # write_file into "Ran 1 shell command" (found live); only
-            # shell commands join groups, everything else stays per-tool.
-            group_id = event.parallel_group_id if command else ""
             turn.calls[event.tool_call_id] = {
                 "tool": event.tool_name,
+                "input": tool_input,
                 "command": command,
-                "block_id": block_id,
-                "group": group_id,
             }
-            if group_id:
-                group = turn.groups.setdefault(group_id, _Group())
-                group.pending.add(event.tool_call_id)
-                group.block_ids.append(block_id)
+            self._push_activity(turn, label, running=True)
         self._update_working()
+
+    def _push_activity(self, turn: _Turn, label: str, *, running: bool) -> None:
+        """Add/replace the newest live-tree branch (bounded, newest last)."""
+        # Drop the previous still-"running" placeholder — only one op is
+        # ever in flight for the pulse's purposes.
+        ring = [b for b in turn.activity_ring if not b.running]
+        ring.append(ActivityBranch(text=label, running=running))
+        turn.activity_ring = ring[-_ACTIVITY_TAIL:]
+
+    def _settle_activity(self, turn: _Turn, label: str) -> None:
+        """Mark the in-flight branch done (keeps it in the tail, dim)."""
+        ring = [b for b in turn.activity_ring if not b.running]
+        ring.append(ActivityBranch(text=label, running=False))
+        turn.activity_ring = ring[-_ACTIVITY_TAIL:]
 
     def _tool_post(self, event: ev.ToolPost) -> None:
         turn = self._turn
@@ -586,67 +668,67 @@ class TranscriptReducer:
         if info is None:
             return
         self.set_activity("")  # tool finished — back to model time
-        self.tool_tokens += _approx_tokens(event.tool_input, event.result)
-        command = info["command"] or str(event.tool_input.get("command", ""))
+        tool_input = info.get("input") or event.tool_input or {}
+        self.tool_tokens += _approx_tokens(tool_input, event.result)
+        command = info["command"] or str(tool_input.get("command", ""))
+        tool = info["tool"]
         status = str(event.result.get("status", ""))
         if status == "denied":
-            turn.blocked.add(command)
-            blocked = Blocked(
-                id=self._ids.next_id(),
-                cmd=command,
-                reason=str(event.result.get("reason", "denied")),
-                continuation=str(event.result.get("continuation", "")),
+            # A denial is load-bearing: it always gets its own durable ⊘
+            # line (spec §3/§7), never folded into the digest.
+            turn.blocked.add(command or _op_label(tool, tool_input))
+            self._append_content(
+                Blocked(
+                    id=self._ids.next_id(),
+                    cmd=command or _op_label(tool, tool_input),
+                    reason=str(event.result.get("reason", "denied")),
+                    continuation=str(event.result.get("continuation", "")),
+                )
             )
-            if info["tool"] == "bash" and info["command"]:
-                # Mockup keeps the live ``└ $ cmd`` line in the transcript
-                # and appends the ⊘ line below it (auto turn, spec §3).
-                self._append_content(blocked)
-            else:
-                self._host.replace_block(blocked.model_copy(update={"id": info["block_id"]}))
+            self._settle_activity(turn, _op_label(tool, tool_input))
             self._update_working()
             return
-        group_id = info["group"]
-        if group_id and group_id in turn.groups:
-            group = turn.groups[group_id]
-            group.pending.discard(event.tool_call_id)
-            group.commands.append(command)
-            if not group.pending:
-                for block_id in group.block_ids:
-                    self._host.remove_block(block_id)
-                count = len(group.commands)
-                plural = "s" if count != 1 else ""
-                self._append_content(
-                    ToolLine(
-                        id=self._ids.next_id(),
-                        summary=f"Ran {count} shell command{plural}",
-                        body=(f"$ {' && '.join(group.commands)}",),
-                        status="completed",
-                    )
-                )
-                del turn.groups[group_id]
-        elif info["tool"] == "bash":
-            # Mockup collapsed body: ``$ <cmd>  (output collapsed)``.
-            output = str(event.result.get("output", ""))
-            body = f"$ {command}" + (f"  {output}" if output else "")
-            self._host.replace_block(
+        # Success: roll into the burst tally + live tree, update the digest.
+        self._settle_activity(turn, _op_label(tool, tool_input))
+        key = _verb_noun(tool)
+        turn.burst_counts[key] = turn.burst_counts.get(key, 0) + 1
+        turn.burst_detail.append(_op_detail(tool, tool_input, event.result))
+        self._render_digest(turn)
+        self._update_working()
+
+    def _render_digest(self, turn: _Turn) -> None:
+        """Create or update this burst's single in-place digest line."""
+        summary = _digest_summary(turn.burst_counts)
+        if not summary:
+            return
+        body = tuple(turn.burst_detail)
+        if turn.digest_id is None:
+            turn.digest_id = self._ids.next_id()
+            self._append_content(
                 ToolLine(
-                    id=info["block_id"],
-                    summary="Ran 1 shell command",
-                    body=(body,),
-                    status="completed",
-                    tool_call_ids=(event.tool_call_id,),
+                    id=turn.digest_id, summary=summary, body=body, status="completed"
                 )
             )
         else:
             self._host.replace_block(
                 ToolLine(
-                    id=info["block_id"],
-                    summary=f"Ran {info['tool']}",
-                    status="completed",
-                    tool_call_ids=(event.tool_call_id,),
+                    id=turn.digest_id, summary=summary, body=body, status="completed"
                 )
             )
-        self._update_working()
+
+    def _flush_burst(self) -> None:
+        """Freeze the current burst's digest and reset for the next run.
+
+        Called when the model speaks (a durable answer/narration lands) and
+        at turn end — the completed digest stays durable in place; the next
+        tool opens a fresh digest below the answer (Claude-Code grammar)."""
+        turn = self._turn
+        if turn is None:
+            return
+        turn.digest_id = None
+        turn.burst_counts = {}
+        turn.burst_detail = []
+        turn.activity_ring = []
 
     def _tool_error(self, event: ev.ToolError) -> None:
         turn = self._turn
@@ -712,6 +794,9 @@ class TranscriptReducer:
 
     def _working_block(self, turn: _Turn) -> WorkingStatus:
         assert turn.working_id is not None
+        # The live activity tree only rides single-agent turns; fan-out
+        # turns get the dedicated agent tree (``_tree_block``) instead.
+        lines = () if turn.agent_total > 1 else tuple(turn.activity_ring)
         return WorkingStatus(
             id=turn.working_id,
             telemetry=self._live_telemetry(),
@@ -720,6 +805,7 @@ class TranscriptReducer:
             agent_count=turn.agent_total or 1,
             spinner_frame=turn.spinner_frame,
             activity=turn.activity,
+            activity_lines=lines,
         )
 
     def _update_working(self) -> None:

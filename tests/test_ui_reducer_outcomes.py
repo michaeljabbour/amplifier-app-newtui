@@ -266,7 +266,8 @@ def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
     line = "".join(s.text for s in render_block(working, 200)[0])
     assert "working · 3s" in line and "1 agent" in line
 
-    # A running tool replaces the static '1 agent' with the actual work.
+    # A running tool shows as the active branch of the live tree beneath
+    # the pulse (not inline); the static '1 agent' fallback drops away.
     reducer.handle(
         ev.ToolPre(
             session_id="s",
@@ -277,11 +278,16 @@ def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
         )
     )
     working = next(b for b in host.blocks if b.kind == "working_status")
-    line = "".join(s.text for s in render_block(working, 200)[0])
-    assert "$ uv run pytest -q" in line and "1 agent" not in line
+    rendered = "\n".join(
+        "".join(s.text for s in line) for line in render_block(working, 200)
+    )
+    assert "$ uv run pytest -q" in rendered  # in the tree
+    assert working.activity_lines and working.activity_lines[-1].running
+    assert "1 agent" not in rendered.splitlines()[0]  # not inline on the pulse
     # ...and the pulse rides at the BOTTOM, under the newest content.
     assert host.blocks[-1].kind == "working_status"
 
+    # A durable answer flushes the burst into a digest and clears the tree.
     reducer.handle(
         ev.ToolPost(
             session_id="s",
@@ -292,6 +298,58 @@ def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
             ts=105.0,
         )
     )
+    reducer.handle(
+        ev.ContentBlockEnd(
+            session_id="s",
+            block_type="text",
+            block={"type": "text", "text": "done"},
+            ts=106.0,
+        )
+    )
     working = next(b for b in host.blocks if b.kind == "working_status")
-    line = "".join(s.text for s in render_block(working, 200)[0])
-    assert "1 agent" in line  # activity cleared — back to model time
+    assert working.activity_lines == ()  # burst flushed — tree cleared
+    digest = next(
+        b for b in host.blocks if b.kind == "tool_line" and b.summary.startswith("Ran")
+    )
+    assert digest.summary == "Ran 1 shell command"
+
+
+def test_mixed_tool_burst_collapses_to_one_humanized_digest() -> None:
+    """A run of many tools between answers is ONE line — not one per tool
+    (DESIGN-SPEC §3): ``Read 2 files · searched 1× · ran 1 shell command``
+    with every op in the expandable body."""
+    from amplifier_app_newtui.kernel import events as ev
+
+    reducer, host = make_reducer("auto")
+    reducer.handle(ev.PromptSubmit(session_id="s", prompt="investigate", ts=0.0))
+
+    ops = [
+        ("read_file", {"file_path": "src/a.py"}),
+        ("read_file", {"file_path": "src/b.py"}),
+        ("grep", {"pattern": "TODO"}),
+        ("bash", {"command": "uv run pytest -q"}),
+    ]
+    for i, (tool, tool_input) in enumerate(ops):
+        cid = f"t{i}"
+        reducer.handle(
+            ev.ToolPre(session_id="s", tool_call_id=cid, tool_name=tool, tool_input=tool_input)
+        )
+        reducer.handle(
+            ev.ToolPost(
+                session_id="s",
+                tool_call_id=cid,
+                tool_name=tool,
+                tool_input=tool_input,
+                result={"output": "ok"},
+            )
+        )
+
+    digests = [b for b in host.blocks if b.kind == "tool_line"]
+    assert len(digests) == 1  # the whole burst is a single line
+    digest = digests[0]
+    assert digest.summary == "Read 2 files · searched 1× · ran 1 shell command"
+    # every op is preserved in the (collapsed) expandable body
+    assert digest.body == ("read a.py", "read b.py", "searched TODO", "$ uv run pytest -q")
+    # live tree beneath the pulse is bounded to the most recent ops
+    working = next(b for b in host.blocks if b.kind == "working_status")
+    assert len(working.activity_lines) <= 3

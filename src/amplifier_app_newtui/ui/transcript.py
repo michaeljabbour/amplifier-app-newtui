@@ -308,19 +308,33 @@ def _render_working_status(block: WorkingStatus, width: int) -> tuple[Line, ...]
                 Segment(text=block.interrupt_hint, style_token="dimmer"),
             ),
         )
-    # Real turns carry the current work item (running tool / thinking);
-    # the mockup's static ``1 agent`` is the fallback (spec §3).
-    doing = block.activity or "1 agent"
-    return (
-        (
-            Segment(text=f"{frame} ", style_token="orange"),
-            Segment(text=f"working · {inner} · {doing} · ", style_token="dim"),
-            Segment(
-                text=f"{block.interrupt_hint} · {block.steer_hint}",
-                style_token="dimmer",
-            ),
-        ),
+    # Single-agent pulse: the live activity tree beneath carries the ops
+    # (spec §3). Before any tool runs, fall back to the inline note
+    # (``thinking``) so the supervisor still sees the turn breathing.
+    pulse: list[Segment] = [Segment(text=f"{frame} ", style_token="orange")]
+    if block.activity_lines:
+        pulse.append(Segment(text=f"working · {inner} · ", style_token="dim"))
+    else:
+        note = block.activity or "1 agent"
+        pulse.append(Segment(text=f"working · {inner} · {note} · ", style_token="dim"))
+    pulse.append(
+        Segment(
+            text=f"{block.interrupt_hint} · {block.steer_hint}",
+            style_token="dimmer",
+        )
     )
+    lines: list[Line] = [tuple(pulse)]
+    last = len(block.activity_lines) - 1
+    for i, branch in enumerate(block.activity_lines):
+        glyph = "  └ " if i == last else "  ├ "
+        text_token = "dim" if branch.running else "dimmer"
+        lines.append(
+            (
+                Segment(text=glyph, style_token="dimmer"),
+                Segment(text=branch.text, style_token=text_token),
+            )
+        )
+    return tuple(lines)
 
 
 def _render_recap(block: Recap, width: int) -> tuple[Line, ...]:
