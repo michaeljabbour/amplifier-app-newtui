@@ -38,6 +38,14 @@ from .keymap import COMPOSER_PLACEHOLDER, hint_label
 MAX_INPUT_HEIGHT = 6
 """Cap on the auto-growing input, in lines."""
 
+PASTE_LINE_THRESHOLD = 10
+PASTE_CHAR_THRESHOLD = 800
+"""A paste larger than either collapses to a stub (amplifier-app-cli
+``LosslessTextPasteState`` parity): the composer shows a compact
+``[Pasted #N · … ]`` placeholder while the full text is retained and
+expanded verbatim at submit — so a big paste never floods the composer
+(what read as 'truncated') and nothing is lost."""
+
 _MODE_CLASSES = ("mode-chat", "mode-plan", "mode-brainstorm", "mode-build", "mode-auto")
 
 
@@ -128,6 +136,22 @@ class ComposerInput(TextArea):
             composer.post_message(Composer.EscPressed())
         else:
             await super()._on_key(event)
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        # Own the paste so a big block collapses to a stub instead of
+        # flooding the composer (amplifier-app-cli parity). Small pastes
+        # fall through to TextArea's verbatim insert.
+        composer = self._composer()
+        if composer is None or not event.text:
+            await super()._on_paste(event)
+            return
+        stub = composer.register_paste(event.text)
+        if stub is None:
+            await super()._on_paste(event)
+            return
+        event.stop()
+        event.prevent_default()
+        self.insert(stub)
 
     def _composer(self) -> "Composer | None":
         node = self.parent
@@ -230,6 +254,8 @@ class Composer(Horizontal):
         self._badge = ModeBadge()
         self._prompt = Static("❯", classes="composer-prompt")
         self._input = ComposerInput()
+        self._pastes: dict[str, str] = {}  # stub → full retained payload
+        self._paste_seq = 0
 
     def compose(self):
         yield self._badge
@@ -261,6 +287,27 @@ class Composer(Horizontal):
 
     def clear(self) -> None:
         self._input.clear()
+        self._pastes.clear()
+
+    def register_paste(self, text: str) -> str | None:
+        """Retain a long paste and return its stub; ``None`` to insert
+        *text* inline (short pastes stay verbatim in the composer)."""
+        line_count = text.count("\n") + 1
+        if line_count <= PASTE_LINE_THRESHOLD and len(text) <= PASTE_CHAR_THRESHOLD:
+            return None
+        self._paste_seq += 1
+        measure = (
+            f"{line_count} lines" if line_count > PASTE_LINE_THRESHOLD else f"{len(text)} chars"
+        )
+        stub = f"[Pasted #{self._paste_seq} · {measure}]"
+        self._pastes[stub] = text
+        return stub
+
+    def _expand(self, text: str) -> str:
+        """Replace retained paste stubs with their full payloads."""
+        for stub, payload in self._pastes.items():
+            text = text.replace(stub, payload)
+        return text
 
     def insert_text(self, text: str) -> None:
         """Insert *text* at the cursor (key pass-through from overlay
@@ -280,7 +327,9 @@ class Composer(Horizontal):
     # -- input semantics -----------------------------------------------------------
 
     def handle_enter(self) -> None:
-        text = self._input.text.strip()
+        # Stubs are expanded to their full payloads for submission while
+        # the composer only ever showed the compact placeholder.
+        text = self._expand(self._input.text).strip()
         if not text:
             self.post_message(self.EnterEmpty())
             return
@@ -288,14 +337,14 @@ class Composer(Horizontal):
             self.post_message(self.Steer(text))
         else:
             self.post_message(self.Submit(text))
-        self._input.clear()
+        self.clear()
 
     def handle_queue(self) -> None:
-        text = self._input.text.strip()
+        text = self._expand(self._input.text).strip()
         if not text:
             return
         self.post_message(self.QueueMessage(text))
-        self._input.clear()
+        self.clear()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         event.stop()

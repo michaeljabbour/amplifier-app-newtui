@@ -133,6 +133,46 @@ def test_queue_hint_swaps_on_missing_kitty_protocol() -> None:
     assert Composer(kitty_protocol=False).queue_hint == "alt+enter"
 
 
+def test_short_paste_stays_inline() -> None:
+    c = Composer()
+    assert c.register_paste("a short paste\nwith two lines") is None
+
+
+def test_long_paste_collapses_to_stub_and_expands() -> None:
+    c = Composer()
+    payload = "\n".join(f"line {i}" for i in range(30))  # > 10 lines
+    stub = c.register_paste(payload)
+    assert stub is not None and stub.startswith("[Pasted #1")
+    assert "30 lines" in stub
+    # composer shows only the stub, but it expands to the full text
+    typed = f"here is the code: {stub} — please review"
+    assert c._expand(typed) == f"here is the code: {payload} — please review"
+    # a big single-line paste (> char threshold) also collapses
+    big = "x" * 900
+    stub2 = c.register_paste(big)
+    assert stub2 is not None and "900 chars" in stub2
+
+
+@pytest.mark.asyncio
+async def test_paste_event_collapses_long_block_and_submits_full_text() -> None:
+    from textual import events
+
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        payload = "\n".join(f"row {i}" for i in range(20))
+        composer._input.post_message(events.Paste(payload))
+        await pilot.pause()
+        shown = composer.text
+        assert "[Pasted #1" in shown and "row 19" not in shown  # collapsed, not flooded
+        await pilot.press("enter")
+        await pilot.pause()
+        submits = _of(app, Composer.Submit)
+        assert len(submits) == 1
+        assert submits[0].text == payload  # full text restored on submit
+        assert composer.text == ""  # cleared, stubs forgotten
+
+
 @pytest.mark.asyncio
 async def test_slash_prefix_posts_live_palette_filters() -> None:
     app = ComposerApp()
