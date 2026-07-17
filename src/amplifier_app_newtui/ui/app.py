@@ -194,6 +194,8 @@ class NewTuiApp(App[None]):
 
     def _copy_settled_selection(self) -> None:
         self._selection_timer = None
+        if not self.screen_stack:
+            return  # debounce timer outlived the app (shutdown race)
         text = self.screen.get_selected_text()
         if not text or text == self._last_selection_copied:
             return
