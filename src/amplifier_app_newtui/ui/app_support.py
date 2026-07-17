@@ -380,6 +380,37 @@ def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
     app.refresh_status()
 
 
+def os_clipboard_copy(text: str) -> bool:
+    """Write *text* to the OS clipboard via the platform tool, if any.
+
+    OSC 52 alone is not enough: iTerm2 ships with terminal clipboard
+    writes disabled, so copies silently vanished (user report). A local
+    TUI can just use pbcopy / wl-copy / xclip directly. Returns True when
+    a tool accepted the text; never raises.
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    candidates: tuple[tuple[str, ...], ...]
+    if sys.platform == "darwin":
+        candidates = (("pbcopy",),)
+    else:
+        candidates = (("wl-copy",), ("xclip", "-selection", "clipboard"), ("xsel", "-ib"))
+    for command in candidates:
+        if shutil.which(command[0]) is None:
+            continue
+        try:
+            subprocess.run(
+                command, input=text.encode("utf-8"), timeout=5, check=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception:  # noqa: BLE001 — clipboard is best-effort
+            continue
+    return False
+
+
 def native_modes_segments(catalog: object) -> tuple[Segment, ...]:
     """Render the mode tool's catalog output grouped by source bundle.
 

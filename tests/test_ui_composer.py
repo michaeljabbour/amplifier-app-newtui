@@ -231,7 +231,12 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
 
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     copied: list[str] = []
-    app.copy_to_clipboard = lambda text: copied.append(text)  # type: ignore[method-assign]
+
+    def _fake_copy(text: str) -> None:
+        copied.append(text)
+        app._os_clipboard_copied = True  # OS tool accepted (pbcopy path)
+
+    app.copy_to_clipboard = _fake_copy  # type: ignore[method-assign]
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause(0.4)
 
@@ -251,7 +256,7 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
         await pilot.press("ctrl+c")
         await pilot.pause()
         assert copied and len(copied[0]) > 10
-        assert app.notice_slot.current.startswith("copied · ")
+        assert app.notice_slot.current == f"copied · {len(copied[0])} chars"
 
         # The composer's own selection wins over the transcript's.
         await pilot.press("h", "i")

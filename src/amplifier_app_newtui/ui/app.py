@@ -137,6 +137,7 @@ class NewTuiApp(App[None]):
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
         self._boot_block_id: str | None = None  # boot-progress transcript line
         self._auto_native_mode: str | None = None  # posture-bridged native mode
+        self._os_clipboard_copied = False  # last copy reached an OS clipboard tool
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
@@ -527,18 +528,30 @@ class NewTuiApp(App[None]):
         if self.lanes_panel.display and not self.lanes_panel.has_focus:
             self.lanes_panel.focus_selected()
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Clipboard writes go BOTH ways: OSC 52 (Textual's built-in, works
+        over SSH) AND the OS clipboard tool when one exists (pbcopy /
+        wl-copy / xclip). iTerm2 ships with OSC 52 writes DISABLED, so
+        relying on the escape alone silently copied nothing (user report:
+        "can't copy still"). One choke point — ctrl+c and any /copy-style
+        command all route through here."""
+        super().copy_to_clipboard(text)
+        self._os_clipboard_copied = app_support.os_clipboard_copy(text)
+
     def action_copy_selection(self) -> None:
         """ctrl+c: copy the composer's own selection, else the transcript
-        drag-selection (OSC 52). Always confirms — the escape sequence is
-        invisible and terminals can silently block clipboard access."""
+        drag-selection. Always confirms — clipboard writes are invisible."""
         text = self.composer.selected_text or self.screen.get_selected_text()
         if not text:
             self.show_notice("nothing selected · drag to select transcript text")
             return
         self.copy_to_clipboard(text)
-        self.show_notice(
-            f"copied · {len(text)} chars · empty clipboard? allow terminal clipboard access"
-        )
+        if self._os_clipboard_copied:
+            self.show_notice(f"copied · {len(text)} chars")
+        else:
+            self.show_notice(
+                f"copied · {len(text)} chars · empty clipboard? allow terminal clipboard access"
+            )
 
     def on_composer_esc_pressed(self, message: Composer.EscPressed) -> None:
         message.stop()
