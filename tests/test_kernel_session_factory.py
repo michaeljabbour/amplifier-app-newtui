@@ -240,6 +240,28 @@ async def test_missing_provider_hard_fails_and_cleans_up(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_partial_provider_failure_degrades_not_fatal(tmp_path: Path) -> None:
+    # One provider up (Anthropic), one down (a vLLM 'openmj' whose endpoint
+    # is offline): the session runs on the working provider and notes the
+    # other — it must NOT hard-fail (regression: newtui killed the whole
+    # app when any single provider failed to mount).
+    mount_plan = {
+        "providers": [
+            {"module": "provider-anthropic"},
+            {"module": "provider-vllm", "id": "openmj"},
+        ]
+    }
+    coordinator = FakeCoordinator(providers={"anthropic": object()})
+    session = FakeSession(coordinator)
+    resolved = make_resolved(session, mount_plan, tmp_path)
+
+    initialized = await create_initialized_session(SessionRequest(resolved=resolved))
+    assert not session.cleaned  # session is live, not torn down
+    assert initialized.degraded_notice is not None
+    assert "openmj" in initialized.degraded_notice
+
+
+@pytest.mark.asyncio
 async def test_missing_tools_start_degraded_not_fatal(tmp_path: Path) -> None:
     mount_plan = {
         "providers": [{"module": "provider-anthropic"}],

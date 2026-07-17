@@ -85,27 +85,37 @@ class MountReport:
     """Result of verifying mounted modules against the mount plan."""
 
     missing_providers: tuple[str, ...] = ()
+    mounted_provider_count: int = 0
     missing_tools: tuple[str, ...] = ()
     configured_tool_count: int = 0
     mounted_tool_count: int = 0
+
+    @property
+    def no_provider(self) -> bool:
+        """True only when NOT ONE provider mounted — the fatal case. A
+        partial failure (some providers up, some down — e.g. a local vLLM
+        endpoint offline while Anthropic is fine) degrades, never blocks."""
+        return self.mounted_provider_count == 0
 
     @property
     def tools_degraded(self) -> bool:
         return bool(self.missing_tools) or self.mounted_tool_count < self.configured_tool_count
 
     def degraded_notice(self) -> str | None:
-        """The blocking transcript notice for a degraded (tools) start."""
+        """The blocking transcript notice for a degraded start (a provider
+        or tool module that failed to mount while the session still ran)."""
+        parts: list[str] = []
+        if self.missing_providers:
+            parts.append(f"provider(s) unavailable: {', '.join(self.missing_providers)}")
         if self.missing_tools:
-            return (
-                f"degraded start · tool modules failed to mount: "
-                f"{', '.join(self.missing_tools)} · run doctor for details"
+            parts.append(f"tool modules failed to mount: {', '.join(self.missing_tools)}")
+        elif self.mounted_tool_count < self.configured_tool_count:
+            parts.append(
+                f"{self.mounted_tool_count}/{self.configured_tool_count} tool modules mounted"
             )
-        if self.mounted_tool_count < self.configured_tool_count:
-            return (
-                f"degraded start · {self.mounted_tool_count}/{self.configured_tool_count} "
-                "tool modules mounted · run doctor for details"
-            )
-        return None
+        if not parts:
+            return None
+        return f"degraded start · {' · '.join(parts)} · run doctor for details"
 
 
 @dataclass
@@ -204,6 +214,7 @@ def verify_mounts(mount_plan: dict[str, Any], coordinator: Any) -> MountReport:
 
     return MountReport(
         missing_providers=missing_providers,
+        mounted_provider_count=len(mounted_providers),
         missing_tools=missing_tools,
         configured_tool_count=len(configured_tools),
         mounted_tool_count=len(mounted_tools),
@@ -292,19 +303,27 @@ async def create_initialized_session(request: SessionRequest) -> InitializedSess
     if request.resume_capability is not None:
         session.coordinator.register_capability(RESUME_CAPABILITY, request.resume_capability)
 
-    # Step 5: verify mounted modules vs the plan.
+    # Step 5: verify mounted modules vs the plan. A session needs at least
+    # ONE working provider — but a partial failure (a configured provider
+    # down while another is up, e.g. an offline local vLLM endpoint next to
+    # Anthropic) must degrade, not block. Only zero mounted providers is
+    # fatal; missing providers otherwise ride the degraded notice.
     report = verify_mounts(resolved.mount_plan, session.coordinator)
-    if report.missing_providers:
+    if report.no_provider:
         try:
             await session.cleanup()
         except Exception:  # noqa: BLE001 — surface the mount error, not cleanup noise
             logger.debug("session cleanup failed after provider mount failure", exc_info=True)
-        raise ProviderMountError(
+        detail = (
             f"Provider module(s) failed to mount: {', '.join(report.missing_providers)}. "
-            "The session cannot run without a provider — check credentials and module "
-            "install state (run `amplifier-newtui doctor`)."
+            if report.missing_providers
+            else "No provider configured. "
         )
-    if report.tools_degraded:
+        raise ProviderMountError(
+            detail + "The session cannot run without a provider — check credentials "
+            "and module install state (run `amplifier-newtui doctor`)."
+        )
+    if report.missing_providers or report.tools_degraded:
         logger.warning("%s", report.degraded_notice())
 
     # Step 6: restore transcript on resume.
