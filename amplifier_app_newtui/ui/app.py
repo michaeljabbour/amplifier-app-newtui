@@ -226,6 +226,12 @@ class NewTuiApp(App[None]):
         app_support.finish_turn_queues(self)
 
     def submit_prompt(self, text: str) -> None:
+        if self._boot_block_id is not None:
+            # Mid-boot submits used to vanish silently (the runtime isn't
+            # up yet) — keep the supervisor's words instead of eating them.
+            self.composer.insert_text(text)
+            self.show_notice("session still starting · message kept in the composer")
+            return
         self.run_worker(self.adapter.submit(text), exclusive=False)
 
     # -- ReducerHost ---------------------------------------------------------------

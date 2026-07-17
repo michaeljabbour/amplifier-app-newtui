@@ -319,7 +319,32 @@ def offline_env(
 async def _started_runtime(project: Path, mode: str = "chat") -> RealRuntime:
     runtime = RealRuntime(bundle="offline", project_dir=project, mode=lambda: mode)
     await runtime.start()
+    _register_policy_hook(runtime)
     return runtime
+
+
+def _register_policy_hook(runtime: RealRuntime) -> None:
+    """Stand-in for the NATIVE hooks-approval module (user directive: the
+    app registers no policy hook of its own — asks come from mounted
+    modules). Asks for write_file, continues everything else; the kernel's
+    real ``process_hook_result`` routes the ask to the ApprovalBroker."""
+    from amplifier_core import HookResult
+
+    async def policy(event: str, data: dict) -> HookResult:
+        del event
+        if data.get("tool_name") == "write_file":
+            return HookResult(
+                action="ask_user",
+                approval_prompt=f"Allow write_file · {data.get('tool_input', {}).get('path', '')}?",
+                approval_options=list(STANDARD_OPTIONS),
+                approval_default="deny",
+            )
+        return HookResult(action="continue")
+
+    assert runtime._initialized is not None
+    runtime._initialized.coordinator.hooks.register(
+        "tool:pre", policy, priority=1000, name="fake-hooks-approval"
+    )
 
 
 async def _answer_next_approval(runtime: RealRuntime, choice: str) -> None:
@@ -583,5 +608,42 @@ def test_native_modes_go_through_the_mounted_mode_tool() -> None:
         assert (await bare.list_native_modes()) == ""
         ok, detail = await bare.set_native_mode("debug")
         assert not ok and "no native mode system" in detail
+
+    asyncio.run(run())
+
+
+def test_broker_approval_provider_adapts_native_requests() -> None:
+    """hooks-approval asks its registered ApprovalProvider — the adapter
+    presents through the broker and reports remember for Allow always
+    (native module owns the persistence; user directive)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from amplifier_app_newtui.kernel.approval import ALLOW_ALWAYS, ApprovalBroker
+    from amplifier_app_newtui.kernel.runtime import _BrokerApprovalProvider
+
+    async def run() -> None:
+        broker = ApprovalBroker()
+        provider = _BrokerApprovalProvider(broker)
+        request = SimpleNamespace(
+            tool_name="bash",
+            action="rm newtui-native-test.txt",
+            details={"command": "rm newtui-native-test.txt"},
+            risk_level="high",
+            timeout=None,
+        )
+        task = asyncio.ensure_future(provider.request_approval(request))
+        for _ in range(100):
+            if broker.head is not None:
+                break
+            await asyncio.sleep(0.01)
+        head = broker.head
+        assert head is not None
+        assert head.prompt == "Allow rm newtui-native-test.txt?"
+        assert head.detail.tool_name == "bash"
+        broker.answer(head.ticket_id, ALLOW_ALWAYS)
+        response = await task
+        assert response.approved is True
+        assert response.remember is True
 
     asyncio.run(run())

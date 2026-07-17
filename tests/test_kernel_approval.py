@@ -1,4 +1,4 @@
-"""ApprovalBroker tests: FIFO, options, remember keys, defer/timeout.
+"""ApprovalBroker tests: FIFO, options, allow-always pass-through, defer/timeout.
 
 Pure asyncio — no Textual, no network, no real kernel.
 """
@@ -18,7 +18,6 @@ from amplifier_app_newtui.kernel.approval import (
     ApprovalDetail,
     is_allow,
     presented_options,
-    remember_key,
 )
 from amplifier_app_newtui.model.queues import NeedsYouQueue
 from amplifier_app_newtui.model.trust import DenialLog
@@ -56,27 +55,6 @@ def test_is_allow_family_matching() -> None:
     assert is_allow("Allow")
     assert not is_allow("Deny")
     assert not is_allow("Skip")
-
-
-# -- remember keys --------------------------------------------------------------
-
-
-def test_remember_key_file_tool_scopes_by_parent_dir() -> None:
-    key = remember_key("write_file", {"file_path": "/repo/src/app.py"})
-    assert key == "write_file:/repo/src/"
-    assert key == remember_key("write_file", {"file_path": "/repo/src/other.py"})
-    assert key != remember_key("write_file", {"file_path": "/repo/docs/readme.md"})
-
-
-def test_remember_key_bash_scopes_by_two_token_prefix() -> None:
-    key = remember_key("bash", {"command": "git push origin main"})
-    assert key == "bash:git push"
-    assert key == remember_key("bash", {"command": "git push --force"})
-    assert remember_key("bash", {"command": "ls"}) == "bash:ls"
-
-
-def test_remember_key_other_tools_fall_back_to_name() -> None:
-    assert remember_key("web_fetch", {"url": "https://x"}) == "web_fetch"
 
 
 # -- FIFO / answer ---------------------------------------------------------------
@@ -133,43 +111,25 @@ async def test_listeners_fire_on_queue_changes() -> None:
     remove()
 
 
-# -- allow-always remember --------------------------------------------------------
+# -- allow-always pass-through ------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_allow_always_short_circuits_same_scope() -> None:
+async def test_allow_always_passes_through_without_local_bookkeeping() -> None:
+    """User directive: the asker (natively hooks-approval) owns allow-always
+    persistence — the broker must NOT keep a shadow remember table, so an
+    identical follow-up ask presents a fresh ticket."""
     broker, _, _ = make_broker()
-    detail = ApprovalDetail(
-        command="git push origin main",
-        tool_name="bash",
-        tool_input={"command": "git push origin main"},
-    )
-    broker.stage_detail("Allow git push origin main?", detail)
-    task = asyncio.ensure_future(
-        broker.request_approval("Allow git push origin main?", [])
-    )
+    task = asyncio.ensure_future(broker.request_approval("Allow git push?", []))
     await _settle()
     broker.answer(broker.head.ticket_id, ALLOW_ALWAYS)  # type: ignore[union-attr]
     assert await task == ALLOW_ALWAYS
 
-    # Same 2-token scope resolves instantly without a ticket.
-    broker.stage_detail(
-        "Allow git push --tags?",
-        ApprovalDetail(tool_name="bash", tool_input={"command": "git push --tags"}),
-    )
-    assert await broker.request_approval("Allow git push --tags?", []) == ALLOW_ALWAYS
-    assert broker.pending == ()
-
-    # Different scope still asks.
-    broker.stage_detail(
-        "Allow rm x?",
-        ApprovalDetail(tool_name="bash", tool_input={"command": "rm x"}),
-    )
-    other = asyncio.ensure_future(broker.request_approval("Allow rm x?", []))
+    again = asyncio.ensure_future(broker.request_approval("Allow git push?", []))
     await _settle()
-    assert broker.head is not None
-    broker.answer(broker.head.ticket_id, DENY)
-    assert await other == DENY
+    assert broker.head is not None  # asked again — no local short-circuit
+    broker.answer(broker.head.ticket_id, ALLOW_ONCE)
+    assert await again == ALLOW_ONCE
 
 
 # -- defer / timeout ---------------------------------------------------------------

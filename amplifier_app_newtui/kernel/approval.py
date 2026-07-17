@@ -23,19 +23,17 @@ Fail-closed invariants (Rust string-matches "Allow"-family options):
   DenialLog AND the needs-you item stays pending — retro-answerable, so a
   later answer becomes a next-turn instruction ("Applying decision: …").
 
-"Allow always" scoping uses remember keys: file tools are keyed by the
-target's parent directory, bash-family tools by the command's first two
-tokens, everything else by tool name (ported from
-amplifier-module-hooks-approval ``_build_remember_key``).
+"Allow always" persistence is NOT handled here (user directive:
+permissions are managed natively) — the asker (hooks-approval) receives
+the choice string back and owns remember/allow-always bookkeeping.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Literal
 
@@ -51,11 +49,6 @@ STANDARD_OPTIONS: tuple[str, str, str] = (ALLOW_ONCE, ALLOW_ALWAYS, DENY)
 
 _ALLOW_FAMILY = frozenset({"allow", "allow once", "allow always"})
 
-_FILE_TOOLS = frozenset(
-    {"write_file", "edit_file", "read_file", "create_file", "delete_file", "apply_patch"}
-)
-_SHELL_TOOLS = frozenset({"bash", "shell", "exec", "exec_command"})
-
 ApprovalDefault = Literal["allow", "deny"]
 
 Listener = Callable[[], None]
@@ -65,8 +58,7 @@ class ApprovalDetail(BaseModel):
     """Structured payload behind one approval prompt (ctrl-a detail view).
 
     Fields mirror the mockup's detail rows: command, cwd, the trust rule
-    that fired, and the capability class. ``tool_name``/``tool_input``
-    additionally power "Allow always" remember-key scoping.
+    that fired, and the capability class.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -77,27 +69,6 @@ class ApprovalDetail(BaseModel):
     capability: str = ""
     tool_name: str = ""
     tool_input: dict[str, Any] = Field(default_factory=dict)
-
-
-def remember_key(tool_name: str, tool_input: Mapping[str, Any] | None = None) -> str:
-    """Scope key for a remembered "Allow always" decision.
-
-    - file tools → ``<tool>:<parent-dir>/``
-    - bash-family → ``<tool>:<first two command tokens>``
-    - everything else → tool name alone
-    """
-    name = tool_name.strip().casefold()
-    tool_input = tool_input or {}
-    if name in _FILE_TOOLS:
-        raw_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
-        parent = str(PurePosixPath(raw_path).parent)
-        if parent != "." and not parent.endswith("/"):
-            parent += "/"
-        return f"{name}:{parent}"
-    if name in _SHELL_TOOLS:
-        tokens = str(tool_input.get("command") or tool_input.get("cmd") or "").split()
-        return f"{name}:{' '.join(tokens[:2])}"
-    return name
 
 
 def is_allow(choice: str) -> bool:
@@ -120,8 +91,6 @@ class ApprovalTicket:
     deferred: bool = False
     decision_id: str = ""
     """NeedsYouQueue decision id once deferred; empty otherwise."""
-    remember: str = field(default="", repr=False)
-    """Remember key computed at request time (empty = no scoping info)."""
 
 
 class ApprovalBroker:
@@ -150,7 +119,6 @@ class ApprovalBroker:
         self._next_id = 1
         self._tickets: list[ApprovalTicket] = []
         self._staged: dict[str, deque[ApprovalDetail]] = {}
-        self._remembered: dict[str, str] = {}
         self._listeners: list[Listener] = []
 
     # -- introspection ------------------------------------------------------
@@ -185,14 +153,6 @@ class ApprovalBroker:
         bearing *prompt*. Instance-scoped, FIFO per prompt."""
         self._staged.setdefault(prompt, deque()).append(detail)
 
-    def remembered_choice(
-        self, tool_name: str, tool_input: Mapping[str, Any] | None = None
-    ) -> str | None:
-        """The remembered "always" decision for this call's scope, if any."""
-        if not tool_name:
-            return None
-        return self._remembered.get(remember_key(tool_name, tool_input))
-
     # -- kernel-facing contract ----------------------------------------------
 
     async def request_approval(
@@ -206,14 +166,10 @@ class ApprovalBroker:
         needs-you, or timeout-to-default. Never raises to the kernel."""
         timeout = max(timeout, self._min_timeout)
         detail = self._pop_staged(prompt)
-        key = (
-            remember_key(detail.tool_name, detail.tool_input)
-            if detail.tool_name
-            else ""
-        )
-        if key and key in self._remembered:
-            return self._remembered[key]
-
+        # NO local "Allow always" bookkeeping (user directive): the asker
+        # (natively, hooks-approval) owns allow-always persistence — it
+        # receives the choice string back and stops asking. A second
+        # remember table here would shadow the native one.
         ticket = ApprovalTicket(
             ticket_id=f"approval-{self._next_id}",
             prompt=prompt,
@@ -223,7 +179,6 @@ class ApprovalBroker:
             timeout=timeout,
             default=default,
             created_at=self._clock(),
-            remember=key,
         )
         self._next_id += 1
         self._tickets.append(ticket)
@@ -240,8 +195,6 @@ class ApprovalBroker:
                 self._tickets.remove(ticket)
             self._notify()
 
-        if choice == ALLOW_ALWAYS and ticket.remember:
-            self._remembered[ticket.remember] = ALLOW_ALWAYS
         return choice
 
     # -- UI-facing actions ---------------------------------------------------
@@ -348,5 +301,4 @@ __all__ = [
     "STANDARD_OPTIONS",
     "is_allow",
     "presented_options",
-    "remember_key",
 ]

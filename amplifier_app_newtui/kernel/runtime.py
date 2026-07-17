@@ -26,7 +26,6 @@ from .display import DisplaySystem
 from .events import ContentBlockEnd, ContextInjected, PromptComplete, PromptSubmit, UIEvent
 from .evidence import EvidenceCollector
 from .git_yield import GitDiffSnapshot, capture_git_diff
-from .governance_hook import GovernanceHook
 from .persistence import IncrementalSaver, SessionStore
 from .queue_bridge import CONSUMED_EVENTS, QueueBridge
 from .turn_yield import TurnYieldTracker
@@ -118,6 +117,48 @@ def _strip_printing_hooks(mount_plan: dict[str, Any]) -> None:
             for h in hooks
             if not (isinstance(h, dict) and h.get("module") in _PRINTING_HOOKS)
         ]
+
+
+class _BrokerApprovalProvider:
+    """Kernel ``ApprovalProvider`` protocol over the app's ApprovalBroker.
+
+    Registered through hooks-approval's ``approval.register_provider``
+    capability — the native module decides WHEN to ask (mode confirm
+    lists, its policy rules) and owns allow-always persistence via
+    ``ApprovalResponse.remember``; this adapter only presents the ask.
+    """
+
+    def __init__(self, broker: ApprovalBroker) -> None:
+        self._broker = broker
+
+    async def request_approval(self, request: Any) -> Any:
+        from amplifier_core import ApprovalResponse
+
+        from .approval import ALLOW_ALWAYS, STANDARD_OPTIONS, ApprovalDetail, is_allow
+
+        action = str(getattr(request, "action", "") or getattr(request, "tool_name", ""))
+        prompt = f"Allow {action}?"
+        details = getattr(request, "details", None)
+        self._broker.stage_detail(
+            prompt,
+            ApprovalDetail(
+                command=action,
+                rule=str(getattr(request, "risk_level", "") or ""),
+                tool_name=str(getattr(request, "tool_name", "") or ""),
+                tool_input=dict(details) if isinstance(details, Mapping) else {},
+            ),
+        )
+        choice = await self._broker.request_approval(
+            prompt,
+            list(STANDARD_OPTIONS),
+            timeout=float(getattr(request, "timeout", None) or 3600.0),
+            default="deny",
+        )
+        return ApprovalResponse(
+            approved=is_allow(choice),
+            reason=f"user chose {choice}",
+            remember=choice == ALLOW_ALWAYS,
+        )
 
 
 class RealRuntime:
@@ -250,14 +291,15 @@ class RealRuntime:
         self._initialized = initialized
         hooks = initialized.coordinator.hooks
         initialized.unregister_handles.append(self.bridge.register_hooks(hooks))
-        governance = GovernanceHook(
-            initialized.session_id,
-            mode=self._mode,
-            denial_log=self.denial_log,
-            broker=self.broker,
-            needs_you=self.needs_you,
-        )
-        initialized.unregister_handles.append(governance.register_hooks(hooks))
+        # NO app-level policy hook (user directive: permissions are managed
+        # natively — hooks-approval owns ask/allow-always policy, hooks-mode
+        # owns mode gating, allowed/denied dirs own write boundaries). The
+        # app's ApprovalBroker is presentation only: it renders whatever the
+        # kernel's ask_user path sends and hands the choice back. The native
+        # hooks-approval module additionally needs the app registered as its
+        # ApprovalProvider — without it, careful-mode confirms auto-deny
+        # ("No approval provider available", found live).
+        self._register_approval_provider(initialized)
         boundary = StepBoundaryBridge(
             initialized.session_id,
             self.steering,
@@ -402,6 +444,21 @@ class RealRuntime:
                 tests_ok=self.turn_yield.tests_ok,
             )
         )
+
+    def _register_approval_provider(self, initialized: InitializedSession) -> None:
+        """Hand the broker to hooks-approval via its registration capability.
+
+        The native module asks its registered ApprovalProvider and owns
+        allow-always persistence itself (ApprovalResponse.remember) — the
+        app supplies presentation only. Best-effort: sessions without
+        hooks-approval simply have no native asker.
+        """
+        try:
+            register = initialized.coordinator.get_capability("approval.register_provider")
+        except Exception:  # noqa: BLE001 — capability registry variance
+            register = None
+        if callable(register):
+            register(_BrokerApprovalProvider(self.broker))
 
     def _mode_tool(self) -> Any | None:
         """The bundle-mounted ``mode`` tool (tool-mode), when composed in."""

@@ -560,14 +560,20 @@ class TranscriptReducer:
                 )
             )
         if turn is not None:
+            # Parallel groups are a BASH-BATCH rendering concept (mockup
+            # "Ran 2 shell commands"). The real kernel stamps EVERY call
+            # with its own parallel_group_id — honoring those turned
+            # write_file into "Ran 1 shell command" (found live); only
+            # shell commands join groups, everything else stays per-tool.
+            group_id = event.parallel_group_id if command else ""
             turn.calls[event.tool_call_id] = {
                 "tool": event.tool_name,
                 "command": command,
                 "block_id": block_id,
-                "group": event.parallel_group_id,
+                "group": group_id,
             }
-            if event.parallel_group_id:
-                group = turn.groups.setdefault(event.parallel_group_id, _Group())
+            if group_id:
+                group = turn.groups.setdefault(group_id, _Group())
                 group.pending.add(event.tool_call_id)
                 group.block_ids.append(block_id)
         self._update_working()
