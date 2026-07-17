@@ -97,6 +97,51 @@ def load_merged_settings(paths: SettingsPaths) -> dict[str, Any]:
     return merged
 
 
+def map_provider_ids_to_instance_ids(mount_plan: dict[str, Any]) -> None:
+    """Copy each provider's settings ``id`` to the kernel's ``instance_id``.
+
+    settings.yaml identifies a provider instance by ``id`` (e.g.
+    ``id: openmj`` for a second provider-vllm); amplifier-core mounts a
+    provider under its ``instance_id`` and only falls back to the module
+    name when none is given. Without this map a provider with an ``id``
+    mounts under its module-derived name (``vllm``), so a mount check that
+    looks for the configured ``id`` (``openmj``) reports it missing even
+    though it is live — a false 'degraded start' notice. The reference CLI
+    does exactly this (``runtime/config._map_id_to_instance_id``).
+    """
+    for provider in mount_plan.get("providers") or []:
+        if isinstance(provider, dict) and "id" in provider and "instance_id" not in provider:
+            provider["instance_id"] = provider["id"]
+
+
+def load_keys_env(amplifier_home: Path | None = None) -> None:
+    """Load ``~/.amplifier/keys.env`` into the process environment.
+
+    The amplifier system stores provider credentials and endpoints
+    (``VLLM_BASE_URL``, ``ANTHROPIC_PROVIDER_ANTHROPIC_API_KEY``, …) in
+    ``keys.env``, and the reference CLI sources it at startup (app-cli
+    ``KeyManager._load_keys``). newtui expands ``${VAR}`` placeholders in
+    the mount plan from ``os.environ`` — so without this load those
+    placeholders resolve to nothing and every provider whose creds live
+    only in ``keys.env`` fails to mount. Existing env wins (never clobber
+    a value the user exported), matching app-cli exactly.
+    """
+    keys_file = (amplifier_home or (Path.home() / ".amplifier")) / "keys.env"
+    if not keys_file.exists():
+        return
+    try:
+        for raw in keys_file.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value.strip().strip('"').strip("'")
+    except OSError:
+        pass  # manual env vars still work; never fail startup on this
+
+
 def active_bundle_name(settings: dict[str, Any]) -> str | None:
     """Read ``bundle.active`` from merged settings."""
     bundle_section = settings.get("bundle")
@@ -390,6 +435,11 @@ async def resolve_config(
     project_dir = (project_dir or Path.cwd()).resolve()
     amplifier_home = amplifier_home or (Path.home() / ".amplifier")
 
+    # 0. Provider creds/endpoints live in ~/.amplifier/keys.env; load them
+    #    before ${VAR} expansion so settings placeholders resolve like the
+    #    reference CLI (else keys.env-only providers fail to mount).
+    load_keys_env(amplifier_home)
+
     # 1. Settings: three-scope deep merge.
     settings = load_merged_settings(SettingsPaths.default(project_dir, amplifier_home))
 
@@ -432,6 +482,10 @@ async def resolve_config(
     #    then ${VAR} placeholder expansion (reference: amplifier-app-cli
     #    expands the effective bundle config before session creation).
     mount_plan = apply_module_overrides(prepared.mount_plan, settings)
+    # settings ``id`` → kernel ``instance_id`` so a provider mounts under
+    # its configured id (reference CLI parity); prevents a false
+    # 'provider unavailable' when the config names an instance.
+    map_provider_ids_to_instance_ids(mount_plan)
     expand_env_placeholders(mount_plan)
 
     return ResolvedConfig(
@@ -473,7 +527,9 @@ __all__ = [
     "get_project_slug",
     "is_bundle_uri",
     "list_available_bundles",
+    "load_keys_env",
     "load_merged_settings",
+    "map_provider_ids_to_instance_ids",
     "overlay_uris",
     "packaged_bundles_dir",
     "resolve_config",

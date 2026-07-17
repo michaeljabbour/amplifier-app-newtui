@@ -25,7 +25,9 @@ from amplifier_app_newtui.kernel.config import (
     get_project_slug,
     is_bundle_uri,
     list_available_bundles,
+    load_keys_env,
     load_merged_settings,
+    map_provider_ids_to_instance_ids,
     overlay_uris,
     packaged_bundles_dir,
     resolve_config,
@@ -233,6 +235,52 @@ def test_get_project_slug(tmp_path: Path) -> None:
     slug = get_project_slug(tmp_path)
     assert slug.startswith("-")
     assert "/" not in slug and ":" not in slug
+
+
+# --------------------------------------------------------------------------
+# keys.env loading + provider id→instance_id (reference-CLI parity)
+# --------------------------------------------------------------------------
+
+
+def test_load_keys_env_sets_missing_and_never_clobbers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "keys.env").write_text(
+        "# comment\n"
+        'VLLM_BASE_URL="https://vllm.test/v1"\n'
+        "VLLM_API_KEY=secret\n"
+        "ALREADY_SET=from_file\n"
+        "\n"
+    )
+    monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+    monkeypatch.delenv("VLLM_API_KEY", raising=False)
+    monkeypatch.setenv("ALREADY_SET", "from_env")  # exported env must win
+
+    load_keys_env(tmp_path)
+
+    import os
+
+    assert os.environ["VLLM_BASE_URL"] == "https://vllm.test/v1"  # quotes stripped
+    assert os.environ["VLLM_API_KEY"] == "secret"
+    assert os.environ["ALREADY_SET"] == "from_env"  # not clobbered
+
+
+def test_load_keys_env_missing_file_is_noop(tmp_path: Path) -> None:
+    load_keys_env(tmp_path)  # no keys.env — must not raise
+
+
+def test_map_provider_ids_to_instance_ids() -> None:
+    plan = {
+        "providers": [
+            {"module": "provider-anthropic"},  # no id — left as default
+            {"module": "provider-vllm", "id": "openmj"},  # id → instance_id
+            {"module": "provider-x", "id": "x", "instance_id": "keep"},  # respected
+        ]
+    }
+    map_provider_ids_to_instance_ids(plan)
+    assert "instance_id" not in plan["providers"][0]
+    assert plan["providers"][1]["instance_id"] == "openmj"
+    assert plan["providers"][2]["instance_id"] == "keep"
 
 
 # --------------------------------------------------------------------------
