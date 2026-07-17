@@ -1,0 +1,137 @@
+digraph newtui_architecture {
+    label="newtui — Architecture & Topology (amplifier-app-newtui)\nStrict layering: ui → model ← commands; kernel/ is the ONLY amplifier touchpoint (ADR-0007)";
+    labelloc="t";
+    fontname="Helvetica-Bold";
+    fontsize=20;
+    rankdir=TB;
+    compound=true;
+    splines=true;
+    nodesep=0.35;
+    ranksep=0.55;
+    node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#555555"];
+    edge [fontname="Helvetica", fontsize=9, color="#666666"];
+
+    // ── Entry point ─────────────────────────────────────────────
+    subgraph cluster_entry {
+        label="Entry Point";
+        style="rounded,filled"; fillcolor="#FFF7E6"; color="#D69E2E"; fontname="Helvetica-Bold";
+        main [label="main.py — async Click CLI\namplifier-newtui  {run | sessions | resume | doctor}\nflags: --demo  --bundle", fillcolor="#FEEBC8"];
+    }
+
+    // ── UI layer (Textual-only) ─────────────────────────────────
+    subgraph cluster_ui {
+        label="ui/  — Textual presentation layer (never imports amplifier-core)";
+        style="rounded,filled"; fillcolor="#EBF8FF"; color="#3182CE"; fontname="Helvetica-Bold";
+        app [label="NewTuiApp (ui/app.py)\ncomposition root, <500 lines", fillcolor="#BEE3F8"];
+        adapter [label="RuntimeAdapter seam\nRealRuntimeAdapter / DemoRuntimeAdapter\n(ui/runtime_adapter.py)", fillcolor="#BEE3F8"];
+        reducer [label="TranscriptReducer\n(ui/reducer.py)\nUIEvent → transcript blocks", fillcolor="#BEE3F8"];
+        widgets [label="Widgets\nTitleBar | TranscriptView + LiveTail + NoticeSlot\nPaletteStrip | LanesPanel | RewindStrip | QueuedStrip\nComposer ⇄ ApprovalBar | FooterBar", fillcolor="#D6EFFF"];
+        uiaux [label="themes.py · keymap.py · segments.py\nterm_probe.py (kitty protocol)", fillcolor="#D6EFFF"];
+    }
+
+    // ── Commands ────────────────────────────────────────────────
+    subgraph cluster_commands {
+        label="commands/ — slash commands as data";
+        style="rounded,filled"; fillcolor="#FAF5FF"; color="#805AD5"; fontname="Helvetica-Bold";
+        registry [label="CommandRegistry + CommandSpec\n/copy /about /export /context /doctor\n/permissions /improve /rewind /theme …", fillcolor="#E9D8FD"];
+    }
+
+    // ── Model layer ─────────────────────────────────────────────
+    subgraph cluster_model {
+        label="model/ — framework-agnostic typed state (no Textual, no amplifier-core)";
+        style="rounded,filled"; fillcolor="#F0FFF4"; color="#38A169"; fontname="Helvetica-Bold";
+        blocks [label="blocks.py — transcript grammar\nUserLine · Answer · ToolLine · PlanBlock\nTurnRule · WorkingStatus", fillcolor="#C6F6D5"];
+        modelstate [label="queues.py (SteeringQueue, NeedsYouQueue)\nmodes.py (5 postures) · trust.py (DenialLog)\nturn.py (OutcomeLedger) · lanes.py (LaneRegistry)\nevidence.py", fillcolor="#C6F6D5"];
+    }
+
+    // ── Kernel adapter layer ────────────────────────────────────
+    subgraph cluster_kernel {
+        label="kernel/ — the ONLY amplifier-core/foundation touchpoint (runs on dedicated 'real-runtime' thread)";
+        style="rounded,filled"; fillcolor="#FFF5F5"; color="#E53E3E"; fontname="Helvetica-Bold";
+        runtime [label="RealRuntime (runtime.py)\nfoundation 7-step lifecycle,\ndrives the event queue", fillcolor="#FED7D7"];
+        config [label="resolve_config() (config.py)\n3-scope settings merge +\nbundle discovery → load_bundle → prepare()", fillcolor="#FED7D7"];
+        factory [label="create_initialized_session()\n(session_factory.py)\nmount plan verification, MountReport", fillcolor="#FED7D7"];
+        events [label="events.py — UIEvent contract\nnormalize(): raw hook payloads →\n~30 typed pydantic UIEvents", fillcolor="#FED7D7"];
+        bridge [label="QueueBridge (queue_bridge.py)\nhooks → asyncio.Queue[UIEvent]\nnever blocks the engine", fillcolor="#FED7D7"];
+        broker [label="ApprovalBroker (approval.py)\n+ StepBoundaryBridge (steering.py)", fillcolor="#FED7D7"];
+        persist [label="SessionStore + IncrementalSaver\n(persistence.py)", fillcolor="#FED7D7"];
+        spawner [label="SessionSpawner (spawner.py)\nregisters session.spawn capability", fillcolor="#FED7D7"];
+        kernelaux [label="RewindController · CostTracker\nEvidenceCollector · TurnYieldTracker\ngovernance_hook (tool:pre trust gate)\nDemoRuntime (offline scripted events)", fillcolor="#FED7D7"];
+    }
+
+    // ── Amplifier ecosystem (external) ──────────────────────────
+    subgraph cluster_amplifier {
+        label="Amplifier Ecosystem (external dependencies)";
+        style="rounded,filled"; fillcolor="#F7FAFC"; color="#4A5568"; fontname="Helvetica-Bold";
+
+        subgraph cluster_core {
+            label="amplifier-core ≥1.6.0 (PyPI) — the kernel";
+            style="rounded,filled"; fillcolor="#EDF2F7"; color="#2D3748";
+            session [label="AmplifierSession\nsession lifecycle + execute()", fillcolor="#E2E8F0"];
+            coordinator [label="Coordinator\nhooks · capabilities\nHookResult · ApprovalResponse", fillcolor="#E2E8F0"];
+        }
+
+        subgraph cluster_foundation {
+            label="amplifier-foundation (git pin)";
+            style="rounded,filled"; fillcolor="#EDF2F7"; color="#2D3748";
+            foundation [label="load_bundle · compose · prepare()\nfork_session_in_memory (rewind)\nsanitize_message", fillcolor="#E2E8F0"];
+        }
+
+        subgraph cluster_bundle {
+            label="newtui bundle (packaged: data/bundles/newtui.md)\n_strip_printing_hooks(): no ANSI-printing hooks allowed";
+            style="rounded,filled"; fillcolor="#EDF2F7"; color="#2D3748";
+            orch [label="orchestrator: loop-streaming\n(extended thinking)", fillcolor="#E2E8F0"];
+            provider [label="provider: provider-anthropic", fillcolor="#E2E8F0"];
+            ctx [label="context: context-simple\n(200k tokens, auto-compact)", fillcolor="#E2E8F0"];
+            tools [label="tools: filesystem · bash · web\nsearch · task (subagents)", fillcolor="#E2E8F0"];
+        }
+    }
+
+    // ── Persistence (disk) ──────────────────────────────────────
+    subgraph cluster_disk {
+        label="Disk";
+        style="rounded,filled"; fillcolor="#FFFFF0"; color="#B7791F"; fontname="Helvetica-Bold";
+        sessiondir [label="~/.amplifier/projects/<slug>/sessions/<id>/\ntranscript.jsonl · metadata.json · events.jsonl", shape=cylinder, fillcolor="#FEFCBF"];
+        settings [label="settings.yaml (user → project → local)\nbundle discovery dirs", shape=cylinder, fillcolor="#FEFCBF"];
+    }
+
+    // ── Topology edges ──────────────────────────────────────────
+    main -> app [label="run_async()"];
+    main -> config [label="--bundle / --demo", style=dashed];
+
+    app -> adapter [label="submit / interrupt / fork"];
+    app -> widgets [label="compose()"];
+    app -> reducer [label="_consume_events() worker"];
+    reducer -> blocks [label="builds"];
+    reducer -> widgets [label="mounts BlockWidgets\n(TranscriptView / LiveTail)"];
+    app -> registry [label="palette · slash · keybinds"];
+    registry -> modelstate [label="reads/writes state only"];
+    app -> uiaux [style=dotted, arrowhead=none];
+
+    adapter -> runtime [label="THREAD BOUNDARY:\nrun_coroutine_threadsafe →\n← call_soon_threadsafe", style="bold,dashed", color="#C53030", fontcolor="#C53030"];
+
+    runtime -> config [label="start()"];
+    config -> foundation [label="load_bundle → prepare()"];
+    config -> settings [label="3-scope merge", style=dashed];
+    runtime -> factory;
+    factory -> session [label="prepared.create_session()"];
+    factory -> coordinator [label="register session.spawn /\nsession.resume"];
+    spawner -> coordinator [label="session.spawn capability"];
+
+    session -> orch [label="drives"];
+    orch -> provider [label="LLM calls"];
+    orch -> tools [label="tool calls"];
+    session -> ctx [label="messages"];
+
+    coordinator -> bridge [label="hook events\n(llm:* tool:* prompt:* …)"];
+    bridge -> events [label="normalize()"];
+    bridge -> adapter [label="asyncio.Queue[UIEvent]", color="#2B6CB0", fontcolor="#2B6CB0", penwidth=2];
+    bridge -> kernelaux [label="tap: evidence · yield ·\nevents.jsonl", style=dashed];
+
+    broker -> app [label="present_approval →\nApprovalBar", style=dashed];
+    modelstate -> broker [label="SteeringQueue →\nStepBoundaryBridge", style=dashed];
+
+    persist -> sessiondir [label="atomic write + backup"];
+    runtime -> persist [label="IncrementalSaver\n(debounced on tool:post)"];
+    kernelaux -> sessiondir [label="events.jsonl append", style=dashed];
+}

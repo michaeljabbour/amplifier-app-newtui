@@ -1,0 +1,112 @@
+digraph newtui_dataflow {
+    label="newtui — Data Flow: user message → LLM → render\n(blue = user input · green = kernel event stream · orange = approval loop · purple = steering · teal = subagents · gray = persistence)";
+    labelloc="t";
+    fontname="Helvetica-Bold";
+    fontsize=18;
+    rankdir=LR;
+    compound=true;
+    splines=true;
+    nodesep=0.3;
+    ranksep=0.7;
+    node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#555555"];
+    edge [fontname="Helvetica", fontsize=9, color="#666666"];
+
+    // ── App loop (Textual / main thread) ────────────────────────
+    subgraph cluster_apploop {
+        label="App event loop (Textual, main thread)";
+        style="rounded,filled"; fillcolor="#EBF8FF"; color="#3182CE"; fontname="Helvetica-Bold";
+        keypress [label="⌨ keypress", shape=ellipse, fillcolor="#BEE3F8"];
+        composer [label="Composer widget", fillcolor="#BEE3F8"];
+        submit [label="NewTuiApp\nrun_worker(adapter.submit(text))", fillcolor="#BEE3F8"];
+        consume [label="_consume_events() worker\nawait adapter.queue.get()", fillcolor="#BEE3F8"];
+        reducer [label="TranscriptReducer.handle(event)\n→ transcript blocks + ReducerHost actions", fillcolor="#BEE3F8"];
+        render [label="TranscriptView (durable)\nLiveTail (streaming tail)\nrender via segments.py theme tokens", fillcolor="#BEE3F8"];
+        approvalbar [label="ApprovalBar\n(swaps in for Composer)", fillcolor="#FEEBC8"];
+        lanes [label="LanesPanel\n(subagent lanes)", fillcolor="#BEE3F8"];
+    }
+
+    // ── Runtime thread ──────────────────────────────────────────
+    subgraph cluster_runtime {
+        label="Runtime thread ('real-runtime' daemon, own asyncio loop)";
+        style="rounded,filled"; fillcolor="#FFF5F5"; color="#E53E3E"; fontname="Helvetica-Bold";
+        rsubmit [label="RealRuntime.submit()\n1. emit synthetic PromptSubmit (instant echo)\n2. snapshot git diff\n3. await session.execute(text)", fillcolor="#FED7D7"];
+        bridge [label="QueueBridge.handle_event\nnormalize() → typed UIEvent\nput_nowait — never blocks engine", fillcolor="#FED7D7"];
+        tap [label="bridge tap (_tap)\nEvidenceCollector · TurnYieldTracker", fillcolor="#FED7D7"];
+        broker [label="ApprovalBroker\nticket ⇄ answer", fillcolor="#FEEBC8"];
+        steerbridge [label="StepBoundaryBridge\ninjects at step boundaries\n→ ContextInjected event", fillcolor="#E9D8FD"];
+        complete [label="end of execute:\nend-turn git diff →\nsynthesized PromptComplete\n(turn yield, always last)", fillcolor="#FED7D7"];
+        spawner [label="SessionSpawner.spawn\n(session.spawn capability)", fillcolor="#FED7D7"];
+    }
+
+    // ── Amplifier kernel ────────────────────────────────────────
+    subgraph cluster_kernel {
+        label="AmplifierSession (amplifier-core)";
+        style="rounded,filled"; fillcolor="#F7FAFC"; color="#4A5568"; fontname="Helvetica-Bold";
+        orch [label="orchestrator loop-streaming\nLLM → tool calls → response loop", fillcolor="#E2E8F0"];
+        provider [label="provider-anthropic\n(streaming)", fillcolor="#E2E8F0"];
+        toolexec [label="tools: filesystem · bash\nweb · search · task", fillcolor="#E2E8F0"];
+        hooks [label="coordinator.hooks fire:\nChannel A: llm:stream_block_delta (live)\nChannel B: content_block:end · tool:pre/post\norchestrator:complete (durable)", fillcolor="#E2E8F0"];
+        childsession [label="child AmplifierSession\n(subagent — shares same QueueBridge)", fillcolor="#E2E8F0"];
+    }
+
+    llm [label="☁ Anthropic API", shape=ellipse, fillcolor="#FAF089"];
+
+    // ── Persistence ─────────────────────────────────────────────
+    subgraph cluster_disk {
+        label="Persistence — ~/.amplifier/projects/<slug>/sessions/<id>/";
+        style="rounded,filled"; fillcolor="#FFFFF0"; color="#B7791F"; fontname="Helvetica-Bold";
+        transcript [label="transcript.jsonl + metadata.json\n(IncrementalSaver, debounced on tool:post,\natomic write + backup)", shape=cylinder, fillcolor="#FEFCBF"];
+        eventsfile [label="events.jsonl (append-only)\npowers resume cost re-seed,\nevidence, replay", shape=cylinder, fillcolor="#FEFCBF"];
+        resume [label="Resume: SessionStore.load →\ninitial_transcript → context\nrestored_history() → transcript view", fillcolor="#FEFCBF"];
+    }
+
+    // ═══ USER INPUT PATH (blue) ═════════════════════════════════
+    edge [color="#2B6CB0", fontcolor="#2B6CB0", penwidth=1.6];
+    keypress -> composer;
+    composer -> submit [label="enter"];
+    submit -> rsubmit [label="run_coroutine_threadsafe\n(thread hop →)", style=dashed];
+    rsubmit -> orch [label="session.execute(text)"];
+    orch -> llm [label="stream request"];
+    llm -> provider [label="deltas"];
+    provider -> orch;
+    orch -> toolexec [label="tool_use"];
+    toolexec -> orch [label="tool_result"];
+
+    // ═══ EVENT STREAM (green) ═══════════════════════════════════
+    edge [color="#2F855A", fontcolor="#2F855A", penwidth=1.6, style=solid];
+    orch -> hooks [label="emits"];
+    toolexec -> hooks;
+    hooks -> bridge [label="raw hook payloads"];
+    bridge -> tap;
+    complete -> bridge [style=dotted];
+    bridge -> consume [label="asyncio.Queue[UIEvent]\n(← call_soon_threadsafe hop)", style=dashed];
+    consume -> reducer;
+    reducer -> render [label="Answer · ToolLine\nPlanBlock · WorkingStatus…"];
+    rsubmit -> bridge [label="synthetic PromptSubmit", style=dotted];
+
+    // ═══ APPROVAL LOOP (orange) ═════════════════════════════════
+    edge [color="#C05621", fontcolor="#C05621", penwidth=1.4, style=solid];
+    toolexec -> broker [label="ask_user /\nhooks-approval"];
+    broker -> approvalbar [label="hop to app loop:\npresent_approval", style=dashed];
+    approvalbar -> broker [label="adapter.answer_approval\n→ broker.answer", style=dashed];
+    broker -> toolexec [label="ApprovalResponse"];
+
+    // ═══ STEERING (purple) ══════════════════════════════════════
+    edge [color="#6B46C1", fontcolor="#6B46C1", penwidth=1.4];
+    composer -> steerbridge [label="mid-turn text →\nSteeringQueue", style=dashed];
+    steerbridge -> orch [label="context injection\nat step boundary"];
+
+    // ═══ SUBAGENTS (teal) ═══════════════════════════════════════
+    edge [color="#2C7A7B", fontcolor="#2C7A7B", penwidth=1.4, style=solid];
+    toolexec -> spawner [label="tool-task"];
+    spawner -> childsession;
+    childsession -> hooks [label="same bridge"];
+    hooks -> lanes [label="AgentSpawned/Completed\n→ LaneRegistry", style=dashed];
+
+    // ═══ PERSISTENCE (gray) ═════════════════════════════════════
+    edge [color="#718096", fontcolor="#718096", penwidth=1.2, style=dashed];
+    bridge -> eventsfile [label="tap: append every UIEvent"];
+    hooks -> transcript [label="tool:post →\nIncrementalSaver"];
+    resume -> rsubmit [label="turn_base offsets,\ncost re-seed"];
+    resume -> render [label="restored_history()"];
+}

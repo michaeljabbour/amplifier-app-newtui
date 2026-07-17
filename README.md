@@ -39,6 +39,40 @@ docs/                       design spec, executable mockup, ADRs (docs/notes/ is
 bundle.md                   the repo's amplifier bundle (packaged copy kept byte-identical)
 ```
 
+## Architecture
+
+Four strictly-layered packages ([ADR-0007](docs/decisions/ADR-0007-newtui-ground-up-architecture.md)): `ui/` and `commands/` depend on `model/`; `kernel/` is the **only** package that touches amplifier-core/foundation and never imports Textual; the UI sees the kernel exclusively through normalized `UIEvent`s.
+
+![newtui architecture and topology](docs/diagrams/newtui-architecture.png)
+
+- **`ui/`** (Textual-only) — `NewTuiApp` composition root, the `RuntimeAdapter` seam (`RealRuntimeAdapter` / `DemoRuntimeAdapter`), `TranscriptReducer`, and the widget stack: TitleBar → TranscriptView + LiveTail + NoticeSlot → overlay strips (Palette, Lanes, Rewind, Queued) → Composer ⇄ ApprovalBar → FooterBar.
+- **`model/`** (framework-agnostic, no Textual, no amplifier-core) — transcript block grammar, `SteeringQueue`/`NeedsYouQueue`, interaction modes, `DenialLog` trust state, `OutcomeLedger`, `LaneRegistry`.
+- **`commands/`** — slash commands as data: one `CommandRegistry` powers the palette, slash triggers, keybinds, and help.
+- **`kernel/`** — the amplifier adapter layer: `RealRuntime` (foundation 7-step lifecycle), `resolve_config()` (3-scope settings merge + bundle discovery → `load_bundle` → compose → `prepare()`), `create_initialized_session()` (mount-plan verification), the `UIEvent` contract + `QueueBridge` (hooks → `asyncio.Queue[UIEvent]`, never blocks the engine), `ApprovalBroker`, `SessionStore`/`IncrementalSaver`, `SessionSpawner`, rewind, cost tracking, and the `tool:pre` governance hook.
+- **Amplifier ecosystem** — `AmplifierSession` + coordinator from amplifier-core; `load_bundle`/`prepare()`/`fork_session_in_memory` from amplifier-foundation; the packaged **newtui bundle** mounts the `loop-streaming` orchestrator, `provider-anthropic`, `context-simple`, and the filesystem/bash/web/search/task tools. `_strip_printing_hooks()` removes ANSI-printing hooks that would corrupt the Textual screen.
+
+The critical seam is the **thread boundary**: `RealRuntime` runs on a dedicated `real-runtime` daemon thread with its own asyncio loop so slow hooks can never starve rendering — calls marshal in via `run_coroutine_threadsafe` and events marshal out via `call_soon_threadsafe`.
+
+### Data flow
+
+![newtui data flow](docs/diagrams/newtui-dataflow.png)
+
+A turn, end to end (colors in the diagram):
+
+- **Input (blue)** — keypress → Composer → `adapter.submit` → thread hop → `RealRuntime.submit` (emits a synthetic `PromptSubmit` for instant echo, snapshots the git diff) → `session.execute` → orchestrator ⇄ Anthropic API ⇄ tools.
+- **Event stream (green)** — coordinator hooks fire (Channel A: live `llm:stream_block_delta`; Channel B: durable `content_block:end` / `tool:pre/post` / `orchestrator:complete`) → `QueueBridge.normalize()` → typed `UIEvent` → app-loop queue → `TranscriptReducer` → TranscriptView/LiveTail.
+- **Approvals (orange)** — tool ask → `ApprovalBroker` ticket → hop to the app loop → ApprovalBar → answer routes back to the kernel as an `ApprovalResponse`.
+- **Steering (purple)** — mid-turn composer text → `SteeringQueue` → `StepBoundaryBridge` injects at step boundaries.
+- **Subagents (teal)** — `tool-task` → `SessionSpawner` (`session.spawn` capability) → child session shares the same bridge → LanesPanel.
+- **Persistence (gray)** — debounced `transcript.jsonl`/`metadata.json`, append-only `events.jsonl` (powers resume cost re-seed, evidence, replay); resume restores history into both the context and the transcript view.
+
+Regenerate the diagrams after architectural changes:
+
+```sh
+dot -Tpng docs/diagrams/newtui-architecture.dot -o docs/diagrams/newtui-architecture.png
+dot -Tpng docs/diagrams/newtui-dataflow.dot -o docs/diagrams/newtui-dataflow.png
+```
+
 ## Development
 
 ```sh
