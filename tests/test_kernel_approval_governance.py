@@ -76,12 +76,14 @@ async def test_build_mode_asks_for_writes_with_standard_options() -> None:
         "tool:pre", tool_pre("write_file", {"file_path": "/repo/a.py"})
     )
     assert result.action == "ask_user"
-    assert result.approval_prompt == "Allow /repo/a.py?"
+    # Path-derived actions carry the tool verb — a bare path told the
+    # supervisor nothing about WHAT would happen (found live).
+    assert result.approval_prompt == "Allow write_file · /repo/a.py?"
     assert result.approval_options is not None
     assert tuple(result.approval_options) == STANDARD_OPTIONS
     assert result.approval_default == "deny"
     # The structured detail was staged end-to-end on the broker.
-    detail = broker._pop_staged("Allow /repo/a.py?")
+    detail = broker._pop_staged("Allow write_file · /repo/a.py?")
     assert detail.tool_name == "write_file"
     assert detail.capability == "write"
     assert detail.rule == "ask write"
@@ -96,7 +98,7 @@ async def test_plan_mode_denies_writes_and_continues() -> None:
     assert result.action == "deny"
     assert result.reason is not None
     assert "Continue without" in result.reason
-    assert result.user_message == "blocked · a.py"
+    assert result.user_message == "blocked · write_file · a.py"
     assert result.suppress_output is True
     assert log.total_count == 1
 

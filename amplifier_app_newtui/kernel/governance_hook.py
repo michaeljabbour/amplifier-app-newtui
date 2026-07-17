@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping
+from pathlib import Path, PurePath
 from typing import Any, Protocol
 
 from amplifier_core import HookResult
@@ -324,10 +325,26 @@ class GovernanceHook:
 
 
 def _action_text(tool_name: str, tool_input: Mapping[str, Any]) -> str:
-    for key in ("command", "cmd", "path", "file_path", "instruction", "query"):
+    """Human-readable action for prompts/denials/needs-you questions.
+
+    Commands and instructions are self-describing; bare paths are NOT —
+    "Allow /Users/…/test_commands_export.py?" told the supervisor
+    nothing about WHAT would happen (found live). Path-derived actions
+    carry the tool verb and relativize under the working directory.
+    """
+    for key in ("command", "cmd", "instruction", "query"):
         value = tool_input.get(key)
         if isinstance(value, str) and value.strip():
             return _line(value)[:_MAX_ACTION_CHARS]
+    for key in ("path", "file_path", "directory"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            path = _line(value)
+            try:
+                path = str(PurePath(path).relative_to(Path.cwd()))
+            except ValueError:
+                pass  # outside the project — keep it absolute (that IS the signal)
+            return f"{tool_name} · {path}"[:_MAX_ACTION_CHARS]
     return tool_name
 
 

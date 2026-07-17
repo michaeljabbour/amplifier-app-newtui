@@ -137,10 +137,16 @@ class ApprovalBroker:
         needs_you: NeedsYouQueue | None = None,
         denial_log: DenialLog | None = None,
         clock: Callable[[], float] = monotonic,
+        min_timeout: float = 0.0,
     ) -> None:
         self._needs_you = needs_you
         self._denial_log = denial_log
         self._clock = clock
+        self._min_timeout = min_timeout
+        """Floor for ticket timeouts. An interactive app sets this HIGH:
+        the kernel's default (300s) silently timed approvals out to deny
+        while the supervisor was still reading the plan (found live —
+        every file write of a run 'came back denied' untouched)."""
         self._next_id = 1
         self._tickets: list[ApprovalTicket] = []
         self._staged: dict[str, deque[ApprovalDetail]] = {}
@@ -198,6 +204,7 @@ class ApprovalBroker:
     ) -> str:
         """Ask the human; resolves via :meth:`answer`, :meth:`defer` +
         needs-you, or timeout-to-default. Never raises to the kernel."""
+        timeout = max(timeout, self._min_timeout)
         detail = self._pop_staged(prompt)
         key = (
             remember_key(detail.tool_name, detail.tool_input)

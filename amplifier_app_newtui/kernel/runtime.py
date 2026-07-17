@@ -165,7 +165,14 @@ class RealRuntime:
         self.steering = steering or SteeringQueue()
         self.needs_you = needs_you or NeedsYouQueue()
         self.denial_log = denial_log or DenialLog()
-        self.broker = ApprovalBroker(needs_you=self.needs_you, denial_log=self.denial_log)
+        self.broker = ApprovalBroker(
+            needs_you=self.needs_you,
+            denial_log=self.denial_log,
+            # The supervisor is present at the bar — approvals must wait
+            # for them, not time out to deny mid-plan-reading (1 hour;
+            # esc denies deliberately, ctrl-y defers to needs-you).
+            min_timeout=3600.0,
+        )
         self.cost = CostTracker()
         self._bundle = bundle
         self._resume_id = resume_id
