@@ -313,9 +313,19 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self._runtime_loop.call_soon_threadsafe(_answer)
 
     def shutdown(self) -> None:
-        """Ask the runtime thread to clean up and exit (best-effort)."""
+        """Stop the runtime thread and WAIT for its cleanup (bounded).
+
+        Signalling without joining let the process exit while the kernel's
+        tokio workers were still mid-teardown — Python finalized under
+        them and pyo3 panicked with "interpreter is not initialized" noise
+        after the shell prompt returned (user report). Joining gives
+        ``session.cleanup()`` and the Rust runtime a window to wind down
+        before interpreter shutdown.
+        """
         if self._runtime_loop is not None and self._stop is not None:
             self._runtime_loop.call_soon_threadsafe(self._stop.set)
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=8.0)
 
     def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
         """Claims derived from the turn's tool calls (spec §10; ADR-0007

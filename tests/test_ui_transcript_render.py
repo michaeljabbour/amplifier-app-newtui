@@ -625,3 +625,22 @@ class TestAnswerMarkdown:
         # bare brackets that are not links stay verbatim
         plain = answer_spans("[tool.uv.sources] stays")
         assert "".join(s.text for s in plain) == "[tool.uv.sources] stays"
+
+
+    def test_wide_table_falls_back_to_definition_list(self) -> None:
+        """Padded grids shred when cells exceed the terminal width (user
+        screenshot: the /about run's Piece/Location table) — wide tables
+        render as header-prefixed definition lists instead."""
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        long_a = "about_info() -> tuple[str, str, str, str] protocol action " + "x" * 60
+        long_b = "commands/registry.py (after copy_answer) " + "y" * 60
+        source = f"| Piece | Location |\n|---|---|\n| {long_a} | {long_b} |"
+        text = "".join(s.text for s in answer_spans(source))
+        assert "│" not in text  # no grid separators
+        assert "  Piece: " in text and "  Location: " in text
+        assert long_a in text and long_b in text
+        # Narrow tables keep the aligned grid.
+        narrow = "| a | b |\n|---|---|\n| 1 | 2 |"
+        grid = "".join(s.text for s in answer_spans(narrow))
+        assert "│" in grid

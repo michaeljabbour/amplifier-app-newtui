@@ -42,6 +42,9 @@ _LINK_RE = re.compile(r"\[([^\]\n]+)\]\(((?:https?|file)://[^)\s]+)\)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:\-|]+\|?\s*$")
+_TABLE_GRID_MAX_WIDTH = 96
+"""Padded-grid tables wider than this fall back to a definition list —
+wrapped cells destroy column alignment (user screenshot, /about run)."""
 
 
 def _inline(text: str) -> list[Segment]:
@@ -95,6 +98,24 @@ def _emit_table(spans: list[Segment], lines: list[str], start: int) -> int:
         max((_plain_len(row[col]) for row in body if col < len(row)), default=0)
         for col in range(columns)
     ]
+    if sum(widths) + 3 * (columns - 1) > _TABLE_GRID_MAX_WIDTH:
+        # Wide cells wrap and shred a padded grid (found live: the
+        # /about run's Piece/Location table). Fall back to a definition
+        # list — header dim, cell inline — which reads at any width.
+        headers = body[0]
+        for row in body[1:]:
+            for col in range(columns):
+                cell = row[col] if col < len(row) else ""
+                if not cell:
+                    continue
+                header = headers[col] if col < len(headers) else ""
+                spans.append(Segment(text=f"  {header or '·'}: ", style_token="dimmer"))
+                spans.extend(_inline(cell))
+                spans.append(Segment(text="\n"))
+            spans.append(Segment(text="\n"))
+        if spans and spans[-1].text == "\n":
+            spans.pop()
+        return end
     for index, row in enumerate(body):
         for col in range(columns):
             cell = row[col] if col < len(row) else ""
