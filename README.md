@@ -19,6 +19,24 @@ uv run amplifier-newtui resume SESSION_ID      # relaunch the TUI resuming a sto
 uv run amplifier-newtui run "PROMPT"           # execute one prompt headlessly, print the response
 ```
 
+## Providers
+
+The packaged bundle ships `provider-anthropic`, but the provider is not hard-wired — settings overlay onto the mount plan, so you can add or reconfigure providers without editing the bundle. In `~/.amplifier/settings.yaml` (user), `.amplifier/settings.yaml` (project), or `.amplifier/settings.local.yaml` (gitignored):
+
+```yaml
+config:
+  providers:
+    # reconfigure the bundled provider (merged by module id)
+    - module: provider-anthropic
+      config: { default_model: claude-sonnet-4-5 }
+    # …or append another provider entirely
+    - module: provider-openai
+      source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
+      config: { api_key: "${OPENAI_API_KEY}", priority: 10 }
+```
+
+Entries merge by module id (bundled config wins on nothing, your overlay fills the rest); a new module id is appended. `${VAR}` / `${VAR:default}` placeholders expand from the environment. For a fully different stack, point `--bundle` at your own bundle file or URI.
+
 ## Copying text
 
 Drag with the mouse to select transcript text (the app highlights it), then press **ctrl+c** — the selection is copied via OSC 52 and a `copied · N chars` notice confirms it. Two terminal caveats:

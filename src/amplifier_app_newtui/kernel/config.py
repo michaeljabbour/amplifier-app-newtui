@@ -292,12 +292,24 @@ def is_bundle_uri(name: str) -> bool:
 def discover_bundle(name: str, search_paths: tuple[Path, ...] | list[Path]) -> str | None:
     """Resolve a bundle *name* to a loadable URI.
 
-    URIs pass straight through. Names are looked up in each search path
-    as ``<name>.md`` / ``<name>.yaml`` / ``<name>/bundle.md`` /
-    ``<name>/bundle.yaml``; first hit wins.
+    URIs pass straight through, as do plain local paths that point at an
+    existing bundle file (``./bundles/dev.md``, ``/abs/bundle.md``) or a
+    directory holding a ``bundle.md`` / ``bundle.yaml``. Bare names are
+    looked up in each search path as ``<name>.md`` / ``<name>.yaml`` /
+    ``<name>/bundle.md`` / ``<name>/bundle.yaml``; first hit wins.
     """
     if is_bundle_uri(name):
         return name
+    # A plain filesystem path (relative or absolute) that resolves to a
+    # bundle file/dir is a valid source — foundation's load_bundle takes
+    # local paths directly (URI_FORMATS.md), so don't force a URI prefix.
+    if any(sep in name for sep in ("/", "\\")) or name.endswith((".md", ".yaml")):
+        path = Path(name).expanduser()
+        if path.is_file():
+            return str(path)
+        for candidate in ("bundle.md", "bundle.yaml"):
+            if (path / candidate).is_file():
+                return str(path / candidate)
     for base in search_paths:
         for pattern in _BUNDLE_FILE_CANDIDATES:
             candidate = base / pattern.format(name=name)

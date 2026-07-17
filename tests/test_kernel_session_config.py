@@ -122,6 +122,20 @@ def test_discover_bundle_uri_passthrough(tmp_path: Path) -> None:
     assert discover_bundle(uri, []) == uri
 
 
+def test_discover_bundle_plain_local_paths(tmp_path: Path) -> None:
+    # A plain path to an existing bundle file/dir resolves without a URI
+    # prefix or a search-path hit (foundation's load_bundle takes it directly).
+    bundle = tmp_path / "bundles" / "dev.md"
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("---\nbundle:\n  name: dev\n---\n")
+    assert discover_bundle(str(bundle), []) == str(bundle)  # absolute file
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "bundle.md").write_text("---\nbundle:\n  name: pkg\n---\n")
+    assert discover_bundle(str(pkg), []) == str(pkg / "bundle.md")  # dir → bundle.md
+    assert discover_bundle(str(tmp_path / "nope.md"), []) is None  # missing path
+
+
 def test_packaged_default_bundle_is_discoverable(tmp_path: Path) -> None:
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     found = discover_bundle(DEFAULT_BUNDLE, paths)
