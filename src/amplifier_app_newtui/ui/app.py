@@ -223,7 +223,12 @@ class NewTuiApp(App[None]):
 
     async def _boot_runtime(self) -> None:
         self.adapter.attach(self)
-        await self.adapter.start(lambda: app_support.announce_ready(self))
+        try:
+            await self.adapter.start(lambda: app_support.announce_ready(self))
+        except Exception as error:  # boot failed — show why, don't crash out
+            # (CancelledError/KeyboardInterrupt stay uncaught: a real
+            # shutdown mid-boot must not read as "session failed to start".)
+            app_support.announce_boot_failure(self, error)
 
     async def _consume_events(self) -> None:
         while True:

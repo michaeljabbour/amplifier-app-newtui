@@ -321,9 +321,18 @@ class RealRuntimeAdapter(RuntimeAdapter):
         after the shell prompt returned (user report). Joining gives
         ``session.cleanup()`` and the Rust runtime a window to wind down
         before interpreter shutdown.
+
+        A boot failure returns ``_thread_body`` early, so ``asyncio.run``
+        has already closed ``_runtime_loop`` by the time on_unmount fires;
+        calling into it then raised ``RuntimeError: Event loop is closed``
+        and masked the real boot error. Guard the closed/finished loop.
         """
-        if self._runtime_loop is not None and self._stop is not None:
-            self._runtime_loop.call_soon_threadsafe(self._stop.set)
+        loop, stop = self._runtime_loop, self._stop
+        if loop is not None and stop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(stop.set)
+            except RuntimeError:
+                pass  # loop finished between the check and the call
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=8.0)
 

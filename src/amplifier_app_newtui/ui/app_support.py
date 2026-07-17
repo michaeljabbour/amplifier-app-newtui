@@ -192,6 +192,42 @@ def announce_ready(app: NewTuiApp) -> None:
     app.refresh_status()
 
 
+def announce_boot_failure(app: NewTuiApp, error: Exception) -> None:
+    """Boot failed: replace the progress line with a readable diagnosis
+    instead of an unhandled worker crash (which used to surface only as
+    the masked ``Event loop is closed`` teardown traceback).
+
+    The session never came up, so there is nothing to drive — but keeping
+    the app alive lets the supervisor read the reason, copy it, and quit
+    cleanly rather than staring at a stack trace in the scrollback.
+    """
+    app.clear_boot_progress()
+    detail = str(error).strip() or error.__class__.__name__
+    app.append_block(
+        Answer(
+            id=app.allocator.next_id(),
+            spans=(
+                Segment(text="⊘ session failed to start · ", style_token="red"),
+                Segment(text=detail, style_token="fg"),
+            ),
+            clickable=False,
+        )
+    )
+    hint = (
+        "Check provider setup with `amplifier-newtui doctor`, or run "
+        "`--demo` for a credential-free UI. Press ctrl+d to quit."
+    )
+    app.append_block(
+        Answer(
+            id=app.allocator.next_id(),
+            spans=(Segment(text=hint, style_token="dim"),),
+            clickable=False,
+        )
+    )
+    app.show_notice("session failed to start")
+    app.refresh_status()
+
+
 async def mount_approval(
     app: NewTuiApp, ticket_id: str, prompt: str, options: tuple[str, ...]
 ) -> None:
