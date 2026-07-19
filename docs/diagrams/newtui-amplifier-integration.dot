@@ -1,0 +1,108 @@
+// How newtui connects to and leverages Amplifier
+// Render: dot -Tpng newtui-amplifier-integration.dot -o newtui-amplifier-integration.png
+digraph newtui_amplifier {
+    rankdir=LR;
+    compound=true;
+    fontname="Helvetica";
+    fontsize=12;
+    labelloc=t;
+    label=<<b>newtui ⇄ Amplifier — integration architecture</b><br/><font point-size="10">app→kernel calls flow right; kernel→app events flow back left</font>>;
+    node [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#f5f5f5", color="#666666"];
+    edge [fontname="Helvetica", fontsize=9, color="#555555"];
+
+    // ============ CONFIG SOURCES ============
+    subgraph cluster_config {
+        label=<<b>Config sources</b>>;
+        style="rounded,filled"; fillcolor="#fff8e1"; color="#e0c060";
+        keys_env      [label="~/.amplifier/keys.env\n(API keys, env wins)", fillcolor="#fff3cd"];
+        settings      [label="settings.yaml ×3\nuser → project → local\n(deep merge)", fillcolor="#fff3cd"];
+        bundle_md     [label="bundle: newtui.md\nloop-streaming · context-simple\nprovider-anthropic · fs/bash/web/search/task", fillcolor="#fff3cd"];
+    }
+
+    // ============ NEWTUI: UI LAYER (Textual) ============
+    subgraph cluster_ui {
+        label=<<b>newtui — UI layer (Textual ~8.2)</b>>;
+        style="rounded,filled"; fillcolor="#e3f2fd"; color="#5b9bd5";
+        cli       [label="CLI entry\namplifier-newtui\nmain.py (run / resume / doctor)", fillcolor="#bbdefb"];
+        app       [label="NewTuiApp\nui/app.py", fillcolor="#bbdefb"];
+        reducer   [label="reducer.py\nUIEvent → widget updates", fillcolor="#bbdefb"];
+        composer  [label="composer.py\nlarge-paste stubs ·\nimage paste / drag-drop", fillcolor="#bbdefb"];
+        widgets   [label="widgets\ntranscript · live_tail · lanes_panel\napproval_bar · needs_you · footer ($/tokens)\nrewind_strip · queued_strip · palette", fillcolor="#bbdefb"];
+    }
+
+    // ============ THREAD BOUNDARY ============
+    adapter [label="RealRuntimeAdapter\nui/runtime_adapter.py\n— THREAD BOUNDARY —\n_AppLoopQueue (call_soon_threadsafe)\nsubmit/interrupt/fork via run_coroutine_threadsafe",
+             shape=box, style="filled,dashed", fillcolor="#fce4ec", color="#c2185b", penwidth=2];
+
+    // ============ NEWTUI: KERNEL BRIDGE ============
+    subgraph cluster_bridge {
+        label=<<b>newtui — kernel bridge (src/…/kernel/, own thread + event loop)</b>>;
+        style="rounded,filled"; fillcolor="#e8f5e9"; color="#66a06b";
+        runtime   [label="RealRuntime\nruntime.py\n7-step foundation lifecycle", fillcolor="#c8e6c9"];
+        config    [label="resolve_config()\nconfig.py\nkeys.env · settings merge · bundle discovery\napply_module_overrides ·\nmap provider id→instance_id ·\nexpand ${VAR}", fillcolor="#c8e6c9"];
+        factory   [label="create_initialized_session()\nsession_factory.py\nmint id · stamp metadata ·\nverify_mounts → MountReport\n(0 providers = hard fail,\npartial = degraded notice)", fillcolor="#c8e6c9"];
+        qbridge   [label="QueueBridge\nqueue_bridge.py\n~30 hook events → normalize()\n→ asyncio.Queue[UIEvent]\ntap → evidence · events.jsonl", fillcolor="#c8e6c9"];
+        spawner   [label="SessionSpawner\nspawner.py\ndepth-limited child sessions", fillcolor="#c8e6c9"];
+        broker    [label="ApprovalBroker\n+ DisplaySystem\napproval UI · notifications", fillcolor="#c8e6c9"];
+        apphooks  [label="app hooks\nStepBoundaryBridge (steer @ step boundary)\nIncrementalSaver (persist on tool:post)\nClipboardImageInjector (text → multimodal)", fillcolor="#c8e6c9"];
+    }
+
+    // ============ AMPLIFIER FOUNDATION ============
+    subgraph cluster_foundation {
+        label=<<b>amplifier-foundation</b> (git pin)>;
+        style="rounded,filled"; fillcolor="#ede7f6"; color="#8e7cc3";
+        loadbundle [label="load_bundle(uri)\n→ .compose(overlays)\n→ .prepare()  [once]", fillcolor="#d1c4e9"];
+        prepared   [label="PreparedBundle\n.create_session(id, approval,\ndisplay, cwd, resumed)", fillcolor="#d1c4e9"];
+        fork       [label="fork_session_in_memory\n(rewind / checkpoints)", fillcolor="#d1c4e9"];
+    }
+
+    // ============ AMPLIFIER CORE ============
+    subgraph cluster_core {
+        label=<<b>amplifier-core</b> (kernel, PyPI ≥1.6)>;
+        style="rounded,filled"; fillcolor="#fbe9e7"; color="#d98066";
+        session   [label="AmplifierSession\n.execute(text)", fillcolor="#ffccbc"];
+        coord     [label="Coordinator\nhooks · capabilities ·\ncancellation", fillcolor="#ffccbc"];
+        modules   [label="mounted modules\nloop-streaming orchestrator\nprovider-anthropic · context-simple\ntools: fs/bash/web/search/task\nhooks-approval (decides when)", fillcolor="#ffccbc"];
+    }
+
+    // ---------- config feeds ----------
+    keys_env  -> config;
+    settings  -> config;
+    bundle_md -> config;
+
+    // ---------- UI spine (app → amplifier) ----------
+    cli      -> app;
+    composer -> app [label="submit(text,\nattachments)"];
+    app      -> adapter;
+    adapter  -> runtime [label="submit / interrupt / fork", color="#2e7d32", fontcolor="#2e7d32"];
+    runtime  -> config  [label="1. resolve"];
+    config   -> loadbundle [label="load → compose → prepare", color="#2e7d32", fontcolor="#2e7d32"];
+    loadbundle -> prepared;
+    runtime  -> factory [label="2. create"];
+    factory  -> prepared [label="create_session()", color="#2e7d32", fontcolor="#2e7d32"];
+    prepared -> session [label="mounts modules,\nreturns session"];
+    session  -> modules [style=dotted];
+    session  -> coord   [style=dotted];
+    runtime  -> session [label="3. execute(text) per turn", color="#2e7d32", fontcolor="#2e7d32", penwidth=1.6];
+
+    // ---------- capabilities & hooks the app gives the kernel ----------
+    spawner  -> coord [label="capability:\nsession.spawn / resume", color="#2e7d32", fontcolor="#2e7d32"];
+    broker   -> coord [label="approval.register_provider\n+ display_system", color="#2e7d32", fontcolor="#2e7d32"];
+    apphooks -> coord [label="register hooks\n(provider:request, tool:post)", color="#2e7d32", fontcolor="#2e7d32"];
+    runtime  -> coord [label="cancellation.\nrequest_graceful()", color="#2e7d32", fontcolor="#2e7d32", style=dashed];
+    runtime  -> fork  [label="rewind: fork +\ncontext.set_messages()", color="#2e7d32", fontcolor="#2e7d32", style=dashed];
+
+    // ---------- event flow back (amplifier → app) ----------
+    coord   -> qbridge [label="~30 hook events:\nllm:stream_* · tool:pre/post/error\nprovider:response/error/retry\nsession:* · approval:* · task:agent_*\norchestrator:complete …",
+                        color="#c62828", fontcolor="#c62828", penwidth=1.8];
+    qbridge -> adapter [label="asyncio.Queue[UIEvent]\n(30 typed pydantic events)", color="#c62828", fontcolor="#c62828", penwidth=1.8];
+    adapter -> reducer [label="hop to app loop", color="#c62828", fontcolor="#c62828"];
+    reducer -> widgets [color="#c62828"];
+
+    // legend
+    legend [shape=plaintext, label=<
+      <table border="0" cellborder="0" cellspacing="2">
+        <tr><td align="left"><font color="#2e7d32">▶ green = app → Amplifier (calls, registrations)</font></td></tr>
+        <tr><td align="left"><font color="#c62828">◀ red = Amplifier → app (hook events → UI)</font></td></tr>
+      </table>>];
+}

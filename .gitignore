@@ -6,3 +6,4 @@ __pycache__/
 exports/
 docs/notes/
 .ai/
+.claude/worktrees/

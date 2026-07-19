@@ -189,6 +189,7 @@ class LaneSeed:
     activity: str = ""
     elapsed: float = 0.0
     cost: Decimal = Decimal("0")
+    tokens: int = 0
     state: LaneStateName = "running"
     tree_spawn: str = ""
     tree_done: str = ""
@@ -936,8 +937,13 @@ class TranscriptReducer:
             # per-agent elapsed live between sparse usage events.
             now=event.ts or time.time(),
         )
-        if seed.elapsed or seed.cost:
-            self.lanes.update(event.sub_session_id, elapsed=seed.elapsed, cost=seed.cost)
+        if seed.elapsed or seed.cost or seed.tokens:
+            self.lanes.update(
+                event.sub_session_id,
+                elapsed=seed.elapsed,
+                cost=seed.cost,
+                tokens=seed.tokens,
+            )
         label = seed.tree_spawn or f"{event.agent} · running"
         previous_last = self._tree_order[-1] if self._tree_order else None
         self._tree_lines[event.sub_session_id] = _TreeLine(

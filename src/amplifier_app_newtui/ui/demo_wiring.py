@@ -54,16 +54,24 @@ from .runtime_adapter import RuntimeAdapter
 
 _TURN_ORDER: tuple[TurnKey, ...] = ("build", "auto", "plan", "brainstorm", "agents")
 _PANEL_LINE_RE = re.compile(
-    r"^\s*\S\s+(?P<name>\S+)\s*·\s*(?P<activity>.+?)\s*·\s*(?P<elapsed>\S+)\s*·\s*\$(?P<cost>[\d.]+)\s*$"
+    r"^\s*\S\s+(?P<name>\S+)\s*·\s*(?P<activity>.+?)\s*·\s*(?P<elapsed>[\dms ]+?)"
+    r"\s*·\s*↓\s*(?P<tokens>[\d.]+)k\s+tokens\s*·\s*\$(?P<cost>[\d.]+)\s*$"
 )
 
 
 def _parse_elapsed(text: str) -> float:
-    if text.endswith("m"):
-        return float(text[:-1]) * 60
-    if text.endswith("s"):
-        return float(text[:-1])
-    return 0.0
+    """Parse ``41s`` / ``2m`` / ``2m 04s`` into seconds."""
+    total = 0.0
+    if (minutes := re.search(r"(\d+)\s*m", text)) is not None:
+        total += int(minutes.group(1)) * 60
+    if (seconds := re.search(r"(\d+)\s*s", text)) is not None:
+        total += int(seconds.group(1))
+    return total
+
+
+def _parse_k_tokens(text: str) -> int:
+    """``"100.1"`` (k) → ``100100``."""
+    return round(float(text) * 1000)
 
 
 _GLYPH_STATE: dict[str, LaneStateName] = {
@@ -80,15 +88,17 @@ def lane_seed_for(name: str) -> LaneSeed | None:
     if lane is None:
         return None
     match = _PANEL_LINE_RE.match(lane.panel_line)
-    activity, elapsed, cost = "", 0.0, Decimal("0")
+    activity, elapsed, cost, tokens = "", 0.0, Decimal("0"), 0
     if match:
         activity = match.group("activity")
         elapsed = _parse_elapsed(match.group("elapsed"))
         cost = Decimal(match.group("cost"))
+        tokens = _parse_k_tokens(match.group("tokens"))
     return LaneSeed(
         activity=activity,
         elapsed=elapsed,
         cost=cost,
+        tokens=tokens,
         state=_GLYPH_STATE.get(lane.glyph, "running"),
         tree_spawn=lane.tree_spawn,
         tree_done=lane.tree_done,

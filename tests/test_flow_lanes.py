@@ -36,7 +36,9 @@ from .test_flow_helpers import (
     wait_for,
 )
 
-_LANE_LINE = re.compile(r"^  [◐■✔] \S+\s* · .+? · \S+\s* · \$\d+\.\d{2}$")
+_LANE_LINE = re.compile(
+    r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$"
+)
 
 
 async def _run_agents_turn(pilot, app: NewTuiApp) -> None:

@@ -143,9 +143,9 @@ def test_build_denied_spec() -> None:
 
 def test_lane_panel_lines_verbatim() -> None:
     assert [lane.panel_line for lane in DEMO_LANES] == [
-        "  ◐ researcher · scanning provider docs · 41s · $0.09",
-        "  ■ coder      · migrating store        · 2m  · $0.31",
-        "  ✔ tester     · done · tests ✔         · 55s · $0.07",
+        "  ◐ researcher · scanning provider docs · 41s    · ↓ 100.1k tokens · $0.09",
+        "  ■ coder      · migrating store        · 2m 04s · ↓ 48.3k tokens  · $0.31",
+        "  ✔ tester     · done · tests ✔         · 55s    · ↓ 3.2k tokens   · $0.07",
     ]
     assert [(lane.glyph, lane.color_token) for lane in DEMO_LANES] == [
         ("◐", "teal"), ("■", "fg"), ("✔", "dim"),
