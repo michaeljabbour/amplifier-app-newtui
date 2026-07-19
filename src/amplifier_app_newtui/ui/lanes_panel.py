@@ -4,12 +4,12 @@ A bordered strip docked ABOVE the composer, toggled by ctrl-t / ``/tasks``:
 
 - Header: ``Agent lanes · ↑↓ select · enter focus · esc close``
   (``Agent lanes`` bright bold, the hint dimmer).
-- One aligned line per subagent:
-  ``  <glyph> <name> · <activity> · <elapsed> · $<cost>`` — name /
-  activity / elapsed columns padded to their widest entry so the ``·``
-  separators line up exactly like the mockup. Line color comes from the
-  lane state's theme token (``◐`` teal running, ``■`` fg working, ``✔``
-  dim done).
+- One aligned line per subagent (Claude Code's live agent panel):
+  ``  <glyph> <name> · <activity> · <elapsed> · ↓ Nk tokens · $<cost>`` —
+  name / activity / elapsed / token columns padded to their widest entry
+  so the ``·`` separators line up exactly like the mockup. Line color
+  comes from the lane state's theme token (``◐`` teal running, ``■`` fg
+  working, ``✔`` dim done).
 
 ``↑``/``↓`` move the selection (highlighted ``bg-tab``), Enter or a
 click posts :class:`LanesPanel.FocusLane`; Esc posts
@@ -30,6 +30,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from ..model.lanes import LaneRecord, LaneState
+from ..model.turn import _format_tokens
 
 LANES_HEADER_TITLE = "Agent lanes"
 LANES_HEADER_HINT = "· ↑↓ select · enter focus · esc close"
@@ -38,27 +39,36 @@ LANES_HEADER = f"{LANES_HEADER_TITLE} {LANES_HEADER_HINT}"
 
 
 def lane_elapsed(seconds: float) -> str:
-    """Compact lane elapsed format per the mockup: ``41s`` / ``2m``."""
-    if seconds < 60:
-        return f"{round(seconds)}s"
-    return f"{round(seconds) // 60}m"
+    """Claude-Code lane elapsed precision: ``41s`` / ``5m 48s``.
+
+    Under a minute renders whole seconds (``41s``); at or above, minutes
+    plus zero-padded seconds (``348`` → ``5m 48s``, ``124`` → ``2m 04s``)
+    so the live per-agent clock reads like Claude Code's agent panel.
+    """
+    total = round(seconds)
+    if total < 60:
+        return f"{total}s"
+    return f"{total // 60}m {total % 60:02d}s"
 
 
 def format_lane_lines(lanes: Sequence[LaneState]) -> tuple[str, ...]:
-    """Aligned lane lines: ``  <glyph> <name> · <activity> · <elapsed> · $<cost>``.
+    """Aligned lane lines per Claude Code's live agent panel:
+    ``  <glyph> <name> · <activity> · <elapsed> · ↓ Nk tokens · $<cost>``.
 
-    Name, activity and elapsed columns are padded to the widest entry so
-    every ``·`` separator column lines up (mockup alignment).
+    Name, activity, elapsed and token columns are padded to the widest
+    entry so every ``·`` separator column lines up (mockup alignment).
     """
     if not lanes:
         return ()
     elapsed = [lane_elapsed(lane.elapsed) for lane in lanes]
+    tokens = [f"↓ {_format_tokens(lane.tokens)} tokens" for lane in lanes]
     name_w = max(len(lane.name) for lane in lanes)
     act_w = max(len(lane.activity) for lane in lanes)
     el_w = max(len(text) for text in elapsed)
+    tok_w = max(len(text) for text in tokens)
     return tuple(
         f"  {lane.glyph} {lane.name:<{name_w}} · {lane.activity:<{act_w}}"
-        f" · {elapsed[i]:<{el_w}} · ${lane.cost:.2f}"
+        f" · {elapsed[i]:<{el_w}} · {tokens[i]:<{tok_w}} · ${lane.cost:.2f}"
         for i, lane in enumerate(lanes)
     )
 
