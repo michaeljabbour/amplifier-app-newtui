@@ -103,6 +103,24 @@ async def capture_git_diff(cwd: Path, *, timeout_seconds: float = 5.0) -> GitDif
     return GitDiffSnapshot(True, tuple(sorted(stats.values(), key=lambda item: item.path)))
 
 
+async def capture_git_patch(
+    cwd: Path, *, staged: bool = False, timeout_seconds: float = 5.0
+) -> str | None:
+    """The working-tree (or ``--cached``) diff patch text for ``/diff``.
+
+    Mirrors amplifier-app-cli's ``/diff`` (``git diff --no-color``); a
+    bounded, shell-free subprocess. Returns ``None`` when git is
+    unavailable / not a repo / output exceeds the byte cap, and ``""``
+    when the tree is clean."""
+    args = ("diff", "--no-color", "--stat", "-p", "--unified=3")
+    if staged:
+        args = args + ("--cached",)
+    output = await _git_output(cwd.resolve(), args, timeout_seconds)
+    if output is None:
+        return None
+    return output.decode("utf-8", "replace")
+
+
 async def _git_output(
     cwd: Path, args: tuple[str, ...], timeout_seconds: float
 ) -> bytes | None:

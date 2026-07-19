@@ -24,12 +24,26 @@ MOCKUP_TABLE = [
     ("During", "/plan", "read-only planning; hands the plan to build", "built-in"),
     ("During", "/brainstorm", "no tools, divergent output; /plan to converge", "built-in"),
     ("During", "/context", "context usage grid + suggestions", "built-in"),
+    # Beyond the mockup table: in-session ops over the live coordinator
+    # (amplifier-app-cli parity).
+    ("During", "/status", "session status: model, mode, messages, cost", "built-in"),
+    ("During", "/model", "list models; /model <name> switches the live model", "built-in"),
+    ("During", "/effort", "reasoning effort; /effort <none…max> sets it", "built-in"),
+    ("During", "/compact", "compact context; /compact <focus> to steer it", "built-in"),
+    ("During", "/clear", "clear the conversation context", "built-in"),
+    ("During", "/tools", "list the mounted tools", "built-in"),
+    ("During", "/agents", "list the delegatable agents", "built-in"),
+    ("During", "/skills", "list available skills", "skill"),
+    ("During", "/skill", "load a skill by name: /skill <name>", "skill"),
+    ("During", "/mcp", "MCP servers: list · add · remove", "built-in"),
     ("Parallel", "/tasks", "agent lanes: one line per subagent", "built-in"),
     ("Ship", "/ledger", "session outcome ledger: spend vs yield", "built-in"),
     # Beyond the mockup table: transcript markdown export.
     ("Ship", "/export", "write transcript markdown to exports/", "built-in"),
     # Beyond the mockup table: last-answer clipboard copy.
     ("Ship", "/copy", "copy last answer to clipboard (OSC 52)", "built-in"),
+    # Beyond the mockup table: working-tree diff (app-cli parity).
+    ("Ship", "/diff", "working-tree diff; /diff staged for the cached diff", "built-in"),
     # Beyond the mockup table: app/core/bundle/session identity block.
     ("Ship", "/about", "app, core, bundle + session identity", "built-in"),
     ("Between", "/rewind", "fork from any turn-rule checkpoint", "built-in"),
@@ -50,7 +64,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 16  # includes the in-flight /export + /copy + /about
+    assert len(registry.specs) == 27  # 16 base + 8 in-session ops + skills/skill/mcp
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -114,6 +128,52 @@ def test_tasks_rewind_permissions_dispatch_actions(fake_command_context) -> None
     registry.run("/rewind", ctx)
     registry.run("/permissions", ctx)
     assert ctx.calls == ["toggle_lanes", "open_rewind", "open_permissions"]
+
+
+def test_in_session_ops_dispatch_through_context(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/status", ctx)
+    registry.run("/model", ctx)
+    registry.run("/model", ctx, "claude-opus-4")
+    registry.run("/effort", ctx)
+    registry.run("/effort", ctx, "high")
+    registry.run("/compact", ctx, "keep the API design")
+    registry.run("/clear", ctx)
+    registry.run("/tools", ctx)
+    registry.run("/agents", ctx)
+    registry.run("/diff", ctx)
+    registry.run("/diff", ctx, "staged")
+    assert ctx.calls == [
+        "show_status",
+        "show_model:",
+        "show_model:claude-opus-4",
+        "apply_effort:",
+        "apply_effort:high",
+        "compact_context:keep the API design",
+        "clear_context",
+        "show_tools",
+        "show_agents",
+        "show_diff:",
+        "show_diff:staged",
+    ]
+
+
+def test_skills_and_mcp_dispatch_through_context(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/skills", ctx)
+    registry.run("/skill", ctx, "design-patterns")
+    registry.run("/mcp", ctx)
+    registry.run("/mcp", ctx, "add postgres npx -y server")
+    registry.run("/mcp", ctx, "remove postgres")
+    assert ctx.calls == [
+        "show_skills",
+        "load_skill:design-patterns",
+        "manage_mcp:",
+        "manage_mcp:add postgres npx -y server",
+        "manage_mcp:remove postgres",
+    ]
 
 
 def test_ledger_posts_ledger_block_with_aggregates(fake_command_context) -> None:

@@ -31,10 +31,21 @@ ALL_COMMANDS = (
     "/plan",
     "/brainstorm",
     "/context",
+    "/status",
+    "/model",
+    "/effort",
+    "/compact",
+    "/clear",
+    "/tools",
+    "/agents",
+    "/skills",
+    "/skill",
+    "/mcp",
     "/tasks",
     "/ledger",
     "/export",
     "/copy",
+    "/diff",
     "/about",
     "/rewind",
     "/quit",
@@ -262,11 +273,11 @@ async def test_trailing_space_keeps_palette_open_with_trimmed_filter() -> None:
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "/mode ")
-        # substring filter: "/mode" matches both /mode and /modes
+        # substring filter: "/mode" matches /mode, /modes and /model
         assert await wait_for(
             pilot,
             lambda: tuple(c.name for c in app.palette.filtered_commands)
-            == ("/mode", "/modes"),
+            == ("/mode", "/modes", "/model"),
         )
         assert app.palette.is_open
         assert app.palette.filter_text == "/mode"

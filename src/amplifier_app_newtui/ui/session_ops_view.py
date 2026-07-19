@@ -1,0 +1,195 @@
+"""Segment renderers for the in-session ops commands.
+
+``/model``, ``/status``, ``/tools``, ``/agents`` and ``/diff`` post an
+:class:`~amplifier_app_newtui.model.blocks.Answer` to the transcript;
+these pure functions turn the kernel result data into the flat
+``Segment`` stream that block carries, matching the house style of
+:func:`amplifier_app_newtui.ui.app_support.native_modes_segments`
+(blue ``·`` marker, bright-bold header, dim/teal detail). Pure and
+Textual-free so they unit-test as span tuples.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+
+from ..kernel.session_ops import ModelListing, SkillInfo, StatusInfo
+from ..model.blocks import Segment
+from .live_tail import answer_spans
+
+_DIFF_MAX_LINES = 400
+
+
+def _header(label: str, detail: str) -> list[Segment]:
+    return [
+        Segment(text="· ", style_token="blue"),
+        Segment(text=label, style_token="bright", bold=True),
+        Segment(text=f"  {detail}\n", style_token="dim"),
+    ]
+
+
+def model_listing_spans(listing: ModelListing) -> tuple[Segment, ...]:
+    """``/model`` (no arg): current model + the provider's advertised set."""
+    if not listing.provider:
+        return (Segment(text="  no provider mounted\n", style_token="dimmer"),)
+    spans = _header("Model", f"provider {listing.provider} · /model <name> switches")
+    current = listing.current or "(provider default)"
+    if listing.available:
+        for model in listing.available:
+            is_current = model == listing.current
+            spans.append(
+                Segment(
+                    text=f"  {'▸' if is_current else ' '} ",
+                    style_token="green" if is_current else "dim",
+                )
+            )
+            spans.append(
+                Segment(
+                    text=f"{model}\n",
+                    style_token="green" if is_current else "teal",
+                    bold=is_current,
+                )
+            )
+    else:
+        spans.append(Segment(text="  current  ", style_token="dim"))
+        spans.append(Segment(text=f"{current}\n", style_token="green"))
+        spans.append(
+            Segment(
+                text="  (provider advertises no model list)\n", style_token="dimmer"
+            )
+        )
+    return tuple(spans)
+
+
+def status_spans(
+    info: StatusInfo,
+    *,
+    mode: str,
+    bundle: str,
+    session_short: str,
+    cost: Decimal,
+) -> tuple[Segment, ...]:
+    """``/status``: coordinator snapshot joined with app-side mode/cost."""
+    session = session_short or (info.session_id[:6] if info.session_id else "—")
+    spans = _header("Status", f"session {session}")
+    rows: tuple[tuple[str, str], ...] = (
+        ("bundle", bundle or "—"),
+        ("mode", mode),
+        ("provider", info.provider or "—"),
+        ("model", info.model or "(default)"),
+        ("effort", info.effort or "(default)"),
+        ("messages", str(info.messages)),
+        ("tools", str(info.tools)),
+        ("agents", str(len(info.agents))),
+        ("cost", f"${cost:.2f}"),
+    )
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        spans.append(Segment(text=f"  {label.ljust(width)}  ", style_token="dim"))
+        spans.append(Segment(text=f"{value}\n", style_token="teal"))
+    return tuple(spans)
+
+
+def names_spans(label: str, names: tuple[str, ...], empty: str) -> tuple[Segment, ...]:
+    """A simple bulleted roster for ``/tools`` and ``/agents``."""
+    if not names:
+        return (Segment(text=f"  {empty}\n", style_token="dimmer"),)
+    spans = _header(label, f"{len(names)} mounted")
+    for name in names:
+        spans.append(Segment(text="  • ", style_token="dim"))
+        spans.append(Segment(text=f"{name}\n", style_token="teal"))
+    return tuple(spans)
+
+
+def skills_spans(skills: tuple[SkillInfo, ...]) -> tuple[Segment, ...]:
+    """``/skills``: the available-skills roster (name + one-line description)."""
+    if not skills:
+        return (
+            Segment(
+                text="  no skills · add sources under .amplifier/skills/ or ~/.amplifier/skills/\n",
+                style_token="dimmer",
+            ),
+        )
+    spans = _header("Skills", f"{len(skills)} available · /skill <name> loads one")
+    width = max(len(s.name) for s in skills)
+    for skill in skills:
+        spans.append(Segment(text=f"  {skill.name.ljust(width)}  ", style_token="teal"))
+        desc = " ".join(skill.description.split())[:90]
+        spans.append(Segment(text=f"{desc}\n", style_token="dim"))
+    return tuple(spans)
+
+
+def skill_loaded_spans(name: str, content: str) -> tuple[Segment, ...]:
+    """``/skill <name>``: a loaded-skill header + the skill body (markdown)."""
+    header = [
+        Segment(text="· ", style_token="blue"),
+        Segment(text="Skill loaded", style_token="bright", bold=True),
+        Segment(text=f"  {name}\n", style_token="dim"),
+    ]
+    return tuple(header) + tuple(answer_spans(content))
+
+
+def mcp_spans(servers: dict[str, str], live_tools: tuple[str, ...]) -> tuple[Segment, ...]:
+    """``/mcp``: configured servers (mcp.json) + live-connected MCP tools."""
+    spans = _header(
+        "MCP",
+        f"{len(servers)} server(s) · {len(live_tools)} tool(s) connected"
+        " · /mcp add|remove",
+    )
+    if servers:
+        width = max(len(n) for n in servers)
+        for name, summary in servers.items():
+            spans.append(Segment(text=f"  {name.ljust(width)}  ", style_token="teal"))
+            spans.append(Segment(text=f"{summary}\n", style_token="dim"))
+    else:
+        spans.append(
+            Segment(text="  no servers in mcp.json · /mcp add <name> <cmd> [args…]\n", style_token="dimmer")
+        )
+    if live_tools:
+        spans.append(Segment(text=f"  connected: {', '.join(live_tools)}\n", style_token="dimmer"))
+    return tuple(spans)
+
+
+def diff_spans(patch: str | None, *, staged: bool) -> tuple[Segment, ...]:
+    """``/diff``: the git patch as a fenced code block (monospace render).
+
+    ``None`` (git unavailable / not a repo) and a clean tree each get a
+    plain dim line; long patches truncate to :data:`_DIFF_MAX_LINES` with
+    a note (never flood the transcript)."""
+    scope = "staged " if staged else ""
+    if patch is None:
+        return (
+            Segment(
+                text=f"  no {scope}diff · not a git repo or git unavailable\n",
+                style_token="dimmer",
+            ),
+        )
+    if not patch.strip():
+        return (
+            Segment(text=f"  working tree clean · no {scope}changes\n", style_token="dim"),
+        )
+    lines = patch.splitlines()
+    truncated = len(lines) > _DIFF_MAX_LINES
+    body = "\n".join(lines[:_DIFF_MAX_LINES])
+    source = f"```diff\n{body}\n```"
+    spans = list(answer_spans(source))
+    if truncated:
+        spans.append(
+            Segment(
+                text=f"\n  … +{len(lines) - _DIFF_MAX_LINES} more lines"
+                " · /diff shows the head\n",
+                style_token="dimmer",
+            )
+        )
+    return tuple(spans)
+
+
+__all__ = [
+    "diff_spans",
+    "mcp_spans",
+    "model_listing_spans",
+    "names_spans",
+    "skill_loaded_spans",
+    "skills_spans",
+    "status_spans",
+]

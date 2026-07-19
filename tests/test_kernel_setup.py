@@ -1,0 +1,61 @@
+"""First-run setup logic (``kernel/setup.py``).
+
+The keys.env read/write + env-prefix derivation, against ``tmp_path``.
+``discover_providers`` (live ``ModuleLoader``) is covered via the init CLI
+smoke test with a stubbed discovery, not here.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from amplifier_app_newtui.kernel import setup
+
+
+def test_provider_env_prefix() -> None:
+    assert setup.provider_env_prefix("provider-anthropic") == "ANTHROPIC"
+    assert setup.provider_env_prefix("provider-openai") == "OPENAI"
+    assert setup.provider_env_prefix("amplifier-module-provider-vllm") == "VLLM"
+
+
+def test_write_key_creates_reads_and_chmods(tmp_path: Path) -> None:
+    path = tmp_path / "keys.env"
+    setup.write_key(path, "ANTHROPIC_API_KEY", "sk-abc", update_environ=False)
+    assert setup.read_keys(path) == {"ANTHROPIC_API_KEY": "sk-abc"}
+    assert setup.stored_key_names(path) == {"ANTHROPIC_API_KEY"}
+    # Secret file locked down (POSIX).
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_write_key_updates_in_place_and_preserves_others(tmp_path: Path) -> None:
+    path = tmp_path / "keys.env"
+    path.write_text("# creds\nOPENAI_API_KEY=old\nHF_TOKEN=hf-1\n", encoding="utf-8")
+    setup.write_key(path, "OPENAI_API_KEY", "new", update_environ=False)
+    text = path.read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY=new" in text
+    assert "old" not in text
+    assert "HF_TOKEN=hf-1" in text  # untouched
+    assert "# creds" in text  # comment preserved
+
+
+def test_write_key_updates_environ(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("XYZ_API_KEY", raising=False)
+    setup.write_key(tmp_path / "keys.env", "XYZ_API_KEY", "live")
+    assert os.environ["XYZ_API_KEY"] == "live"
+
+
+def test_read_keys_ignores_comments_and_blank(tmp_path: Path) -> None:
+    path = tmp_path / "keys.env"
+    path.write_text('\n# a comment\nANTHROPIC_API_KEY="quoted"\nbad line\n', encoding="utf-8")
+    assert setup.read_keys(path) == {"ANTHROPIC_API_KEY": "quoted"}
+
+
+def test_setup_status_reads_keys_and_bundle(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home).mkdir()
+    (home / "keys.env").write_text("ANTHROPIC_API_KEY=x\n", encoding="utf-8")
+    status = setup.setup_status(tmp_path / "proj", home)
+    assert status.stored_keys == ("ANTHROPIC_API_KEY",)
+    assert status.active_bundle is None  # nothing set in tmp scopes
+    assert status.keys_path == home / "keys.env"

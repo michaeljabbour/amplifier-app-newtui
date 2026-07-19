@@ -127,6 +127,39 @@ class FakeCommandContext:
     def set_native_mode(self, name: str | None) -> None:
         self.calls.append(f"set_native_mode:{name}")
 
+    def show_status(self) -> None:
+        self.calls.append("show_status")
+
+    def show_model(self, arg: str) -> None:
+        self.calls.append(f"show_model:{arg}")
+
+    def apply_effort(self, arg: str) -> None:
+        self.calls.append(f"apply_effort:{arg}")
+
+    def compact_context(self, focus: str) -> None:
+        self.calls.append(f"compact_context:{focus}")
+
+    def clear_context(self) -> None:
+        self.calls.append("clear_context")
+
+    def show_tools(self) -> None:
+        self.calls.append("show_tools")
+
+    def show_agents(self) -> None:
+        self.calls.append("show_agents")
+
+    def show_diff(self, arg: str) -> None:
+        self.calls.append(f"show_diff:{arg}")
+
+    def show_skills(self) -> None:
+        self.calls.append("show_skills")
+
+    def load_skill(self, name: str) -> None:
+        self.calls.append(f"load_skill:{name}")
+
+    def manage_mcp(self, args: str) -> None:
+        self.calls.append(f"manage_mcp:{args}")
+
 
 @pytest.fixture
 def fake_command_context() -> FakeCommandContext:

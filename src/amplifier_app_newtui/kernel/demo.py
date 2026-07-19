@@ -367,7 +367,7 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
             ),
             DemoLogRow(
                 kind="command",
-                text="uv run python -m amplifier_app_cli.session_store --check",
+                text="rg -n 'SessionStore\\(' src/",
             ),
             DemoLogRow(kind="tool", text="Ran 4 edit calls · 2 files"),
             DemoLogRow(kind="narration", text="Wiring journal replay into resume; tests next."),

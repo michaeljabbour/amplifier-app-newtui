@@ -321,6 +321,73 @@ def packaged_bundles_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "data" / "bundles"
 
 
+def packaged_modes_dir() -> Path:
+    """Native mode definitions shipped with this app (plan/brainstorm/careful).
+
+    Fed into the mounted ``hooks-mode`` search_paths so the app's postures
+    activate self-contained modes even on a clean install with no bundle
+    overlays composed in."""
+    return Path(__file__).resolve().parent.parent / "data" / "modes"
+
+
+def inject_routing_config(
+    mount_plan: dict[str, Any], settings: dict[str, Any], amplifier_home: Path
+) -> None:
+    """Bridge ``settings.routing`` into the mounted ``hooks-routing`` config.
+
+    - ``routing.matrix`` → ``default_matrix`` (user picks the matrix);
+    - ``routing.overrides`` → ``overrides``;
+    - ``~/.amplifier/routing`` added to ``custom_routing_dirs`` (so user
+      matrices there are visible to the hook, not just to a lister).
+    No-op when ``hooks-routing`` isn't mounted. Never raises."""
+    entry = None
+    for hook in mount_plan.get("hooks") or []:
+        if isinstance(hook, dict) and hook.get("module") == "hooks-routing":
+            entry = hook
+            break
+    if entry is None:
+        return
+    config = entry.get("config")
+    if not isinstance(config, dict):
+        config = {}
+        entry["config"] = config
+    routing = settings.get("routing")
+    if isinstance(routing, dict):
+        if isinstance(routing.get("matrix"), str) and routing["matrix"]:
+            config["default_matrix"] = routing["matrix"]
+        if isinstance(routing.get("overrides"), dict):
+            config["overrides"] = routing["overrides"]
+    user_dir = amplifier_home / "routing"
+    if user_dir.is_dir():
+        dirs = config.get("custom_routing_dirs")
+        if not isinstance(dirs, list):
+            dirs = []
+            config["custom_routing_dirs"] = dirs
+        if str(user_dir) not in dirs:
+            dirs.append(str(user_dir))
+
+
+def inject_mode_search_paths(mount_plan: dict[str, Any], modes_dir: Path) -> None:
+    """Add *modes_dir* to the mounted ``hooks-mode`` config's search_paths.
+
+    A no-op when ``hooks-mode`` is not mounted. Idempotent — the dir is
+    only appended once."""
+    for hook in mount_plan.get("hooks") or []:
+        if not isinstance(hook, dict) or hook.get("module") != "hooks-mode":
+            continue
+        config = hook.get("config")
+        if not isinstance(config, dict):
+            config = {}
+            hook["config"] = config
+        paths = config.get("search_paths")
+        if not isinstance(paths, list):
+            paths = []
+            config["search_paths"] = paths
+        target = str(modes_dir)
+        if target not in paths:
+            paths.append(target)
+
+
 def bundle_search_paths(project_dir: Path, amplifier_home: Path) -> tuple[Path, ...]:
     """Search order (highest precedence first): project → user → packaged."""
     return (
@@ -486,6 +553,11 @@ async def resolve_config(
     # its configured id (reference CLI parity); prevents a false
     # 'provider unavailable' when the config names an instance.
     map_provider_ids_to_instance_ids(mount_plan)
+    # Point the mounted mode system at the app's own mode definitions so the
+    # plan/brainstorm/careful postures work self-contained (approvals stay
+    # OFF until a posture activates one of these — feature-mapping.md).
+    inject_mode_search_paths(mount_plan, packaged_modes_dir())
+    inject_routing_config(mount_plan, settings, amplifier_home)
     expand_env_placeholders(mount_plan)
 
     return ResolvedConfig(
@@ -524,6 +596,9 @@ __all__ = [
     "deep_merge",
     "discover_bundle",
     "expand_env_placeholders",
+    "inject_mode_search_paths",
+    "inject_routing_config",
+    "packaged_modes_dir",
     "get_project_slug",
     "is_bundle_uri",
     "list_available_bundles",

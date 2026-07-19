@@ -26,7 +26,8 @@ from .cost import CostTracker, restore_session_cost, start_live_pricing
 from .display import DisplaySystem
 from .events import ContentBlockEnd, ContextInjected, PromptComplete, PromptSubmit, UIEvent
 from .evidence import EvidenceCollector
-from .git_yield import GitDiffSnapshot, capture_git_diff
+from . import session_ops
+from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
 from .queue_bridge import CONSUMED_EVENTS, QueueBridge
 from .turn_yield import TurnYieldTracker
@@ -550,6 +551,79 @@ class RealRuntime:
         if isinstance(output, Mapping):
             output = output.get("message") or output.get("error") or str(dict(output))
         return (ok, str(output) if output else "")
+
+    def _coordinator(self) -> Any | None:
+        """The live amplifier coordinator, or ``None`` before ``start()``."""
+        return self._initialized.coordinator if self._initialized else None
+
+    # -- in-session ops (/model /effort /compact /clear /status /tools) ------
+    # All run on the runtime loop (the coordinator is thread-owned here); the
+    # adapter marshals each call in via ``run_coroutine_threadsafe``.
+
+    async def list_models(self) -> session_ops.ModelListing:
+        coord = self._coordinator()
+        if coord is None:
+            return session_ops.ModelListing(provider="", current="")
+        return await session_ops.list_models(coord)
+
+    async def set_model(self, model: str) -> tuple[bool, str]:
+        coord = self._coordinator()
+        if coord is None:
+            return (False, "session still starting")
+        return await session_ops.set_model(coord, model)
+
+    async def get_effort(self) -> str | None:
+        coord = self._coordinator()
+        return session_ops.get_effort(coord) if coord is not None else None
+
+    async def set_effort(self, level: str) -> tuple[bool, str]:
+        coord = self._coordinator()
+        if coord is None:
+            return (False, "session still starting")
+        return session_ops.set_effort(coord, level)
+
+    async def compact(self, focus: str = "") -> tuple[bool, str]:
+        coord = self._coordinator()
+        if coord is None:
+            return (False, "session still starting")
+        return await session_ops.compact_context(coord, focus)
+
+    async def clear_context(self) -> tuple[bool, int]:
+        coord = self._coordinator()
+        if coord is None:
+            return (False, 0)
+        return await session_ops.clear_context(coord)
+
+    async def status(self) -> session_ops.StatusInfo:
+        coord = self._coordinator()
+        if coord is None:
+            return session_ops.StatusInfo()
+        return await session_ops.status_snapshot(coord)
+
+    async def list_tools(self) -> tuple[str, ...]:
+        coord = self._coordinator()
+        return await session_ops.list_tools(coord) if coord is not None else ()
+
+    async def list_agents(self) -> tuple[str, ...]:
+        coord = self._coordinator()
+        return await session_ops.list_agents(coord) if coord is not None else ()
+
+    async def diff(self, staged: bool = False) -> str | None:
+        return await capture_git_patch(self._turn_cwd(), staged=staged)
+
+    async def list_skills(self) -> tuple[session_ops.SkillInfo, ...]:
+        coord = self._coordinator()
+        return await session_ops.list_skills(coord) if coord is not None else ()
+
+    async def load_skill(self, name: str) -> tuple[bool, str]:
+        coord = self._coordinator()
+        if coord is None:
+            return (False, "session still starting")
+        return await session_ops.load_skill(coord, name)
+
+    async def mcp_tools(self) -> tuple[str, ...]:
+        coord = self._coordinator()
+        return await session_ops.list_mcp_tools(coord) if coord is not None else ()
 
     async def interrupt(self) -> bool:
         """Best-effort graceful cancellation at the next step boundary.

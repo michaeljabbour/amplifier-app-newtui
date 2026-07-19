@@ -177,6 +177,52 @@ class CommandContext(Protocol):
         actioned through the mounted mode tool, never an app-local list."""
         ...
 
+    # -- in-session ops over the live amplifier coordinator -----------------
+
+    def show_status(self) -> None:
+        """Post the live session status block (``/status``)."""
+        ...
+
+    def show_model(self, arg: str) -> None:
+        """``/model``: list models (empty arg) or switch to ``arg``."""
+        ...
+
+    def apply_effort(self, arg: str) -> None:
+        """``/effort``: show current level (empty arg) or set to ``arg``."""
+        ...
+
+    def compact_context(self, focus: str) -> None:
+        """``/compact``: compact context, optionally focused on ``focus``."""
+        ...
+
+    def clear_context(self) -> None:
+        """``/clear``: clear the conversation context."""
+        ...
+
+    def show_tools(self) -> None:
+        """``/tools``: post the mounted-tools roster."""
+        ...
+
+    def show_agents(self) -> None:
+        """``/agents``: post the delegatable-agents roster."""
+        ...
+
+    def show_diff(self, arg: str) -> None:
+        """``/diff``: post the working-tree (or ``staged``) patch."""
+        ...
+
+    def show_skills(self) -> None:
+        """``/skills``: post the available-skills roster."""
+        ...
+
+    def load_skill(self, name: str) -> None:
+        """``/skill <name>``: load a skill via the mounted skills tool."""
+        ...
+
+    def manage_mcp(self, args: str) -> None:
+        """``/mcp``: list / add / remove MCP servers (mcp.json)."""
+        ...
+
 
 CommandHandler = Callable[[CommandContext, str], None]
 """Handler signature: ``(ctx, args)`` where ``args`` is the text after the

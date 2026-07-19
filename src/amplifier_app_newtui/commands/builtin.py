@@ -68,6 +68,66 @@ def _cmd_tasks(ctx: CommandContext, args: str) -> None:
     ctx.toggle_lanes()
 
 
+def _cmd_status(ctx: CommandContext, args: str) -> None:
+    """``/status`` — live session snapshot (model, mode, messages, cost)."""
+    del args
+    ctx.show_status()
+
+
+def _cmd_model(ctx: CommandContext, args: str) -> None:
+    """``/model`` — list models; ``/model <name>`` switches the live model."""
+    ctx.show_model(args.strip())
+
+
+def _cmd_effort(ctx: CommandContext, args: str) -> None:
+    """``/effort`` — show reasoning effort; ``/effort <level>`` sets it."""
+    ctx.apply_effort(args.strip())
+
+
+def _cmd_compact(ctx: CommandContext, args: str) -> None:
+    """``/compact`` — compact context; ``/compact <focus>`` steers it."""
+    ctx.compact_context(args.strip())
+
+
+def _cmd_clear(ctx: CommandContext, args: str) -> None:
+    """``/clear`` — clear the conversation context."""
+    del args
+    ctx.clear_context()
+
+
+def _cmd_tools(ctx: CommandContext, args: str) -> None:
+    """``/tools`` — list the mounted tools."""
+    del args
+    ctx.show_tools()
+
+
+def _cmd_agents(ctx: CommandContext, args: str) -> None:
+    """``/agents`` — list the delegatable agents."""
+    del args
+    ctx.show_agents()
+
+
+def _cmd_diff(ctx: CommandContext, args: str) -> None:
+    """``/diff`` — working-tree patch; ``/diff staged`` for the cached diff."""
+    ctx.show_diff(args.strip())
+
+
+def _cmd_skills(ctx: CommandContext, args: str) -> None:
+    """``/skills`` — list the available skills."""
+    del args
+    ctx.show_skills()
+
+
+def _cmd_skill(ctx: CommandContext, args: str) -> None:
+    """``/skill <name>`` — load a skill via the mounted skills tool."""
+    ctx.load_skill(args.strip())
+
+
+def _cmd_mcp(ctx: CommandContext, args: str) -> None:
+    """``/mcp`` — list; ``/mcp add|remove`` manages MCP servers (mcp.json)."""
+    ctx.manage_mcp(args.strip())
+
+
 def _cmd_ledger(ctx: CommandContext, args: str) -> None:
     del args
     ledger = ctx.ledger
@@ -206,6 +266,77 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         tag="built-in",
         handler=_cmd_context,
     ),
+    # In-session ops over the live amplifier coordinator (app-cli parity).
+    CommandSpec(
+        group="During",
+        name="/status",
+        desc="session status: model, mode, messages, cost",
+        tag="built-in",
+        handler=_cmd_status,
+    ),
+    CommandSpec(
+        group="During",
+        name="/model",
+        desc="list models; /model <name> switches the live model",
+        tag="built-in",
+        handler=_cmd_model,
+    ),
+    CommandSpec(
+        group="During",
+        name="/effort",
+        desc="reasoning effort; /effort <none…max> sets it",
+        tag="built-in",
+        handler=_cmd_effort,
+    ),
+    CommandSpec(
+        group="During",
+        name="/compact",
+        desc="compact context; /compact <focus> to steer it",
+        tag="built-in",
+        handler=_cmd_compact,
+    ),
+    CommandSpec(
+        group="During",
+        name="/clear",
+        desc="clear the conversation context",
+        tag="built-in",
+        handler=_cmd_clear,
+    ),
+    CommandSpec(
+        group="During",
+        name="/tools",
+        desc="list the mounted tools",
+        tag="built-in",
+        handler=_cmd_tools,
+    ),
+    CommandSpec(
+        group="During",
+        name="/agents",
+        desc="list the delegatable agents",
+        tag="built-in",
+        handler=_cmd_agents,
+    ),
+    CommandSpec(
+        group="During",
+        name="/skills",
+        desc="list available skills",
+        tag="skill",
+        handler=_cmd_skills,
+    ),
+    CommandSpec(
+        group="During",
+        name="/skill",
+        desc="load a skill by name: /skill <name>",
+        tag="skill",
+        handler=_cmd_skill,
+    ),
+    CommandSpec(
+        group="During",
+        name="/mcp",
+        desc="MCP servers: list · add · remove",
+        tag="built-in",
+        handler=_cmd_mcp,
+    ),
     CommandSpec(
         group="Parallel",
         name="/tasks",
@@ -237,6 +368,14 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="copy last answer to clipboard (OSC 52)",
         tag="built-in",
         handler=_cmd_copy,
+    ),
+    # In-session ops (app-cli parity): review the working-tree diff.
+    CommandSpec(
+        group="Ship",
+        name="/diff",
+        desc="working-tree diff; /diff staged for the cached diff",
+        tag="built-in",
+        handler=_cmd_diff,
     ),
     # Beyond the mockup table: app/core/bundle/session identity block.
     CommandSpec(

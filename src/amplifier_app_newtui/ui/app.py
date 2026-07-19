@@ -65,6 +65,15 @@ from .queued_strip import QueuedStrip
 from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
 from .runtime_adapter import RuntimeAdapter
+from .session_ops_view import (
+    diff_spans,
+    mcp_spans,
+    model_listing_spans,
+    names_spans,
+    skill_loaded_spans,
+    skills_spans,
+    status_spans,
+)
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
     BlockWidget,
@@ -355,6 +364,186 @@ class NewTuiApp(App[None]):
             self.show_notice(f"mode {label} · native (bundle)")
         else:
             self.show_notice(detail or f"no such mode · {name}")
+
+    # -- in-session ops (/model /effort /compact /clear /status /tools …) ----
+    # Each is a sync trigger the command handler calls; the async body runs
+    # on a worker so the coordinator call marshals through the adapter to the
+    # runtime loop without blocking the UI (mirrors _show_native_modes).
+
+    def _ops_starting(self) -> bool:
+        """True (and notices) when the session banner has not landed yet."""
+        if self._boot_block_id is not None:
+            self.show_notice("session still starting · try again once the banner lands")
+            return True
+        return False
+
+    def show_status(self) -> None:
+        self.run_worker(self._show_status(), exclusive=False)
+
+    async def _show_status(self) -> None:
+        info = await self.adapter.status()
+        self.append_block(
+            Answer(
+                id=self.allocator.next_id(),
+                spans=status_spans(
+                    info,
+                    mode=self.mode_id,
+                    bundle=self.adapter.bundle_name,
+                    session_short=self.adapter.session_short,
+                    cost=self.reducer.session_cost,
+                ),
+            )
+        )
+
+    def show_model(self, arg: str) -> None:
+        if arg and self._ops_starting():
+            return
+        self.run_worker(self._show_model(arg), exclusive=False)
+
+    async def _show_model(self, arg: str) -> None:
+        if arg:
+            ok, detail = await self.adapter.set_model(arg)
+            self.show_notice(f"model · {detail}" if ok else detail)
+            return
+        listing = await self.adapter.list_models()
+        self.append_block(
+            Answer(id=self.allocator.next_id(), spans=model_listing_spans(listing))
+        )
+
+    def apply_effort(self, arg: str) -> None:
+        if arg and self._ops_starting():
+            return
+        self.run_worker(self._apply_effort(arg), exclusive=False)
+
+    async def _apply_effort(self, arg: str) -> None:
+        if arg:
+            ok, detail = await self.adapter.set_effort(arg)
+            self.show_notice(f"effort · {detail}" if ok else detail)
+            return
+        current = await self.adapter.get_effort()
+        self.show_notice(f"effort · {current or '(default)'} · /effort <level> to set")
+
+    def compact_context(self, focus: str) -> None:
+        if self._ops_starting():
+            return
+        self.run_worker(self._compact_context(focus), exclusive=False)
+
+    async def _compact_context(self, focus: str) -> None:
+        ok, detail = await self.adapter.compact(focus)
+        self.show_notice(f"compacted · {detail}" if ok else detail)
+
+    def clear_context(self) -> None:
+        if self._ops_starting():
+            return
+        self.run_worker(self._clear_context(), exclusive=False)
+
+    async def _clear_context(self) -> None:
+        ok, count = await self.adapter.clear_context()
+        self.show_notice(
+            f"context cleared · {count} messages dropped"
+            if ok
+            else "clear unavailable in this session"
+        )
+
+    def show_tools(self) -> None:
+        self.run_worker(self._show_tools(), exclusive=False)
+
+    async def _show_tools(self) -> None:
+        names = await self.adapter.list_tools()
+        self.append_block(
+            Answer(
+                id=self.allocator.next_id(),
+                spans=names_spans("Tools", names, "no tools mounted"),
+            )
+        )
+
+    def show_agents(self) -> None:
+        self.run_worker(self._show_agents(), exclusive=False)
+
+    async def _show_agents(self) -> None:
+        names = await self.adapter.list_agents()
+        self.append_block(
+            Answer(
+                id=self.allocator.next_id(),
+                spans=names_spans(
+                    "Agents", names, "no agents · bundle has no agents: include: block"
+                ),
+            )
+        )
+
+    _DIFF_STAGED_ARGS = frozenset({"staged", "cached", "--staged", "--cached"})
+
+    def show_diff(self, arg: str) -> None:
+        self.run_worker(self._show_diff(arg), exclusive=False)
+
+    async def _show_diff(self, arg: str) -> None:
+        staged = arg.strip().lower() in self._DIFF_STAGED_ARGS
+        patch = await self.adapter.diff(staged)
+        self.append_block(
+            Answer(id=self.allocator.next_id(), spans=diff_spans(patch, staged=staged))
+        )
+
+    def show_skills(self) -> None:
+        self.run_worker(self._show_skills(), exclusive=False)
+
+    async def _show_skills(self) -> None:
+        skills = await self.adapter.list_skills()
+        self.append_block(Answer(id=self.allocator.next_id(), spans=skills_spans(skills)))
+
+    def load_skill(self, name: str) -> None:
+        if not name:
+            self.show_notice("usage: /skill <name> · /skills lists them")
+            return
+        if self._ops_starting():
+            return
+        self.run_worker(self._load_skill(name), exclusive=False)
+
+    async def _load_skill(self, name: str) -> None:
+        ok, payload = await self.adapter.load_skill(name)
+        if ok:
+            self.append_block(
+                Answer(id=self.allocator.next_id(), spans=skill_loaded_spans(name, payload))
+            )
+            self.show_notice(f"skill loaded · {name}")
+        else:
+            self.show_notice(payload or f"no such skill · {name}")
+
+    def manage_mcp(self, args: str) -> None:
+        self.run_worker(self._manage_mcp(args), exclusive=False)
+
+    async def _manage_mcp(self, args: str) -> None:
+        from ..kernel import mcp_config
+
+        parts = args.split()
+        sub = parts[0].lower() if parts else "list"
+        path = mcp_config.mcp_config_path()
+        if sub in ("", "list"):
+            servers = {
+                name: mcp_config.describe_server(spec)
+                for name, spec in mcp_config.read_servers(path).items()
+            }
+            live = await self.adapter.mcp_tools()
+            self.append_block(
+                Answer(id=self.allocator.next_id(), spans=mcp_spans(servers, live))
+            )
+        elif sub == "add":
+            if len(parts) < 3:
+                self.show_notice("usage: /mcp add <name> <command> [args…]")
+                return
+            mcp_config.add_stdio_server(path, parts[1], parts[2], tuple(parts[3:]))
+            self.show_notice(f"mcp server added · {parts[1]} · restart the session to connect")
+        elif sub == "remove":
+            if len(parts) < 2:
+                self.show_notice("usage: /mcp remove <name>")
+                return
+            removed = mcp_config.remove_server(path, parts[1])
+            self.show_notice(
+                f"mcp server removed · {parts[1]} · restart to apply"
+                if removed
+                else f"no such server · {parts[1]}"
+            )
+        else:
+            self.show_notice(f"unknown /mcp subcommand · {sub} (list | add | remove)")
 
     def turn_started(self) -> None:
         self.turn_active = True

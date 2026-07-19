@@ -140,5 +140,38 @@ class AppCommandContext:
     def set_native_mode(self, name: str | None) -> None:
         self._app.activate_native_mode(name)
 
+    def show_status(self) -> None:
+        self._app.show_status()
+
+    def show_model(self, arg: str) -> None:
+        self._app.show_model(arg)
+
+    def apply_effort(self, arg: str) -> None:
+        self._app.apply_effort(arg)
+
+    def compact_context(self, focus: str) -> None:
+        self._app.compact_context(focus)
+
+    def clear_context(self) -> None:
+        self._app.clear_context()
+
+    def show_tools(self) -> None:
+        self._app.show_tools()
+
+    def show_agents(self) -> None:
+        self._app.show_agents()
+
+    def show_diff(self, arg: str) -> None:
+        self._app.show_diff(arg)
+
+    def show_skills(self) -> None:
+        self._app.show_skills()
+
+    def load_skill(self, name: str) -> None:
+        self._app.load_skill(name)
+
+    def manage_mcp(self, args: str) -> None:
+        self._app.manage_mcp(args)
+
 
 __all__ = ["AppCommandContext"]

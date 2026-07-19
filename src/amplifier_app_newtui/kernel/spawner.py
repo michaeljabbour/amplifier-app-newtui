@@ -90,6 +90,8 @@ class SessionSpawner:
         parent_session: Any,
         agent_configs: dict[str, dict[str, Any]] | None = None,
         sub_session_id: str | None = None,
+        provider_preferences: list[Any] | None = None,
+        model_role: str | list[str] | None = None,
         **_kwargs: Any,
     ) -> dict[str, Any]:
         """Spawn, execute, persist-nothing, and unwind one child session.
@@ -117,6 +119,15 @@ class SessionSpawner:
             str(parent_session.session_id), agent_name
         )
         config = _merged_config(parent_session, agent_configs or {}, agent_name)
+        # Model routing (hooks-routing): apply per-role provider preferences to
+        # the child's mount plan so a delegated agent runs on its role's model.
+        # Explicit prefs win; else resolve model_role via the capability; else
+        # any prefs the routing hook wrote onto the agent config. Best-effort:
+        # a single-provider setup or missing resolver leaves the child on the
+        # parent provider (apply_* skips unmounted providers). Never raises.
+        await _apply_routing(
+            config, parent_coordinator, provider_preferences, model_role
+        )
         approval_system = self._approval_system or getattr(
             parent_coordinator, "approval_system", None
         )
@@ -207,6 +218,63 @@ def _merged_config(
     if isinstance(overlay, dict):
         merged.update(overlay)
     return merged
+
+
+def _as_preferences(raw: Any) -> list[Any]:
+    """Coerce provider-preference dicts/objects into ``ProviderPreference``s."""
+    from amplifier_foundation.spawn_utils import ProviderPreference
+
+    prefs: list[Any] = []
+    for item in raw or ():
+        if isinstance(item, ProviderPreference):
+            prefs.append(item)
+        elif isinstance(item, dict) and item.get("provider") and item.get("model"):
+            prefs.append(
+                ProviderPreference(
+                    provider=str(item["provider"]),
+                    model=str(item["model"]),
+                    config=item.get("config") or {},
+                )
+            )
+    return prefs
+
+
+async def _apply_routing(
+    config: dict[str, Any],
+    parent_coordinator: Any,
+    provider_preferences: list[Any] | None,
+    model_role: str | list[str] | None,
+) -> None:
+    """Apply per-role model routing to a child mount plan (best-effort).
+
+    Resolution order: explicit ``provider_preferences`` → ``model_role`` via
+    the ``model_role_resolver`` capability → any ``provider_preferences`` the
+    routing hook wrote onto the (merged) agent config. Applies via foundation's
+    ``apply_provider_preferences_with_resolution`` (skips unmounted providers,
+    so single-provider setups degrade to the parent model). Swallows all
+    errors — routing must never break a spawn."""
+    try:
+        prefs = provider_preferences
+        if not prefs and model_role:
+            resolver = None
+            try:
+                resolver = parent_coordinator.get_capability("model_role_resolver")
+            except Exception:  # noqa: BLE001 — capability registry variance
+                resolver = None
+            if resolver is not None:
+                prefs = await resolver.resolve(model_role)
+        if not prefs:
+            prefs = config.get("provider_preferences")
+        coerced = _as_preferences(prefs)
+        if not coerced:
+            return
+        from amplifier_foundation.spawn_utils import (
+            apply_provider_preferences_with_resolution,
+        )
+
+        await apply_provider_preferences_with_resolution(config, coerced, parent_coordinator)
+    except Exception:  # noqa: BLE001 — routing is best-effort; never break spawn
+        logger.debug("routing application failed for spawn", exc_info=True)
 
 
 __all__ = [

@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from ..kernel.events import UIEvent
+from ..kernel.session_ops import ModelListing, StatusInfo
 from ..model.blocks import BlockIdAllocator, TranscriptBlock
 from ..model.evidence import EvidenceLink
 from ..model.queues import NeedsYouQueue, SteeringQueue
@@ -89,6 +90,52 @@ class RuntimeAdapter:
         """Activate/clear a bundle-provided mode via the native mode tool."""
         del name
         return (False, "native modes need a real session")
+
+    # -- in-session ops (base: no live session, neutral results) ------------
+
+    async def list_models(self) -> ModelListing:
+        return ModelListing(provider="", current="")
+
+    async def set_model(self, model: str) -> tuple[bool, str]:
+        del model
+        return (False, "switching models needs a real session")
+
+    async def get_effort(self) -> str | None:
+        return None
+
+    async def set_effort(self, level: str) -> tuple[bool, str]:
+        del level
+        return (False, "reasoning effort needs a real session")
+
+    async def compact(self, focus: str = "") -> tuple[bool, str]:
+        del focus
+        return (False, "compaction needs a real session")
+
+    async def clear_context(self) -> tuple[bool, int]:
+        return (False, 0)
+
+    async def status(self) -> StatusInfo:
+        return StatusInfo()
+
+    async def list_tools(self) -> tuple[str, ...]:
+        return ()
+
+    async def list_agents(self) -> tuple[str, ...]:
+        return ()
+
+    async def diff(self, staged: bool = False) -> str | None:
+        del staged
+        return None
+
+    async def list_skills(self) -> tuple[Any, ...]:
+        return ()
+
+    async def load_skill(self, name: str) -> tuple[bool, str]:
+        del name
+        return (False, "skills need a real session")
+
+    async def mcp_tools(self) -> tuple[str, ...]:
+        return ()
 
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Fork the session at *checkpoint_id*, then trim *ledger* (spec §9).
@@ -291,6 +338,71 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is None:
             return (False, "session still starting")
         return await self._in_runtime(self._runtime.set_native_mode(name))
+
+    async def list_models(self) -> ModelListing:
+        if self._runtime is None:
+            return ModelListing(provider="", current="")
+        return await self._in_runtime(self._runtime.list_models())
+
+    async def set_model(self, model: str) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.set_model(model))
+
+    async def get_effort(self) -> str | None:
+        if self._runtime is None:
+            return None
+        return await self._in_runtime(self._runtime.get_effort())
+
+    async def set_effort(self, level: str) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.set_effort(level))
+
+    async def compact(self, focus: str = "") -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.compact(focus))
+
+    async def clear_context(self) -> tuple[bool, int]:
+        if self._runtime is None:
+            return (False, 0)
+        return await self._in_runtime(self._runtime.clear_context())
+
+    async def status(self) -> StatusInfo:
+        if self._runtime is None:
+            return StatusInfo()
+        return await self._in_runtime(self._runtime.status())
+
+    async def list_tools(self) -> tuple[str, ...]:
+        if self._runtime is None:
+            return ()
+        return await self._in_runtime(self._runtime.list_tools())
+
+    async def list_agents(self) -> tuple[str, ...]:
+        if self._runtime is None:
+            return ()
+        return await self._in_runtime(self._runtime.list_agents())
+
+    async def diff(self, staged: bool = False) -> str | None:
+        if self._runtime is None:
+            return None
+        return await self._in_runtime(self._runtime.diff(staged))
+
+    async def list_skills(self) -> tuple[Any, ...]:
+        if self._runtime is None:
+            return ()
+        return await self._in_runtime(self._runtime.list_skills())
+
+    async def load_skill(self, name: str) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.load_skill(name))
+
+    async def mcp_tools(self) -> tuple[str, ...]:
+        if self._runtime is None:
+            return ()
+        return await self._in_runtime(self._runtime.mcp_tools())
 
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Real fork: foundation in-memory fork + ``context.set_messages()``."""
