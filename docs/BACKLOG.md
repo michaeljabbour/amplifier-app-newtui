@@ -10,7 +10,7 @@ Textual, UI never touches amplifier-core.
 
 ---
 
-## 1. Accurate pricing (parity with amplifier-app-cli) — mostly shipped
+## 1. Accurate pricing (parity with amplifier-app-cli) — SHIPPED
 
 **Already in `kernel/cost.py`:**
 - `estimate_cost()` — Decimal port of app-cli's estimator (input/output/cache-read/cache-write rates per model).
@@ -24,20 +24,21 @@ Textual, UI never touches amplifier-core.
 - [x] **Wire `fetch_live_pricing()` at startup.** `start_live_pricing()` runs in a daemon background thread behind settings `pricing.live` (default on); the fetched table swaps in atomically and `CostTracker` snapshots it at `start_turn` — new turns only, mid-session totals never jump retroactively.
 - [x] **On-disk cache with TTL**: `~/.amplifier/pricing_cache.json`, 24 h. Fresh cache applies at startup with no fetch; stale/missing → fallback now + background fetch writes the cache. Read/write never raise.
 - [x] **Never lie in the footer.** `CostTracker.unpriced` counts unpriceable usage; the footer total and turn-rule `$` figures render `~$1.23` when any usage was unpriced (footer + telemetry-label tests updated in the same change).
-- [x] **Parity tests**: `tests/test_cost_parity_appcli.py` — fixtures through newtui's `estimate_cost` vs app-cli's estimator (values generated from amplifier-module-hooks-streaming-ui `cost.py`, hard-coded with provenance), matching well past the cent.
+- [x] **Parity tests**: `tests/test_cost_parity_appcli.py` — fixtures through newtui's `estimate_cost` vs app-cli's estimator (values generated from amplifier-module-hooks-streaming-ui `cost.py`, hard-coded with provenance), matching well past the cent. **Verified live: 10/10 green.**
 
-## 2. Live plan / TODO tracker — renderer shipped, adapter missing
+## 2. Live plan / TODO tracker — adapter shipped, ambient surfacing open
 
-**Already shipped:** `PlanBlock`/`PlanItem` (model → reducer → transcript) with
-checkbox states, in-place updates, live telemetry suffix, and the read-only
-plan-mode variant. The full display pipeline works — for the **demo `plan` tool
-shape** (`title` / `steps[{step,status}]`).
+**Already shipped:** `PlanBlock`/`PlanItem` display pipeline **plus** the real
+Amplifier `todo` tool adapter (`action` + `todos: [{content, activeForm,
+status}]` → `pending → ☐ content`, `in_progress → → activeForm`,
+`completed → ✓ content`; one block per turn, `create`/`update` both replace in
+place). The demo `plan` shape and the real `todo` shape coexist — same
+PlanBlock, two parsers. **Verified live**: a real session rendered the native
+checklist with progress bar and in-place status updates.
 
 **Remaining:**
-- [ ] **Adapt the reducer to the real Amplifier `todo` tool.** Its payload is `action` + `todos: [{content, activeForm, status}]`. Today `reducer.py` maps `todo` to a one-line `updated plan` ToolLine. Translate instead: `pending → ☐ content`, `in_progress → → activeForm`, `completed → ✓ content`; one PlanBlock per session, updated in place (`update`/`create` both replace).
-- [ ] **Keep the two shapes coexisting** — the demo script and goldens use `plan`; real sessions use `todo`. Same PlanBlock, two parsers.
 - [ ] **Decide ambient surfacing.** The ctrl-t panel is *lanes* (background delegates), not todos. Minimal: a `3/7 tasks` counter in the footer next to mode; the block in the transcript remains the source of truth.
-- [ ] Subagent todo events: scope to root session first; revisit whether lane todos surface at all.
+- [ ] Subagent todo events: currently root-session only; revisit whether lane todos surface at all.
 
 ## 3. Streaming parity — kill "the pop"
 
@@ -49,14 +50,14 @@ partial line plain, and track fence state so a half-open ``` never renders as
 prose. Golden-testable: streamed-then-committed output must equal one-shot
 rendering of the same text.
 
-## 4. Inline emphasis — verify, then finish
+## 4. Inline emphasis — mostly shipped, italic open
 
-**Verify first**: are `**bold**` / `*italic*` / `` `code` `` parsed into Segment
-flags, or passed through literally? (The Segment model already carries
-bold/italic/style tokens; the goldens contain no literal markers, which may just
-be demo content.) If unparsed, it's a contained transform: inline code → teal
-(rhyming with fences), bold → bright, strip the markers. Determines whether
-this is a gap or already done.
+**Verified live** (markdown torture test): `_inline()` in `live_tail.py` parses
+`**bold**` → bright+bold, `` `code` `` → teal, and `[text](url)` → teal text +
+dim url, stripping markers. **Remaining:** single-asterisk `*italic*` passes
+through literally (confirmed on screen). A contained transform: extend
+`_ANSWER_SPAN_RE` with a `*…*` alternation that doesn't collide with `**` or
+list bullets, map to the Segment `italic` flag, golden in the same commit.
 
 ## 5. Reading measure
 
@@ -72,7 +73,7 @@ tags, short paragraphs."* Zero renderer code; prevents the pathological cases
 
 ## 7. Smaller wins
 
-- [ ] `[text](url)` → styled text with OSC 8 hyperlinks; bare URLs collapsed.
+- [ ] `[text](url)` → **half done**: teal text + dim url shipped in `_inline()`. Remaining: real OSC 8 hyperlinks and bare-URL collapsing.
 - [ ] `- [x]` / `- [ ]` → ✓/☐ glyphs, rhyming with PlanBlock.
 - [ ] Blockquotes as a dim left bar.
 - [ ] Click-a-fence-to-copy (the ToolLine click precedent exists; `/copy` grabs the whole answer today).
