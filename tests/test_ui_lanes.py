@@ -17,7 +17,15 @@ from amplifier_app_newtui.ui.lanes_panel import (
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
-def _record(session_id: str, name: str, state: str, activity: str, elapsed: float, cost: str) -> LaneRecord:
+def _record(
+    session_id: str,
+    name: str,
+    state: str,
+    activity: str,
+    elapsed: float,
+    cost: str,
+    tokens: int = 0,
+) -> LaneRecord:
     return LaneRecord(
         session_id=session_id,
         parent_id="root",
@@ -26,6 +34,7 @@ def _record(session_id: str, name: str, state: str, activity: str, elapsed: floa
             state=state,  # type: ignore[arg-type]
             activity=activity,
             elapsed=elapsed,
+            tokens=tokens,
             cost=Decimal(cost),
         ),
     )
@@ -33,9 +42,9 @@ def _record(session_id: str, name: str, state: str, activity: str, elapsed: floa
 
 # The mockup's three demo lanes, verbatim.
 RECORDS = (
-    _record("s1", "researcher", "running", "scanning provider docs", 41, "0.09"),
-    _record("s2", "coder", "working", "migrating store", 124, "0.31"),
-    _record("s3", "tester", "done", "done · tests ✔", 55, "0.07"),
+    _record("s1", "researcher", "running", "scanning provider docs", 41, "0.09", 100100),
+    _record("s2", "coder", "working", "migrating store", 124, "0.31", 48300),
+    _record("s3", "tester", "done", "done · tests ✔", 55, "0.07", 3200),
 )
 
 
@@ -67,16 +76,17 @@ def test_header_exact_string() -> None:
 def test_lane_elapsed_format() -> None:
     assert lane_elapsed(41) == "41s"
     assert lane_elapsed(55) == "55s"
-    assert lane_elapsed(124) == "2m"
+    assert lane_elapsed(124) == "2m 04s"
+    assert lane_elapsed(348) == "5m 48s"
     assert lane_elapsed(0) == "0s"
 
 
 def test_lane_lines_align_exactly_like_mockup() -> None:
     lines = format_lane_lines(tuple(r.lane for r in RECORDS))
     assert lines == (
-        "  ◐ researcher · scanning provider docs · 41s · $0.09",
-        "  ■ coder      · migrating store        · 2m  · $0.31",
-        "  ✔ tester     · done · tests ✔         · 55s · $0.07",
+        "  ◐ researcher · scanning provider docs · 41s    · ↓ 100.1k tokens · $0.09",
+        "  ■ coder      · migrating store        · 2m 04s · ↓ 48.3k tokens  · $0.31",
+        "  ✔ tester     · done · tests ✔         · 55s    · ↓ 3.2k tokens   · $0.07",
     )
 
 

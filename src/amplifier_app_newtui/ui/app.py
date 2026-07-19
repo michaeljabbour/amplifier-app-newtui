@@ -144,6 +144,7 @@ class NewTuiApp(App[None]):
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
         self._lanes_fanout_open = False  # active-lane edge for the auto-open
+        self._lanes_auto_opened = False  # panel opened by fan-out, not the user
         self.title_bar = TitleBar(id="title-bar")
         self.transcript = TranscriptView(id="transcript")
         self.live_tail = LiveTail(id="live-tail")
@@ -390,6 +391,13 @@ class NewTuiApp(App[None]):
             # Mockup runAgentsTurn: the panel opens automatically at fan-out.
             # Display only — the composer keeps focus (type to steer).
             self.lanes_panel.display = True
+            self._lanes_auto_opened = True
+            self._refresh_footer()
+        elif not active and self._lanes_auto_opened:
+            # Every fanned-out agent has finished: retract the auto-opened
+            # panel (a user-opened panel via ctrl-t stays put).
+            self.lanes_panel.hide_panel()
+            self._lanes_auto_opened = False
             self._refresh_footer()
         self._lanes_fanout_open = active
         self._refresh_title()
@@ -802,6 +810,9 @@ class NewTuiApp(App[None]):
         self.show_notice(f"trust · {self._mode.trust_str} · edit via /permissions")
 
     def action_toggle_lanes(self) -> None:
+        # A manual toggle takes ownership: the fan-out auto-hide no longer
+        # governs this panel (it neither reopens nor retracts it).
+        self._lanes_auto_opened = False
         if self.lanes_panel.display:
             self.lanes_panel.hide_panel()
             self._restore_keyboard()

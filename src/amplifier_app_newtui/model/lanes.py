@@ -48,6 +48,7 @@ class LaneState(BaseModel):
     color_token: StyleToken
     activity: str = ""
     elapsed: float = Field(default=0.0, ge=0)
+    tokens: int = Field(default=0, ge=0)
     cost: Decimal = Field(default=Decimal("0"), ge=0)
     state: LaneStateName = "running"
 
@@ -59,6 +60,7 @@ class LaneState(BaseModel):
         state: LaneStateName,
         activity: str = "",
         elapsed: float = 0.0,
+        tokens: int = 0,
         cost: Decimal = Decimal("0"),
     ) -> LaneState:
         """Build a lane with the spec glyph/color for *state*."""
@@ -69,6 +71,7 @@ class LaneState(BaseModel):
             color_token=color,
             activity=activity,
             elapsed=elapsed,
+            tokens=tokens,
             cost=cost,
             state=state,
         )
@@ -82,6 +85,7 @@ class LaneRecord(BaseModel):
     session_id: str
     parent_id: str | None
     depth: int = Field(default=1, ge=0)
+    started_at: float = Field(default=0.0, ge=0)
     lane: LaneState
 
 
@@ -128,6 +132,7 @@ class LaneRegistry:
         activity: str = "",
         state: LaneStateName = "running",
         reopen: bool = False,
+        now: float = 0.0,
     ) -> LaneRecord:
         """Open a lane for a spawned subagent.
 
@@ -143,9 +148,10 @@ class LaneRegistry:
             if reopen and existing.lane.state == "done" and state != "done":
                 fresh = existing.model_copy(
                     update={
+                        "started_at": now,
                         "lane": LaneState.for_state(
                             name=name, state=state, activity=activity
-                        )
+                        ),
                     }
                 )
                 self._records[session_id] = fresh
@@ -156,6 +162,7 @@ class LaneRegistry:
             session_id=session_id,
             parent_id=parent_id,
             depth=(parent.depth + 1) if parent else 1,
+            started_at=now,
             lane=LaneState.for_state(name=name, state=state, activity=activity),
         )
         self._records[session_id] = record
@@ -169,6 +176,7 @@ class LaneRegistry:
         *,
         activity: str | None = None,
         elapsed: float | None = None,
+        tokens: int | None = None,
         cost: Decimal | None = None,
         state: LaneStateName | None = None,
     ) -> LaneRecord | None:
@@ -184,11 +192,32 @@ class LaneRegistry:
             state=new_state,
             activity=lane.activity if activity is None else activity,
             elapsed=lane.elapsed if elapsed is None else elapsed,
+            tokens=lane.tokens if tokens is None else tokens,
             cost=lane.cost if cost is None else cost,
         )
         patched = record.model_copy(update={"lane": updated})
         self._records[session_id] = patched
         return patched
+
+    def advance(self, now: float) -> bool:
+        """Bump each running lane's ``elapsed`` to ``now - started_at``.
+
+        Driven by the app's 1s heartbeat (via ``reducer.tick``) so a
+        subagent's per-lane clock ticks live between the sparse usage
+        events. Done lanes are frozen; lanes with no ``started_at`` (never
+        stamped at spawn) are left alone. Returns True if any lane moved.
+        """
+        changed = False
+        for session_id, record in self._records.items():
+            if record.lane.state == "done" or record.started_at <= 0:
+                continue
+            elapsed = now - record.started_at
+            if elapsed < 0 or elapsed == record.lane.elapsed:
+                continue
+            updated = record.lane.model_copy(update={"elapsed": elapsed})
+            self._records[session_id] = record.model_copy(update={"lane": updated})
+            changed = True
+        return changed
 
     def complete(self, session_id: str, *, result: str = "") -> LaneRecord | None:
         """Mark a lane done (``✔`` dim), recording its result summary."""

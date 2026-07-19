@@ -18,6 +18,7 @@ The real runtime flows through the same paths with generic fallbacks.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol, cast
@@ -829,6 +830,9 @@ class TranscriptReducer:
         if turn.spec is None:
             turn.last_ts = max(turn.last_ts, now)
         self._update_working()
+        # Per-agent lane clocks tick on the same heartbeat.
+        if self.lanes.advance(now):
+            self._host.lanes_changed()
 
     def set_activity(self, activity: str) -> None:
         """Update the working line's current-work note (real turns only)."""
@@ -841,10 +845,22 @@ class TranscriptReducer:
     def _usage(self, event: ev.ProviderResponseUsage) -> None:
         self.total_tokens += event.output_tokens
         self.memory_tokens = max(self.memory_tokens, event.cache_read + event.cache_write)
-        self._cost.record(event)
+        cost = self._cost.record(event)
         if self._turn is not None:
             self._turn.tokens += event.output_tokens
             self._update_working()
+        # Route per-lane telemetry: usage stamped with a registered child
+        # session id belongs to that subagent's lane. The root turn session
+        # is never a registered lane, so it never matches (no double count).
+        lane = self.lanes.get(event.session_id)
+        if lane is not None:
+            lane_cost = event.cost_usd if event.cost_usd is not None else cost
+            self.lanes.update(
+                event.session_id,
+                tokens=lane.lane.tokens + event.output_tokens,
+                cost=lane.lane.cost + lane_cost,
+            )
+            self._host.lanes_changed()
 
     # -- approvals / notifications -----------------------------------------------------
 
@@ -916,6 +932,9 @@ class TranscriptReducer:
             # sub-session ids (completions for unknown lanes are dropped, so
             # no spawn/complete race reaches this path) — reset it live.
             reopen=True,
+            # Stamp the spawn wall-time so advance() can tick the lane's
+            # per-agent elapsed live between sparse usage events.
+            now=event.ts or time.time(),
         )
         if seed.elapsed or seed.cost:
             self.lanes.update(event.sub_session_id, elapsed=seed.elapsed, cost=seed.cost)
