@@ -41,6 +41,15 @@ tools:
     source: git+https://github.com/microsoft/amplifier-module-tool-search@main
   - module: tool-task
     source: git+https://github.com/microsoft/amplifier-module-tool-task@main
+
+agents:
+  include:
+    - foundation:explorer
+    - foundation:zen-architect
+    - foundation:bug-hunter
+    - foundation:test-coverage
+    - foundation:modular-builder
+    - foundation:web-research
 ---
 
 # Amplifier NewTUI Bundle
