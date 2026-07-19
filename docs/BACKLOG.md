@@ -10,6 +10,27 @@ Textual, UI never touches amplifier-core.
 
 ---
 
+## 0. Amplifier-native capabilities & CLI parity
+
+Reusing amplifier's own modules/APIs (never importing amplifier-app-cli;
+verified no import/dependency ties). Mount set matches the reference `anchors`
+default; `tool-mcp` is the one addition beyond anchors, kept by request.
+
+**Shipped (verified on real boots + full suite):**
+- [x] **In-session commands** — `/status /model /effort /compact /clear /tools /agents /diff` over the live coordinator; palette + tests updated.
+- [x] **Skills** — `tool-skills` mounted (visibility off, anchors-matching); `/skills` + `/skill <name>`.
+- [x] **MCP** — `tool-mcp` mounted; `/mcp` list/add/remove over `~/.amplifier/mcp.json` (verified live: an imagegen server's 8 tools mount).
+- [x] **Approvals / modes** — `hooks-mode` + `hooks-approval` + `tool-mode` mounted **off by default** (byte-identical config to anchors); shipped `plan`/`brainstorm`/`careful` mode defs + search-path injection; posture bridge. Verified: `active_mode` None on boot, `write_file`/`bash` fire `continue` (not gated).
+- [x] **Routing** — spawner threads `provider_preferences`/`model_role` + settings bridge; `hooks-routing` not mounted in base (anchors parity), activates via overlay.
+- [x] **bundle CLI** — `list/show/use/clear/current/add/remove/update` over the shared foundation `BundleRegistry` (Rich table); scoped settings writes.
+- [x] **init (partial)** — writes a provider key to `keys.env` (interactive + `--yes`).
+
+**Remaining (Bucket B):**
+- [ ] **`update`** — top-level command via foundation `check_bundle_status`/`update_bundle` (`BundleRegistry.check_update` is a stub — don't use); drop uv self-update.
+- [ ] **Complete `init`** — authoritative env-var via `provider.get_info().config_fields[secret].env_var` (current guess is wrong for azure/gemini/copilot), a `config.providers` settings writer, field wizard, provider install, first-run + auto-init-from-env.
+- [ ] **Remove/manage ingested sources** — delete knowledge/memory sources (needs scoping: which bundle owns fragments).
+- [ ] Nice-to-have: `routing list/use` CLI; `/config` live editing; session-manager ops (delete/rename/background); notifications; `--output-format json`.
+
 ## 1. Accurate pricing (parity with amplifier-app-cli) — SHIPPED
 
 **Already in `kernel/cost.py`:**

@@ -61,12 +61,17 @@ Options and subcommands:
 ```sh
 uv run amplifier-newtui --bundle NAME_OR_URI   # pick a bundle (default: settings/bundled)
 uv run amplifier-newtui doctor                 # setup checkup; exit 1 when findings exist
+uv run amplifier-newtui init                   # set up a provider key in ~/.amplifier/keys.env
 uv run amplifier-newtui sessions               # list stored session ids for this project
 uv run amplifier-newtui resume SESSION_ID      # relaunch the TUI resuming a stored session
 uv run amplifier-newtui run "PROMPT"           # execute one prompt headlessly, print the response
+uv run amplifier-newtui bundle list            # bundles from the shared registry (--all incl. deps)
+uv run amplifier-newtui bundle use NAME        # set the active bundle (--global/--project/--local)
 ```
 
-A *bundle* is a packaged agent configuration — provider + tools + agents + behaviors. The app ships one (`newtui`), so you never need `--bundle` to get started.
+A *bundle* is a packaged agent configuration — provider + tools + agents + behaviors. The app ships one (`newtui`), so you never need `--bundle` to get started. The `bundle` group (`list · show · use · clear · current · add · remove · update`) reads and writes the same registry and settings the reference `amplifier` CLI uses.
+
+Inside the TUI, `/` opens the command palette. Beyond the core (mode/plan/rewind/ledger), it now includes the live-session commands `/status · /model · /effort · /compact · /clear · /tools · /agents · /diff`, plus `/skills`, `/skill <name>`, and `/mcp` — see the [User Guide §7](docs/USER-GUIDE.md#7-commands). **MCP servers** (`~/.amplifier/mcp.json`) and **skills** are mounted natively, and **approvals are off by default** (gating turns on only in a mode like `careful` — [§4/§5](docs/USER-GUIDE.md#4-modes)).
 
 ### Use it on your own projects
 

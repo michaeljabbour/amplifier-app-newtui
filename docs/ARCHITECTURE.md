@@ -96,16 +96,23 @@ src/amplifier_app_newtui/
 ├── main.py            click entry point: TUI launch, --demo, run/sessions/resume/doctor
 ├── kernel/            amplifier adapter layer (no Textual)
 │   ├── config.py          resolve_config(): keys.env → settings merge → bundle lifecycle
+│   │                       (+ mode search-path & routing-config injection)
 │   ├── session_factory.py create_initialized_session(): canonical session bring-up
 │   ├── runtime.py         RealRuntime: boot, submit, hook registration, turn close-out
+│   ├── session_ops.py     live-session ops for /model /effort /compact /clear /status
+│   │                       /tools /agents /skills /mcp (over the coordinator)
+│   ├── bundle_admin.py    bundle CLI logic (list/show/use/… over the shared registry)
+│   ├── setup.py           init: provider discovery + keys.env writer
+│   ├── mcp_config.py      ~/.amplifier/mcp.json read/modify/write (for /mcp)
 │   ├── events.py          UIEvent union + normalize() — THE normalization boundary
 │   ├── queue_bridge.py    hooks → asyncio.Queue[UIEvent]
-│   ├── governance_hook.py tool:pre trust gate (allow / ask / deny / classifier)
+│   ├── governance_hook.py app-side tool:pre trust gate — PORTED BUT NOT WIRED
+│   │                       (gating is done by native hooks-mode/hooks-approval; §7.2)
 │   ├── approval.py        ApprovalBroker: tickets, timeout→deny, defer to needs-you
 │   ├── steering.py        StepBoundaryBridge: mid-turn context injection
-│   ├── spawner.py         SessionSpawner: in-process subagents (session.spawn)
+│   ├── spawner.py         SessionSpawner: in-process subagents + routing preference apply
 │   ├── rewind.py          RewindController: confirm-then-trim forking
-│   ├── git_yield.py       bounded git diff snapshots → turn yield labels
+│   ├── git_yield.py       bounded git diff snapshots → turn yield labels (+ /diff patch)
 │   ├── turn_yield.py      TurnYieldTracker (tests-ran heuristic)
 │   ├── cost.py            CostTracker: Decimal pricing, resume re-seed
 │   ├── persistence.py     SessionStore + IncrementalSaver (transcript/metadata/events)
@@ -370,25 +377,36 @@ rather than executing anything itself.
 Tools are classified into `CapabilityClass` — READ / WRITE / NET / TEST / SPEND / EXEC — via
 an explicit table, then test-command sniffing, then name heuristics, with **EXEC as the
 fail-safe default** for anything unknown. `resolve(mode, tool, input)` yields a
-`TrustDecision`: `allow`, `ask`, or `deny` (plus `classifier_gated` in auto mode). A missing
-policy key means "ask". The `DenialLog` counts denials and escalates at 3 consecutive or 20
-total.
+`TrustDecision`: `allow`, `ask`, or `deny` (plus `classifier_gated` in auto mode). The
+`DenialLog` counts denials and escalates at 3 consecutive or 20 total, and **is** used live
+(it backs `/improve` and denial escalation). **Caveat:** `resolve()` and the app-side
+governance gate below are the ported app-cli trust *design* but are **not the wired
+enforcement path** — gating is done natively (§7.2). `model/trust.py` remains the source for
+the posture vocabulary and the denial ledger.
 
-### 7.2 The governance gate (`kernel/governance_hook.py`)
+### 7.2 Gating: native modes + approval (off by default)
 
-`GovernanceHook` is the **single trust gate**. It registers on `tool:pre` and
-`prompt:submit` (the latter only feeds evidence capture) at priority 1000; the gating logic
-runs on `tool:pre`:
+Enforcement is the amplifier-native mode/approval stack, mounted in the bundle to match the
+reference `anchors` default:
 
-- **allow** → continue (resets the consecutive-denial streak);
-- **ask** → `HookResult(action="ask_user")` with verbatim *Allow once / Allow always / Deny*
-  options; structured detail travels on the `ApprovalBroker` FIFO (no global smuggling);
-- **deny** → **deny-and-continue**: synthesize a denial tool result plus a `Blocked`
-  transcript block; the turn never halts. Escalation raises a needs-you decision;
-- **classifier-gated** (auto mode, NET/SPEND/EXEC): a reasoning-blind classifier sees only
-  the user's messages and the proposed action. Any classifier failure **fails closed** to
-  deny. The deterministic `OfflineAutoClassifier` fallback denies destructive shapes
-  (`rm -rf`, force-push, `curl | sh`) and defers unrequested `git push`.
+- **`hooks-mode`** (`tool:pre`, pri −20) reads `session_state["active_mode"]` and, per the
+  mode's YAML, allows / warns / confirms / blocks a tool (and sets
+  `require_approval_tools` from the mode's `confirm` list). With **no active mode it does
+  nothing**.
+- **`hooks-approval`** (`tool:pre`, pri −10) prompts only for tools in
+  `require_approval_tools`; mounted with `policy_driven_only: true` + `default_action:
+  continue` + `rules: []`, so its built-in high-risk checks are skipped and a timeout falls
+  through to continue.
+- **`tool-mode`** lets the app switch the active mode; the app's `_sync_native_mode`
+  (`ui/app.py`) bridges the shift+tab postures (`plan`/`brainstorm`) to same-named native
+  modes, and `data/modes/{plan,brainstorm,careful}.md` ship self-contained definitions
+  (injected via `config.py::inject_mode_search_paths`).
+
+**Net effect — approvals are OFF by default:** in `auto` (and `chat`/`build`) no mode is
+active ⇒ `require_approval_tools` empty ⇒ nothing gated. Gating turns on only inside a mode
+that lists `confirm`/`block`/`warn`/`default_action: block` (`plan`, `brainstorm`, `careful`,
+or any composed bundle mode). `kernel/governance_hook.py` (the app-side alternative) is
+deliberately **left unregistered** so the two gates never double-fire.
 
 ### 7.3 Approvals (`kernel/approval.py`)
 

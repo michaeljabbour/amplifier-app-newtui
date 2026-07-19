@@ -35,8 +35,11 @@ This is the complete set of keys the app consumes:
 
 | Key | Effect | Default | Typical scope |
 |---|---|---|---|
-| `bundle.active` | Which bundle to load when `--bundle` isn't passed | `newtui` (packaged) | global or project |
+| `bundle.active` | Which bundle to load when `--bundle` isn't passed (written by `bundle use`) | `newtui` (packaged) | global or project |
 | `bundle.app` | List of overlay bundle URIs composed onto **every** session (behavior add-ons) | none | global |
+| `bundle.added` | Registry of `name → URI` for discoverable bundles (written by `bundle add`) | none | global |
+| `routing.matrix` | Active model-routing matrix name for delegated sub-agents; feeds `hooks-routing` (`default_matrix`) when that hook is mounted (via an overlay). Not mounted in the base bundle | none (base) | global |
+| `routing.overrides` | Per-role candidate overrides merged onto the matrix | none | project |
 | `config.providers` | Provider entries merged by identity (`id` \| `instance_id` \| `module`): reconfigure the bundled provider or append new ones (see the README's Providers section) | none | global (credentials via `${VAR}`) |
 | `modules.tools` | Tool entries merged by identity into the mount plan, same mechanics as providers | none | project |
 | `pricing.live` | Live Helicone pricing: fresh `~/.amplifier/pricing_cache.json` (24 h TTL) applies at startup, else a background fetch swaps rates in for **new turns only**; `false` keeps the built-in offline table | `true` | global |
@@ -47,7 +50,19 @@ This is the complete set of keys the app consumes:
 **Bundle discovery**, for `--bundle NAME` or `bundle.active`: `<project>/.amplifier/bundles/`
 → `~/.amplifier/bundles/` → the packaged `data/bundles/` — first hit wins. Names resolve as
 `<name>.md`, `<name>.yaml`, or `<name>/bundle.md|bundle.yaml`. Drop a bundle file into one
-of these directories and it's addressable by name.
+of these directories and it's addressable by name. `bundle list` additionally enumerates the
+shared foundation `BundleRegistry` (well-known + fetched bundles).
+
+**MCP servers — `~/.amplifier/mcp.json`** (and `<project>/.amplifier/mcp.json`): top-level
+`mcpServers` map (`name → {command, args, env}` for stdio, or `{url, type, headers}` for
+http). The mounted `tool-mcp` reads these at session start and exposes each server's tools
+as `mcp_<server>_<tool>`. `/mcp add|remove` edits this file (takes effect next launch).
+
+**Native modes** are discovered from `<project>/.amplifier/modes/` → `~/.amplifier/modes/`
+→ the app's packaged `data/modes/` (plan/brainstorm/careful) → composed bundles' `modes/`.
+The base bundle mounts `hooks-mode` + `hooks-approval` + `tool-mode` matching the reference
+`anchors` default, with **approvals off** (`policy_driven_only: true`, no active mode ⇒
+nothing gated). Switch to a gating posture/mode to opt in.
 
 ## Environment variables
 

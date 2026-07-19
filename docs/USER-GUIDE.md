@@ -17,7 +17,14 @@ uv run amplifier-newtui sessions     # list stored sessions for this project
 uv run amplifier-newtui resume ID    # resume a stored session
 uv run amplifier-newtui run "PROMPT" # headless one-shot, prints the answer
 uv run amplifier-newtui doctor       # setup checkup (exit 1 when findings exist)
+uv run amplifier-newtui init         # set up a provider key in ~/.amplifier/keys.env
+uv run amplifier-newtui bundle list  # bundles from the shared registry (--all for deps)
+uv run amplifier-newtui bundle use B # set the active bundle (--global/--project/--local)
 ```
+
+`bundle` also has `show · current · clear · add · remove · update`; run
+`bundle --help`. These read/write the same amplifier settings and registry
+the reference CLI uses — nothing app-specific.
 
 **First run:** follow the [README's Install section](../README.md#install) — it deploys
 [Amplifier](https://github.com/microsoft/amplifier) first (`amplifier init` sets up your
@@ -74,39 +81,42 @@ Things worth knowing:
 
 ## 4. Modes
 
-Modes are *postures*: they change what the agent is allowed to do, its tone of work, and
-they tint the composer edge and footer. Cycle with **shift+tab**, or jump with
-`/mode <name>`, `/plan`, `/brainstorm`.
+Modes are *postures*: they set the agent's working style, tint the composer edge and footer,
+and — for the gating postures below — restrict which tools can run via Amplifier's **native
+mode system** (`hooks-mode` + `tool-mode`, the same modules the reference bundle mounts).
+Cycle with **shift+tab**, or jump with `/mode <name>`, `/plan`, `/brainstorm`.
 
-| Mode | Trust | Use it for |
+| Mode | Gating | Use it for |
 |---|---|---|
-| chat | ask all · auto read | Q&A; every action asks first |
-| plan | read-only | exploring and planning — nothing gets written |
-| brainstorm | no tools | pure divergent thinking |
-| build | auto read,test · ask write,net,spend | hands-on work with confirmation on writes |
-| **auto** *(default)* | auto read,write · classifier-gated | amplifier's natural wide scope |
+| chat | none | Q&A and light work |
+| plan | **read-only** — writes/edits blocked, shell warns | exploring and planning |
+| brainstorm | **no tools** — pure text | divergent thinking |
+| build | none | hands-on work |
+| **auto** *(default)* | **none** | Amplifier's natural wide scope |
 
-In **auto**, reads/writes/tests run freely; network, spend, and exec actions pass through a
-safety classifier that only sees your messages and the proposed action. Destructive shapes
-(`rm -rf`, force-push, `curl | sh`) and a `git push` you never asked for are denied and
-parked for your review (§6).
+**Approvals are OFF by default.** In auto (and chat/build) nothing is gated — the agent runs
+freely. Gating only turns on when you switch to a posture whose mode restricts tools:
+**plan** (read-only) and **brainstorm** (no tools) are enforced natively; `/mode careful`
+adds a posture that *confirms* file writes, edits, and shell before they run (see §5). Any
+bundle-composed mode (`/modes` lists them) works the same way via `/mode <name>`.
 
-Want to see where you stand? **ctrl+p** shows your current trust posture at a glance
-(`trust · <summary> · edit via /permissions`), and `/permissions` prints the full
-per-capability picture — each trust slot (read / test / write / net / spend / exec) with
-its current decision, plus the project boundary.
+`ctrl+p` shows the current posture and `/permissions` prints the trust view; note that in
+this build the *enforcement* mechanism is the native mode system above, not a separate
+classifier.
 
 Plan-mode turns that produce a plan end with a `· plan ready` rule. There's no ceremony to
 hand it over: the plan is already in the conversation — shift+tab to build and say go.
 
 ## 5. Approvals
 
-When the agent needs your sign-off, the composer is replaced by an **approval bar** showing
-what it wants to run and three options — **Allow once · Allow always · Deny**.
+Approvals are **off by default** — in the default posture nothing prompts, nothing blocks.
+They turn on only inside a gating mode: `/mode careful` (confirm writes/edits/shell) or any
+bundle mode that lists `confirm` tools. When such a mode is active and the agent tries a
+gated action, the composer is replaced by an **approval bar** — **Allow once · Allow always
+· Deny**.
 
 - **arrows / tab** select · **enter** confirm · **esc** deny
-- Unanswered approvals time out to **deny** — never to allow. Timed-out and deferred
-  decisions land in the *needs-you* queue (§6), where you can still answer them later
+- Deferred decisions land in the *needs-you* queue (§6), where you can still answer later
 - *Allow once* covers just this call; *Allow always* asks Amplifier's approval system to
   remember the decision for that same action going forward
 
@@ -134,8 +144,19 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | | `/plan` | jump to read-only planning |
 | | `/brainstorm` | jump to no-tools brainstorming |
 | | `/context` | context-window usage grid (conversation / tools / memory / free) |
+| | `/status` | live session snapshot — model, mode, messages, tools, cost |
+| | `/model [name]` | list the provider's models, or switch the live model |
+| | `/effort [none…max]` | show or set reasoning effort |
+| | `/compact [focus]` | compact the conversation context, optionally focused |
+| | `/clear` | clear the conversation context |
+| | `/tools` | list the mounted tools |
+| | `/agents` | list the delegatable agents |
+| | `/skills` | list available skills |
+| | `/skill <name>` | load a skill by name |
+| | `/mcp [add\|remove]` | list MCP servers + connected tools; add/remove in `mcp.json` |
 | Parallel | `/tasks` | toggle the agent lanes panel (ctrl+t) |
 | Ship | `/ledger` | session outcome ledger — spend vs. yield summary (ctrl+l) |
+| | `/diff [staged]` | working-tree (or staged) git patch |
 | | `/export` | write the transcript as markdown to `exports/` |
 | | `/copy` | copy the last answer to the clipboard |
 | | `/about` | app / core / bundle / session identity |
@@ -145,6 +166,16 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | | `/doctor` | setup checkup — reports findings and the fixes to make; changes nothing itself |
 | | `/improve` | suggests allowlist/trust tweaks from your approval history — never applies silently |
 | | `/theme [name]` | switch or cycle theme: slate · graphite · carbon (session-only — resets to slate on restart) |
+
+**Model, effort, compact, clear, status, tools, agents, diff** act on the live
+Amplifier session through the coordinator (the same calls the reference CLI
+makes). **`/model`** switches the mounted provider's model in place;
+**`/compact`** and **`/clear`** drive the context module directly.
+
+**MCP & skills.** `/mcp` reads `~/.amplifier/mcp.json` (and `./.amplifier/mcp.json`);
+each configured server's tools mount as `mcp_<server>_<tool>` at session start, so
+`/mcp add` / `/mcp remove` take effect on the next launch. `/skills` and `/skill`
+drive the mounted skills tool — the agent also loads skills on its own when relevant.
 
 ## 8. Keys
 
