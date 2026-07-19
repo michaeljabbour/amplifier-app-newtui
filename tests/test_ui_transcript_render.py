@@ -644,3 +644,46 @@ class TestAnswerMarkdown:
         narrow = "| a | b |\n|---|---|\n| 1 | 2 |"
         grid = "".join(s.text for s in answer_spans(narrow))
         assert "│" in grid
+
+    def test_numbered_list_marker_and_hanging_indent(self) -> None:
+        """Numbered items render a dim ``N. `` marker; wrapped continuation
+        lines hang-indent under the body (3 cells for ``1. ``)."""
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        spans = answer_spans("1. First item body")
+        assert spans[0].text == "1. " and spans[0].style_token == "dim"
+
+        source = (
+            "1. Configure the provider, load the bundle, "
+            "and render the terminal UI cleanly for the operator."
+        )
+        block = Answer(id="a1", spans=answer_spans(source))
+        plains = [line_plain(line) for line in render_block(block, 40)]
+        assert plains[0].startswith("1. ")
+        assert len(plains) > 1  # wrapped at width 40
+        assert plains[1].startswith("   ")  # 3-cell hanging indent
+        assert plains[1][3] != " "  # continuation body, no fabricated padding
+
+    def test_bullet_hanging_indent_when_wrapped(self) -> None:
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        source = (
+            "- Configure the provider, load the bundle, "
+            "and render the terminal UI cleanly for the operator."
+        )
+        block = Answer(id="a2", spans=answer_spans(source))
+        plains = [line_plain(line) for line in render_block(block, 40)]
+        assert plains[0].startswith("• ")
+        assert len(plains) > 1
+        assert plains[1].startswith("  ")  # 2-cell hang for "• "
+        assert plains[1][2] != " "
+
+    def test_heading_is_preceded_by_a_blank_line(self) -> None:
+        from amplifier_app_newtui.ui.live_tail import answer_spans
+
+        text = "".join(
+            s.text for s in answer_spans("Intro paragraph.\n## Section\nBody text.")
+        )
+        lines = text.split("\n")
+        idx = lines.index("Section")
+        assert lines[idx - 1] == ""  # blank line separates the heading

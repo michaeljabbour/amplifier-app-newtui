@@ -32,7 +32,9 @@
 [$dimmer]✳ [/][italic $dim]Goal: durable session store. Next: open PR against main.[/]
 
 === answer ===
-[$fg]This repo is the [/][bold $bright]command-line app for Amplifier[/][$fg]. If amplifier-core is the engine, this is the dashboard and steering wheel: the [/][$teal]amplifier[/][$fg] command starts sessions, configures providers, loads bundles, and renders this UI.[/]
+[$fg]This repo is the [/][bold $bright]command-line app for Amplifier[/][$fg]. If amplifier-core is the[/]
+[$fg]engine, this is the dashboard and steering wheel: the [/][$teal]amplifier[/][$fg] command starts[/]
+[$fg]sessions, configures providers, loads bundles, and renders this UI.[/]
 
 === steer_echo ===
 [$teal]  ↳ [/][$teal]steer queued: "focus on the store tests first" [/][$dimmer]· applies at next step boundary[/]
