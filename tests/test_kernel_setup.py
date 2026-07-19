@@ -51,6 +51,64 @@ def test_read_keys_ignores_comments_and_blank(tmp_path: Path) -> None:
     assert setup.read_keys(path) == {"ANTHROPIC_API_KEY": "quoted"}
 
 
+def test_load_provider_info_reads_authoritative_env_var() -> None:
+    # The installed anthropic provider declares its real secret env var; this
+    # must come from get_info(), not the <PREFIX>_API_KEY convention.
+    info = setup.load_provider_info("provider-anthropic")
+    assert info is not None
+    assert info.key_var == "ANTHROPIC_API_KEY"
+    assert info.base_url_var == "ANTHROPIC_BASE_URL"
+
+
+def test_load_provider_info_none_for_unknown() -> None:
+    assert setup.load_provider_info("provider-does-not-exist") is None
+
+
+def test_provider_config_entry_uses_placeholders() -> None:
+    entry = setup.provider_config_entry(
+        "provider-openai",
+        key_var="OPENAI_API_KEY",
+        model="gpt-x",
+        base_url="https://x/v1",
+        base_url_var="OPENAI_BASE_URL",
+    )
+    assert entry == {
+        "module": "provider-openai",
+        "config": {
+            "default_model": "gpt-x",
+            "api_key": "${OPENAI_API_KEY}",
+            "base_url": "${OPENAI_BASE_URL}",
+            "priority": 1,
+        },
+    }
+
+
+def test_write_provider_config_prepends_and_demotes(tmp_path: Path) -> None:
+    from amplifier_app_newtui.kernel import bundle_admin
+
+    paths = bundle_admin.settings_paths(tmp_path / "proj", tmp_path / "home")
+    # Seed an existing active provider at priority 1.
+    setup.write_provider_config(
+        paths, "global", setup.provider_config_entry("provider-openai", key_var="OPENAI_API_KEY")
+    )
+    setup.write_provider_config(
+        paths, "global", setup.provider_config_entry("provider-anthropic", key_var="ANTHROPIC_API_KEY")
+    )
+    providers = bundle_admin.read_scope(bundle_admin.scope_file(paths, "global"))["config"]["providers"]
+    assert providers[0]["module"] == "provider-anthropic"  # newest is active
+    assert providers[0]["config"]["priority"] == 1
+    assert providers[1]["module"] == "provider-openai"
+    assert providers[1]["config"]["priority"] == 10  # demoted
+
+
+def test_detect_provider_from_env(monkeypatch) -> None:
+    for v in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GITHUB_TOKEN"):
+        monkeypatch.delenv(v, raising=False)
+    assert setup.detect_provider_from_env() is None
+    monkeypatch.setenv("OPENAI_API_KEY", "sk")
+    assert setup.detect_provider_from_env() == "provider-openai"
+
+
 def test_setup_status_reads_keys_and_bundle(tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home).mkdir()

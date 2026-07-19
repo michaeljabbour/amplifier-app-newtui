@@ -303,8 +303,26 @@ def _match_provider(choices, token: str):  # noqa: ANN001, ANN202
     return None
 
 
-async def _init(provider: str | None, api_key: str | None, base_url: str | None, yes: bool) -> int:
+async def _init(
+    provider: str | None,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+    yes: bool,
+    from_env: bool,
+) -> int:
     from .kernel import setup
+
+    # Non-interactive env setup (CI/Docker), explicit opt-in: detect a provider
+    # from env vars and write its config.providers entry — the key is already
+    # exported. (Explicit flag only, so piped stdin never triggers a write.)
+    if from_env:
+        configured = await setup.auto_init_from_env()
+        if configured:
+            click.echo(f"auto-configured {configured} from environment")
+            return 0
+        click.echo("no provider credentials found in the environment", err=True)
+        return 1
 
     status = setup.setup_status()
     click.echo(f"keys file: {status.keys_path}")
@@ -352,13 +370,28 @@ async def _init(provider: str | None, api_key: str | None, base_url: str | None,
         click.echo("no key entered · nothing written")
         return 0
 
+    from .kernel import bundle_admin
+
     path = setup.keys_file()
     setup.write_key(path, target.key_var, key)
     written = [target.key_var]
     if base_url:
         setup.write_key(path, target.base_url_var, base_url.strip())
         written.append(target.base_url_var)
+    # Persist the provider into config.providers so it actually mounts — not
+    # just a key in keys.env. ${VAR} placeholders reference the keys above.
+    entry = setup.provider_config_entry(
+        target.module_id,
+        key_var=target.key_var,
+        model=(model or "").strip() or None,
+        base_url=base_url.strip() if base_url else None,
+        base_url_var=target.base_url_var,
+    )
+    cfg_path = setup.write_provider_config(
+        bundle_admin.settings_paths(None, None), "global", entry
+    )
     click.echo(f"\nwrote {', '.join(written)} → {path}")
+    click.echo(f"configured provider {target.module_id} → {cfg_path}")
     click.echo("run `amplifier-newtui` to start a session.")
     return 0
 
@@ -367,10 +400,20 @@ async def _init(provider: str | None, api_key: str | None, base_url: str | None,
 @click.option("--provider", "-p", default=None, help="Provider to set up (e.g. anthropic).")
 @click.option("--api-key", default=None, help="API key (non-interactive; else prompted).")
 @click.option("--base-url", default=None, help="Optional provider base-URL override.")
+@click.option("--model", default=None, help="Default model for the provider.")
+@click.option("--from-env", is_flag=True, help="Non-interactive: configure a provider detected from env vars.")
 @click.option("--yes", "-y", is_flag=True, help="Non-interactive: never prompt (needs --api-key).")
-def init(provider: str | None, api_key: str | None, base_url: str | None, yes: bool) -> None:
-    """Set up provider credentials in ~/.amplifier/keys.env."""
-    raise SystemExit(asyncio.run(_init(provider, api_key, base_url, yes)))
+def init(
+    provider: str | None,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+    from_env: bool,
+    yes: bool,
+) -> None:
+    """Set up a provider: writes the API key to ~/.amplifier/keys.env and the
+    provider entry to settings (config.providers)."""
+    raise SystemExit(asyncio.run(_init(provider, api_key, base_url, model, yes, from_env)))
 
 
 if __name__ == "__main__":

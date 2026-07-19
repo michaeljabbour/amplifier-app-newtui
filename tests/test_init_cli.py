@@ -21,6 +21,7 @@ _CHOICES = (
 
 def _stub(monkeypatch, tmp_path: Path):
     path = tmp_path / "keys.env"
+    written: list = []
 
     async def _discover(*a, **k):
         return _CHOICES
@@ -32,7 +33,13 @@ def _stub(monkeypatch, tmp_path: Path):
         "setup_status",
         lambda *a, **k: setup.SetupStatus(keys_path=path, stored_keys=(), active_bundle=None),
     )
-    return path
+    # Never touch real settings — capture the provider-config write instead.
+    monkeypatch.setattr(
+        setup,
+        "write_provider_config",
+        lambda paths, scope, entry: written.append(entry) or (tmp_path / "settings.yaml"),
+    )
+    return path, written
 
 
 def test_init_help_lists_options() -> None:
@@ -43,17 +50,32 @@ def test_init_help_lists_options() -> None:
 
 
 def test_init_writes_key_non_interactive(tmp_path: Path, monkeypatch) -> None:
-    path = _stub(monkeypatch, tmp_path)
+    path, written = _stub(monkeypatch, tmp_path)
     result = CliRunner().invoke(
         main, ["init", "-p", "anthropic", "--api-key", "sk-test", "-y"]
     )
     assert result.exit_code == 0
     assert setup.read_keys(path) == {"ANTHROPIC_API_KEY": "sk-test"}
     assert "wrote ANTHROPIC_API_KEY" in result.output
+    # It also persists a config.providers entry (not just the key).
+    (entry,) = written
+    assert entry["module"] == "provider-anthropic"
+    assert entry["config"]["api_key"] == "${ANTHROPIC_API_KEY}"
+    assert "configured provider provider-anthropic" in result.output
+
+
+def test_init_writes_model_into_config(tmp_path: Path, monkeypatch) -> None:
+    _path, written = _stub(monkeypatch, tmp_path)
+    result = CliRunner().invoke(
+        main, ["init", "-p", "anthropic", "--api-key", "k", "--model", "claude-x", "-y"]
+    )
+    assert result.exit_code == 0
+    (entry,) = written
+    assert entry["config"]["default_model"] == "claude-x"
 
 
 def test_init_writes_base_url_too(tmp_path: Path, monkeypatch) -> None:
-    path = _stub(monkeypatch, tmp_path)
+    path, _written = _stub(monkeypatch, tmp_path)
     result = CliRunner().invoke(
         main,
         ["init", "-p", "openai", "--api-key", "k", "--base-url", "https://x/v1", "-y"],
@@ -72,7 +94,7 @@ def test_init_unknown_provider_errors(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_init_yes_without_provider_is_status_only(tmp_path: Path, monkeypatch) -> None:
-    path = _stub(monkeypatch, tmp_path)
+    path, _written = _stub(monkeypatch, tmp_path)
     result = CliRunner().invoke(main, ["init", "-y"])
     assert result.exit_code == 0
     assert "providers:" in result.output
@@ -87,7 +109,7 @@ def test_init_requires_key_with_yes(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_init_interactive_selection_and_key(tmp_path: Path, monkeypatch) -> None:
-    path = _stub(monkeypatch, tmp_path)
+    path, _written = _stub(monkeypatch, tmp_path)
     # stdin: choose provider #1, then type the key at the hidden prompt.
     result = CliRunner().invoke(main, ["init"], input="1\nsk-interactive\n")
     assert result.exit_code == 0
