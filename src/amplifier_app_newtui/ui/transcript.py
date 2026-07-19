@@ -446,12 +446,21 @@ def _render_answer(block: Answer, width: int) -> tuple[Line, ...]:
     out: list[Line] = []
     for line in _split_lines(block.spans):
         if not line:
-            out.append(line)  # blank line (inter-block spacing) preserved
+            # Inter-block spacing: one blank line max — the block sentinel
+            # and a source blank line must not stack into a double gap.
+            if out and not out[-1]:
+                continue
+            out.append(line)
             continue
         if _answer_line_is_verbatim(line):
             out.append(line)
             continue
         out.extend(_wrap_line(line, width, _answer_marker_hang(line[0])))
+    # Drop a leading/trailing blank the collapsing may leave.
+    while out and not out[0]:
+        out.pop(0)
+    while out and not out[-1]:
+        out.pop()
     return tuple(out)
 
 
