@@ -41,6 +41,7 @@ _ANSWER_SPAN_RE = re.compile(
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\(((?:https?|file)://[^)\s]+)\)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_NUMBERED_RE = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:\-|]+\|?\s*$")
 _TABLE_GRID_MAX_WIDTH = 96
 """Padded-grid tables wider than this fall back to a definition list —
@@ -134,6 +135,23 @@ def _emit_table(spans: list[Segment], lines: list[str], start: int) -> int:
     return end
 
 
+def _ensure_blank(spans: list[Segment]) -> None:
+    """Append a blank line (a lone ``\\n`` sentinel) unless the last emitted
+    line is already blank.
+
+    Inter-block spacing (headings, list runs, tables, fenced code) is the
+    main readability win — a block reads as its own paragraph. Every line the
+    loop emits terminates in a ``Segment(text="\\n")``; a blank line is a
+    second consecutive terminator. Nothing is added at the very start
+    (leading blank) or when a blank already separates the previous block.
+    """
+    if not spans or spans[-1].text != "\n":
+        return
+    if len(spans) >= 2 and spans[-2].text == "\n":
+        return  # the last line is already blank — don't stack another
+    spans.append(Segment(text="\n"))
+
+
 def answer_spans(source: str) -> tuple[Segment, ...]:
     """Raw model text → Answer segments (light markdown, theme tokens only).
 
@@ -148,11 +166,18 @@ def answer_spans(source: str) -> tuple[Segment, ...]:
     lines = source.split("\n")
     index = 0
     in_code = False
+    in_list = False  # inside a run of consecutive bullet/numbered items
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
         if stripped.startswith(("```", "~~~")):
-            in_code = not in_code
+            if not in_code:
+                in_list = False
+                _ensure_blank(spans)  # fenced code opens its own paragraph
+                in_code = True
+            else:
+                in_code = False
+                _ensure_blank(spans)  # …and closes with a trailing gap
             index += 1
             continue
         if in_code:
@@ -166,24 +191,50 @@ def answer_spans(source: str) -> tuple[Segment, ...]:
             and lines[index + 1].lstrip().startswith("|")
             and _TABLE_SEP_RE.match(lines[index + 1])
         ):
+            in_list = False
+            _ensure_blank(spans)
             index = _emit_table(spans, lines, index)
+            _ensure_blank(spans)
             continue
         if heading := _HEADING_RE.match(line):
+            in_list = False
+            _ensure_blank(spans)  # the blank before is what sets a heading off
             spans.append(Segment(text=heading.group(2), style_token="bright", bold=True))
+            spans.append(Segment(text="\n"))
+            _ensure_blank(spans)
+            index += 1
+            continue
+        if numbered := _NUMBERED_RE.match(line):
+            if not in_list:
+                _ensure_blank(spans)
+                in_list = True
+            marker = f"{numbered.group(1)}{numbered.group(2)}. "
+            spans.append(Segment(text=marker, style_token="dim"))
+            spans.extend(_inline(numbered.group(3)))
             spans.append(Segment(text="\n"))
             index += 1
             continue
         if bullet := _BULLET_RE.match(line):
+            if not in_list:
+                _ensure_blank(spans)
+                in_list = True
             spans.append(Segment(text=f"{bullet.group(1)}• ", style_token="dim"))
             spans.extend(_inline(bullet.group(2)))
             spans.append(Segment(text="\n"))
             index += 1
             continue
+        if in_list:
+            _ensure_blank(spans)  # a plain line closes the list run
+            in_list = False
         spans.extend(_inline(line))
         spans.append(Segment(text="\n"))
         index += 1
     # The per-line loop appends one newline per source line; the final one
-    # would fabricate a trailing blank line — drop it.
+    # would fabricate a trailing blank line — drop it. A block that ends the
+    # answer (heading/list/table/code) also left a trailing blank sentinel
+    # from _ensure_blank; pop that too so answers never end on empty lines.
+    if len(spans) >= 2 and spans[-1].text == "\n" and spans[-2].text == "\n":
+        spans.pop()
     if spans and spans[-1].text == "\n" and spans[-1].style_token == "fg":
         spans.pop()
     if not spans:

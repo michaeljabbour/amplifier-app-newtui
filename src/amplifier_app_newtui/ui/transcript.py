@@ -31,6 +31,7 @@ and exactly one forced reflow runs when streaming ends
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Sequence
 from time import monotonic
 from typing import cast
@@ -350,8 +351,108 @@ def _render_recap(block: Recap, width: int) -> tuple[Line, ...]:
     )
 
 
+_ANSWER_MARKER_RE = re.compile(r"^\s*(?:•|\d+[.)])\s+$")
+"""A list marker segment (``• `` / ``1. `` / indented) at the head of a
+logical answer line — its cell width becomes the hanging indent."""
+
+
+def _answer_marker_hang(first: Segment) -> int:
+    """Cell width of a leading list marker, or 0 if the line is not a list
+    item (continuation lines wrap under the body, not the marker)."""
+    if first.style_token == "dim" and _ANSWER_MARKER_RE.match(first.text):
+        return cell_len(first.text)
+    return 0
+
+
+def _answer_line_is_verbatim(line: Line) -> bool:
+    """Lines the wrapper must not touch: fenced code (teal, 2-space indent)
+    and table rows/rules (grid separators destroy alignment if re-wrapped)."""
+    first = line[0]
+    if first.style_token == "teal" and first.text.startswith("  "):
+        return True
+    return any("│" in seg.text or "┼" in seg.text for seg in line)
+
+
+def _coalesce(segs: Sequence[Segment]) -> Line:
+    """Merge adjacent segments that share a style so wrapped lines emit one
+    run per style rather than one per word (readable markup, small goldens)."""
+    merged: list[Segment] = []
+    for seg in segs:
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and prev.style_token == seg.style_token
+            and prev.bold == seg.bold
+            and prev.italic == seg.italic
+            and prev.bg_token == seg.bg_token
+        ):
+            merged[-1] = prev.model_copy(update={"text": prev.text + seg.text})
+        else:
+            merged.append(seg)
+    return tuple(merged)
+
+
+def _wrap_line(segs: Sequence[Segment], width: int, hang: int) -> tuple[Line, ...]:
+    """Greedy word-wrap a run of styled segments to *width* cells.
+
+    Continuation lines are left-padded by *hang* spaces so list-item bodies
+    stay flush under their first word (hanging indent). Styles are preserved
+    per token; a single word wider than *width* sits alone rather than looping.
+    """
+    if width <= 0 or sum(cell_len(seg.text) for seg in segs) <= width:
+        return (tuple(segs),)  # fits as-is — keep the original segment runs
+    pad = " " * hang
+    lines: list[list[Segment]] = [[]]
+    widths: list[int] = [0]
+    pending: Segment | None = None  # a whitespace run awaiting its next word
+
+    def baseline() -> int:
+        return hang if len(lines) > 1 else 0
+
+    def wrap() -> None:
+        lines.append([Segment(text=pad)] if hang else [])
+        widths.append(hang)
+
+    for seg in segs:
+        for token in re.split(r"(\s+)", seg.text):
+            if not token:
+                continue
+            if token.isspace():
+                if widths[-1] > baseline():
+                    pending = seg.model_copy(update={"text": token})
+                continue  # drop leading whitespace on a fresh line
+            tok_w = cell_len(token)
+            space_w = cell_len(pending.text) if pending is not None else 0
+            if widths[-1] > baseline() and widths[-1] + space_w + tok_w > width:
+                wrap()  # word does not fit — start a continuation line
+                pending = None
+                space_w = 0
+            if pending is not None:
+                lines[-1].append(pending)
+                widths[-1] += space_w
+                pending = None
+            lines[-1].append(seg.model_copy(update={"text": token}))
+            widths[-1] += tok_w
+    return tuple(_coalesce(line) for line in lines)
+
+
 def _render_answer(block: Answer, width: int) -> tuple[Line, ...]:
-    return _split_lines(block.spans)
+    """Long answers read like a document: word-wrapped to the full transcript
+    width (no reading-column cap) with hanging indents on list continuations.
+
+    Code and table lines pass through verbatim; every other logical line is
+    greedy-wrapped, list items keeping their body aligned under the marker.
+    """
+    out: list[Line] = []
+    for line in _split_lines(block.spans):
+        if not line:
+            out.append(line)  # blank line (inter-block spacing) preserved
+            continue
+        if _answer_line_is_verbatim(line):
+            out.append(line)
+            continue
+        out.extend(_wrap_line(line, width, _answer_marker_hang(line[0])))
+    return tuple(out)
 
 
 def _render_steer_echo(block: SteerEcho, width: int) -> tuple[Line, ...]:
@@ -674,6 +775,11 @@ class BlockWidget(Static):
        executing-turn plan header (L313) — it stays flush. */
     BlockWidget.kind-plan.read-only {
         margin-top: 0;
+    }
+    /* A final answer opens its own paragraph — separated from the preceding
+       working line / turn rule so long answers read as a document. */
+    BlockWidget.kind-answer {
+        margin-top: 1;
     }
     """
 
