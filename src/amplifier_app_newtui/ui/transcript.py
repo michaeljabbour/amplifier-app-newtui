@@ -62,6 +62,7 @@ from ..model.blocks import (
     PlanBlock,
     Recap,
     Segment,
+    TodoBlock,
     SessionBanner,
     SteerEcho,
     ToolLine,
@@ -278,6 +279,58 @@ def _render_plan(block: PlanBlock, width: int) -> tuple[Line, ...]:
                     Segment(text=item.text, style_token="dim"),
                 )
             )
+    return tuple(lines)
+
+
+TODO_BAR_WIDTH = 24
+"""Progress-bar cells in the todo block (``█`` done / ``░`` remaining)."""
+
+
+def _render_todo(block: TodoBlock, width: int) -> tuple[Line, ...]:
+    """Flat, newtui-native todo checklist (see :class:`TodoBlock`):
+    ``· Todo · N/M`` header, one glyph row per item, and a progress bar —
+    the native replacement for the stripped ``hooks-todo-display`` panel."""
+    total = len(block.items)
+    done = sum(1 for item in block.items if item.status == "completed")
+    lines: list[Line] = [
+        (
+            Segment(text="· ", style_token="orange"),
+            Segment(text="Todo", style_token="fg"),
+            Segment(text=f" · {done}/{total}", style_token="dim"),
+        )
+    ]
+    for item in block.items:
+        if item.status == "completed":
+            lines.append(
+                (
+                    Segment(text="  ✔ ", style_token="green"),
+                    Segment(text=item.content, style_token="dim"),
+                )
+            )
+        elif item.status == "in_progress":
+            lines.append(
+                (
+                    Segment(text="  ▶ ", style_token="orange"),
+                    Segment(text=item.content, style_token="bright", bold=True),
+                )
+            )
+        else:
+            lines.append(
+                (
+                    Segment(text="  □ ", style_token="dimmer"),
+                    Segment(text=item.content, style_token="dim"),
+                )
+            )
+    if total:
+        filled = round(done / total * TODO_BAR_WIDTH)
+        lines.append(
+            (
+                Segment(text="  ", style_token="dim"),
+                Segment(text="█" * filled, style_token="green"),
+                Segment(text="░" * (TODO_BAR_WIDTH - filled), style_token="dimmer"),
+                Segment(text=f" {done}/{total}", style_token="dim"),
+            )
+        )
     return tuple(lines)
 
 
@@ -698,6 +751,7 @@ _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "tool_line": _render_tool_line,
     "live_command": _render_live_command,
     "plan": _render_plan,
+    "todo": _render_todo,
     "blocked": _render_blocked,
     "working_status": _render_working_status,
     "recap": _render_recap,
@@ -773,6 +827,7 @@ class BlockWidget(Static):
        (narration, answer, evidence, working status) stay flush — the
        repo's px→cell mapping rounds sub-10px margins to 0. */
     BlockWidget.kind-plan,
+    BlockWidget.kind-todo,
     BlockWidget.kind-ledger,
     BlockWidget.kind-context,
     BlockWidget.kind-doctor,

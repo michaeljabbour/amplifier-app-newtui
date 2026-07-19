@@ -202,6 +202,28 @@ class PlanBlock(_FrozenModel):
     read_only: bool = False
 
 
+TodoStatus = Literal["pending", "in_progress", "completed"]
+
+
+class TodoItem(_FrozenModel):
+    """One row of the ``todo`` tool's list: ``□`` pending / ``▶`` in-progress
+    / ``✔`` completed."""
+
+    content: str
+    status: TodoStatus = "pending"
+
+
+class TodoBlock(_FrozenModel):
+    """The ``todo`` tool's live checklist (amplifier tool-todo), rendered
+    natively because the printing ``hooks-todo-display`` is stripped under
+    the full-screen TUI. Flat, newtui-native: ``· Todo · N/M`` header, one
+    glyph row per item, and a ``█``/``░`` progress bar."""
+
+    id: str
+    kind: Literal["todo"] = "todo"
+    items: tuple[TodoItem, ...] = ()
+
+
 class Blocked(_FrozenModel):
     """Deny-and-continue marker: ``  ⊘ blocked · <cmd>`` red + dim tail.
 
@@ -445,6 +467,7 @@ TranscriptBlock = Annotated[
     | ToolLine
     | LiveCommand
     | PlanBlock
+    | TodoBlock
     | Blocked
     | WorkingStatus
     | Recap
@@ -498,6 +521,8 @@ __all__ = [
     "NeedsYouEntry",
     "PlanBlock",
     "PlanItem",
+    "TodoBlock",
+    "TodoItem",
     "PlanItemState",
     "Recap",
     "Segment",

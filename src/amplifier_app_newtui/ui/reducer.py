@@ -37,6 +37,9 @@ from ..model.blocks import (
     PlanItemState,
     Recap,
     Segment,
+    TodoBlock,
+    TodoItem,
+    TodoStatus,
     ToolLine,
     TranscriptBlock,
     TurnRule,
@@ -61,6 +64,16 @@ def _plan_state(value: object) -> PlanItemState:
     """Coerce a raw plan-step ``status`` to a valid state (else pending)."""
     if isinstance(value, str) and value in _PLAN_STATES:
         return cast("PlanItemState", value)
+    return "pending"
+
+
+_TODO_STATES = frozenset({"pending", "in_progress", "completed"})
+
+
+def _todo_status(value: object) -> TodoStatus:
+    """Coerce a raw todo ``status`` to a valid state (else pending)."""
+    if isinstance(value, str) and value in _TODO_STATES:
+        return cast("TodoStatus", value)
     return "pending"
 
 
@@ -92,7 +105,6 @@ _TOOL_VERBS: dict[str, tuple[str, str | None]] = {
     "web_fetch": ("fetched", "page"),
     "web_search": ("searched web", None),
     "load_skill": ("loaded", "skill"),
-    "todo": ("updated", "plan"),
 }
 # Reading order for the digest so it scans naturally, whatever order the
 # model actually ran the tools in.
@@ -234,6 +246,7 @@ class _Turn:
     tokens: int = 0
     working_id: str | None = None
     plan_ids: dict[str, str] = field(default_factory=dict)
+    todo_id: str | None = None
     active_step: str | None = None
     calls: dict[str, dict[str, Any]] = field(default_factory=dict)
     blocked: set[str] = field(default_factory=set)
@@ -632,6 +645,9 @@ class TranscriptReducer:
         if event.tool_name == "update_plan":
             self._update_plan(event)
             return
+        if event.tool_name == "todo":
+            self._update_todo(event)
+            return
         tool_input = event.tool_input or {}
         command = str(tool_input.get("command", ""))
         # No durable per-tool line: the in-flight op shows as the active
@@ -664,7 +680,9 @@ class TranscriptReducer:
 
     def _tool_post(self, event: ev.ToolPost) -> None:
         turn = self._turn
-        if event.tool_name == "update_plan" or turn is None:
+        if event.tool_name in ("update_plan", "todo") or turn is None:
+            # Plans and todos are their own blocks (rendered from tool:pre),
+            # never folded into the activity digest.
             return
         info = turn.calls.pop(event.tool_call_id, None)
         if info is None:
@@ -783,6 +801,35 @@ class TranscriptReducer:
                 # Title keeps the last step name between steps — it is
                 # only reassigned at step activation (mockup line 332).
                 turn.active_step = active
+
+    def _update_todo(self, event: ev.ToolPre) -> None:
+        """Render the amplifier ``todo`` tool as a native checklist block.
+
+        The printing ``hooks-todo-display`` is stripped under the TUI, so
+        newtui draws the list itself from the tool call's ``todos`` payload
+        (``create``/``update`` ops carry the full list; ``list`` carries
+        none). One TodoBlock per turn, replaced in place as it updates."""
+        raw = event.tool_input or {}
+        raw_todos = raw.get("todos")
+        if not isinstance(raw_todos, list) or not raw_todos:
+            return  # a 'list' op or empty payload — nothing to redraw
+        items = tuple(
+            TodoItem(
+                content=str(todo.get("content", "")),
+                status=_todo_status(todo.get("status")),
+            )
+            for todo in raw_todos
+            if isinstance(todo, dict)
+        )
+        turn = self._turn
+        block_id = turn.todo_id if turn is not None else None
+        block = TodoBlock(id=block_id or self._ids.next_id(), items=items)
+        if block_id is not None:
+            self._host.replace_block(block)
+        else:
+            if turn is not None:
+                turn.todo_id = block.id
+            self._append_content(block)
 
     # -- telemetry -------------------------------------------------------------------
 

@@ -36,6 +36,8 @@ from amplifier_app_newtui.model.blocks import (
     Recap,
     Segment,
     SessionBanner,
+    TodoBlock,
+    TodoItem,
     SteerEcho,
     ToolLine,
     TranscriptBlock,
@@ -687,3 +689,81 @@ class TestAnswerMarkdown:
         lines = text.split("\n")
         idx = lines.index("Section")
         assert lines[idx - 1] == ""  # blank line separates the heading
+
+
+# -- todo block (amplifier todo tool → native checklist) --------------------
+
+
+def test_todo_block_renders_header_glyphs_and_progress_bar() -> None:
+    from amplifier_app_newtui.ui.transcript import TODO_BAR_WIDTH
+
+    block = TodoBlock(
+        id="td1",
+        items=(
+            TodoItem(content="Survey repo", status="completed"),
+            TodoItem(content="Vendor deployment", status="completed"),
+            TodoItem(content="Security sweep", status="completed"),
+            TodoItem(content="Publishing repo", status="in_progress"),
+        ),
+    )
+    lines = [line_plain(line) for line in render_block(block, 80)]
+    assert lines[0] == "· Todo · 3/4"
+    assert lines[1] == "  ✔ Survey repo"
+    assert lines[4] == "  ▶ Publishing repo"
+    bar = lines[5]
+    assert bar.endswith(" 3/4")
+    filled = round(3 / 4 * TODO_BAR_WIDTH)
+    assert "█" * filled in bar and "░" * (TODO_BAR_WIDTH - filled) in bar
+
+
+def test_todo_tool_becomes_a_todo_block_updated_in_place_not_digested() -> None:
+    import sys
+
+    from amplifier_app_newtui.kernel import events as ev
+    from amplifier_app_newtui.model.blocks import BlockIdAllocator
+    from amplifier_app_newtui.model.lanes import LaneRegistry
+    from amplifier_app_newtui.model.turn import OutcomeLedger
+    from amplifier_app_newtui.ui.reducer import TranscriptReducer
+
+    sys.path.insert(0, "tests")
+    from test_ui_reducer_outcomes import FakeHost
+
+    host = FakeHost("auto")
+    reducer = TranscriptReducer(
+        host, allocator=BlockIdAllocator(), ledger=OutcomeLedger(), lanes=LaneRegistry()
+    )
+    reducer.handle(ev.PromptSubmit(session_id="s", prompt="do it", ts=0.0))
+
+    def todo_call(cid: str, statuses: list[str]) -> None:
+        todos = [
+            {"content": f"step {i}", "status": st, "activeForm": f"doing {i}"}
+            for i, st in enumerate(statuses)
+        ]
+        reducer.handle(
+            ev.ToolPre(
+                session_id="s",
+                tool_call_id=cid,
+                tool_name="todo",
+                tool_input={"operation": "update", "todos": todos},
+                ts=1.0,
+            )
+        )
+        reducer.handle(
+            ev.ToolPost(
+                session_id="s",
+                tool_call_id=cid,
+                tool_name="todo",
+                tool_input={"operation": "update", "todos": todos},
+                result={"status": "ok"},
+                ts=1.0,
+            )
+        )
+
+    todo_call("t1", ["in_progress", "pending"])
+    todo_call("t2", ["completed", "in_progress"])  # same turn → updates in place
+
+    todos = [b for b in host.blocks if b.kind == "todo"]
+    assert len(todos) == 1  # one block, replaced in place
+    assert [i.status for i in todos[0].items] == ["completed", "in_progress"]
+    # never folded into the activity digest
+    assert not [b for b in host.blocks if b.kind == "tool_line"]

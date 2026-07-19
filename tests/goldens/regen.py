@@ -60,6 +60,8 @@ from amplifier_app_newtui.model.blocks import (
     NeedsYouEntry,
     PlanBlock,
     PlanItem,
+    TodoBlock,
+    TodoItem,
     Recap,
     SessionBanner,
     SteerEcho,
@@ -113,6 +115,14 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
                 PlanItem(text=STORE_STEPS[0], state="done"),
                 PlanItem(text=STORE_STEPS[1], state="active"),
                 PlanItem(text=STORE_STEPS[2], state="pending"),
+            ),
+        ),
+        TodoBlock(
+            id="g6b",
+            items=(
+                TodoItem(content=STORE_STEPS[0], status="completed"),
+                TodoItem(content=STORE_STEPS[1], status="in_progress"),
+                TodoItem(content=STORE_STEPS[2], status="pending"),
             ),
         ),
         Blocked(
