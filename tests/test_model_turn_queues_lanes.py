@@ -21,6 +21,14 @@ from amplifier_app_newtui.model.turn import (
 # --- telemetry formatting (DESIGN-SPEC §3) ----------------------------------
 
 
+def test_telemetry_label_marks_unpriced_cost_with_tilde() -> None:
+    """estimated=True → the $ figure is a floor (some usage was unpriceable)."""
+    telemetry = TurnTelemetry(
+        secs=24, tokens_down=3200, cached_pct=80, cost=Decimal("0.12"), estimated=True
+    )
+    assert telemetry.label() == "24s · 3.2k tok, 80% cached · ~$0.12"
+
+
 def test_telemetry_suffix_and_label() -> None:
     telemetry = TurnTelemetry(secs=24, tokens_down=3200, cached_pct=80, cost=Decimal("0.12"))
     assert telemetry.suffix() == "(24s · ↓ 3.2k tok)"

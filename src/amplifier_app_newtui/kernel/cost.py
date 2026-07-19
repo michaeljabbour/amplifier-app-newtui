@@ -24,9 +24,13 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from .events import ProviderResponseUsage
 
@@ -96,6 +100,28 @@ class PricingTable:
 
 
 _DEFAULT_TABLE = PricingTable()
+
+_active_table: PricingTable = _DEFAULT_TABLE
+"""The process-wide pricing table used for NEW turns.
+
+A plain module-level reference: reads and the swap in
+:func:`set_active_pricing_table` are single attribute operations —
+atomic under the GIL — so the background fetch thread never needs a
+lock. :class:`CostTracker` snapshots this reference at ``start_turn``,
+which is what keeps already-recorded turn costs (and the running
+session total) immune to a mid-session swap.
+"""
+
+
+def active_pricing_table() -> PricingTable:
+    """The pricing table new turns should price against."""
+    return _active_table
+
+
+def set_active_pricing_table(table: PricingTable | None) -> None:
+    """Atomically swap the active table (``None`` restores the fallback)."""
+    global _active_table
+    _active_table = table if table is not None else _DEFAULT_TABLE
 
 
 def infer_provider(model: str) -> str | None:
@@ -178,6 +204,10 @@ class TurnUsage:
     output_tokens: int = 0
     cache_read: int = 0
     cache_write: int = 0
+    unpriced: int = 0
+    """Usage records this turn that could not be priced (no table entry
+    and no provider ``cost_usd``) — their $0 makes ``cost`` a floor, so
+    renderers must mark the figure (``~$``) instead of lying."""
 
     @property
     def tokens_down(self) -> int:
@@ -201,11 +231,21 @@ class CostTracker:
     :meth:`start_turn` at ``prompt:submit`` and :meth:`end_turn` at the
     turn boundary. ``session_cost`` includes any resume-seeded prior
     spend (:meth:`seed`).
+
+    Pricing table selection: an explicit ``pricing`` always wins (unit
+    tests, fixed-table callers). Otherwise the tracker snapshots the
+    process-wide :func:`active_pricing_table` at :meth:`start_turn`, so
+    a live-pricing swap landing mid-session applies to NEW turns only —
+    already-recorded turn costs and the running session total never
+    change retroactively.
     """
 
-    pricing: PricingTable = field(default_factory=PricingTable)
+    pricing: PricingTable | None = None
+    unpriced: int = 0
+    """Session-total count of usage records that could not be priced."""
     _session_cost: Decimal = Decimal("0")
     _turn: TurnUsage = field(default_factory=TurnUsage)
+    _turn_pricing: PricingTable | None = None
 
     @property
     def session_cost(self) -> Decimal:
@@ -222,16 +262,35 @@ class CostTracker:
 
     def start_turn(self) -> None:
         self._turn = TurnUsage()
+        # Snapshot the table for the whole turn (see class docstring).
+        self._turn_pricing = self.pricing if self.pricing is not None else active_pricing_table()
 
     def end_turn(self) -> TurnUsage:
         """Freeze and return the finished turn's usage."""
         finished = self._turn
         self._turn = TurnUsage()
+        self._turn_pricing = None
         return finished
 
+    def _table(self) -> PricingTable:
+        if self.pricing is not None:
+            return self.pricing
+        if self._turn_pricing is not None:
+            return self._turn_pricing
+        return active_pricing_table()
+
     def record(self, usage: ProviderResponseUsage) -> Decimal:
-        """Accumulate one usage event; returns its cost (0 if unpriceable)."""
-        cost = cost_of(usage, self.pricing) or Decimal("0")
+        """Accumulate one usage event; returns its cost (0 if unpriceable).
+
+        Unpriceable records (unknown model, no provider ``cost_usd``)
+        contribute $0 to the totals but increment ``unpriced`` — session
+        and per-turn — so the UI can mark the figures as a floor.
+        """
+        cost = cost_of(usage, self._table())
+        if cost is None:
+            cost = Decimal("0")
+            self.unpriced += 1
+            self._turn.unpriced += 1
         self._session_cost += cost
         self._turn.cost += cost
         self._turn.input_tokens += usage.input_tokens
@@ -285,9 +344,7 @@ def sum_prior_cost(events_path: Path, pricing: PricingTable | None = None) -> De
     return total
 
 
-def restore_session_cost(
-    tracker: CostTracker, events_path: Path
-) -> Decimal | None:
+def restore_session_cost(tracker: CostTracker, events_path: Path) -> Decimal | None:
     """Seed *tracker* with the prior spend found in *events_path*.
 
     Returns the restored total, or ``None`` when there was nothing to
@@ -317,9 +374,7 @@ def fetch_live_pricing(timeout: float = 5.0) -> PricingTable | None:
     import urllib.request
 
     try:
-        request = urllib.request.Request(
-            _HELICONE_URL, headers={"Accept": "application/json"}
-        )
+        request = urllib.request.Request(_HELICONE_URL, headers={"Accept": "application/json"})
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             payload = json.loads(response.read().decode())
     except (urllib.error.URLError, OSError, ValueError):
@@ -346,16 +401,157 @@ def fetch_live_pricing(timeout: float = 5.0) -> PricingTable | None:
     return PricingTable(entries) if entries else None
 
 
+# --------------------------------------------------------------------------
+# On-disk pricing cache + startup wiring (BACKLOG item 1)
+# --------------------------------------------------------------------------
+
+PRICING_CACHE_PATH = Path.home() / ".amplifier" / "pricing_cache.json"
+"""Fetched-table cache. amplifier-app-cli keeps no on-disk pricing cache
+(its estimator in amplifier-module-hooks-streaming-ui caches in memory
+only), so this follows its ``~/.amplifier`` JSON-cache-file convention
+(cf. app-cli's ``.update_cache.json``) at the backlog's default location."""
+
+PRICING_CACHE_TTL_SECONDS = 24 * 3600.0
+"""Cache freshness window (24 h — the backlog's default TTL)."""
+
+_RATE_FIELDS = ("input_per_1k", "output_per_1k", "cache_read_per_1k", "cache_write_per_1k")
+
+
+def load_cached_pricing(
+    path: Path | None = None,
+    *,
+    ttl: float = PRICING_CACHE_TTL_SECONDS,
+    now: Callable[[], float] | None = None,
+) -> PricingTable | None:
+    """The cached pricing table, or ``None`` when missing/stale/corrupt.
+
+    Never raises — a bad cache file simply means "no cache" (callers
+    fall back and refetch).
+    """
+    cache_path = path if path is not None else PRICING_CACHE_PATH
+    clock = now or time.time
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        fetched_at = float(payload["fetched_at"])
+        if clock() - fetched_at > ttl:
+            return None
+        entries: dict[str, dict[str, ModelPricing]] = {}
+        for provider, models in payload["entries"].items():
+            for model, rates in models.items():
+                entries.setdefault(str(provider), {})[str(model)] = ModelPricing(
+                    **{field_name: Decimal(str(rates[field_name])) for field_name in _RATE_FIELDS}
+                )
+        return PricingTable(entries) if entries else None
+    except Exception:  # noqa: BLE001 — corrupt/missing cache is "no cache"
+        logger.debug("Pricing cache unusable: %s", cache_path, exc_info=True)
+        return None
+
+
+def save_pricing_cache(
+    table: PricingTable,
+    path: Path | None = None,
+    *,
+    now: Callable[[], float] | None = None,
+) -> bool:
+    """Persist *table* (Decimal rates as strings). Never raises."""
+    cache_path = path if path is not None else PRICING_CACHE_PATH
+    clock = now or time.time
+    try:
+        entries = {
+            provider: {
+                model: {
+                    field_name: str(getattr(pricing, field_name)) for field_name in _RATE_FIELDS
+                }
+                for model, pricing in models.items()
+            }
+            for provider, models in table._entries.items()  # noqa: SLF001 — same module
+        }
+        payload = json.dumps({"fetched_at": clock(), "entries": entries})
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_suffix(".json.tmp")
+        tmp_path.write_text(payload, encoding="utf-8")
+        tmp_path.replace(cache_path)
+        return True
+    except Exception:  # noqa: BLE001 — the cache is an optimization only
+        logger.debug("Could not write pricing cache: %s", cache_path, exc_info=True)
+        return False
+
+
+def pricing_live_enabled(settings: Mapping[str, Any]) -> bool:
+    """The ``pricing.live`` settings key (default: enabled)."""
+    section = settings.get("pricing")
+    if isinstance(section, Mapping):
+        value = section.get("live")
+        if isinstance(value, bool):
+            return value
+    return True
+
+
+def start_live_pricing(
+    settings: Mapping[str, Any],
+    *,
+    cache_path: Path | None = None,
+    fetch: Callable[[], PricingTable | None] | None = None,
+    now: Callable[[], float] | None = None,
+) -> threading.Thread | None:
+    """Wire live pricing at app startup (behind ``pricing.live``).
+
+    - ``pricing.live: false`` → nothing happens; the fallback table stays.
+    - Fresh on-disk cache → activated immediately, no fetch needed.
+    - Stale/missing cache → fallback now, plus a **daemon** background
+      thread that fetches Helicone, atomically swaps the active table
+      (new turns only — see :func:`set_active_pricing_table`) and writes
+      the cache on success.
+
+    Returns the fetch thread when one was started (tests ``join()`` it);
+    ``None`` otherwise. Never raises — any failure degrades silently to
+    the fallback table.
+    """
+    try:
+        if not pricing_live_enabled(settings or {}):
+            return None
+        cached = load_cached_pricing(cache_path, now=now)
+        if cached is not None:
+            set_active_pricing_table(cached)
+            return None
+        fetch_fn = fetch if fetch is not None else fetch_live_pricing
+
+        def _worker() -> None:
+            try:
+                table = fetch_fn()
+                if table is None:
+                    return  # fetch failed/timed out → keep the fallback silently
+                set_active_pricing_table(table)
+                save_pricing_cache(table, cache_path, now=now)
+            except Exception:  # noqa: BLE001 — background work never raises into the app
+                logger.debug("Live pricing fetch failed; keeping fallback", exc_info=True)
+
+        thread = threading.Thread(target=_worker, name="pricing-fetch", daemon=True)
+        thread.start()
+        return thread
+    except Exception:  # noqa: BLE001 — startup must never break on pricing
+        logger.debug("Live pricing startup wiring failed", exc_info=True)
+        return None
+
+
 __all__ = [
     "FALLBACK_PRICING",
+    "PRICING_CACHE_PATH",
+    "PRICING_CACHE_TTL_SECONDS",
     "CostTracker",
     "ModelPricing",
     "PricingTable",
     "TurnUsage",
+    "active_pricing_table",
     "cost_of",
     "estimate_cost",
     "fetch_live_pricing",
     "infer_provider",
+    "load_cached_pricing",
+    "pricing_live_enabled",
     "restore_session_cost",
+    "save_pricing_cache",
+    "set_active_pricing_table",
+    "start_live_pricing",
     "sum_prior_cost",
 ]

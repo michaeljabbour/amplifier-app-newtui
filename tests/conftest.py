@@ -131,3 +131,23 @@ class FakeCommandContext:
 @pytest.fixture
 def fake_command_context() -> FakeCommandContext:
     return FakeCommandContext()
+
+
+@pytest.fixture(autouse=True)
+def _offline_pricing(tmp_path, monkeypatch):
+    """Keep the suite fully offline and pricing-deterministic.
+
+    - ``fetch_live_pricing`` is stubbed to ``None`` (no Helicone traffic
+      even if a code path starts the background fetch).
+    - The on-disk pricing cache is redirected to a per-test tmp file so
+      tests never read/write the user's real ``~/.amplifier`` cache.
+    - The process-wide active pricing table is reset to the fallback
+      around every test (it is module-level mutable state by design).
+    """
+    from amplifier_app_newtui.kernel import cost
+
+    monkeypatch.setattr(cost, "fetch_live_pricing", lambda timeout=5.0: None)
+    monkeypatch.setattr(cost, "PRICING_CACHE_PATH", tmp_path / "pricing_cache.json")
+    cost.set_active_pricing_table(None)
+    yield
+    cost.set_active_pricing_table(None)

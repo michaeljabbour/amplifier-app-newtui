@@ -515,6 +515,7 @@ def footer_state(app: NewTuiApp) -> FooterState:
         bundle=app.adapter.bundle_name,
         session_short=app.adapter.session_short,
         cost=max(Decimal("0"), app.reducer.session_cost),
+        cost_estimated=app.reducer.unpriced_usage > 0,
         shipped=app.ledger.last_shipped,
         queued=len(app.adapter.steering.pending_next_turn),
         waiting=app.adapter.needs_you.pending_count,

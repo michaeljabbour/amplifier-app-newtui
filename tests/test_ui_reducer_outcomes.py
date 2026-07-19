@@ -119,6 +119,38 @@ def test_real_turn_with_file_changes_ships() -> None:
     assert reducer.ledger.last_shipped  # footer ▲ yield glyph
 
 
+def test_real_turn_with_unpriceable_usage_marks_rule_cost_estimated() -> None:
+    """Never lie: an unknown model with no cost_usd renders ``~$`` not ``$0.00``."""
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(prompt="ask the mystery model", ts=1.0))
+    reducer.handle(
+        ev.ProviderResponseUsage(
+            input_tokens=100, output_tokens=3200, model="mystery-model-9000", ts=2.0
+        )
+    )
+    reducer.handle(ev.PromptComplete(response="done", ts=13.0))
+    rule = last_rule(host)
+    assert "~$0.00" in rule.label
+    assert reducer.ledger.turns[-1].telemetry.estimated
+    # session-level flag feeds the footer's ~$ total
+    assert reducer.unpriced_usage == 1
+
+
+def test_real_turn_with_priced_usage_keeps_plain_dollar() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(prompt="priced turn", ts=1.0))
+    reducer.handle(
+        ev.ProviderResponseUsage(
+            input_tokens=1000, output_tokens=1000, model="claude-sonnet-4", ts=2.0
+        )
+    )
+    reducer.handle(ev.PromptComplete(response="done", ts=4.0))
+    rule = last_rule(host)
+    assert "~$" not in rule.label
+    assert "$0.02" in rule.label  # 1k in + 1k out on the fallback table
+    assert reducer.unpriced_usage == 0
+
+
 def test_real_turn_failed_tests_render_tests_cross() -> None:
     reducer, host = make_reducer()
     reducer.handle(ev.PromptSubmit(prompt="fix the flake", ts=1.0))

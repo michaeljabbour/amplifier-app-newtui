@@ -20,11 +20,11 @@ Textual, UI never touches amplifier-core.
 - `sum_prior_cost()` — re-seeds the session total from `events.jsonl` on `--resume`.
 - `fetch_live_pricing()` — Helicone fetch, stdlib-only, 5 s timeout, never raises.
 
-**Remaining:**
-- [ ] **Wire `fetch_live_pricing()` at startup.** It is defined but never called. Run it in a background thread behind a settings key (e.g. `pricing.live`), swap the table in when it lands — mid-session totals must not jump retroactively (apply to new turns only).
-- [ ] **On-disk cache with TTL** for the fetched table (like app-cli), so offline sessions still use recent rates instead of the static fallback.
-- [ ] **Never lie in the footer.** Models absent from the table with no provider `cost_usd` currently record `$0` silently. Track an `unpriced` count and mark the total (e.g. `~$1.23`) when any usage was unpriceable.
-- [ ] **Parity tests**: same usage fixtures through newtui's `estimate_cost` and app-cli's — totals must match to the cent.
+**Remaining:** *(all shipped)*
+- [x] **Wire `fetch_live_pricing()` at startup.** `start_live_pricing()` runs in a daemon background thread behind settings `pricing.live` (default on); the fetched table swaps in atomically and `CostTracker` snapshots it at `start_turn` — new turns only, mid-session totals never jump retroactively.
+- [x] **On-disk cache with TTL**: `~/.amplifier/pricing_cache.json`, 24 h. Fresh cache applies at startup with no fetch; stale/missing → fallback now + background fetch writes the cache. Read/write never raise.
+- [x] **Never lie in the footer.** `CostTracker.unpriced` counts unpriceable usage; the footer total and turn-rule `$` figures render `~$1.23` when any usage was unpriced (footer + telemetry-label tests updated in the same change).
+- [x] **Parity tests**: `tests/test_cost_parity_appcli.py` — fixtures through newtui's `estimate_cost` vs app-cli's estimator (values generated from amplifier-module-hooks-streaming-ui `cost.py`, hard-coded with provenance), matching well past the cent.
 
 ## 2. Live plan / TODO tracker — renderer shipped, adapter missing
 

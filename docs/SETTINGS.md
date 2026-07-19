@@ -39,6 +39,7 @@ This is the complete set of keys the app consumes:
 | `bundle.app` | List of overlay bundle URIs composed onto **every** session (behavior add-ons) | none | global |
 | `config.providers` | Provider entries merged by identity (`id` \| `instance_id` \| `module`): reconfigure the bundled provider or append new ones (see the README's Providers section) | none | global (credentials via `${VAR}`) |
 | `modules.tools` | Tool entries merged by identity into the mount plan, same mechanics as providers | none | project |
+| `pricing.live` | Live Helicone pricing: fresh `~/.amplifier/pricing_cache.json` (24 h TTL) applies at startup, else a background fetch swaps rates in for **new turns only**; `false` keeps the built-in offline table | `true` | global |
 | `sources.modules` | Map of `module_id → source URI`: redirect where a module is fetched from | none | local (dev checkouts) |
 | `overrides.<id>.source` | Per-module source redirect; wins over `sources.modules` | none | local |
 | `overrides.<id>.config` | Dict deep-merged into that module's config (applied before `config.providers` / `modules.tools`, so those win) | none | project / local |
@@ -67,9 +68,12 @@ No `AMPLIFIER_*` environment variables are read.
 - **Approval timeout floor is fixed.** The app raises the kernel's 300 s approval default
   to a 1-hour floor (so approvals don't silently deny while you read); this is not
   user-configurable.
-- **Pricing is offline.** Costs use provider-reported figures when present, else a
-  built-in pricing table. (A Helicone live-pricing fetch exists in the code as an explicit
-  opt-in API, but nothing in the app calls it today.)
+- **Pricing degrades silently.** Costs use provider-reported figures when present, else
+  the live Helicone table (`pricing.live`, cached 24 h in
+  `~/.amplifier/pricing_cache.json`), else the built-in offline table. A fetch failure
+  never surfaces an error; rates land for new turns only, so a mid-session swap never
+  changes already-recorded costs. Usage the app cannot price at all renders the footer
+  and turn-rule `$` figures with a `~` prefix (the total is a floor, never a lie).
 - **Silent resilience.** Malformed settings files, an unreadable `keys.env`, and
   unpriceable models are all skipped without errors — run `/doctor` (or
   `amplifier-newtui doctor`) when something seems ignored.

@@ -49,12 +49,15 @@ class TurnTelemetry(_FrozenModel):
     - ``tokens_down``: output tokens received (the ``↓ X.Xk tok`` figure).
     - ``cached_pct``: percentage of input tokens served from cache.
     - ``cost``: dollars, computed from provider usage (kernel/cost.py).
+    - ``estimated``: some usage could not be priced, so ``cost`` is a
+      floor — the rendered $ figure gets a ``~`` prefix (never lie).
     """
 
     secs: float = Field(ge=0)
     tokens_down: int = Field(default=0, ge=0)
     cached_pct: int | None = Field(default=None, ge=0, le=100)
     cost: Decimal = Field(default=Decimal("0"), ge=0)
+    estimated: bool = False
 
     def suffix(self) -> str:
         """Live plan-header suffix: ``(Ns · ↓ X.Xk tok)``."""
@@ -62,13 +65,16 @@ class TurnTelemetry(_FrozenModel):
         return f"({' · '.join(parts)})"
 
     def label(self) -> str:
-        """Turn-rule label prefix: ``<Ns> · <X.Xk> tok, <N>% cached · $<cost>``."""
+        """Turn-rule label prefix: ``<Ns> · <X.Xk> tok, <N>% cached · $<cost>``.
+
+        ``~$`` when any of the turn's usage was unpriceable (the figure
+        is a floor, not the real spend).
+        """
         token_part = f"{_format_tokens(self.tokens_down)} tok"
         if self.cached_pct is not None:
             token_part += f", {self.cached_pct}% cached"
-        return " · ".join(
-            (_format_elapsed(self.secs), token_part, f"${self.cost:.2f}")
-        )
+        marker = "~" if self.estimated else ""
+        return " · ".join((_format_elapsed(self.secs), token_part, f"{marker}${self.cost:.2f}"))
 
 
 OutcomeKind = Literal["answer", "shipped", "interrupted", "plan_ready"]

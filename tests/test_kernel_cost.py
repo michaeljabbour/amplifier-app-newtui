@@ -1,6 +1,7 @@
 """Tests for kernel/cost.py — Decimal cost math + resume re-seed.
 
-Fully offline: only the fallback pricing table is exercised.
+Fully offline: only the fallback pricing table is exercised (live
+fetches are injected fakes; the on-disk cache is a tmp file).
 """
 
 from __future__ import annotations
@@ -12,11 +13,18 @@ import pytest
 
 from amplifier_app_newtui.kernel.cost import (
     CostTracker,
+    ModelPricing,
     PricingTable,
+    active_pricing_table,
     cost_of,
     estimate_cost,
     infer_provider,
+    load_cached_pricing,
+    pricing_live_enabled,
     restore_session_cost,
+    save_pricing_cache,
+    set_active_pricing_table,
+    start_live_pricing,
     sum_prior_cost,
 )
 from amplifier_app_newtui.kernel.events import ProviderResponseUsage, normalize
@@ -28,9 +36,7 @@ from amplifier_app_newtui.kernel.persistence import SessionStore
 
 
 def test_estimate_cost_known_model_exact_decimal() -> None:
-    cost = estimate_cost(
-        input_tokens=1000, output_tokens=1000, model="claude-sonnet-4-5"
-    )
+    cost = estimate_cost(input_tokens=1000, output_tokens=1000, model="claude-sonnet-4-5")
     # 1k * $0.003 + 1k * $0.015 — exact Decimal, no float drift
     assert cost == Decimal("0.018")
 
@@ -49,10 +55,7 @@ def test_estimate_cost_cache_heuristics() -> None:
 
 def test_estimate_cost_unknown_model_returns_none() -> None:
     assert estimate_cost(input_tokens=10, output_tokens=10, model="") is None
-    assert (
-        estimate_cost(input_tokens=10, output_tokens=10, model="mystery-model-9000")
-        is None
-    )
+    assert estimate_cost(input_tokens=10, output_tokens=10, model="mystery-model-9000") is None
 
 
 def test_infer_provider() -> None:
@@ -217,3 +220,184 @@ def test_cache_key_variants_price_identically(cache_key: str, expected: Decimal)
     )
     assert isinstance(event, ProviderResponseUsage)
     assert cost_of(event) == expected
+
+
+# --------------------------------------------------------------------------
+# Unpriced counter — never lie in the footer (BACKLOG item 1)
+# --------------------------------------------------------------------------
+
+
+def test_unpriced_counter_counts_records_that_could_not_be_priced() -> None:
+    tracker = CostTracker()
+    tracker.start_turn()
+    tracker.record(_usage(output_tokens=500, model="mystery-model-9000"))
+    tracker.record(_usage(input_tokens=1000, output_tokens=1000))  # priceable
+    assert tracker.unpriced == 1
+    assert tracker.turn.unpriced == 1
+
+    finished = tracker.end_turn()
+    assert finished.unpriced == 1
+    # per-turn count resets; the session counter is sticky
+    assert tracker.turn.unpriced == 0
+    assert tracker.unpriced == 1
+
+
+def test_provider_reported_cost_usd_counts_as_priced() -> None:
+    tracker = CostTracker()
+    usage = ProviderResponseUsage(
+        session_id="s1",
+        output_tokens=500,
+        model="mystery-model-9000",
+        cost_usd=Decimal("0.42"),
+    )
+    assert tracker.record(usage) == Decimal("0.42")
+    assert tracker.unpriced == 0
+
+
+# --------------------------------------------------------------------------
+# Active pricing table — atomic swap, new turns only
+# --------------------------------------------------------------------------
+
+
+_EXPENSIVE = PricingTable(
+    {"anthropic": {"claude-sonnet-4": ModelPricing(Decimal("1"), Decimal("1"))}}
+)
+
+
+def test_active_table_defaults_to_fallback_and_none_resets() -> None:
+    default = active_pricing_table()
+    assert default.lookup("anthropic", "claude-sonnet-4") is not None
+    set_active_pricing_table(_EXPENSIVE)
+    assert active_pricing_table() is _EXPENSIVE
+    set_active_pricing_table(None)
+    assert active_pricing_table() is default
+
+
+def test_table_swap_applies_to_new_turns_only() -> None:
+    tracker = CostTracker()
+    tracker.start_turn()
+    tracker.record(_usage(input_tokens=1000))  # fallback: $0.003
+    set_active_pricing_table(_EXPENSIVE)
+    # Mid-turn swap: the running turn keeps its snapshot table.
+    tracker.record(_usage(input_tokens=1000))  # still $0.003
+    assert tracker.session_cost == Decimal("0.006")
+    tracker.end_turn()
+    tracker.start_turn()
+    tracker.record(_usage(input_tokens=1000))  # new turn: $1.00
+    assert tracker.session_cost == Decimal("1.006")
+
+
+def test_explicit_tracker_pricing_wins_over_active_table() -> None:
+    set_active_pricing_table(_EXPENSIVE)
+    tracker = CostTracker(pricing=PricingTable())
+    tracker.start_turn()
+    assert tracker.record(_usage(input_tokens=1000)) == Decimal("0.003")
+
+
+# --------------------------------------------------------------------------
+# On-disk pricing cache (24h TTL; never raises)
+# --------------------------------------------------------------------------
+
+
+def test_pricing_cache_roundtrip_preserves_decimal_rates(tmp_path: Path) -> None:
+    path = tmp_path / "pricing_cache.json"
+    assert save_pricing_cache(_EXPENSIVE, path, now=lambda: 1000.0)
+    loaded = load_cached_pricing(path, now=lambda: 1000.0 + 60)
+    assert loaded is not None
+    entry = loaded.lookup("anthropic", "claude-sonnet-4")
+    assert entry == ModelPricing(Decimal("1"), Decimal("1"))
+
+
+def test_pricing_cache_stale_missing_or_corrupt_returns_none(tmp_path: Path) -> None:
+    path = tmp_path / "pricing_cache.json"
+    assert load_cached_pricing(path) is None  # missing
+    assert save_pricing_cache(_EXPENSIVE, path, now=lambda: 1000.0)
+    stale_at = 1000.0 + 24 * 3600 + 1
+    assert load_cached_pricing(path, now=lambda: stale_at) is None  # stale
+    path.write_text("{not json", encoding="utf-8")
+    assert load_cached_pricing(path, now=lambda: 1000.0) is None  # corrupt
+    path.write_text('{"fetched_at": "soon"}', encoding="utf-8")
+    assert load_cached_pricing(path, now=lambda: 1000.0) is None  # malformed
+
+
+def test_pricing_cache_write_failure_never_raises(tmp_path: Path) -> None:
+    # A directory where the cache file should be → open() fails.
+    blocked = tmp_path / "pricing_cache.json"
+    blocked.mkdir()
+    assert save_pricing_cache(_EXPENSIVE, blocked) is False
+
+
+# --------------------------------------------------------------------------
+# Startup wiring — pricing.live settings gate + background fetch
+# --------------------------------------------------------------------------
+
+
+def test_pricing_live_enabled_defaults_true() -> None:
+    assert pricing_live_enabled({}) is True
+    assert pricing_live_enabled({"pricing": {}}) is True
+    assert pricing_live_enabled({"pricing": "garbage"}) is True
+    assert pricing_live_enabled({"pricing": {"live": True}}) is True
+    assert pricing_live_enabled({"pricing": {"live": False}}) is False
+
+
+def test_start_live_pricing_disabled_never_fetches(tmp_path: Path) -> None:
+    def _fetch() -> PricingTable | None:
+        raise AssertionError("fetch must not run when pricing.live is false")
+
+    default = active_pricing_table()
+    thread = start_live_pricing(
+        {"pricing": {"live": False}},
+        cache_path=tmp_path / "pricing_cache.json",
+        fetch=_fetch,
+    )
+    assert thread is None
+    assert active_pricing_table() is default
+
+
+def test_start_live_pricing_fresh_cache_short_circuits_fetch(tmp_path: Path) -> None:
+    path = tmp_path / "pricing_cache.json"
+    assert save_pricing_cache(_EXPENSIVE, path)
+
+    def _fetch() -> PricingTable | None:
+        raise AssertionError("fresh cache must skip the network fetch")
+
+    thread = start_live_pricing({}, cache_path=path, fetch=_fetch)
+    assert thread is None
+    assert active_pricing_table().lookup("anthropic", "claude-sonnet-4") == ModelPricing(
+        Decimal("1"), Decimal("1")
+    )
+
+
+def test_start_live_pricing_fetch_success_swaps_table_and_writes_cache(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pricing_cache.json"
+    thread = start_live_pricing({}, cache_path=path, fetch=lambda: _EXPENSIVE)
+    assert thread is not None
+    assert thread.daemon
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert active_pricing_table() is _EXPENSIVE
+    assert load_cached_pricing(path) is not None
+
+
+def test_start_live_pricing_fetch_failure_keeps_fallback_silently(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pricing_cache.json"
+    default = active_pricing_table()
+
+    thread = start_live_pricing({}, cache_path=path, fetch=lambda: None)
+    assert thread is not None
+    thread.join(timeout=5)
+    assert active_pricing_table() is default
+    assert not path.exists()
+
+    def _boom() -> PricingTable | None:
+        raise RuntimeError("network exploded")
+
+    thread = start_live_pricing({}, cache_path=path, fetch=_boom)
+    assert thread is not None
+    thread.join(timeout=5)  # the raise never escapes the daemon worker
+    assert active_pricing_table() is default
+    assert not path.exists()

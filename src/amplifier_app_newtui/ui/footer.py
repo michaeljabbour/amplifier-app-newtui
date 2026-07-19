@@ -54,6 +54,9 @@ class FooterState(BaseModel):
     bundle: str = ""
     session_short: str = ""
     cost: Decimal = Field(default=Decimal("0"), ge=0)
+    cost_estimated: bool = False
+    """True when any usage this session was unpriceable → the total is a
+    floor, rendered ``~$1.23`` (never lie in the footer)."""
     shipped: bool = False
     """True when the last turn shipped → green ``▲`` yield glyph."""
     queued: int = Field(default=0, ge=0)
@@ -77,7 +80,7 @@ def footer_left_text(state: FooterState) -> str:
         parts.append(state.bundle)
     if state.session_short:
         parts.append(state.session_short)
-    cost_part = f"${state.cost:.2f}"
+    cost_part = f"{'~' if state.cost_estimated else ''}${state.cost:.2f}"
     if state.shipped:
         cost_part += f" {GLYPH_YIELD}"
     parts.append(cost_part)
@@ -232,7 +235,7 @@ class FooterBar(Horizontal):
             rest_parts.append(state.bundle)
         if state.session_short:
             rest_parts.append(state.session_short)
-        rest_parts.append(f"${state.cost:.2f}")
+        rest_parts.append(f"{'~' if state.cost_estimated else ''}${state.cost:.2f}")
         markup = f"[${mode.color_token}]$mode_part[/]"
         substitutions = {"mode_part": f"mode {mode.id}"}
         for index, part in enumerate(rest_parts):

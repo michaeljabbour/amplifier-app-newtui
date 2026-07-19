@@ -51,6 +51,20 @@ def test_left_text_no_yield_no_queue() -> None:
     assert footer_left_text(state) == "mode plan · read-only · $1.24"
 
 
+def test_left_text_unpriced_usage_marks_cost_with_tilde() -> None:
+    """Never lie in the footer: unpriceable usage → the total is a floor."""
+    state = FooterState(mode_id="plan", cost=Decimal("1.24"), cost_estimated=True)
+    assert footer_left_text(state) == "mode plan · read-only · ~$1.24"
+
+
+def test_left_text_full_state_estimated_exact() -> None:
+    state = FULL_STATE.model_copy(update={"cost_estimated": True})
+    assert footer_left_text(state) == (
+        "mode build · auto read,test · ask write,net,spend"
+        " · dev-bundle · a1b2c3 · ~$0.87 ▲ · q1"
+    )
+
+
 def test_waiting_text_singular_plural_empty() -> None:
     assert footer_waiting_text(FooterState(waiting=1)) == "1 decision waiting · ctrl-y"
     assert footer_waiting_text(FooterState(waiting=3)) == "3 decisions waiting · ctrl-y"

@@ -22,7 +22,7 @@ from ..model.trust import DenialLog
 from .approval import ApprovalBroker
 from .config import ResolvedConfig, resolve_config
 from .clipboard import ClipboardImageInjector, ImageAttachment
-from .cost import CostTracker, restore_session_cost
+from .cost import CostTracker, restore_session_cost, start_live_pricing
 from .display import DisplaySystem
 from .events import ContentBlockEnd, ContextInjected, PromptComplete, PromptSubmit, UIEvent
 from .evidence import EvidenceCollector
@@ -260,6 +260,11 @@ class RealRuntime:
         )
         _strip_printing_hooks(resolved.mount_plan)
         self._resolved = resolved
+        # Live pricing (BACKLOG item 1, behind settings ``pricing.live``,
+        # default on): fresh disk cache applies immediately; otherwise a
+        # daemon background fetch swaps the table for NEW turns only.
+        # Never raises — failure keeps the offline fallback silently.
+        start_live_pricing(resolved.settings)
         self._report_progress("creating", "session")
         store = SessionStore(project_dir=resolved.project_dir)
         self._store = store

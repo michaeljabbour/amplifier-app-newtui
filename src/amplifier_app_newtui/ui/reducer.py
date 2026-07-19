@@ -295,6 +295,11 @@ class TranscriptReducer:
         self._lane_seed = lane_seed_lookup or (lambda name: None)
         self._evidence = evidence_lookup or (lambda text: ())
         self.session_cost = session_cost_start
+        self.unpriced_usage = 0
+        """Usage records this session that could not be priced (real
+        turns only — demo/spec turns carry scripted costs). Non-zero ⇒
+        ``session_cost`` is a floor; the footer renders ``~$`` (never
+        lie in the footer)."""
         self.total_tokens = 0
         self.tool_tokens = 0  # /context "tools" bucket (estimated, §10)
         self.memory_tokens = 0
@@ -487,11 +492,13 @@ class TranscriptReducer:
             # the provider usage recorded by the CostTracker (spec §11);
             # the yield (files/diffstat/tests ✔) rides on the runtime's
             # synthesized PromptComplete (git snapshot delta — spec §3).
+            self.unpriced_usage += usage.unpriced
             telemetry = TurnTelemetry(
                 secs=max(0.0, (event.ts or turn.last_ts) - turn.start_ts),
                 tokens_down=turn.tokens,
                 cached_pct=usage.cached_pct,
                 cost=usage.cost,
+                estimated=usage.unpriced > 0,
             )
             shipped = bool(event.files_changed) and not turn.cancelled
             if turn.cancelled:

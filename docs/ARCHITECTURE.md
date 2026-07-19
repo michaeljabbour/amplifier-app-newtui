@@ -431,9 +431,14 @@ blocks get synthetic error results so the forked history stays provider-valid.
 
 ### 7.6 Cost & evidence
 
-- **Cost** (`kernel/cost.py`): Decimal end-to-end; an offline pricing table by default, with
-  provider-reported `cost_usd` authoritative when present; Helicone live pricing is explicit
-  opt-in. On resume, prior spend is re-seeded by replaying usage events from `events.jsonl`.
+- **Cost** (`kernel/cost.py`): Decimal end-to-end; provider-reported `cost_usd` is
+  authoritative when present, else the live Helicone table (settings `pricing.live`,
+  default on: fresh 24 h `~/.amplifier/pricing_cache.json` applies at startup, otherwise a
+  daemon background fetch atomically swaps the module-level table — `CostTracker`
+  snapshots it at `start_turn`, so new turns only), else the offline fallback table.
+  Usage that cannot be priced increments an `unpriced` counter and the footer/turn-rule
+  `$` figures render with a `~` prefix instead of silently recording $0. On resume, prior
+  spend is re-seeded by replaying usage events from `events.jsonl`.
 - **Evidence** (`kernel/evidence.py`, `model/evidence.py`): a tap on the event stream pairs
   answer claims with the tool calls that support them (`EvidenceLink`), skipping denied
   calls; `EvidenceBlock`s render the links as keyboard-navigable superscripts.
