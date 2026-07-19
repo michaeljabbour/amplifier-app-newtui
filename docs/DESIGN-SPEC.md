@@ -4,6 +4,11 @@ Ground truth: `docs/design-v3-cohesive.html` (Amplifier TUI v3 - Cohesive.dc.htm
 Every item below is a testable requirement. The rebuild is done when every checkbox
 can be demonstrated in the real terminal app.
 
+> **Precedence:** this document is the authoritative behavioral spec. Where the earlier
+> presentation spec (`docs/tui-v3-cohesive.md`) conflicts with it — palette groups,
+> approval keys, footer hints, app naming — **this file wins**. User-facing documentation
+> of shipped behavior lives in `docs/USER-GUIDE.md`.
+
 ## 1. Themes & design tokens
 
 Three themes, switchable at runtime. Exact token values (from the mockup):

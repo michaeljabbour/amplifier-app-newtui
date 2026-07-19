@@ -1,13 +1,18 @@
 # TUI v3 — Cohesive: presentation specification
 
-Status: Approved design, source of truth for the interactive TUI's presentation.
+Status: Approved design (historical). Superseded by `DESIGN-SPEC.md` wherever the two
+conflict — notably: no "Setup" palette group, no `y/a/d`/`ctrl-a`/`ctrl-g`/`alt+up`/`ctrl-o`
+bindings (see `ui/keymap.py` for the keys that exist), the app title is
+`amplifier-app-newtui`, and the ctrl-p permission-posture *cycle* (including the `bypass`
+posture) was not built — as shipped, ctrl+p shows the current trust posture and the five
+modes are the only postures. The user-facing key/command reference is `USER-GUIDE.md`.
 Source: claude.ai/design project "Amplifier TUI design refinement",
 file `Amplifier TUI v3 - Cohesive.dc.html` (project 0eef1524-817c-4122-bc86-5e58734a950e).
 Scope: how the layered REPL *presents* — colors, glyphs, labels, layout, hints.
 Mechanisms (trust postures, steering, evidence, ledger) are per ADR-0005/ADR-0006.
 
 Any intentional change to this presentation must update this file and the golden
-tests (`tests/test_transcript_golden_widths.py`, `tests/test_footer_golden_widths.py`)
+tests (`tests/test_golden_widths.py`, regenerated via `tests/goldens/regen.py`)
 in the same commit.
 
 ## 1. Theme tokens
