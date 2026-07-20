@@ -7,6 +7,7 @@ import pytest
 from amplifier_app_newtui.ui.keymap import (
     ALL_CONTEXTS,
     COMPOSER_PLACEHOLDER,
+    ESC_BACKTRACK_WINDOW_SECONDS,
     ESC_CHAIN,
     FOOTER_HINTS,
     KEYMAP,
@@ -60,6 +61,7 @@ def test_esc_chain_priority_order_per_spec() -> None:
         bindings = [b for b in bindings_for(context) if b.action == action]
         assert bindings, (context, action)
         assert "escape" in bindings[0].keys
+    assert ESC_BACKTRACK_WINDOW_SECONDS == 0.75
 
 
 def test_footer_hints_exact_spec_strings() -> None:

@@ -18,6 +18,7 @@ uv run amplifier-newtui resume ID    # resume a stored session
 uv run amplifier-newtui run "PROMPT" # headless one-shot, prints the answer
 printf 'PROMPT\n' | uv run amplifier-newtui run # stdin one-shot
 uv run amplifier-newtui run --output-format json "PROMPT" # machine-readable stdout
+uv run amplifier-newtui run --output-format jsonl "PROMPT" # live versioned JSONL events
 uv run amplifier-newtui doctor       # setup checkup (exit 1 when findings exist)
 uv run amplifier-newtui init         # set up a provider key in ~/.amplifier/keys.env
 uv run amplifier-newtui bundle list  # bundles from the shared registry (--all for deps)
@@ -28,6 +29,13 @@ uv run amplifier-newtui update       # update the mounted bundles/modules (--che
 `bundle` also has `show · current · clear · add · remove · update`; run
 `bundle --help`. These read/write the same amplifier settings and registry
 the reference CLI uses — nothing app-specific.
+
+`run` accepts either a prompt argument or all piped stdin. JSON modes reserve stdout for
+machine-readable output and redirect setup/module diagnostics to stderr. `json-trace`
+adds the normalized runtime event trace to one document. `jsonl` is live: every line has
+`schema_version`, monotonic `sequence`, `timestamp`, and a discriminating `type` of
+`session.started`, `runtime.event`, `turn.completed`, or `error`. Runtime records contain
+the same typed event payload consumed by the TUI.
 
 **First run:** follow the [README's Install section](../README.md#install) — it deploys
 [Amplifier](https://github.com/microsoft/amplifier) first (`amplifier init` sets up your
@@ -177,6 +185,10 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 Amplifier session through the coordinator (the same calls the reference CLI
 makes). **`/model`** switches the mounted provider's model in place;
 **`/compact`** and **`/clear`** drive the context module directly.
+The packaged newtui bundle also compacts automatically at 80% of its 200k
+window. Override `context.auto_compact`, `context.compact_threshold`, or
+`context.max_tokens` in settings; `/status` shows the effective policy and
+`/context` uses the effective window rather than a hard-coded size.
 
 **MCP & skills.** `/mcp` reads `~/.amplifier/mcp.json` (and `./.amplifier/mcp.json`);
 each configured server's tools mount as `mcp_<server>_<tool>` at session start, so
@@ -205,6 +217,7 @@ operating-system sandbox around arbitrary interpreter code.
 | ctrl+l | outcome ledger | any time |
 | ctrl+y | needs-you queue | any time |
 | ctrl+r | rewind picker | any time |
+| esc esc | interrupt, then open rewind | running turn |
 | ↑ ↓ | select in palette/lanes (lanes from an empty composer) | panels |
 | ‹ › (← →) | navigate checkpoints · evidence refs | rewind · evidence |
 | ctrl+c | copy mouse-selected transcript text | after selecting |
@@ -213,7 +226,8 @@ operating-system sandbox around arbitrary interpreter code.
 
 **Esc does the nearest thing first:** leave a focused lane → close the palette → close
 rewind → close the lanes panel → interrupt the running turn. During an approval, esc means
-*deny*.
+*deny*. Press Esc again within 750ms after an interrupt to open the same rewind picker used
+by ctrl+r; this works whether turn close-out has finished yet or not.
 
 An accepted turn interrupt is also recorded in model context as a hidden
 `<turn_aborted>` boundary. The next turn therefore knows the prior response was cut off and

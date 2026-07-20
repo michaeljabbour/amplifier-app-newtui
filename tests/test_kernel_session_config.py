@@ -33,6 +33,10 @@ from amplifier_app_newtui.kernel.config import (
     packaged_bundles_dir,
     resolve_config,
 )
+from amplifier_app_newtui.kernel.compaction import (
+    apply_compaction_settings,
+    compaction_config,
+)
 
 # --------------------------------------------------------------------------
 # deep_merge / settings
@@ -181,6 +185,61 @@ def test_apply_module_overrides_merges_in_place() -> None:
     assert anthropic["config"] == {"priority": 1, "default_model": "claude-x"}
     assert mount_plan["providers"][1]["module"] == "provider-openai"  # appended
     assert mount_plan["tools"][0]["config"]["allowed_write_paths"] == ["/a", "/b"]
+
+
+def test_context_compaction_settings_apply_to_effective_mount_plan() -> None:
+    mount_plan = {
+        "context": {
+            "module": "context-simple",
+            "config": {
+                "max_tokens": 200_000,
+                "compact_threshold": 0.8,
+                "auto_compact": True,
+            },
+        }
+    }
+    result = apply_compaction_settings(
+        mount_plan,
+        {
+            "context": {
+                "max_tokens": 128_000,
+                "compact_threshold": 0.7,
+                "auto_compact": False,
+            }
+        },
+    )
+    assert result is mount_plan
+    assert mount_plan["context"]["config"] == {
+        "max_tokens": 128_000,
+        "compact_threshold": 0.7,
+        "auto_compact": False,
+    }
+    assert compaction_config(mount_plan).threshold_tokens == 89_600
+
+
+def test_invalid_context_compaction_settings_are_ignored(caplog) -> None:
+    mount_plan = {
+        "context": {
+            "module": "context-simple",
+            "config": {"max_tokens": 200_000, "compact_threshold": 0.8},
+        }
+    }
+    apply_compaction_settings(
+        mount_plan,
+        {"context": {"max_tokens": -1, "compact_threshold": 2, "auto_compact": "yes"}},
+    )
+    assert mount_plan["context"]["config"] == {
+        "max_tokens": 200_000,
+        "compact_threshold": 0.8,
+    }
+    assert "Ignoring invalid context.max_tokens" in caplog.text
+
+
+def test_context_compaction_settings_do_not_leak_into_other_modules(caplog) -> None:
+    mount_plan = {"context": {"module": "context-custom", "config": {"own": True}}}
+    apply_compaction_settings(mount_plan, {"context": {"auto_compact": True}})
+    assert mount_plan["context"]["config"] == {"own": True}
+    assert "is not context-simple" in caplog.text
 
 
 def test_permission_paths_union_across_settings_scopes(tmp_path: Path) -> None:
@@ -384,3 +443,12 @@ def test_packaged_bundle_matches_repo_root_bundle() -> None:
     root = Path(__file__).resolve().parents[1]
     packaged = root / "src" / "amplifier_app_newtui" / "data" / "bundles" / "newtui.md"
     assert packaged.read_bytes() == (root / "bundle.md").read_bytes()
+
+
+def test_packaged_bundle_declares_automatic_compaction() -> None:
+    from amplifier_app_newtui.kernel.config import packaged_bundles_dir
+
+    text = (packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8")
+    assert "max_tokens: 200000" in text
+    assert "compact_threshold: 0.8" in text
+    assert "auto_compact: true" in text

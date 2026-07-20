@@ -32,6 +32,8 @@ from typing import Any
 
 import yaml
 
+from .compaction import apply_compaction_settings
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BUNDLE = "newtui"
@@ -650,6 +652,7 @@ async def resolve_config(
     #    then ${VAR} placeholder expansion (reference: amplifier-app-cli
     #    expands the effective bundle config before session creation).
     mount_plan = apply_module_overrides(prepared.mount_plan, settings)
+    apply_compaction_settings(mount_plan, settings)
     ensure_project_write_path(mount_plan, project_dir)
     # settings ``id`` → kernel ``instance_id`` so a provider mounts under
     # its configured id (reference CLI parity); prevents a false

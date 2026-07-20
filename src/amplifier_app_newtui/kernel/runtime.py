@@ -23,6 +23,7 @@ from .approval import ApprovalBroker
 from .bundle_admin import read_scope, settings_paths
 from .config import ResolvedConfig, resolve_config
 from .clipboard import ClipboardImageInjector, ImageAttachment
+from .compaction import CompactionConfig, compaction_config
 from .cost import CostTracker, restore_session_cost, start_live_pricing
 from .display import DisplaySystem
 from .events import (
@@ -281,6 +282,7 @@ class RealRuntime:
         self.restored_history: tuple[tuple[str, str], ...] = ()
         """(role, text) pairs replayed into the transcript on resume."""
         self.degraded_notice: str | None = None
+        self.compaction = CompactionConfig()
 
     def _progress(self, action: str = "", detail: str = "", *rest: object) -> None:
         del rest
@@ -301,6 +303,7 @@ class RealRuntime:
         )
         _strip_printing_hooks(resolved.mount_plan)
         self._resolved = resolved
+        self.compaction = compaction_config(resolved.mount_plan)
         # Live pricing (BACKLOG item 1, behind settings ``pricing.live``,
         # default on): fresh disk cache applies immediately; otherwise a
         # daemon background fetch swaps the table for NEW turns only.

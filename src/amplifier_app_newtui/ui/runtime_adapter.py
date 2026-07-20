@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from ..kernel.events import UIEvent
+from ..kernel.compaction import CompactionConfig
 from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
 from ..kernel.session_ops import ModelListing, StatusInfo
 from ..model.blocks import BlockIdAllocator, TranscriptBlock
@@ -61,6 +62,9 @@ class RuntimeAdapter:
         self.restored_history: tuple[tuple[str, str], ...] = ()
         """(role, text) pairs replayed into the transcript on resume."""
         self.startup_notices: tuple[str, ...] = ()
+        self.compaction = CompactionConfig(
+            auto_compact=True, compact_threshold=0.8
+        )
 
     def attach(self, app: Any) -> None:
         """Give the adapter its app handle (approval presentation etc.)."""
@@ -264,6 +268,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.session_cost_start = runtime.session_cost_start
         self.turn_base = runtime.turn_base
         self.restored_history = runtime.restored_history
+        self.compaction = runtime.compaction
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
         runtime.broker.add_listener(self._on_broker_change)

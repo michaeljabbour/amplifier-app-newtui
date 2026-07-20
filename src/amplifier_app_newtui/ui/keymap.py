@@ -160,6 +160,9 @@ context-exclusive — the approval bar owns the keyboard, and evidence esc
 only fires while the evidence block has focus — so they sit outside the
 global chain.)"""
 
+ESC_BACKTRACK_WINDOW_SECONDS = 0.75
+"""A second Esc after interrupt opens rewind through the existing picker."""
+
 
 # Footer hint strings — EXACT text per DESIGN-SPEC §2.
 FOOTER_HINTS: dict[str, str] = {
@@ -251,6 +254,7 @@ __all__ = [
     "COMPOSER_PLACEHOLDER",
     "Context",
     "ESC_CHAIN",
+    "ESC_BACKTRACK_WINDOW_SECONDS",
     "FOOTER_HINTS",
     "KEYMAP",
     "NO_APPROVAL",

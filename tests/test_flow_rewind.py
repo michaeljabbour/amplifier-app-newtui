@@ -82,6 +82,45 @@ async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
 
 
 @pytest.mark.asyncio
+async def test_double_esc_interrupts_then_opens_existing_rewind_picker() -> None:
+    adapter = GatedDemoAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.submit_prompt(BRAINSTORM_PROMPT)
+        assert await wait_for(pilot, lambda: app.turn_active)
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.rewind.display
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.rewind.display
+        assert app.rewind.current is not None
+        assert app.rewind.current.id == "t1"
+
+        adapter.release()
+        assert await wait_for(pilot, lambda: not app.turn_active)
+
+
+@pytest.mark.asyncio
+async def test_second_esc_after_fast_close_out_still_opens_rewind() -> None:
+    adapter = GatedDemoAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.submit_prompt(BRAINSTORM_PROMPT)
+        assert await wait_for(pilot, lambda: app.turn_active)
+
+        await pilot.press("escape")
+        adapter.release()
+        assert await wait_for(pilot, lambda: not app.turn_active)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.rewind.display
+
+
+@pytest.mark.asyncio
 async def test_clicking_turn_rule_opens_picker_at_that_checkpoint() -> None:
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
