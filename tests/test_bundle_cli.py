@@ -25,12 +25,22 @@ def test_bundle_group_lists_subcommands() -> None:
 
 def test_bundle_list_all_is_superset_of_default() -> None:
     # --all surfaces nested dependency bundles from the shared registry; it
-    # can never show fewer rows than the default (user-selectable) view.
+    # can never return fewer entries than the default (user-selectable) view.
+    # Compare entry identity, not Rich-rendered line counts: when no nested
+    # bundles exist, the default-only "Use --all" hint intentionally makes
+    # its rendered output one line longer (the clean Linux CI environment).
+    default_names = {entry.name for entry in bundle_admin.list_bundles()}
+    every_name = {
+        entry.name for entry in bundle_admin.list_bundles(all_bundles=True)
+    }
+    assert default_names <= every_name
+
     runner = CliRunner()
     default = runner.invoke(main, ["bundle", "list"])
     every = runner.invoke(main, ["bundle", "list", "--all"])
     assert default.exit_code == 0 and every.exit_code == 0
-    assert len(every.output.splitlines()) >= len(default.output.splitlines())
+    assert "Use --all" in default.output
+    assert "Use --all" not in every.output
 
 
 def test_bundle_show_packaged_newtui_offline() -> None:
