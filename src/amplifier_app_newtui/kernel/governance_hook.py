@@ -95,7 +95,21 @@ class OfflineAutoClassifier:
         CapabilityClass.EXEC: ("check", "execute", "inspect", "run", "verify"),
         CapabilityClass.NET: ("browse", "download", "fetch", "look up", "search", "upload"),
         CapabilityClass.SPEND: ("agent", "delegate", "parallel", "research", "spawn"),
-        CapabilityClass.OUTSIDE_PROJECT: ("change", "edit", "run", "write"),
+        CapabilityClass.OUTSIDE_PROJECT: (
+            "change",
+            "check",
+            "edit",
+            "find",
+            "inspect",
+            "list",
+            "look",
+            "read",
+            "run",
+            "search",
+            "see",
+            "show",
+            "write",
+        ),
     }
     _SEMANTIC_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("pytest", ("test", "verify")),
@@ -185,9 +199,7 @@ class GovernanceHook:
         classifier: AutoClassifier | None = None,
         on_blocked: Callable[[str, str], None] | None = None,
         directory_policy: DirectoryPolicy | None = None,
-        permission_resolver: Callable[
-            [str, Mapping[str, object] | None], TrustDecision
-        ]
+        permission_resolver: Callable[[str, Mapping[str, object] | None], TrustDecision]
         | None = None,
         capability_resolver: Callable[[CapabilityClass], TrustDecision] | None = None,
     ) -> None:
@@ -211,9 +223,7 @@ class GovernanceHook:
             return HookResult(action="continue")
         return await self._govern_tool(data)
 
-    def register_hooks(
-        self, hooks: Any, *, priority: int = 1_000
-    ) -> Callable[[], None]:
+    def register_hooks(self, hooks: Any, *, priority: int = 1_000) -> Callable[[], None]:
         unregister_callbacks: list[Callable[..., object]] = []
         for event in self.EVENTS:
             unregister = hooks.register(
@@ -266,7 +276,7 @@ class GovernanceHook:
             return self._deny(
                 CapabilityClass.OUTSIDE_PROJECT,
                 action,
-                safety.execution_reason,
+                safety.policy_reason,
             )
         decision = safety.approval
         target = safety.target or target
@@ -285,9 +295,7 @@ class GovernanceHook:
             return self._capability_resolver(capability)
         return resolve_capability(self._mode(), capability)
 
-    async def _classify(
-        self, decision: TrustDecision, action: str, target: str
-    ) -> HookResult:
+    async def _classify(self, decision: TrustDecision, action: str, target: str) -> HookResult:
         try:
             allowed, reason = await self._classifier.classify(
                 action=action,
@@ -343,12 +351,8 @@ class GovernanceHook:
             reason=decision.reason,
         )
 
-    def _deny(
-        self, capability: CapabilityClass, action: str, reason: str
-    ) -> HookResult:
-        record = self._denial_log.record_denial(
-            capability=capability, action=action, reason=reason
-        )
+    def _deny(self, capability: CapabilityClass, action: str, reason: str) -> HookResult:
+        record = self._denial_log.record_denial(capability=capability, action=action, reason=reason)
         if record.escalation_due and self._needs_you is not None:
             try:
                 self._needs_you.defer(

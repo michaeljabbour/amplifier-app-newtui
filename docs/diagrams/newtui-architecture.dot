@@ -56,7 +56,7 @@ digraph newtui_architecture {
         broker [label="ApprovalBroker (approval.py)\n+ StepBoundaryBridge (steering.py)", fillcolor="#FED7D7"];
         persist [label="SessionStore + IncrementalSaver\n(persistence.py)", fillcolor="#FED7D7"];
         spawner [label="SessionSpawner (spawner.py)\nregisters session.spawn capability", fillcolor="#FED7D7"];
-        kernelaux [label="RewindController · CostTracker\nEvidenceCollector · TurnYieldTracker · trackers/\nsession_ops · bundle_admin · mcp_config · updater\ngovernance_hook (built, NOT wired — gating is\nhooks-mode + hooks-approval)\nDemoRuntime (offline scripted events)", fillcolor="#FED7D7"];
+        kernelaux [label="RewindController · CostTracker\nEvidenceCollector · TurnYieldTracker · trackers/\nsession_ops · bundle_admin · mcp_config · updater\nGovernanceHook (tool:pre pri 1000 — app trust\ngate atop hooks-mode + hooks-approval)\nDemoRuntime (offline scripted events)", fillcolor="#FED7D7"];
     }
 
     // ── Amplifier ecosystem (external) ──────────────────────────

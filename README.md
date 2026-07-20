@@ -90,8 +90,8 @@ Inside the TUI, `/` opens the command palette: mode/plan/rewind/ledger, live-ses
 commands, `/allowed-dirs` and `/denied-dirs` for session-scoped path capabilities, and
 `/skills · /skill <name> · /mcp` (see [User Guide §7](docs/USER-GUIDE.md#7-commands)).
 Type `@` after whitespace to autocomplete a workspace file into the composer. The mounted
-filesystem tool hard-enforces write paths; the kernel keeps approval and execution
-confinement as separate decisions, with `.git`, `.agents`, `.codex`, and `AGENTS.md`
+filesystem tool hard-enforces write paths; the kernel keeps approval and execution path
+policy as separate decisions, with `.git`, `.agents`, `.codex`, and `AGENTS.md`
 protected by default. Bundle-native modes such as `careful` can add confirmation policy
 without weakening that path boundary.
 

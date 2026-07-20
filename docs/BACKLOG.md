@@ -37,10 +37,11 @@ default; `tool-mcp` is the one addition beyond anchors, kept by request.
 ## 0.1 Codex-inspired core and interop — SHIPPED
 
 - [x] Durable `<turn_aborted>` context marker and step-boundary steering.
-- [x] Truthful automatic compaction binding, provider-observed accounting when supported,
-  and persistent `ContextCompacted` before/after telemetry.
+- [x] Truthful automatic compaction binding against the prepared bundle's native
+  `session.context` mount, provider-observed accounting when supported, and persistent
+  `ContextCompacted` before/after telemetry.
 - [x] Progressive line-commit streaming with mutable-tail fence tracking and table holdback.
-- [x] Typed two-axis safety resolution: approval and execution confinement cannot override
+- [x] Typed two-axis safety resolution: approval and execution path policy cannot override
   one another; protected `.git/.agents/.codex/AGENTS.md` paths are denied by default.
 - [x] Composer `@file` autocomplete over a bounded workspace index.
 - [x] Theme-token diff highlighting for `/diff` additions, deletions, metadata, and hunks.

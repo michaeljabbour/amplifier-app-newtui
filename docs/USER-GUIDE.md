@@ -208,9 +208,10 @@ under that session for resume. Permission lists union across scopes, denied path
 the mounted filesystem tool is the hard enforcement point. `.git`, `.agents`, `.codex`,
 and `AGENTS.md` beneath the project are protected defaults and cannot be reopened by an
 approval. The kernel resolves two independent axes for each recognized action: whether it
-needs approval and whether its target is workspace-confined. Shell calls also pass through
-this check for recognizable absolute, home-relative, parent-relative and redirection
-paths; this is not yet an operating-system sandbox around arbitrary interpreter code.
+needs approval and whether its recognizable target satisfies the configured path policy.
+Shell calls also pass through this check for recognizable absolute, home-relative,
+parent-relative and redirection paths; this is not yet an operating-system sandbox around
+arbitrary interpreter code.
 
 ## 8. Keys
 

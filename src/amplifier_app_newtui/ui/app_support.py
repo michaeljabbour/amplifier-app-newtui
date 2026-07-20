@@ -136,7 +136,7 @@ def permissions_block(
         Segment(text="Permissions", style_token="bright", bold=True),
         Segment(text=f"  {trust_str}\n", style_token="dim"),
         Segment(
-            text="  execution · workspace-confined · protected paths enforced\n",
+            text="  path policy · allowed roots + protected paths enforced\n",
             style_token="dim",
         ),
     ]

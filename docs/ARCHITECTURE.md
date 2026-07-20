@@ -108,8 +108,8 @@ src/amplifier_app_newtui/
 │   ├── mcp_config.py      ~/.amplifier/mcp.json read/modify/write (for /mcp)
 │   ├── events.py          UIEvent union + normalize() — THE normalization boundary
 │   ├── queue_bridge.py    hooks → asyncio.Queue[UIEvent]
-│   ├── governance_hook.py app-side tool:pre approval + confinement gate (§7.2)
-│   ├── safety.py          typed two-axis approval / execution resolution
+│   ├── governance_hook.py app-side tool:pre approval + path-policy gate (§7.2)
+│   ├── safety.py          typed two-axis approval / execution-policy resolution
 │   ├── approval.py        ApprovalBroker: tickets, timeout→deny, defer to needs-you
 │   ├── steering.py        StepBoundaryBridge: mid-turn context injection
 │   ├── spawner.py         SessionSpawner: in-process subagents + routing preference apply
@@ -408,12 +408,12 @@ fail-safe default** for anything unknown. `resolve(mode, tool, input)` yields a
 adds explicit slot overrides, command exceptions and blocks; `GovernanceHook` consults it
 live through adapter callables, so the pure model never imports kernel code.
 
-`kernel/safety.py` keeps approval and execution confinement as a typed two-axis result.
-An allow decision can therefore remain valid while execution is still blocked by the
-workspace boundary. `DirectoryPolicy` supplies the hard path check to filesystem tools and
-protects `.git`, `.agents`, `.codex`, and `AGENTS.md` by default; recognizable shell paths
-use the same resolution. This is policy enforcement, not an OS sandbox for opaque
-interpreter code.
+`kernel/safety.py` keeps approval and execution path policy as a typed two-axis result.
+An allow decision can therefore remain valid while a recognizable target is still blocked
+by configured directory policy. `DirectoryPolicy` supplies the hard path check to
+filesystem tools and protects `.git`, `.agents`, `.codex`, and `AGENTS.md` by default;
+recognizable shell paths use the same resolution. This is policy enforcement, not an OS
+sandbox for opaque interpreter code.
 
 ### 7.2 Gating: app postures + native modes
 

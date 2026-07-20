@@ -284,6 +284,8 @@ def test_permissions_block_renders_slot_labels_not_bound_methods() -> None:
     block = permissions_block(surface, "auto read,write · classifier-gated", BlockIdAllocator())
     text = "".join(segment.text for segment in block.spans)
     assert "bound method" not in text
+    assert "path policy · allowed roots + protected paths enforced" in text
+    assert "execution confinement" not in text
     assert "read · allow" in text
     assert "always allowed: uv run pytest" in text
     assert "boundary: within project" in text
