@@ -67,7 +67,8 @@ read the footer.
 | You want to… | Do this |
 |---|---|
 | Send a message | type, **enter** |
-| Add a newline while composing | **ctrl+j** |
+| Recall an earlier prompt | **↑** for older, **↓** for newer/current draft |
+| Add a newline while composing | **ctrl+j** or **ctrl+enter** |
 | **Steer** the current turn (it's still running) | just type and press **enter** — your note is injected at the next step boundary |
 | Queue a **full next turn** while one runs | **shift+enter** (**alt+enter** on legacy terminals — the hint adapts) |
 | Interrupt the running turn | **esc** |
@@ -91,8 +92,9 @@ Things worth knowing:
 - **File mentions** autocomplete bounded, relative workspace paths. They insert an `@path`
   reference into your message; paths containing whitespace are quoted. **Esc** closes the
   suggestions without interrupting a running turn.
-- There is **no input history** on ↑/↓ — on an empty composer those keys navigate the
-  agent lanes panel instead.
+- **Prompt history** keeps submitted, steered and queued text for this app session; resumed
+  user turns seed it too. While browsing, **↓** eventually restores the draft you were
+  typing. A multi-line draft keeps normal vertical cursor movement.
 
 ## 4. Modes
 
@@ -124,9 +126,10 @@ hand it over: the plan is already in the conversation — shift+tab to build and
 
 ## 5. Approvals
 
-In the default `auto` posture, in-project read/write/test calls proceed silently. Network,
-spend, shell and outside-project actions are reasoning-blind classifier gates: explicit,
-safe user requests proceed; destructive or unrequested boundary crossings deny and defer.
+In the default `auto` posture, read/write/test calls proceed silently, with writes still
+limited by the configured write roots. Network, spend and shell actions are reasoning-blind
+classifier gates: explicit, safe user requests proceed; destructive or unrequested
+boundary crossings deny and defer.
 `chat` and `build` can ask more often, and `/mode careful` or another bundle mode can add
 native confirmations. An ask replaces the composer with **Allow once · Allow always ·
 Deny**.
@@ -205,13 +208,15 @@ drive the mounted skills tool — the agent also loads skills on its own when re
 Top-level `amplifier-newtui allowed-dirs` / `denied-dirs` commands persist global, project,
 or local settings; the slash commands change the current session immediately and persist
 under that session for resume. Permission lists union across scopes, denied paths win, and
-the mounted filesystem tool is the hard enforcement point. `.git`, `.agents`, `.codex`,
-and `AGENTS.md` beneath the project are protected defaults and cannot be reopened by an
-approval. The kernel resolves two independent axes for each recognized action: whether it
-needs approval and whether its recognizable target satisfies the configured path policy.
-Shell calls also pass through this check for recognizable absolute, home-relative,
-parent-relative and redirection paths; this is not yet an operating-system sandbox around
-arbitrary interpreter code.
+the mounted filesystem tool is the hard enforcement point for writes. These lists do not
+restrict reads: when the active posture permits reading, Amplifier can inspect system paths
+such as `~/.amplifier/cache` without adding them as writable roots. `.git`, `.agents`,
+`.codex`, and `AGENTS.md` beneath the project are protected write defaults and cannot be
+reopened by an approval. The kernel resolves two independent axes for each recognized
+action: whether it needs approval and whether a recognizable write target satisfies the
+configured path policy. Shell redirections and common mutating commands pass through the
+same write check; this is not yet an operating-system sandbox around arbitrary interpreter
+code.
 
 ## 8. Keys
 
@@ -219,7 +224,8 @@ arbitrary interpreter code.
 |---|---|---|
 | enter | send · steer · confirm | idle · running · in panels |
 | shift+enter (alt+enter) | queue next-turn message | any time |
-| ctrl+j | newline in composer | composing |
+| ctrl+j (ctrl+enter) | newline in composer | composing |
+| ↑ / ↓ | older/newer prompt; restore draft | single-line composer |
 | ↑ / ↓ | move file suggestion | `@file` suggestions open |
 | tab | insert selected file path | `@file` suggestions open |
 | shift+tab | cycle mode | any time |

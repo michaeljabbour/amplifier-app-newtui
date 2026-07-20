@@ -9,7 +9,6 @@ stable policy seam without claiming that one exists today.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -44,7 +43,6 @@ def resolve_safety(
     action: str,
     target: str,
     directory_policy: DirectoryPolicy | None,
-    resolve_capability: Callable[[CapabilityClass], TrustDecision],
 ) -> SafetyResolution:
     """Resolve path policy without changing approval-policy precedence."""
     if directory_policy is None:
@@ -61,35 +59,24 @@ def resolve_safety(
         )
 
     if capability == CapabilityClass.READ and target:
-        if directory_policy.within_allowed(target):
-            return SafetyResolution(
-                approval, "within-policy", "within allowed directories", target
-            )
         return SafetyResolution(
-            resolve_capability(CapabilityClass.OUTSIDE_PROJECT),
-            "outside-policy",
-            "read target is outside allowed directories",
+            approval,
+            "not-applicable",
+            "reads are not constrained by allowed write directories",
             target,
         )
 
     if capability == CapabilityClass.EXEC:
-        outside = directory_policy.shell_outside_target(action)
-        if outside is None:
+        violation = directory_policy.shell_write_violation(action)
+        if violation is None:
             return SafetyResolution(
                 approval,
                 "within-policy",
-                "no outside or protected path detected",
+                "no recognizable shell write violates path policy",
                 target,
             )
-        path, reason = outside
-        if reason.startswith(("path is protected", "path is within denied")):
-            return SafetyResolution(approval, "blocked", reason, path)
-        return SafetyResolution(
-            resolve_capability(CapabilityClass.OUTSIDE_PROJECT),
-            "outside-policy",
-            reason,
-            path,
-        )
+        path, reason = violation
+        return SafetyResolution(approval, "blocked", reason, path)
 
     return SafetyResolution(approval, "not-applicable", target=target)
 

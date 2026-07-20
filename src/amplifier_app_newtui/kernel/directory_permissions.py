@@ -31,6 +31,23 @@ PROTECTED_PROJECT_PATHS: tuple[str, ...] = (
 )
 """Instruction and repository-control paths denied inside writable roots."""
 
+_SHELL_WRITE_ALL_TARGETS = frozenset(
+    {
+        "chmod",
+        "chown",
+        "chgrp",
+        "mkdir",
+        "rm",
+        "rmdir",
+        "shred",
+        "touch",
+        "truncate",
+        "unlink",
+    }
+)
+_SHELL_WRITE_DESTINATION = frozenset({"cp", "install", "ln", "mv", "rsync"})
+_SHELL_SEGMENT_BREAKS = frozenset({";", "&&", "||", "|"})
+
 
 @dataclass(frozen=True)
 class DirectoryEntry:
@@ -243,12 +260,14 @@ class DirectoryPolicy:
                 return True
         return False
 
-    def shell_outside_target(self, command: str) -> tuple[str, str] | None:
-        """Return the first obvious shell path outside/inside a deny rule.
+    def shell_write_violation(self, command: str) -> tuple[str, str] | None:
+        """Return the first recognizable shell write outside policy.
 
-        This is a governance signal, not a shell sandbox. It covers absolute,
-        home-relative, ``./``/``../`` and redirection targets while leaving
-        the mounted bash tool's own safety validator in charge of command form.
+        Allowed/denied directory settings are write capabilities, not a read
+        sandbox. Redirections and common mutating commands are checked here;
+        ordinary reads such as ``cat ~/.amplifier/cache/...`` remain governed
+        by the active trust posture instead of the write-root list. This is a
+        governance signal, not an operating-system sandbox.
         """
         try:
             lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -256,15 +275,63 @@ class DirectoryPolicy:
             tokens = list(lexer)
         except ValueError:
             tokens = command.split()
-        for raw in tokens:
-            token = raw.strip("'\";,(){}[]")
-            if token.startswith(("http://", "https://")):
-                continue
-            protected_relative = any(
-                token == relative or token.startswith(f"{relative}/")
-                for relative in PROTECTED_PROJECT_PATHS
+
+        candidates: list[str] = []
+        for index, token in enumerate(tokens[:-1]):
+            if token in {">", ">>", ">|"}:
+                candidates.append(tokens[index + 1])
+
+        segments: list[list[str]] = []
+        segment: list[str] = []
+        for token in tokens:
+            if token in _SHELL_SEGMENT_BREAKS:
+                if segment:
+                    segments.append(segment)
+                    segment = []
+            else:
+                segment.append(token)
+        if segment:
+            segments.append(segment)
+
+        for part in segments:
+            command_index = next(
+                (
+                    index
+                    for index, token in enumerate(part)
+                    if token not in {"sudo", "command", "env"}
+                    and not token.startswith("-")
+                    and "=" not in token
+                ),
+                None,
             )
-            if not protected_relative and not token.startswith(("/", "~/", "./", "../")):
+            if command_index is None:
+                continue
+            name = Path(part[command_index]).name
+            arguments = part[command_index + 1 :]
+            positional = [token for token in arguments if not token.startswith("-")]
+            if name in _SHELL_WRITE_ALL_TARGETS:
+                candidates.extend(positional)
+            elif name in _SHELL_WRITE_DESTINATION and positional:
+                candidates.append(positional[-1])
+            elif name == "tee":
+                candidates.extend(positional)
+            elif name == "sed" and any(token.startswith("-i") for token in arguments):
+                if positional:
+                    candidates.append(positional[-1])
+            elif name == "dd":
+                candidates.extend(
+                    token.removeprefix("of=")
+                    for token in arguments
+                    if token.startswith("of=")
+                )
+            elif name == "git" and positional[:1] == ["config"]:
+                for index, token in enumerate(arguments[:-1]):
+                    if token == "-f":
+                        candidates.append(arguments[index + 1])
+
+        for raw in candidates:
+            token = raw.strip("'\";,(){}[]")
+            if not token or token in {"&", "1", "2", "/dev/null"}:
                 continue
             allowed, reason = self.check_write(token)
             if not allowed:

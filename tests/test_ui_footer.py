@@ -85,7 +85,7 @@ def test_right_hints_exact_per_context() -> None:
         "esc interrupt · enter steer · shift+enter queue"
     )
     assert footer_right_text(FooterState(context="idle")) == (
-        "/ commands · shift+tab mode · ctrl-t tasks"
+        "↑ history · ctrl+j newline · / commands"
     )
 
 
@@ -96,7 +96,7 @@ def test_running_hint_swaps_queue_chord_without_kitty() -> None:
 
 def test_unknown_hint_context_falls_back_to_idle() -> None:
     state = FooterState(context="rewind")
-    assert footer_right_text(state) == "/ commands · shift+tab mode · ctrl-t tasks"
+    assert footer_right_text(state) == "↑ history · ctrl+j newline · / commands"
 
 
 # -- widget rendering ---------------------------------------------------------------

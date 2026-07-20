@@ -45,7 +45,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
    - Rewind picker strip
    - Queued-message strip
    - Approval bar (replaces composer while open)
-5. **Composer**: left edge tinted 2px in mode accent; `[mode]` badge (clickable/cyclable) + green bold `❯` + input. Placeholder: `Message Amplifier…  ( / commands · shift+tab mode · enter send · type mid-turn to steer )`.
+5. **Composer**: left edge tinted 2px in mode accent; `[mode]` badge (clickable/cyclable) + green bold `❯` + input. Placeholder: `Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )`.
 6. **Footer status bar** (bg-chrome): left = `mode <mode>` (mode color) `· <trust> · <bundle> · <session-short> · $<cost><yield▲><queued q1>` and optional orange `N decisions waiting · ctrl-y`; right = context-sensitive hints.
 
 - [ ] Layout matches order & styling above.
@@ -54,7 +54,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
   - lane focused → `esc back to parent · transcript is the subagent's own`
   - palette open → `↑↓ select · enter run · esc close`
   - running → `esc interrupt · enter steer · shift+enter queue`
-  - idle → `/ commands · shift+tab mode · ctrl-t tasks`
+  - idle → `↑ history · ctrl+j newline · / commands`
 
 ## 3. Transcript block grammar
 

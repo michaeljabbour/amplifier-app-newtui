@@ -50,11 +50,27 @@ def test_shell_path_signal_respects_allowed_and_parent_escape(tmp_path: Path) ->
     project = tmp_path / "project"
     shared = tmp_path / "shared"
     policy = DirectoryPolicy(project, allowed=(str(shared),))
-    assert policy.shell_outside_target("echo ok > ./inside.txt") is None
-    assert policy.shell_outside_target(f"echo ok > {shared / 'out.txt'}") is None
-    outside = policy.shell_outside_target("echo no > ../outside.txt")
+    assert policy.shell_write_violation("echo ok > ./inside.txt") is None
+    assert policy.shell_write_violation(f"echo ok > {shared / 'out.txt'}") is None
+    outside = policy.shell_write_violation("echo no > ../outside.txt")
     assert outside is not None
     assert outside[0] == "../outside.txt"
+
+
+def test_shell_reads_are_not_mistaken_for_writes(tmp_path: Path) -> None:
+    policy = DirectoryPolicy(tmp_path / "project")
+    assert policy.shell_write_violation("cat ~/.amplifier/cache/module.py") is None
+    assert policy.shell_write_violation("rg ProviderInfo /tmp/provider.py") is None
+    assert policy.shell_write_violation("ls /tmp/elsewhere 2>/dev/null") is None
+
+
+def test_common_shell_mutations_still_enforce_write_roots(tmp_path: Path) -> None:
+    policy = DirectoryPolicy(tmp_path / "project")
+    assert policy.shell_write_violation("touch ../outside.txt") is not None
+    assert policy.shell_write_violation("cp ./source.txt ../outside.txt") is not None
+    assert policy.shell_write_violation("dd if=./source of=../outside.img") is not None
+    assert policy.shell_write_violation("rsync ./source/ ../outside/") is not None
+    assert policy.shell_write_violation("rm ../outside.txt") is not None
 
 
 def test_repository_and_instruction_paths_are_protected_by_default(tmp_path: Path) -> None:
@@ -67,7 +83,7 @@ def test_repository_and_instruction_paths_are_protected_by_default(tmp_path: Pat
         allowed, reason = policy.check_write(project / relative)
         assert not allowed, relative
         assert "protected by default" in reason
-    assert policy.shell_outside_target("echo bad > ./AGENTS.md") is not None
+    assert policy.shell_write_violation("echo bad > ./AGENTS.md") is not None
 
 
 def test_protected_paths_reach_filesystem_tool_config(tmp_path: Path) -> None:

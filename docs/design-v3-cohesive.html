@@ -114,7 +114,7 @@ input::placeholder { color: var(--dimmer); }
       <div style="border-top: 1px solid var(--rule); border-left: 2px solid {{ modeAccent }}; padding: 8px 18px; display: flex; align-items: flex-start; gap: 8px;">
         <span onClick="{{ cycleMode }}" title="shift+tab or click to cycle" style="flex-shrink: 0; font-size: 12px; padding-top: 2px; cursor: pointer; color: {{ modeColor }}; user-select: none;" style-hover="text-decoration: underline;">[{{ mode }}]</span>
         <span style="color: var(--green); font-weight: 700; padding-top: 2px; flex-shrink: 0;">❯</span>
-        <input ref="{{ inputRef }}" onInput="{{ onInput }}" onKeyDown="{{ onKeyDown }}" placeholder="Message Amplifier…  ( / commands · shift+tab mode · enter send · type mid-turn to steer )" style="flex: 1; background: transparent; border: none; outline: none; color: var(--bright); font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.5; padding: 2px 0 0;"></input>
+        <input ref="{{ inputRef }}" onInput="{{ onInput }}" onKeyDown="{{ onKeyDown }}" placeholder="Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )" style="flex: 1; background: transparent; border: none; outline: none; color: var(--bright); font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.5; padding: 2px 0 0;"></input>
       </div>
     </sc-if>
 
@@ -610,7 +610,7 @@ class Component extends DCLogic {
       : this.agentFocus ? "esc back to parent · transcript is the subagent's own"
       : this.palFilter !== null ? "↑↓ select · enter run · esc close"
       : this.running ? "esc interrupt · enter steer · shift+enter queue"
-      : "/ commands · shift+tab mode · ctrl-t tasks";
+      : "↑ history · ctrl+j newline · / commands";
     return {
       queuedText: this.queued ? "▹ queued next: \"" + this.queued + "\" · runs when this turn ends" : false,
       queuedBadge: this.queued ? " · q1" : "",
