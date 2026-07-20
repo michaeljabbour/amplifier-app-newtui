@@ -24,9 +24,7 @@ class FakeHooks:
         self.registered: list[tuple[str, int, str]] = []
         self.unregistered: list[str] = []
 
-    def register(
-        self, event: str, handler: Any, *, priority: int = 0, name: str = ""
-    ) -> Any:
+    def register(self, event: str, handler: Any, *, priority: int = 0, name: str = "") -> Any:
         self.registered.append((event, priority, name))
         return lambda: self.unregistered.append(name)
 
@@ -93,9 +91,7 @@ async def test_build_mode_asks_for_writes_with_standard_options() -> None:
 @pytest.mark.asyncio
 async def test_plan_mode_denies_writes_and_continues() -> None:
     hook, _, _, log = make_hook("plan")
-    result = await hook.handle_event(
-        "tool:pre", tool_pre("write_file", {"file_path": "a.py"})
-    )
+    result = await hook.handle_event("tool:pre", tool_pre("write_file", {"file_path": "a.py"}))
     assert result.action == "deny"
     assert result.reason is not None
     assert "Continue without" in result.reason
@@ -115,9 +111,7 @@ async def test_brainstorm_mode_denies_everything() -> None:
 async def test_denial_escalation_raises_needs_you_decision() -> None:
     hook, _, needs_you, _ = make_hook("plan")
     for index in range(3):
-        await hook.handle_event(
-            "tool:pre", tool_pre("write_file", {"file_path": f"f{index}.py"})
-        )
+        await hook.handle_event("tool:pre", tool_pre("write_file", {"file_path": f"f{index}.py"}))
     assert needs_you.pending_count == 1
     assert needs_you.pending[0].question == "Review the run's denial pattern?"
 
@@ -135,9 +129,7 @@ async def test_auto_mode_allows_read_write_without_classifier() -> None:
             return (True, "ok")
 
     hook, _, _, _ = make_hook("auto", classifier=Recording())
-    result = await hook.handle_event(
-        "tool:pre", tool_pre("write_file", {"file_path": "a.py"})
-    )
+    result = await hook.handle_event("tool:pre", tool_pre("write_file", {"file_path": "a.py"}))
     assert result.action == "continue"
     assert calls == []  # read/write bypass classification
 
@@ -180,9 +172,7 @@ async def test_auto_mode_broken_classifier_fails_closed() -> None:
             raise RuntimeError("provider down")
 
     hook, _, needs_you, _ = make_hook("auto", classifier=Broken())
-    result = await hook.handle_event(
-        "tool:pre", tool_pre("bash", {"command": "git push"})
-    )
+    result = await hook.handle_event("tool:pre", tool_pre("bash", {"command": "git push"}))
     assert result.action == "deny"
     assert needs_you.pending_count == 1
 
@@ -213,6 +203,51 @@ async def test_offline_classifier_allows_explicit_user_request() -> None:
         user_messages=("run the tests in tests/ please",),
     )
     assert allowed
+
+
+@pytest.mark.asyncio
+async def test_offline_classifier_authorizes_outside_project_read_request() -> None:
+    """Regression: a read-intent prompt ("look at ~/.claude") naming the target
+    verbatim must authorize an outside-project read. The OUTSIDE_PROJECT verb
+    gate previously listed only write-ish verbs (change/edit/run/write), so an
+    explicit read request could never reach the verbatim-target match."""
+    classifier = OfflineAutoClassifier()
+    allowed, reason = await classifier.classify(
+        action="ls ~/.claude",
+        capability=CapabilityClass.OUTSIDE_PROJECT,
+        target="~/.claude",
+        user_messages=("you can also look at ~/.claude for anything interesting in there",),
+    )
+    assert allowed
+    assert reason == "action matches an explicit user request"
+
+
+@pytest.mark.asyncio
+async def test_offline_classifier_still_denies_unrequested_outside_project() -> None:
+    """An outside-project read the user never asked for still denies."""
+    classifier = OfflineAutoClassifier()
+    allowed, reason = await classifier.classify(
+        action="ls ~/.claude",
+        capability=CapabilityClass.OUTSIDE_PROJECT,
+        target="~/.claude",
+        user_messages=("fix the typo in the readme",),
+    )
+    assert not allowed
+    assert "outside configured project boundary" in reason
+
+
+@pytest.mark.asyncio
+async def test_offline_classifier_denies_outside_project_read_verb_wrong_target() -> None:
+    """A read verb aimed at something else ("look at the readme") must not
+    authorize an unrelated outside-project target."""
+    classifier = OfflineAutoClassifier()
+    allowed, _ = await classifier.classify(
+        action="ls ~/.claude",
+        capability=CapabilityClass.OUTSIDE_PROJECT,
+        target="~/.claude",
+        user_messages=("look at the readme in this repo",),
+    )
+    assert not allowed
 
 
 @pytest.mark.asyncio
@@ -285,9 +320,7 @@ async def test_auto_mode_test_capability_statically_allowed() -> None:
             return (False, "must never run")
 
     hook, _, _, _ = make_hook("auto", classifier=Recording())
-    result = await hook.handle_event(
-        "tool:pre", tool_pre("bash", {"command": "uv run pytest -q"})
-    )
+    result = await hook.handle_event("tool:pre", tool_pre("bash", {"command": "uv run pytest -q"}))
     assert result.action == "continue"
     assert calls == []  # test capability bypasses classification
 
