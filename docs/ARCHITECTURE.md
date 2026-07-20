@@ -301,6 +301,11 @@ NewTuiApp
 └── FooterBar #footer-bar           mode · trust · bundle · $cost │ context-sensitive hints
 ```
 
+`TitleBar` owns the only 260 ms active-turn spinner timer. Each changed frame
+is emitted as a Textual message; `NewTuiApp` mirrors that already-rendered text
+to the native terminal window/tab title with a sanitized, bounded OSC 0 write.
+The timer is stopped at idle, and unmount restores a static application title.
+
 ### 5.2 State management (`ui/reducer.py`)
 
 `TranscriptReducer` is redux-*adjacent*: a stateful UIEvent→mutation translator, not a pure

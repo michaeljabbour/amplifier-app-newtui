@@ -12,7 +12,11 @@ step (lowercased) or ``ready`` / ``planning`` / ``brainstorming`` /
 
 from __future__ import annotations
 
+import unicodedata
+
 from textual.content import Content
+from textual.driver import Driver
+from textual.message import Message
 from textual.reactive import reactive
 from textual.timer import Timer
 from textual.widgets import Static
@@ -23,8 +27,37 @@ TITLE_SEPARATOR = " — "
 SPINNER_INTERVAL = 0.26
 """Seconds between spinner frames (~260ms per DESIGN-SPEC §2)."""
 
+TERMINAL_TITLE_MAX_CHARS = 180
+"""Keep macOS terminal tabs useful when a plan step has a long title."""
+
 APP_TITLE_NAME = "amplifier-app-newtui"
 PRODUCT_NAME = "Amplifier"
+
+
+def terminal_title_sequence(title: str) -> str:
+    """Build a safe OSC 0 sequence for a native terminal window/tab title.
+
+    Bundle names and plan steps can come from runtime data, so control
+    characters must never reach the OSC payload. Whitespace is collapsed and
+    the result is bounded so a verbose step does not take over the tab bar.
+    """
+
+    without_controls = "".join(
+        " " if unicodedata.category(character) == "Cc" else character
+        for character in title
+    )
+    safe_title = " ".join(without_controls.split())[:TERMINAL_TITLE_MAX_CHARS]
+    return f"\x1b]0;{safe_title}\x07"
+
+
+def write_terminal_title(driver: Driver | None, title: str) -> bool:
+    """Write ``title`` to native terminal chrome when a terminal is present."""
+
+    if driver is None or driver.is_headless or driver.is_web:
+        return False
+    driver.write(terminal_title_sequence(title))
+    driver.flush()
+    return True
 
 
 class TitleBar(Static):
@@ -54,10 +87,18 @@ class TitleBar(Static):
     session_short: reactive[str] = reactive("")
     running: reactive[bool] = reactive(False)
 
+    class TitleChanged(Message):
+        """The rendered title changed, including an active spinner frame."""
+
+        def __init__(self, title: str) -> None:
+            self.title = title
+            super().__init__()
+
     def __init__(self, *, id: str | None = None, classes: str | None = None) -> None:
         super().__init__(id=id, classes=classes)
         self._frame_index = 0
         self._spinner_timer: Timer | None = None
+        self._last_emitted_title = ""
 
     # -- text assembly -----------------------------------------------------
 
@@ -76,6 +117,7 @@ class TitleBar(Static):
     # -- painting ----------------------------------------------------------
 
     def _repaint(self) -> None:
+        title = self.title_text()
         if self.running:
             # Substitution kwargs insert values literally (no markup parse).
             self.update(
@@ -86,7 +128,10 @@ class TitleBar(Static):
                 )
             )
         else:
-            self.update(Content.from_markup("$title", title=self._plain_title()))
+            self.update(Content.from_markup("$title", title=title))
+        if self.is_mounted and title != self._last_emitted_title:
+            self._last_emitted_title = title
+            self.post_message(self.TitleChanged(title))
 
     def _plain_title(self) -> str:
         parts = [APP_TITLE_NAME, PRODUCT_NAME, self.state_text]
@@ -144,6 +189,9 @@ __all__ = [
     "APP_TITLE_NAME",
     "PRODUCT_NAME",
     "SPINNER_INTERVAL",
+    "TERMINAL_TITLE_MAX_CHARS",
     "TITLE_SEPARATOR",
     "TitleBar",
+    "terminal_title_sequence",
+    "write_terminal_title",
 ]

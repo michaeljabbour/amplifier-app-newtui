@@ -58,6 +58,10 @@ wired? `--demo` always works and exercises the whole UI offline.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+While Amplifier is working, the small title-bar spinner is mirrored into your
+terminal window or tab title. It uses the same active-turn timer, so it stops
+immediately when the turn finishes and consumes no idle redraw loop.
+
 The footer always shows your current mode, trust posture, and session cost on the left, and
 the keys that work *right now* on the right. The hints change with context — when in doubt,
 read the footer.

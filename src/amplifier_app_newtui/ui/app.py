@@ -52,7 +52,7 @@ from ..model.modes import DEFAULT_MODE, ModeProfile, cycle_mode, get_mode
 from ..model.turn import OutcomeLedger
 from . import app_support, keymap
 from .approval_bar import ApprovalBar
-from .chrome import TitleBar
+from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
 from .command_context import AppCommandContext
 from .composer import Composer
 from .footer import FooterBar
@@ -222,6 +222,9 @@ class NewTuiApp(App[None]):
         self.show_notice(f"copied on select · {len(text)} chars")
 
     def on_unmount(self) -> None:
+        # A quit during a running turn must not leave a frozen spinner in the
+        # terminal tab after Textual restores the shell screen.
+        write_terminal_title(self._driver, APP_TITLE_NAME)
         shutdown = getattr(self.adapter, "shutdown", None)
         if callable(shutdown):
             shutdown()  # stop the runtime thread (real sessions)
@@ -797,6 +800,12 @@ class NewTuiApp(App[None]):
         message.stop()
         if self.lanes_panel.display and not self.lanes_panel.has_focus:
             self.lanes_panel.focus_selected()
+
+    def on_title_bar_title_changed(self, message: TitleBar.TitleChanged) -> None:
+        """Mirror the in-app title into the native terminal window/tab title."""
+        message.stop()
+        self.title = message.title
+        write_terminal_title(self._driver, message.title)
 
     def copy_to_clipboard(self, text: str) -> None:
         """Clipboard writes go BOTH ways: OSC 52 (Textual's built-in, works
