@@ -106,6 +106,9 @@ KEYMAP: tuple[Binding, ...] = (
     # Submission / steering / queueing (spec §5).
     _b("submit", ("enter",), "enter", _IDLE),
     _b("steer", ("enter",), "enter", _RUNNING),
+    _b("insert_newline", ("ctrl+j", "ctrl+enter"), "ctrl+j", NO_APPROVAL),
+    _b("history_prev", ("up",), "↑", frozenset({"idle", "running"})),
+    _b("history_next", ("down",), "↓", frozenset({"idle", "running"})),
     _b("queue_message", ("shift+enter",), "shift+enter", NO_APPROVAL),
     _b("queue_message", ("alt+enter",), "alt+enter", NO_APPROVAL, fallback=True),
     # Mode & permission cycles (independent controls, ADR-0005 amendment).
@@ -178,13 +181,13 @@ FOOTER_HINTS: dict[str, str] = {
     "palette": "↑↓ select · enter run · esc close",
     "mention": "↑↓ select · enter/tab insert · esc close",
     "running": "esc interrupt · enter steer · shift+enter queue",
-    "idle": "/ commands · shift+tab mode · ctrl-t tasks",
+    "idle": "↑ history · ctrl+j newline · / commands",
 }
 
 
 COMPOSER_PLACEHOLDER = (
     "Message Amplifier…  "
-    "( / commands · shift+tab mode · enter send · type mid-turn to steer )"
+    "( ↑ history · ctrl+j newline · enter send · / commands )"
 )
 """Composer placeholder — exact string per DESIGN-SPEC §2."""
 

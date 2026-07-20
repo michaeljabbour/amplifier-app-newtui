@@ -8,7 +8,10 @@ from textual.app import App, ComposeResult
 from amplifier_app_newtui.ui.chrome import (
     APP_TITLE_NAME,
     SPINNER_INTERVAL,
+    TERMINAL_TITLE_MAX_CHARS,
     TitleBar,
+    terminal_title_sequence,
+    write_terminal_title,
 )
 from amplifier_app_newtui.ui.notices import NoticeSlot
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
@@ -64,6 +67,38 @@ def test_spinner_interval_is_260ms() -> None:
 
 def test_app_name_constant() -> None:
     assert APP_TITLE_NAME == "amplifier-app-newtui"
+
+
+def test_terminal_title_sequence_sanitizes_controls_and_bounds_length() -> None:
+    sequence = terminal_title_sequence(f"✳ working\x1b]0;spoof\x07\n{'x' * 300}")
+    assert sequence.startswith("\x1b]0;✳ working ]0;spoof x")
+    assert sequence.endswith("\x07")
+    payload = sequence.removeprefix("\x1b]0;").removesuffix("\x07")
+    assert "\x1b" not in payload
+    assert "\x07" not in payload
+    assert "\n" not in payload
+    assert len(payload) == TERMINAL_TITLE_MAX_CHARS
+
+
+def test_terminal_title_write_uses_osc_and_flushes() -> None:
+    class RecordingDriver:
+        is_headless = False
+        is_web = False
+
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            self.flushes = 0
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+    driver = RecordingDriver()
+    assert write_terminal_title(driver, "✦ amplifier-app-newtui")  # type: ignore[arg-type]
+    assert driver.writes == ["\x1b]0;✦ amplifier-app-newtui\x07"]
+    assert driver.flushes == 1
 
 
 # -- Pilot: spinner timer + rendering ------------------------------------------

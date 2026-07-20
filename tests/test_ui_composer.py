@@ -75,7 +75,7 @@ def test_placeholder_is_exact_spec_string() -> None:
     assert composer_input.placeholder == COMPOSER_PLACEHOLDER
     assert COMPOSER_PLACEHOLDER == (
         "Message Amplifier…  "
-        "( / commands · shift+tab mode · enter send · type mid-turn to steer )"
+        "( ↑ history · ctrl+j newline · enter send · / commands )"
     )
 
 
@@ -113,6 +113,46 @@ async def test_empty_enter_posts_nothing() -> None:
         await pilot.pause()
         assert not _of(app, Composer.Submit)
         assert not _of(app, Composer.Steer)
+
+
+@pytest.mark.asyncio
+async def test_ctrl_j_and_ctrl_enter_insert_newlines_before_submit() -> None:
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        await pilot.press(*"first", "ctrl+j", *"second", "ctrl+enter", *"third")
+        assert app.query_one(Composer).text == "first\nsecond\nthird"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert _of(app, Composer.Submit)[0].text == "first\nsecond\nthird"
+
+
+@pytest.mark.asyncio
+async def test_up_down_recall_prompts_and_restore_current_draft() -> None:
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        await pilot.press(*"first", "enter", *"second", "enter", *"draft")
+        composer = app.query_one(Composer)
+
+        await pilot.press("up")
+        assert composer.text == "second"
+        await pilot.press("up")
+        assert composer.text == "first"
+        await pilot.press("down")
+        assert composer.text == "second"
+        await pilot.press("down")
+        assert composer.text == "draft"
+
+
+@pytest.mark.asyncio
+async def test_resumed_prompt_history_is_seeded_and_deduplicated() -> None:
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        composer.seed_history(("older prompt", "latest prompt", "latest prompt"))
+        await pilot.press("up")
+        assert composer.text == "latest prompt"
+        await pilot.press("up")
+        assert composer.text == "older prompt"
 
 
 @pytest.mark.asyncio

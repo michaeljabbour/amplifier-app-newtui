@@ -58,6 +58,10 @@ wired? `--demo` always works and exercises the whole UI offline.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+While Amplifier is working, the small title-bar spinner is mirrored into your
+terminal window or tab title. It uses the same active-turn timer, so it stops
+immediately when the turn finishes and consumes no idle redraw loop.
+
 The footer always shows your current mode, trust posture, and session cost on the left, and
 the keys that work *right now* on the right. The hints change with context — when in doubt,
 read the footer.
@@ -67,7 +71,8 @@ read the footer.
 | You want to… | Do this |
 |---|---|
 | Send a message | type, **enter** |
-| Add a newline while composing | **ctrl+j** |
+| Recall an earlier prompt | **↑** for older, **↓** for newer/current draft |
+| Add a newline while composing | **ctrl+j** or **ctrl+enter** |
 | **Steer** the current turn (it's still running) | just type and press **enter** — your note is injected at the next step boundary |
 | Queue a **full next turn** while one runs | **shift+enter** (**alt+enter** on legacy terminals — the hint adapts) |
 | Interrupt the running turn | **esc** |
@@ -91,8 +96,9 @@ Things worth knowing:
 - **File mentions** autocomplete bounded, relative workspace paths. They insert an `@path`
   reference into your message; paths containing whitespace are quoted. **Esc** closes the
   suggestions without interrupting a running turn.
-- There is **no input history** on ↑/↓ — on an empty composer those keys navigate the
-  agent lanes panel instead.
+- **Prompt history** keeps submitted, steered and queued text for this app session; resumed
+  user turns seed it too. While browsing, **↓** eventually restores the draft you were
+  typing. A multi-line draft keeps normal vertical cursor movement.
 
 ## 4. Modes
 
@@ -224,7 +230,8 @@ arbitrary interpreter code.
 |---|---|---|
 | enter | send · steer · confirm | idle · running · in panels |
 | shift+enter (alt+enter) | queue next-turn message | any time |
-| ctrl+j | newline in composer | composing |
+| ctrl+j (ctrl+enter) | newline in composer | composing |
+| ↑ / ↓ | older/newer prompt; restore draft | single-line composer |
 | ↑ / ↓ | move file suggestion | `@file` suggestions open |
 | tab | insert selected file path | `@file` suggestions open |
 | shift+tab | cycle mode | any time |

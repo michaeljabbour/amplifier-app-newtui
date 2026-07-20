@@ -77,7 +77,7 @@ async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
         assert not app.rewind.display
         assert app.footer_bar.state.context == "idle"
         assert footer_right_text(app.footer_bar.state) == (
-            "/ commands · shift+tab mode · ctrl-t tasks"
+            "↑ history · ctrl+j newline · / commands"
         )
 
 

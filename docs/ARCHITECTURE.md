@@ -301,6 +301,11 @@ NewTuiApp
 └── FooterBar #footer-bar           mode · trust · bundle · $cost │ context-sensitive hints
 ```
 
+`TitleBar` owns the only 260 ms active-turn spinner timer. Each changed frame
+is emitted as a Textual message; `NewTuiApp` mirrors that already-rendered text
+to the native terminal window/tab title with a sanitized, bounded OSC 0 write.
+The timer is stopped at idle, and unmount restores a static application title.
+
 ### 5.2 State management (`ui/reducer.py`)
 
 `TranscriptReducer` is redux-*adjacent*: a stateful UIEvent→mutation translator, not a pure
@@ -356,12 +361,13 @@ It **only posts messages; it never executes anything**:
 | Enter (idle) | `Submit` (with staged image attachments) |
 | Enter (turn running) | `Steer` — text-only mid-turn steering |
 | Shift+Enter (Alt+Enter fallback) | `QueueMessage` — a full next turn |
-| Ctrl+J | literal newline (app-cli parity) |
+| Ctrl+J / Ctrl+Enter | literal newline (app-cli parity + terminal alternate) |
 | Large paste (>10 lines / 800 chars) | collapses to a `[Pasted #N · …]` stub, expanded verbatim at submit |
 | Image path paste / Ctrl+V | `[Image #N]` attachment (off-thread clipboard read) |
 | Text starting with `/` | posts `OpenPalette(filter=…)` on every edit |
 | `@query` after whitespace | posts a ranked workspace-file filter; arrows/enter/tab stay in the composer |
-| ↑/↓ on empty composer | lane navigation (there is deliberately no input history) |
+| ↑/↓ on single-line composer | bounded prompt history; ↓ restores the current draft |
+| ↑/↓ on empty composer with no history | lane navigation |
 | Esc | `EscPressed` → resolved by the app's Esc chain |
 
 ### 6.2 Commands (`commands/`)

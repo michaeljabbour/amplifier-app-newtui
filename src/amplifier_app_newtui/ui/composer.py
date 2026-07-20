@@ -28,6 +28,7 @@ anything itself:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from textual import events
 from textual.containers import Horizontal
@@ -41,6 +42,9 @@ from .keymap import COMPOSER_PLACEHOLDER, hint_label
 
 MAX_INPUT_HEIGHT = 6
 """Cap on the auto-growing input, in lines."""
+
+MAX_PROMPT_HISTORY = 500
+"""Bound the in-memory prompt ring without truncating individual prompts."""
 
 PASTE_LINE_THRESHOLD = 10
 PASTE_CHAR_THRESHOLD = 800
@@ -154,25 +158,43 @@ class ComposerInput(TextArea):
             event.stop()
             event.prevent_default()
             composer.handle_queue()
-        elif event.key == "ctrl+j":
+        elif event.key in ("ctrl+j", "ctrl+enter"):
             # Multi-line input, amplifier-app-cli parity (its banner:
-            # "Multi-line: Ctrl-J"). The TextArea grows to max-height 6.
+            # "Multi-line: Ctrl-J"). Ctrl+Enter is a terminal-supported
+            # alternate; the TextArea grows to max-height 6.
             # Ignored while empty: automation that sends Enter as CRLF
             # (e.g. node-pty key helpers) must not leave a phantom
             # newline in the just-cleared composer.
             event.stop()
             event.prevent_default()
             if self.text:
+                composer.end_history_navigation()
                 self.insert("\n")
-        elif event.key in ("up", "down") and not self.text:
-            # Empty composer: arrows drive the auto-opened lanes panel
-            # (spec §8 header "↑↓ select · enter focus") — the panel keeps
-            # composer focus at fan-out so typing still steers.
-            event.stop()
-            event.prevent_default()
-            composer.post_message(
-                Composer.NavKey(-1 if event.key == "up" else 1)
-            )
+        elif event.key == "up":
+            # Shell-style prompt history wins for a single-line draft (or
+            # while already browsing). Multi-line drafts retain TextArea's
+            # native vertical cursor movement.
+            history_eligible = composer.history_browsing or "\n" not in self.text
+            if history_eligible and composer.history_previous():
+                event.stop()
+                event.prevent_default()
+            elif not self.text:
+                # With no history, preserve lanes-panel navigation.
+                event.stop()
+                event.prevent_default()
+                composer.post_message(Composer.NavKey(-1))
+            else:
+                await super()._on_key(event)
+        elif event.key == "down":
+            if composer.history_next():
+                event.stop()
+                event.prevent_default()
+            elif not self.text:
+                event.stop()
+                event.prevent_default()
+                composer.post_message(Composer.NavKey(1))
+            else:
+                await super()._on_key(event)
         elif event.key == "ctrl+v":
             # Clipboard image paste (amplifier-app-cli parity): the app
             # reads the system clipboard off-thread; text paste stays on
@@ -185,6 +207,7 @@ class ComposerInput(TextArea):
             event.prevent_default()
             composer.post_message(Composer.EscPressed())
         else:
+            composer.end_history_navigation()
             await super()._on_key(event)
 
     async def _on_paste(self, event: events.Paste) -> None:
@@ -195,6 +218,7 @@ class ComposerInput(TextArea):
         if composer is None or not event.text:
             await super()._on_paste(event)
             return
+        composer.end_history_navigation()
         # Cmd+V of an image file and drag-and-drop both arrive here as a
         # bracketed paste of the file path — attach them, don't insert text.
         images = pasted_image_attachments(event.text)
@@ -324,6 +348,9 @@ class Composer(Horizontal):
         self._paste_seq = 0
         self._attachments: list[tuple[str, ImageAttachment]] = []  # (placeholder, image)
         self._image_seq = 0
+        self._history: list[str] = []
+        self._history_index: int | None = None
+        self._history_draft = ""
 
     def compose(self):
         yield self._badge
@@ -355,6 +382,7 @@ class Composer(Horizontal):
 
     def clear(self) -> None:
         self._input.clear()
+        self.end_history_navigation()
         self.mention_open = False
         self._pastes.clear()
         self._attachments.clear()
@@ -364,6 +392,7 @@ class Composer(Horizontal):
         """Stage a clipboard image and insert its ``[Image #N]`` placeholder
         (deleting the placeholder before submit drops the image)."""
         self._image_seq += 1
+        self.end_history_navigation()
         placeholder = f"[Image #{self._image_seq}]"
         self._attachments.append((placeholder, attachment))
         prefix = "" if not self._input.text or self._input.text.endswith((" ", "\n")) else " "
@@ -397,10 +426,51 @@ class Composer(Horizontal):
     def insert_text(self, text: str) -> None:
         """Insert *text* at the cursor (key pass-through from overlay
         strips — e.g. typing while the lanes panel holds focus)."""
+        self.end_history_navigation()
         self._input.insert(text)
+
+    def seed_history(self, prompts: Iterable[str]) -> None:
+        """Load persisted user prompts so resumed sessions keep ↑ history."""
+        for prompt in prompts:
+            self._remember_prompt(prompt)
+        self.end_history_navigation()
+
+    @property
+    def history_browsing(self) -> bool:
+        return self._history_index is not None
+
+    def history_previous(self) -> bool:
+        """Recall the previous prompt, preserving the current draft."""
+        if not self._history:
+            return False
+        if self._history_index is None:
+            self._history_draft = self._input.text
+            self._history_index = len(self._history) - 1
+        elif self._history_index > 0:
+            self._history_index -= 1
+        self._load_history_text(self._history[self._history_index])
+        return True
+
+    def history_next(self) -> bool:
+        """Move toward newer prompts and finally restore the saved draft."""
+        if self._history_index is None:
+            return False
+        if self._history_index < len(self._history) - 1:
+            self._history_index += 1
+            self._load_history_text(self._history[self._history_index])
+        else:
+            draft = self._history_draft
+            self.end_history_navigation()
+            self._load_history_text(draft)
+        return True
+
+    def end_history_navigation(self) -> None:
+        self._history_index = None
+        self._history_draft = ""
 
     def apply_file_mention(self, path: str) -> bool:
         """Replace the active ``@query`` with *path* and keep typing."""
+        self.end_history_navigation()
         active = active_file_mention(self._input.text, self._input.cursor_location)
         if active is None:
             return False
@@ -437,6 +507,7 @@ class Composer(Horizontal):
         if not text:
             self.post_message(self.EnterEmpty())
             return
+        self._remember_prompt(text)
         if self.running:
             # Steering is text-only (images ride a fresh submit only).
             self.post_message(self.Steer(text))
@@ -448,6 +519,7 @@ class Composer(Horizontal):
         text = self._expand(self._input.text).strip()
         if not text:
             return
+        self._remember_prompt(text)
         self.post_message(self.QueueMessage(text))
         self.clear()
 
@@ -476,6 +548,18 @@ class Composer(Horizontal):
             self.post_message(FileMentionIntent("clear"))
 
     # -- internals ---------------------------------------------------------------
+
+    def _remember_prompt(self, text: str) -> None:
+        prompt = text.strip()
+        if not prompt or (self._history and self._history[-1] == prompt):
+            return
+        self._history.append(prompt)
+        if len(self._history) > MAX_PROMPT_HISTORY:
+            del self._history[: len(self._history) - MAX_PROMPT_HISTORY]
+
+    def _load_history_text(self, text: str) -> None:
+        self._input.load_text(text)
+        self._input.cursor_location = _cursor_location(text, len(text))
 
     def _apply_mode(self) -> None:
         mode_class = f"mode-{self._mode.id}"

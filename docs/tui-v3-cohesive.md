@@ -114,7 +114,7 @@ terminals (`COLORTERM=truecolor`) the app must request 24-bit color so the
 
 ### Composer
 - `[mode]` clickable mode-colored label, green bold `❯ `, then input.
-- Placeholder: `Message Amplifier…  ( / commands · shift+tab mode · ctrl-p perms · enter send · type mid-turn to steer )`
+- Placeholder: `Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )`
 - Hidden while an approval is pending.
 
 ### Approval bar (replaces composer)
@@ -167,7 +167,7 @@ Right side, dimmer, context-sensitive hints:
 
 | State          | Hint |
 |----------------|------|
-| idle           | `/ commands · shift+tab mode · ctrl-t tasks · ctrl-p perms` |
+| idle           | `↑ history · ctrl+j newline · / commands` |
 | running        | `esc interrupt · enter steer · shift+enter queue` |
 | approval open  | `arrows select · enter confirm · esc deny` |
 | palette open   | `↑↓ select · enter run · esc close` |

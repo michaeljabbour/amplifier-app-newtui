@@ -201,6 +201,9 @@ def announce_ready(app: NewTuiApp) -> None:
     # tool traffic skipped) so scrollback matches what the model knows.
     from .live_tail import answer_spans
 
+    app.composer.seed_history(
+        text for role, text in app.adapter.restored_history if role == "user"
+    )
     for role, text in app.adapter.restored_history:
         if role == "user":
             app.append_block(

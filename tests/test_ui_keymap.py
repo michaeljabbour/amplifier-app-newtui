@@ -32,6 +32,9 @@ def test_required_actions_present_with_expected_keys() -> None:
     assert by_action["show_needs_you"][0].keys == ("ctrl+y",)
     assert by_action["open_rewind"][0].keys == ("ctrl+r",)
     assert by_action["submit"][0].keys == ("enter",)
+    assert by_action["insert_newline"][0].keys == ("ctrl+j", "ctrl+enter")
+    assert by_action["history_prev"][0].keys == ("up",)
+    assert by_action["history_next"][0].keys == ("down",)
 
 
 def test_shift_enter_with_alt_enter_fallback() -> None:
@@ -73,13 +76,13 @@ def test_footer_hints_exact_spec_strings() -> None:
     assert FOOTER_HINTS["palette"] == "↑↓ select · enter run · esc close"
     assert FOOTER_HINTS["mention"] == "↑↓ select · enter/tab insert · esc close"
     assert FOOTER_HINTS["running"] == "esc interrupt · enter steer · shift+enter queue"
-    assert FOOTER_HINTS["idle"] == "/ commands · shift+tab mode · ctrl-t tasks"
+    assert FOOTER_HINTS["idle"] == "↑ history · ctrl+j newline · / commands"
 
 
 def test_composer_placeholder_exact() -> None:
     assert COMPOSER_PLACEHOLDER == (
         "Message Amplifier…  "
-        "( / commands · shift+tab mode · enter send · type mid-turn to steer )"
+        "( ↑ history · ctrl+j newline · enter send · / commands )"
     )
 
 
