@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from amplifier_app_newtui.kernel.demo import BRAINSTORM_PROMPT
 from amplifier_app_newtui.ui.app import NewTuiApp
@@ -17,11 +18,13 @@ _SNAPSHOT = (
     / "test_ui_snapshots"
     / "test_double_esc_rewind_snapshot.raw"
 )
+_DYNAMIC_TERMINAL_ID = re.compile(r"terminal-\d+")
 
 
 def _clean_svg(value: str) -> str:
-    """Keep generated SVG reviewable by git without trailing whitespace."""
-    return "\n".join(line.rstrip() for line in value.splitlines()) + "\n"
+    """Remove Textual's per-process namespace and trailing whitespace."""
+    stable_ids = _DYNAMIC_TERMINAL_ID.sub("terminal-SNAPSHOT", value)
+    return "\n".join(line.rstrip() for line in stable_ids.splitlines()) + "\n"
 
 
 def test_double_esc_rewind_snapshot() -> None:
