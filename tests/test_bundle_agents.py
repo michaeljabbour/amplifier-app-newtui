@@ -56,6 +56,8 @@ def test_newtui_bundle_mounts_mcp_and_skills_tools() -> None:
     modules = {t.get("module") for t in (data.get("tools") or []) if isinstance(t, dict)}
     assert "tool-mcp" in modules
     assert "tool-skills" in modules
+    # team-pulse read tools by default (mounts unconfigured without crashing).
+    assert "tool-team-pulse" in modules
 
 
 def test_newtui_bundle_mounts_native_mode_system() -> None:

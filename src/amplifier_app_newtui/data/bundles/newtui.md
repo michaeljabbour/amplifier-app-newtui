@@ -54,6 +54,15 @@ tools:
     config:
       visibility:
         enabled: false
+  # team-pulse: read-only lens over a team corpus (all GET endpoints). url/key
+  # are empty here by design — mount() resolves them from settings or the
+  # AMPLIFIER_TEAM_PULSE_URL / _KEY env vars, and is skipped (degraded, not
+  # fatal) when unconfigured, so a clean install without a corpus still boots.
+  - module: tool-team-pulse
+    source: git+https://github.com/microsoft/amplifier-bundle-team-pulse@main#subdirectory=modules/tool-team-pulse
+    config:
+      url: ""
+      key: ""
   # Native modes: tool-mode lets the app switch the active mode (the app
   # drives it from its shift+tab posture bridge). gate_policy warn = the
   # first agent-initiated set is confirmed (the app retries once).
