@@ -1,6 +1,6 @@
 # Amplifier App — New TUI
 
-Ground-up full-screen Textual TUI rebuild of amplifier-app-cli, 100% compliant with docs/DESIGN-SPEC.md (Amplifier TUI v3 — Cohesive).
+A full-screen terminal UI for [Amplifier](https://github.com/microsoft/amplifier) — modes, steering, live subagent lanes, rewind, and cost tracking — built directly on amplifier-core and amplifier-foundation.
 
 ![The TUI running its built-in demo session](docs/images/demo-session.svg)
 
@@ -44,7 +44,7 @@ uv sync            # installs everything, incl. pinned amplifier-core / amplifie
 ```sh
 uv run amplifier-newtui doctor   # checks install, PATH, settings health; exit 0 = ready
 uv run amplifier-newtui --demo   # full UI on a scripted session — free, offline, zero credentials
-uv run amplifier-newtui          # the real thing (talks to your provider — API usage costs money)
+uv run amplifier-newtui          # a real session (talks to your provider — API usage costs money)
 ```
 
 If `doctor` reports findings, it explains each fix. Note that it checks install/PATH/settings health — not credentials; a missing API key surfaces at first real launch (`--demo` never needs one).
@@ -72,7 +72,7 @@ uv run amplifier-newtui update --check-only     # check the mounted bundles/modu
 
 A *bundle* is a packaged agent configuration — provider + tools + agents + behaviors. The app ships one (`newtui`), so you never need `--bundle` to get started. The `bundle` group (`list · show · use · clear · current · add · remove · update`) reads and writes the same registry and settings the reference `amplifier` CLI uses.
 
-Inside the TUI, `/` opens the command palette. Beyond the core (mode/plan/rewind/ledger), it now includes the live-session commands `/status · /model · /effort · /compact · /clear · /tools · /agents · /diff`, plus `/skills`, `/skill <name>`, and `/mcp` — see the [User Guide §7](docs/USER-GUIDE.md#7-commands). **MCP servers** (`~/.amplifier/mcp.json`) and **skills** are mounted natively, and **approvals are off by default** (gating turns on only in a mode like `careful` — [§4/§5](docs/USER-GUIDE.md#4-modes)).
+Inside the TUI, `/` opens the command palette: mode/plan/rewind/ledger, the live-session commands `/status · /model · /effort · /compact · /clear · /tools · /agents · /diff`, and `/skills · /skill <name> · /mcp` (see [User Guide §7](docs/USER-GUIDE.md#7-commands)). MCP servers (`~/.amplifier/mcp.json`) and skills are mounted natively; approvals are off by default — gating turns on only in a mode like `careful` ([§4/§5](docs/USER-GUIDE.md#4-modes)).
 
 ### Use it on your own projects
 
