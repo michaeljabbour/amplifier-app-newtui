@@ -68,6 +68,7 @@ uv run amplifier-newtui run "PROMPT"           # execute one prompt headlessly, 
 printf 'PROMPT\n' | uv run amplifier-newtui run # stdin one-shot
 uv run amplifier-newtui run --output-format json "PROMPT"       # JSON-only stdout
 uv run amplifier-newtui run --output-format json-trace "PROMPT" # JSON + normalized event trace
+uv run amplifier-newtui run --output-format jsonl "PROMPT"      # live versioned event stream
 uv run amplifier-newtui allowed-dirs add ../shared --project     # persistent write capability
 uv run amplifier-newtui denied-dirs add .git --project           # persistent write block
 uv run amplifier-newtui bundle list            # bundles from the shared registry (--all incl. deps)
@@ -76,6 +77,10 @@ uv run amplifier-newtui update --check-only     # check the mounted bundles/modu
 ```
 
 A *bundle* is a packaged agent configuration — provider + tools + agents + behaviors. The app ships one (`newtui`), so you never need `--bundle` to get started. The `bundle` group (`list · show · use · clear · current · add · remove · update`) reads and writes the same registry and settings the reference `amplifier` CLI uses.
+
+JSON modes reserve stdout for machine-readable output; module diagnostics go to stderr.
+`json` and `json-trace` emit one document, while `jsonl` flushes `session.started`,
+normalized `runtime.event`, and one terminal `turn.completed` or `error` record live.
 
 Inside the TUI, `/` opens the command palette: mode/plan/rewind/ledger, live-session
 commands, `/allowed-dirs` and `/denied-dirs` for session-scoped path capabilities, and

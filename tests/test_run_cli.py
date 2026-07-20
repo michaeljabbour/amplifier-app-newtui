@@ -7,7 +7,7 @@ import json
 
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel.events import PromptSubmit
+from amplifier_app_newtui.kernel.events import PromptComplete, PromptSubmit
 from amplifier_app_newtui.main import main
 
 
@@ -36,6 +36,20 @@ class FailingRuntime(FakeRuntime):
     async def start(self) -> None:
         print("diagnostic before failure")
         raise RuntimeError("offline setup failed")
+
+
+class StreamingRuntime(FakeRuntime):
+    event_was_written: asyncio.Event | None = None
+
+    async def submit(self, prompt: str) -> str:
+        type(self).last_prompt = prompt
+        self.queue.put_nowait(PromptSubmit(session_id=self.session_id, prompt=prompt))
+        assert self.event_was_written is not None
+        await asyncio.wait_for(self.event_was_written.wait(), timeout=1)
+        self.queue.put_nowait(
+            PromptComplete(session_id=self.session_id, response="streamed response")
+        )
+        return "streamed response"
 
 
 def test_run_reads_stdin_and_prints_text(monkeypatch) -> None:
@@ -77,6 +91,64 @@ def test_json_trace_contains_normalized_events(monkeypatch) -> None:
     assert payload["metadata"]["event_count"] == 1
 
 
+def test_jsonl_is_versioned_sequenced_and_streamed_live(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "amplifier_app_newtui.kernel.runtime.RealRuntime", StreamingRuntime
+    )
+    StreamingRuntime.event_was_written = asyncio.Event()
+
+    class LiveCapture:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def write(self, value: str) -> int:
+            self.lines.extend(line for line in value.splitlines() if line)
+            if self.lines:
+                record = json.loads(self.lines[-1])
+                if (
+                    record["type"] == "runtime.event"
+                    and record["event"]["kind"] == "prompt_submit"
+                ):
+                    assert StreamingRuntime.event_was_written is not None
+                    StreamingRuntime.event_was_written.set()
+            return len(value)
+
+        def flush(self) -> None:
+            return None
+
+    output = LiveCapture()
+    from amplifier_app_newtui.main import _run_once
+
+    exit_code = asyncio.run(
+        _run_once("stream me", None, "jsonl", jsonl_output=output)  # type: ignore[arg-type]
+    )
+    assert exit_code == 0
+    records = [json.loads(line) for line in output.lines]
+    assert [record["type"] for record in records] == [
+        "session.started",
+        "runtime.event",
+        "runtime.event",
+        "turn.completed",
+    ]
+    assert [record["sequence"] for record in records] == [1, 2, 3, 4]
+    assert {record["schema_version"] for record in records} == {1}
+    assert records[1]["event"]["kind"] == "prompt_submit"
+    assert records[-1]["response"] == "streamed response"
+
+
+def test_jsonl_cli_reserves_stdout_for_json_lines(monkeypatch) -> None:
+    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FakeRuntime)
+    result = CliRunner().invoke(
+        main, ["run", "prompt arg", "--output-format", "jsonl"]
+    )
+    assert result.exit_code == 0
+    records = [json.loads(line) for line in result.stdout.splitlines()]
+    assert records[0]["type"] == "session.started"
+    assert records[-1]["type"] == "turn.completed"
+    assert "module startup diagnostic" not in result.stdout
+    assert "module startup diagnostic" in result.stderr
+
+
 def test_json_failure_is_still_one_parseable_document(monkeypatch) -> None:
     monkeypatch.setattr(
         "amplifier_app_newtui.kernel.runtime.RealRuntime", FailingRuntime
@@ -91,6 +163,19 @@ def test_json_failure_is_still_one_parseable_document(monkeypatch) -> None:
     assert payload["error_type"] == "RuntimeError"
     assert "diagnostic before failure" not in result.stdout
     assert "diagnostic before failure" in result.stderr
+
+
+def test_jsonl_failure_is_one_terminal_error_record(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "amplifier_app_newtui.kernel.runtime.RealRuntime", FailingRuntime
+    )
+    result = CliRunner().invoke(
+        main, ["run", "prompt arg", "--output-format", "jsonl"]
+    )
+    assert result.exit_code == 1
+    records = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [record["type"] for record in records] == ["error"]
+    assert records[0]["error_type"] == "RuntimeError"
 
 
 def test_run_without_prompt_or_pipe_is_usage_error() -> None:

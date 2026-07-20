@@ -165,10 +165,12 @@ src/amplifier_app_newtui/
 `main()` is a click group. With no subcommand it runs `asyncio.run(_launch_tui(...))` — one
 `asyncio.run` for the whole app. Flags: `--demo` (scripted offline runtime), `--bundle`
 (name or URI). Subcommands: `run [PROMPT]` (headless one-shot; stdin plus
-`text|json|json-trace` output), `sessions`, `resume ID`, `doctor`, `init` (provider setup),
+`text|json|json-trace|jsonl` output), `sessions`, `resume ID`, `doctor`, `init` (provider setup),
 `update` (bundle/module refresh), `allowed-dirs`, `denied-dirs`, and the `bundle` group
 (`list/show/use/clear/current/add/remove/update`). JSON modes redirect all runtime chatter
-to stderr so stdout is exactly one parseable document.
+to stderr. Document modes keep stdout to one parseable object; JSONL adds a versioned,
+sequenced envelope around the normalized queue the TUI consumes and flushes each event
+before the turn completes.
 
 `_launch_tui` picks the adapter — `DemoRuntimeAdapter` for `--demo`, otherwise
 `RealRuntimeAdapter(bundle, resume_id)` — and hands it to `NewTuiApp`. That adapter choice is

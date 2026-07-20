@@ -97,7 +97,8 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 - [ ] Running + Enter → **steer** this turn (applies at next step boundary; echoed with ↳; consumed steer removed).
 - [ ] Running + Shift+Enter (or second steer) → **queue** full next-turn message; queued strip shows `▹ queued next: "<text>" · runs when this turn ends`; footer shows ` · q1`; auto-runs at turn end (`queued message picked up`).
 - [ ] `/` prefix opens the palette live-filtered as you type.
-- [ ] Esc priority order: lane-focus → palette → rewind → lanes → interrupt-running.
+- [ ] Esc priority order: lane-focus → palette → rewind → lanes → interrupt-running;
+  a second Esc within 750ms opens the existing rewind picker.
 
 ## 6. Command palette
 
@@ -126,7 +127,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 ## 9. Rewind & checkpoints
 
 - [ ] Every turn rule records a checkpoint `{id: tN, label, cost-at-time}`.
-- [ ] ctrl-r / `/rewind` / clicking a rule opens picker strip: `‹ rewind › tN · $<cost> · <label> › [enter fork] [esc close]`; ‹/› navigate, fork forks the session from that checkpoint.
+- [ ] ctrl-r / `/rewind` / double-Esc after interrupt / clicking a rule opens picker strip: `‹ rewind › tN · $<cost> · <label> › [enter fork] [esc close]`; ‹/› navigate, fork forks the session from that checkpoint.
 - [ ] Forking actually restores conversation state to that point (session fork in the store).
 
 ## 10. Ledger, evidence, context

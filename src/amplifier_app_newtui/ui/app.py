@@ -150,6 +150,7 @@ class NewTuiApp(App[None]):
         self._selection_timer: Any = None  # copy-on-select debounce
         self._last_selection_copied = ""  # suppress duplicate auto-copies
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
+        self.esc_sequence = app_support.EscSequence()
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
         self._lanes_fanout_open = False  # active-lane edge for the auto-open
@@ -396,6 +397,7 @@ class NewTuiApp(App[None]):
                     bundle=self.adapter.bundle_name,
                     session_short=self.adapter.session_short,
                     cost=self.reducer.session_cost,
+                    compaction=self.adapter.compaction,
                 ),
             )
         )
@@ -1077,7 +1079,7 @@ class NewTuiApp(App[None]):
         )
 
     def context_usage(self) -> ContextUsage:
-        window = 200_000
+        window = self.adapter.compaction.max_tokens
         memory = min(self.reducer.memory_tokens, window)
         tools = min(self.reducer.tool_tokens, window - memory)
         return ContextUsage(

@@ -48,6 +48,9 @@ This is the complete set of keys the app consumes:
 | `routing.matrix` | Active model-routing matrix name for delegated sub-agents; feeds `hooks-routing` (`default_matrix`) when that hook is mounted (via an overlay). Not mounted in the base bundle | none (base) | global |
 | `routing.overrides` | Per-role candidate overrides merged onto the matrix | none | project |
 | `config.providers` | Provider entries merged by identity (`id` \| `instance_id` \| `module`): reconfigure the bundled provider or append new ones (see the README's Providers section) | none | global (credentials via `${VAR}`) |
+| `context.max_tokens` | Effective context window used by `context-simple` and `/context` | `200000` in the packaged newtui bundle | global or project |
+| `context.compact_threshold` | `context-simple` window fraction that triggers automatic compaction (`0 < value <= 1`) | `0.8` in the packaged newtui bundle | global or project |
+| `context.auto_compact` | Enable `context-simple` automatic compaction | `true` in the packaged newtui bundle | global or project |
 | `modules.tools` | Tool entries merged by identity; filesystem permission lists union across scopes | project root is implicitly writable | global / project / local / session |
 | `pricing.live` | Live Helicone pricing: fresh `~/.amplifier/pricing_cache.json` (24 h TTL) applies at startup, else a background fetch swaps rates in for **new turns only**; `false` keeps the built-in offline table | `true` | global |
 | `sources.modules` | Map of `module_id → source URI`: redirect where a module is fetched from | none | local (dev checkouts) |

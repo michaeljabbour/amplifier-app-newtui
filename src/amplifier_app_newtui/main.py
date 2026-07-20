@@ -5,7 +5,7 @@ session (RealRuntime); ``--demo`` swaps in the scripted DemoRuntime
 (fully offline — no bundle, no network, no credentials). Subcommands:
 
 - ``run [PROMPT]`` — one-shot session from an argument or piped stdin;
-  emits text, JSON, or JSON with a normalized event trace.
+  emits text, one-document JSON, or live versioned JSONL events.
 - ``sessions``     — list stored session ids for this project.
 - ``resume ID``    — launch the TUI resuming a stored session.
 - ``doctor``       — plain-text setup checkup (exit 0 ok / 1 findings).
@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 import sys
 from time import monotonic
-from typing import Literal, cast
+from typing import IO, Literal, cast
 
 import click
 
@@ -52,12 +52,16 @@ async def _launch_tui(
 
 
 async def _run_once(
-    prompt: str, bundle: str | None, output_format: Literal["text", "json", "json-trace"]
+    prompt: str,
+    bundle: str | None,
+    output_format: Literal["text", "json", "json-trace", "jsonl"],
+    *,
+    jsonl_output: IO[str] | None = None,
 ) -> int:
     from .kernel.runtime import RealRuntime
 
     runtime = RealRuntime(bundle=bundle)
-    json_mode = output_format in ("json", "json-trace")
+    json_mode = output_format in ("json", "json-trace", "jsonl")
     started = monotonic()
     response = ""
     error: Exception | None = None
@@ -81,6 +85,80 @@ async def _run_once(
             except Exception as caught:
                 if error is None:
                     error = caught
+
+    if output_format == "jsonl":
+        from .kernel.jsonl import JsonlRecord, JsonlRecords
+
+        records = JsonlRecords()
+        output = jsonl_output or sys.stdout
+
+        def emit(record: JsonlRecord) -> None:
+            output.write(record.model_dump_json(fallback=str) + "\n")
+            output.flush()
+
+        # Hold the caller's stdout handle while runtime/module print() calls
+        # are redirected.  JSONL records still reach the original stream as
+        # soon as their normalized UIEvent enters the queue.
+        with redirect_stdout(sys.stderr):
+            try:
+                await runtime.start()
+                session_id = runtime.session_id
+                bundle_name = runtime.bundle_name
+                model_name = runtime.model_name
+                emit(
+                    records.session_started(
+                        session_id=session_id,
+                        bundle=bundle_name,
+                        model=model_name,
+                    )
+                )
+
+                submit = asyncio.create_task(runtime.submit(prompt))
+                while not submit.done():
+                    next_event = asyncio.create_task(runtime.queue.get())
+                    done, _pending = await asyncio.wait(
+                        (submit, next_event), return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if next_event in done:
+                        emit(records.runtime_event(next_event.result()))
+                    else:
+                        next_event.cancel()
+                        try:
+                            await next_event
+                        except asyncio.CancelledError:
+                            pass
+                while not runtime.queue.empty():
+                    emit(records.runtime_event(runtime.queue.get_nowait()))
+                response = await submit
+            except Exception as caught:
+                error = caught
+                while not runtime.queue.empty():
+                    emit(records.runtime_event(runtime.queue.get_nowait()))
+            finally:
+                try:
+                    await runtime.cleanup()
+                except Exception as caught:
+                    if error is None:
+                        error = caught
+
+        duration_ms = round((monotonic() - started) * 1000, 3)
+        if error is None:
+            emit(
+                records.turn_completed(
+                    session_id=session_id,
+                    response=response,
+                    duration_ms=duration_ms,
+                )
+            )
+            return 0
+        emit(
+            records.error(
+                session_id=session_id,
+                error=error,
+                duration_ms=duration_ms,
+            )
+        )
+        return 1
 
     if json_mode:
         # Bundle/module diagnostics and accidental print() calls belong on
@@ -151,10 +229,10 @@ def main(ctx: click.Context, demo: bool, bundle: str | None) -> None:
 @click.option("--bundle", default=None, help="Bundle name or URI.")
 @click.option(
     "--output-format",
-    type=click.Choice(("text", "json", "json-trace")),
+    type=click.Choice(("text", "json", "json-trace", "jsonl")),
     default="text",
     show_default=True,
-    help="Response format; JSON modes reserve stdout for one document.",
+    help="Response format; JSON modes reserve stdout for machine-readable output.",
 )
 def run(prompt: str | None, bundle: str | None, output_format: str) -> None:
     """Execute PROMPT (or piped stdin) in one real session."""
@@ -164,7 +242,7 @@ def run(prompt: str | None, bundle: str | None, output_format: str) -> None:
             _run_once(
                 resolved_prompt,
                 bundle,
-                cast(Literal["text", "json", "json-trace"], output_format),
+                cast(Literal["text", "json", "json-trace", "jsonl"], output_format),
             )
         )
     )

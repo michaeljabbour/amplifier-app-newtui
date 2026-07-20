@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from amplifier_app_newtui.kernel.compaction import CompactionConfig
 from amplifier_app_newtui.kernel.session_ops import ModelListing, SkillInfo, StatusInfo
 from amplifier_app_newtui.ui.session_ops_view import (
     diff_spans,
@@ -42,7 +43,16 @@ def test_status_spans_include_mode_and_cost() -> None:
     )
     text = _text(
         status_spans(
-            info, mode="build", bundle="newtui", session_short="abcdef", cost=Decimal("1.23")
+            info,
+            mode="build",
+            bundle="newtui",
+            session_short="abcdef",
+            cost=Decimal("1.23"),
+            compaction=CompactionConfig(
+                max_tokens=200_000,
+                auto_compact=True,
+                compact_threshold=0.8,
+            ),
         )
     )
     assert "build" in text
@@ -50,6 +60,8 @@ def test_status_spans_include_mode_and_cost() -> None:
     assert "$1.23" in text
     assert "high" in text
     assert "2" in text  # agent count
+    assert "auto compact" in text
+    assert "on · 80% · 200,000 token window" in text
 
 
 def test_names_spans_roster_and_empty() -> None:

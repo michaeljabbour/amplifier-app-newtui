@@ -10,7 +10,9 @@ surface — no hidden state.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from decimal import Decimal
+from time import monotonic
 from typing import TYPE_CHECKING
 
 from textual.binding import Binding, BindingType
@@ -54,6 +56,32 @@ _GLOBAL_ACTIONS = frozenset(
         "open_rewind",
     }
 )
+
+
+@dataclass
+class EscSequence:
+    """The small state machine behind interrupt-then-backtrack.
+
+    Only an Esc that actually targets a running turn arms the sequence.
+    Panel-close and approval Esc presses therefore cannot accidentally open
+    rewind.  The second press may land before or just after turn close-out.
+    """
+
+    interrupted_at: float | None = None
+
+    def arm_interrupt(self, now: float) -> None:
+        self.interrupted_at = now
+
+    def consume_backtrack(self, now: float) -> bool:
+        interrupted_at = self.interrupted_at
+        self.interrupted_at = None
+        return (
+            interrupted_at is not None
+            and 0 <= now - interrupted_at <= keymap.ESC_BACKTRACK_WINDOW_SECONDS
+        )
+
+    def reset(self) -> None:
+        self.interrupted_at = None
 
 
 def global_bindings() -> list[BindingType]:
@@ -486,8 +514,9 @@ def native_modes_segments(catalog: object) -> tuple[Segment, ...]:
     return tuple(segments)
 
 
-def handle_esc(app: NewTuiApp) -> None:
-    """Resolve one Esc press via ``keymap.ESC_CHAIN`` (spec §5 table)."""
+def handle_esc(app: NewTuiApp, *, now: float | None = None) -> None:
+    """Resolve Esc priority plus interrupt-then-backtrack (spec §5)."""
+    pressed_at = monotonic() if now is None else now
     checks = {
         "lane_focus": lambda: app.transcript.focused_lane is not None,
         # Mockup Escape: ``if (this.palFilter !== null)`` — ANY live slash
@@ -507,8 +536,18 @@ def handle_esc(app: NewTuiApp) -> None:
     }
     for context, action in keymap.ESC_CHAIN:
         if checks[context]():
+            if action == "interrupt_running":
+                if app.esc_sequence.consume_backtrack(pressed_at):
+                    app.action_open_rewind()
+                else:
+                    app.esc_sequence.arm_interrupt(pressed_at)
+                    actions[action]()
+                return
+            app.esc_sequence.reset()
             actions[action]()
             return
+    if app.esc_sequence.consume_backtrack(pressed_at):
+        app.action_open_rewind()
 
 
 def footer_state(app: NewTuiApp) -> FooterState:
@@ -529,6 +568,7 @@ def footer_state(app: NewTuiApp) -> FooterState:
 
 __all__ = [
     "APPROVAL_NOTICE",
+    "EscSequence",
     "QUEUED_NOTICE",
     "STEER_NOTICE",
     "announce_ready",

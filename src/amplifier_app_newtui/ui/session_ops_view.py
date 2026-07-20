@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from ..kernel.compaction import CompactionConfig
 from ..kernel.session_ops import ModelListing, SkillInfo, StatusInfo
 from ..model.blocks import Segment
 from .live_tail import answer_spans
@@ -68,10 +69,22 @@ def status_spans(
     bundle: str,
     session_short: str,
     cost: Decimal,
+    compaction: CompactionConfig,
 ) -> tuple[Segment, ...]:
     """``/status``: coordinator snapshot joined with app-side mode/cost."""
     session = session_short or (info.session_id[:6] if info.session_id else "—")
     spans = _header("Status", f"session {session}")
+    if compaction.auto_compact is True:
+        threshold = (
+            f" · {compaction.compact_threshold:.0%}"
+            if compaction.compact_threshold is not None
+            else ""
+        )
+        compaction_label = f"on{threshold} · {compaction.max_tokens:,} token window"
+    elif compaction.auto_compact is False:
+        compaction_label = f"off · {compaction.max_tokens:,} token window"
+    else:
+        compaction_label = f"bundle default · {compaction.max_tokens:,} token window"
     rows: tuple[tuple[str, str], ...] = (
         ("bundle", bundle or "—"),
         ("mode", mode),
@@ -79,6 +92,7 @@ def status_spans(
         ("model", info.model or "(default)"),
         ("effort", info.effort or "(default)"),
         ("messages", str(info.messages)),
+        ("auto compact", compaction_label),
         ("tools", str(info.tools)),
         ("agents", str(len(info.agents))),
         ("cost", f"${cost:.2f}"),
