@@ -135,6 +135,10 @@ def permissions_block(
         Segment(text="· ", style_token="blue"),
         Segment(text="Permissions", style_token="bright", bold=True),
         Segment(text=f"  {trust_str}\n", style_token="dim"),
+        Segment(
+            text="  execution · workspace-confined · protected paths enforced\n",
+            style_token="dim",
+        ),
     ]
     spans.extend(
         Segment(text=f"  {slot.label()}\n", style_token="fg") for slot in surface.slots()

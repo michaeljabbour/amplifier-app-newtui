@@ -108,8 +108,8 @@ src/amplifier_app_newtui/
 │   ├── mcp_config.py      ~/.amplifier/mcp.json read/modify/write (for /mcp)
 │   ├── events.py          UIEvent union + normalize() — THE normalization boundary
 │   ├── queue_bridge.py    hooks → asyncio.Queue[UIEvent]
-│   ├── governance_hook.py app-side tool:pre trust gate — PORTED BUT NOT WIRED
-│   │                       (gating is done by native hooks-mode/hooks-approval; §7.2)
+│   ├── governance_hook.py app-side tool:pre approval + confinement gate (§7.2)
+│   ├── safety.py          typed two-axis approval / execution resolution
 │   ├── approval.py        ApprovalBroker: tickets, timeout→deny, defer to needs-you
 │   ├── steering.py        StepBoundaryBridge: mid-turn context injection
 │   ├── spawner.py         SessionSpawner: in-process subagents + routing preference apply
@@ -122,7 +122,8 @@ src/amplifier_app_newtui/
 │   ├── clipboard.py       clipboard image ingestion
 │   ├── display.py         DisplaySystem: kernel messages → Notification UIEvents
 │   ├── demo.py            DemoRuntime: scripted offline event producer
-│   ├── directory_permissions.py  shared path policy + settings administration
+│   ├── directory_permissions.py  shared path policy + protected defaults
+│   ├── file_mentions.py   bounded workspace-file discovery and ranking
 │   └── trackers/          task_status, stream_status, runtime_status
 ├── model/             pure domain state (no Textual, no amplifier-core)
 │   ├── blocks.py          TranscriptBlock discriminated union (20 kinds) + id allocator
@@ -148,7 +149,8 @@ src/amplifier_app_newtui/
     ├── reducer.py         TranscriptReducer: UIEvent → transcript mutations
     ├── transcript.py      TranscriptView + pure render_block() per block kind
     ├── live_tail.py       the single mutable streaming region
-    ├── composer.py        input TextArea: submit/steer/queue, paste, attachments
+    ├── composer.py        input TextArea: submit/steer/queue, paste, @file mentions
+    ├── file_mentions.py   controlled workspace-path autocomplete strip
     ├── keymap.py          keymap-as-data + ESC_CHAIN + validation
     ├── palette.py         command palette strip (substring filter)
     ├── lanes_panel.py     live subagent panel
@@ -171,6 +173,11 @@ src/amplifier_app_newtui/
 to stderr. Document modes keep stdout to one parseable object; JSONL adds a versioned,
 sequenced envelope around the normalized queue the TUI consumes and flushes each event
 before the turn completes.
+
+The packages under `sdk/python` and `sdk/typescript` deliberately contain no runtime
+implementation. Each spawns this command, sends the prompt over stdin, validates schema v1
+plus sequence/terminal invariants, and exposes the normalized runtime records as a typed
+iterator. “The CLI is the API” keeps TUI, automation, and SDK behavior on one surface.
 
 `_launch_tui` picks the adapter — `DemoRuntimeAdapter` for `--demo`, otherwise
 `RealRuntimeAdapter(bundle, resume_id)` — and hands it to `NewTuiApp`. That adapter choice is
@@ -230,7 +237,7 @@ Two channels are consumed independently:
 Plus lifecycle (`PromptSubmit/Complete`, `ExecutionStart/End`), telemetry
 (`ProviderResponseUsage`, `ProviderNotice`), session (`SessionStart/End/Fork/Resume`),
 approvals/cancel (`ApprovalRequired/Granted/Denied`, `CancelRequested/Completed`), subagents
-(`AgentSpawned/Completed`), `Notification`, and `ContextInjected`.
+(`AgentSpawned/Completed`), `Notification`, `ContextInjected`, and `ContextCompacted`.
 
 ### 4.2 Bridge (`kernel/queue_bridge.py`)
 
@@ -312,7 +319,9 @@ unidirectional loop: events flow down through the reducer; intents flow up as me
 
 **Two-region model.** `TranscriptView` holds the durable, immutable history;
 `LiveTail` is the single mutable region that renders streaming deltas and consolidates into
-an immutable `Answer` block at `stream_block_end`.
+an immutable `Answer` block at `stream_block_end`. Completed streaming lines already use
+the final answer renderer while only the trailing partial line stays mutable; pipe tables
+remain held until their widths are stable, and half-open fences retain code styling.
 
 **Pure rendering.** Each block kind has a `_render_*` function; `render_block(block, width)`
 returns lines of segments referencing theme variables (via `ui/segments.py`) — which makes
@@ -351,6 +360,7 @@ It **only posts messages; it never executes anything**:
 | Large paste (>10 lines / 800 chars) | collapses to a `[Pasted #N · …]` stub, expanded verbatim at submit |
 | Image path paste / Ctrl+V | `[Image #N]` attachment (off-thread clipboard read) |
 | Text starting with `/` | posts `OpenPalette(filter=…)` on every edit |
+| `@query` after whitespace | posts a ranked workspace-file filter; arrows/enter/tab stay in the composer |
 | ↑/↓ on empty composer | lane navigation (there is deliberately no input history) |
 | Esc | `EscPressed` → resolved by the app's Esc chain |
 
@@ -379,6 +389,10 @@ The palette (`ui/palette.py`) is a strip docked above the composer (never a moda
 substring-filtered (not fuzzy), slaved to composer text, and posts `CommandRun` messages
 rather than executing anything itself.
 
+The file mention strip follows the same controlled-widget pattern. Filesystem discovery
+lives in `kernel/file_mentions.py`, is bounded, prunes dependency/build trees, and never
+follows symlinks; the UI only presents relative paths.
+
 ---
 
 ## 7. Governance, approvals, and turn machinery
@@ -393,6 +407,13 @@ fail-safe default** for anything unknown. `resolve(mode, tool, input)` yields a
 `DenialLog` counts denials and escalates at 3 consecutive or 20 total. `PermissionSurface`
 adds explicit slot overrides, command exceptions and blocks; `GovernanceHook` consults it
 live through adapter callables, so the pure model never imports kernel code.
+
+`kernel/safety.py` keeps approval and execution confinement as a typed two-axis result.
+An allow decision can therefore remain valid while execution is still blocked by the
+workspace boundary. `DirectoryPolicy` supplies the hard path check to filesystem tools and
+protects `.git`, `.agents`, `.codex`, and `AGENTS.md` by default; recognizable shell paths
+use the same resolution. This is policy enforcement, not an OS sandbox for opaque
+interpreter code.
 
 ### 7.2 Gating: app postures + native modes
 

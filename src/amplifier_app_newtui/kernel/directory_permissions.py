@@ -23,6 +23,14 @@ _CONFIG_KEY: dict[DirectoryKind, str] = {
     "denied": "denied_write_paths",
 }
 
+PROTECTED_PROJECT_PATHS: tuple[str, ...] = (
+    ".git",
+    ".agents",
+    ".codex",
+    "AGENTS.md",
+)
+"""Instruction and repository-control paths denied inside writable roots."""
+
 
 @dataclass(frozen=True)
 class DirectoryEntry:
@@ -151,6 +159,9 @@ class DirectoryPolicy:
         self.project_dir = project_dir.resolve()
         self._base_allowed = self._stable((str(self.project_dir), *allowed))
         self._base_denied = self._stable(denied)
+        self._protected = self._stable(
+            [str(self.project_dir / relative) for relative in PROTECTED_PROJECT_PATHS]
+        )
         self._session_allowed: list[str] = []
         self._session_denied: list[str] = []
 
@@ -169,7 +180,13 @@ class DirectoryPolicy:
 
     @property
     def denied(self) -> tuple[str, ...]:
-        return tuple(self._stable([*self._base_denied, *self._session_denied]))
+        return tuple(
+            self._stable([*self._protected, *self._base_denied, *self._session_denied])
+        )
+
+    @property
+    def protected(self) -> tuple[str, ...]:
+        return tuple(self._protected)
 
     @property
     def session_allowed(self) -> tuple[str, ...]:
@@ -204,6 +221,8 @@ class DirectoryPolicy:
         if not candidate.is_absolute():
             candidate = (cwd or self.project_dir) / candidate
         resolved = candidate.resolve(strict=False)
+        if self._within_any(resolved, self.protected):
+            return (False, f"path is protected by default · {resolved}")
         if self._within_any(resolved, self.denied):
             return (False, f"path is within denied directories · {resolved}")
         if self._within_any(resolved, self.allowed):
@@ -241,7 +260,11 @@ class DirectoryPolicy:
             token = raw.strip("'\";,(){}[]")
             if token.startswith(("http://", "https://")):
                 continue
-            if not token.startswith(("/", "~/", "./", "../")):
+            protected_relative = any(
+                token == relative or token.startswith(f"{relative}/")
+                for relative in PROTECTED_PROJECT_PATHS
+            )
+            if not protected_relative and not token.startswith(("/", "~/", "./", "../")):
                 continue
             allowed, reason = self.check_write(token)
             if not allowed:
@@ -287,6 +310,7 @@ __all__ = [
     "DirectoryEntry",
     "DirectoryKind",
     "DirectoryPolicy",
+    "PROTECTED_PROJECT_PATHS",
     "apply_policy_to_mount_plan",
     "configured_entries",
     "policy_from_mount_plan",

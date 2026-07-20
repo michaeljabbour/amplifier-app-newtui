@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from inspect import isawaitable
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_WINDOW = 200_000
 _SETTING_KEYS = ("max_tokens", "compact_threshold", "auto_compact")
+AccountingMode = Literal["provider-observed", "estimated"]
 
 
 @dataclass(frozen=True)
@@ -24,12 +26,73 @@ class CompactionConfig:
     max_tokens: int = DEFAULT_CONTEXT_WINDOW
     auto_compact: bool | None = None
     compact_threshold: float | None = None
+    accounting: AccountingMode = "estimated"
 
     @property
     def threshold_tokens(self) -> int | None:
         if self.compact_threshold is None:
             return None
         return round(self.max_tokens * self.compact_threshold)
+
+
+class CompactionRuntimeBinding:
+    """Bind NewTUI's effective policy to the context that actually mounted.
+
+    Older ``context-simple`` releases accepted ``auto_compact`` in bundle
+    configuration without consuming it. Contexts with an ``auto_compact``
+    attribute receive the flag directly; older threshold-only contexts use
+    an infinite internal threshold when automatic compaction is disabled.
+    Future contexts can consume exact provider usage through one of the
+    observer methods detected here.
+    """
+
+    _OBSERVERS = ("record_observed_input_tokens", "set_observed_input_tokens")
+
+    def __init__(self, context: Any, config: CompactionConfig) -> None:
+        self._context = context
+        self._observer = next(
+            (
+                candidate
+                for name in self._OBSERVERS
+                if callable(candidate := getattr(context, name, None))
+            ),
+            None,
+        )
+        self.config = CompactionConfig(
+            max_tokens=config.max_tokens,
+            auto_compact=config.auto_compact,
+            compact_threshold=config.compact_threshold,
+            accounting=(
+                "provider-observed" if self._observer is not None else "estimated"
+            ),
+        )
+
+    def apply(self) -> CompactionConfig:
+        auto_compact = self.config.auto_compact
+        threshold = self.config.compact_threshold
+        if hasattr(self._context, "max_tokens"):
+            self._context.max_tokens = self.config.max_tokens
+        if auto_compact is not None and hasattr(self._context, "auto_compact"):
+            self._context.auto_compact = auto_compact
+        if hasattr(self._context, "compact_threshold"):
+            if auto_compact is False and not hasattr(self._context, "auto_compact"):
+                self._context.compact_threshold = float("inf")
+            elif threshold is not None:
+                self._context.compact_threshold = threshold
+        return self.config
+
+    async def observe_input_tokens(self, input_tokens: int) -> bool:
+        """Feed an exact server-observed input count when supported."""
+        if self._observer is None or input_tokens <= 0:
+            return False
+        try:
+            result = self._observer(input_tokens)
+            if isawaitable(result):
+                await result
+            return True
+        except Exception:  # noqa: BLE001 - optional telemetry must not break a turn
+            logger.warning("context rejected provider-observed token usage", exc_info=True)
+            return False
 
 
 def _context_config(mount_plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -120,8 +183,10 @@ def compaction_config(mount_plan: dict[str, Any]) -> CompactionConfig:
 
 
 __all__ = [
+    "AccountingMode",
     "DEFAULT_CONTEXT_WINDOW",
     "CompactionConfig",
+    "CompactionRuntimeBinding",
     "apply_compaction_settings",
     "compaction_config",
 ]

@@ -44,6 +44,7 @@ from ..model.trust import (
 )
 from .approval import STANDARD_OPTIONS, ApprovalBroker, ApprovalDetail
 from .directory_permissions import DirectoryPolicy
+from .safety import resolve_safety
 
 _MAX_USER_MESSAGES = 12
 _MAX_MESSAGE_CHARS = 32_768
@@ -254,25 +255,21 @@ class GovernanceHook:
             else resolve(self._mode(), tool_name, tool_input)
         )
 
-        policy = self._directory_policy
-        if policy is not None and decision.capability == CapabilityClass.WRITE and target:
-            allowed, reason = policy.check_write(target)
-            if not allowed:
-                return self._deny(CapabilityClass.OUTSIDE_PROJECT, action, reason)
-        if (
-            policy is not None
-            and decision.capability == CapabilityClass.READ
-            and target
-            and not policy.within_allowed(target)
-        ):
-            decision = self._resolve_capability(CapabilityClass.OUTSIDE_PROJECT)
-        if policy is not None and decision.capability == CapabilityClass.EXEC:
-            outside = policy.shell_outside_target(action)
-            if outside is not None:
-                target, reason = outside
-                if "denied directories" in reason:
-                    return self._deny(CapabilityClass.OUTSIDE_PROJECT, action, reason)
-                decision = self._resolve_capability(CapabilityClass.OUTSIDE_PROJECT)
+        safety = resolve_safety(
+            decision,
+            action=action,
+            target=target,
+            directory_policy=self._directory_policy,
+            resolve_capability=self._resolve_capability,
+        )
+        if safety.blocked:
+            return self._deny(
+                CapabilityClass.OUTSIDE_PROJECT,
+                action,
+                safety.execution_reason,
+            )
+        decision = safety.approval
+        target = safety.target or target
 
         if decision.classifier_gated:
             return await self._classify(decision, action, target)

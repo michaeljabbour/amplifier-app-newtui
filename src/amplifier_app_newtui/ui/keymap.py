@@ -27,6 +27,7 @@ Context = Literal[
     "idle",  # composer focused, no turn running
     "running",  # a turn is executing
     "palette",  # command palette strip open
+    "mention",  # workspace-file autocomplete open
     "lanes",  # agent lanes panel open
     "lane_focus",  # a subagent lane is focused (child transcript shown)
     "rewind",  # rewind picker strip open
@@ -40,6 +41,7 @@ ALL_CONTEXTS: frozenset[Context] = frozenset(
         "idle",
         "running",
         "palette",
+        "mention",
         "lanes",
         "lane_focus",
         "rewind",
@@ -91,6 +93,7 @@ def _b(
 
 
 _PALETTE: frozenset[Context] = frozenset({"palette"})
+_MENTION: frozenset[Context] = frozenset({"mention"})
 _LANES: frozenset[Context] = frozenset({"lanes"})
 _LANE_FOCUS: frozenset[Context] = frozenset({"lane_focus"})
 _REWIND: frozenset[Context] = frozenset({"rewind"})
@@ -117,6 +120,10 @@ KEYMAP: tuple[Binding, ...] = (
     _b("palette_up", ("up",), "↑↓", _PALETTE),
     _b("palette_down", ("down",), "↑↓", _PALETTE),
     _b("palette_run", ("enter",), "enter", _PALETTE),
+    _b("mention_up", ("up",), "↑↓", _MENTION),
+    _b("mention_down", ("down",), "↑↓", _MENTION),
+    _b("mention_accept", ("enter", "tab"), "enter/tab", _MENTION),
+    _b("mention_close", ("escape",), "esc", _MENTION),
     _b("lane_up", ("up",), "↑↓", _LANES),
     _b("lane_down", ("down",), "↑↓", _LANES),
     _b("focus_lane", ("enter",), "enter", _LANES),
@@ -169,6 +176,7 @@ FOOTER_HINTS: dict[str, str] = {
     "approval": "arrows select · enter confirm · esc deny",
     "lane_focus": "esc back to parent · transcript is the subagent's own",
     "palette": "↑↓ select · enter run · esc close",
+    "mention": "↑↓ select · enter/tab insert · esc close",
     "running": "esc interrupt · enter steer · shift+enter queue",
     "idle": "/ commands · shift+tab mode · ctrl-t tasks",
 }

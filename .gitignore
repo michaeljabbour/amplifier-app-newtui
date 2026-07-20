@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+sdk/typescript/node_modules/
+sdk/typescript/dist/
+sdk/typescript/dist-test/
 exports/
 docs/notes/
 .ai/

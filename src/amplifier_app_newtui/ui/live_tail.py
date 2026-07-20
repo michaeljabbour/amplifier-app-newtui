@@ -24,13 +24,13 @@ from __future__ import annotations
 import re
 from time import monotonic
 
-from textual.markup import escape
 from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Static
 
 from ..model.blocks import Answer, Segment
 from ..model.evidence import EvidenceLink
+from .segments import segment_markup
 
 THROTTLE_SECONDS = 1 / 30
 """Minimum interval between tail repaints (30Hz — inside the 30–60Hz budget)."""
@@ -261,6 +261,59 @@ def visible_length(lines: list[str]) -> int:
     return cut
 
 
+def _open_fence(source: str) -> str | None:
+    """Return the active fence marker after all completed lines."""
+    active: str | None = None
+    for line in source.splitlines():
+        stripped = line.strip()
+        marker = (
+            "```"
+            if stripped.startswith("```")
+            else "~~~"
+            if stripped.startswith("~~~")
+            else None
+        )
+        if marker is None:
+            continue
+        if active is None:
+            active = marker
+        elif marker == active:
+            active = None
+    return active
+
+
+def streaming_spans(source: str) -> tuple[Segment, ...]:
+    """Render completed streaming lines through the final answer pipeline.
+
+    Only the trailing partial line remains plain. A trailing table run is
+    held back until its paragraph break arrives, and a partial line inside
+    an open fence uses the same indented teal treatment as the final answer.
+    """
+    lines = source.split("\n")
+    cut = visible_length(lines)
+    table_held = cut < len(lines)
+    visible = "\n".join(lines[:cut]) if table_held else source
+    if not visible:
+        return ()
+
+    if table_held:
+        committed, partial = visible, ""
+    elif "\n" in visible:
+        committed, partial = visible.rsplit("\n", 1)
+    else:
+        committed, partial = "", visible
+
+    spans: list[Segment] = list(answer_spans(committed)) if committed else []
+    if committed and partial:
+        spans.append(Segment(text="\n"))
+    if partial:
+        if _open_fence(committed) is not None:
+            spans.append(Segment(text=f"  {partial}", style_token="teal"))
+        else:
+            spans.append(Segment(text=partial))
+    return tuple(spans)
+
+
 class LiveTail(Static):
     """Streaming tail widget: accumulate deltas, throttle paints, consolidate.
 
@@ -374,12 +427,20 @@ class LiveTail(Static):
         self.update(self._markup())
 
     def _markup(self) -> str:
-        text = escape(self.visible_source())
-        if not text:
+        visible = self.visible_source()
+        if not visible:
             return ""
         if self._block_type == "thinking":
-            return f"[italic $dim]{text}[/]"
-        return f"[$fg]{text}[/]"
+            from textual.markup import escape
+
+            return f"[italic $dim]{escape(visible)}[/]"
+        return "".join(segment_markup(segment) for segment in streaming_spans(self._source))
 
 
-__all__ = ["THROTTLE_SECONDS", "LiveTail", "answer_spans", "visible_length"]
+__all__ = [
+    "THROTTLE_SECONDS",
+    "LiveTail",
+    "answer_spans",
+    "streaming_spans",
+    "visible_length",
+]

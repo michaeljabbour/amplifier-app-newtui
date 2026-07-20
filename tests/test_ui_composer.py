@@ -9,7 +9,13 @@ from textual.app import App, ComposeResult
 from textual.message import Message
 
 from amplifier_app_newtui.model.modes import get_mode
-from amplifier_app_newtui.ui.composer import Composer, ComposerInput, ModeBadge
+from amplifier_app_newtui.ui.composer import (
+    Composer,
+    ComposerInput,
+    ModeBadge,
+    active_file_mention,
+)
+from amplifier_app_newtui.ui.file_mentions import FileMentionIntent
 from amplifier_app_newtui.ui.keymap import COMPOSER_PLACEHOLDER
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
@@ -43,6 +49,9 @@ class ComposerApp(App[None]):
     def on_composer_palette_filter_cleared(
         self, message: Composer.PaletteFilterCleared
     ) -> None:
+        self.messages.append(message)
+
+    def on_file_mention_intent(self, message: FileMentionIntent) -> None:
         self.messages.append(message)
 
     def on_composer_esc_pressed(self, message: Composer.EscPressed) -> None:
@@ -131,6 +140,48 @@ async def test_alt_enter_fallback_posts_queue_message() -> None:
 def test_queue_hint_swaps_on_missing_kitty_protocol() -> None:
     assert Composer(kitty_protocol=True).queue_hint == "shift+enter"
     assert Composer(kitty_protocol=False).queue_hint == "alt+enter"
+
+
+def test_active_file_mention_only_matches_token_at_cursor() -> None:
+    text = "review @src/ap then later"
+    assert active_file_mention(text, (0, 14)) == ("src/ap", 7, 14)
+    assert active_file_mention(text, (0, len(text))) is None
+    assert active_file_mention("mail@example.com", (0, 16)) is None
+
+
+@pytest.mark.asyncio
+async def test_file_mention_posts_filter_and_intercepts_navigation() -> None:
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        await pilot.press("@", "s", "r", "c")
+        await pilot.pause()
+        filters = [
+            message
+            for message in _of(app, FileMentionIntent)
+            if message.action == "filter"
+        ]
+        assert [message.query for message in filters] == ["", "s", "sr", "src"]
+
+        composer = app.query_one(Composer)
+        composer.mention_open = True
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        intents = _of(app, FileMentionIntent)
+        assert [message.delta for message in intents if message.action == "move"] == [1]
+        assert sum(message.action == "accept" for message in intents) == 1
+        assert not _of(app, Composer.Submit)
+
+
+@pytest.mark.asyncio
+async def test_apply_file_mention_replaces_query_and_quotes_spaces() -> None:
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        await pilot.press(*"open @rea")
+        await pilot.pause()
+        assert composer.apply_file_mention("docs/read me.md") is True
+        await pilot.pause()
+        assert composer.text == 'open @"docs/read me.md" '
 
 
 def test_short_paste_stays_inline() -> None:

@@ -138,6 +138,10 @@ class RuntimeAdapter:
         del staged
         return None
 
+    async def workspace_files(self) -> tuple[str, ...]:
+        """Relative paths available to composer ``@file`` autocomplete."""
+        return ()
+
     async def list_skills(self) -> tuple[Any, ...]:
         return ()
 
@@ -426,6 +430,11 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is None:
             return None
         return await self._in_runtime(self._runtime.diff(staged))
+
+    async def workspace_files(self) -> tuple[str, ...]:
+        if self._runtime is None:
+            return ()
+        return await self._in_runtime(self._runtime.workspace_files())
 
     async def list_skills(self) -> tuple[Any, ...]:
         if self._runtime is None:

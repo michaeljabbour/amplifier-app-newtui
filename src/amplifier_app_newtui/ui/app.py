@@ -56,6 +56,12 @@ from .chrome import TitleBar
 from .command_context import AppCommandContext
 from .composer import Composer
 from .footer import FooterBar
+from .file_mentions import (
+    FileMentionIntent,
+    FileMentionStrip,
+    close_file_mentions,
+    handle_file_mention_intent,
+)
 from .lanes_panel import LanesPanel
 from .live_tail import LiveTail
 from .needs_you import NeedsYouList
@@ -162,6 +168,7 @@ class NewTuiApp(App[None]):
         self.lanes_panel = LanesPanel(id="lanes-panel")
         self.rewind = RewindStrip(id="rewind-strip")
         self.queued_strip = QueuedStrip(id="queued-strip")
+        self.file_mentions = FileMentionStrip(id="file-mentions")
         self.composer = Composer(kitty_protocol=kitty_protocol, id="composer")
         self.footer_bar = FooterBar(id="footer-bar")
 
@@ -175,6 +182,7 @@ class NewTuiApp(App[None]):
         yield self.lanes_panel
         yield self.rewind
         yield self.queued_strip
+        yield self.file_mentions
         with Container(id="composer-slot"):
             yield self.composer
         yield self.footer_bar
@@ -235,6 +243,7 @@ class NewTuiApp(App[None]):
         self.adapter.attach(self)
         try:
             await self.adapter.start(lambda: app_support.announce_ready(self))
+            self.file_mentions.set_files(await self.adapter.workspace_files())
         except Exception as error:  # boot failed — show why, don't crash out
             # (CancelledError/KeyboardInterrupt stay uncaught: a real
             # shutdown mid-boot must not read as "session failed to start".)
@@ -679,6 +688,7 @@ class NewTuiApp(App[None]):
     def on_composer_submit(self, message: Composer.Submit) -> None:
         message.stop()
         text = message.text
+        close_file_mentions(self)
         selected = self.palette.selected_command if self.palette.is_open else None
         self.palette.apply_filter(None)
         if text.startswith("/"):
@@ -717,6 +727,7 @@ class NewTuiApp(App[None]):
 
     def on_composer_steer(self, message: Composer.Steer) -> None:
         message.stop()
+        close_file_mentions(self)
         # Mockup onKeyDown: an open palette match runs BEFORE the steer
         # branch — a slash command typed mid-turn runs, never steers (§6).
         selected = self.palette.selected_command if self.palette.is_open else None
@@ -733,6 +744,7 @@ class NewTuiApp(App[None]):
 
     def on_composer_queue_message(self, message: Composer.QueueMessage) -> None:
         message.stop()
+        close_file_mentions(self)
         # Mockup onKeyDown: every Enter — shift held or not — runs an open
         # palette's top match BEFORE the queue/submit branch (§5/§6).
         selected = self.palette.selected_command if self.palette.is_open else None
@@ -759,6 +771,7 @@ class NewTuiApp(App[None]):
 
     def on_composer_open_palette(self, message: Composer.OpenPalette) -> None:
         message.stop()
+        close_file_mentions(self)
         self.palette.apply_filter(message.filter)
         self._refresh_footer()
 
@@ -768,6 +781,9 @@ class NewTuiApp(App[None]):
         message.stop()
         self.palette.apply_filter(None)
         self._refresh_footer()
+
+    def on_file_mention_intent(self, message: FileMentionIntent) -> None:
+        handle_file_mention_intent(self, message)
 
     def on_composer_nav_key(self, message: Composer.NavKey) -> None:
         message.stop()

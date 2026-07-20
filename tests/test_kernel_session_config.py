@@ -34,6 +34,8 @@ from amplifier_app_newtui.kernel.config import (
     resolve_config,
 )
 from amplifier_app_newtui.kernel.compaction import (
+    CompactionConfig,
+    CompactionRuntimeBinding,
     apply_compaction_settings,
     compaction_config,
 )
@@ -215,6 +217,51 @@ def test_context_compaction_settings_apply_to_effective_mount_plan() -> None:
         "auto_compact": False,
     }
     assert compaction_config(mount_plan).threshold_tokens == 89_600
+
+
+def test_runtime_binding_disables_legacy_threshold_only_context() -> None:
+    class LegacyContext:
+        max_tokens = 200_000
+        compact_threshold = 0.8
+
+    context = LegacyContext()
+    effective = CompactionRuntimeBinding(
+        context,
+        CompactionConfig(
+            max_tokens=128_000,
+            compact_threshold=0.7,
+            auto_compact=False,
+        ),
+    ).apply()
+    assert context.max_tokens == 128_000
+    assert context.compact_threshold == float("inf")
+    assert effective.accounting == "estimated"
+
+
+@pytest.mark.asyncio
+async def test_runtime_binding_uses_native_switch_and_observed_accounting() -> None:
+    class ModernContext:
+        max_tokens = 200_000
+        compact_threshold = 0.8
+        auto_compact = True
+
+        def __init__(self) -> None:
+            self.observed: list[int] = []
+
+        async def record_observed_input_tokens(self, tokens: int) -> None:
+            self.observed.append(tokens)
+
+    context = ModernContext()
+    binding = CompactionRuntimeBinding(
+        context,
+        CompactionConfig(compact_threshold=0.75, auto_compact=False),
+    )
+    effective = binding.apply()
+    assert context.auto_compact is False
+    assert context.compact_threshold == 0.75
+    assert effective.accounting == "provider-observed"
+    assert await binding.observe_input_tokens(12_345)
+    assert context.observed == [12_345]
 
 
 def test_invalid_context_compaction_settings_are_ignored(caplog) -> None:

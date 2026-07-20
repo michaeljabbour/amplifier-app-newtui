@@ -43,6 +43,8 @@ CONSUMED_EVENTS: tuple[str, ...] = (
     "provider:error",
     "provider:retry",
     "provider:throttle",
+    # Context telemetry
+    "context:compaction",
     # Session lifecycle
     "session:start",
     "session:end",

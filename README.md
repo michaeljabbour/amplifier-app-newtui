@@ -81,13 +81,19 @@ A *bundle* is a packaged agent configuration — provider + tools + agents + beh
 JSON modes reserve stdout for machine-readable output; module diagnostics go to stderr.
 `json` and `json-trace` emit one document, while `jsonl` flushes `session.started`,
 normalized `runtime.event`, and one terminal `turn.completed` or `error` record live.
+That JSONL stream is the SDK contract: the dependency-free
+[Python](sdk/python/README.md) and zero-runtime-dependency
+[TypeScript](sdk/typescript/README.md) clients are thin subprocess wrappers, so they cannot
+drift into a second implementation of Amplifier behavior.
 
 Inside the TUI, `/` opens the command palette: mode/plan/rewind/ledger, live-session
 commands, `/allowed-dirs` and `/denied-dirs` for session-scoped path capabilities, and
 `/skills · /skill <name> · /mcp` (see [User Guide §7](docs/USER-GUIDE.md#7-commands)).
-The mounted filesystem tool hard-enforces write paths; the kernel governance hook applies
-the same posture and outside-project boundary to tool calls, while bundle-native modes
-such as `careful` can add their own confirmation policy.
+Type `@` after whitespace to autocomplete a workspace file into the composer. The mounted
+filesystem tool hard-enforces write paths; the kernel keeps approval and execution
+confinement as separate decisions, with `.git`, `.agents`, `.codex`, and `AGENTS.md`
+protected by default. Bundle-native modes such as `careful` can add confirmation policy
+without weakening that path boundary.
 
 ### Use it on your own projects
 
@@ -145,6 +151,8 @@ src/amplifier_app_newtui/   the installable app (kernel / model / ui / commands)
 tests/                      offline test suite (no credentials required)
 docs/                       user guide, architecture, design spec, ADRs (docs/notes/ is local scratch, gitignored)
 scripts/                    maintenance utilities (README screenshot regen)
+sdk/python/                 thin typed Python client over CLI JSONL
+sdk/typescript/             thin typed TypeScript client over CLI JSONL
 bundle.md                   the repo's amplifier bundle (packaged copy kept byte-identical)
 ```
 

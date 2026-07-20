@@ -52,7 +52,8 @@ addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "sdk/python/src"]
+extraPaths = ["sdk/python/src"]
 venvPath = "."
 venv = ".venv"
 exclude = ["**/__pycache__"]
