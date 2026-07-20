@@ -28,10 +28,14 @@ default; `tool-mcp` is the one addition beyond anchors, kept by request.
 - [x] **team-pulse** read tools mounted in the base bundle (12 GET-only lens tools; safe when unconfigured).
 - [x] **`update`** — `amplifier-newtui update` (`--check-only/--yes/--force`) over foundation `check_bundle_status`/`update_bundle`, scoped to the composed bundles (active + overlays); `--force` runs `uv cache clean`; self-update (app/platform) intentionally out of scope (printed hint). Rich table report.
 
-**Remaining (Bucket B):**
-- [ ] **Complete `init`** — authoritative env-var via `provider.get_info().config_fields[secret].env_var` (current guess is wrong for azure/gemini/copilot), a `config.providers` settings writer, field wizard, provider install, first-run + auto-init-from-env.
-- [ ] **Remove/manage ingested sources** — delete knowledge/memory sources (needs scoping: which bundle owns fragments).
-- [ ] Nice-to-have: `routing list/use` CLI; `/config` live editing; session-manager ops (delete/rename/background); notifications; `--output-format json`.
+- [x] **`init`** — authoritative env-var from `provider.get_info().config_fields[secret].env_var`; `config.providers` settings writer; `--model`; `--from-env` auto-init. (Remaining nice-to-have: interactive provider dashboard, provider install, launch first-run gate.)
+
+**Remaining (Bucket B) — all nice-to-have; core parity done:**
+- [ ] `source` command group (module-source overrides: add/remove/list/show) — parity with app-cli's `source` group; `bundle remove` already covers bundle un-registration.
+- [ ] `routing list/use` CLI; `/config` live editing; session-manager ops (delete/rename/background); notifications; `--output-format json`.
+
+Dropped: ingested-source deletion (the corpus "Delete original" UI) — not a
+newtui feature; no amplifier tool exposes a corpus-document delete.
 
 ## 1. Accurate pricing (parity with amplifier-app-cli) — SHIPPED
 
