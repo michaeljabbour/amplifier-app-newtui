@@ -95,8 +95,26 @@ class CompactionRuntimeBinding:
             return False
 
 
-def _context_config(mount_plan: dict[str, Any]) -> dict[str, Any] | None:
+def _context_mount(mount_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the effective context mount, preferring Foundation's shape.
+
+    Prepared Amplifier bundles place orchestrator/context configuration below
+    ``session``.  Early NewTUI fixtures used a legacy top-level ``context``
+    entry, so keep that shape readable without letting it shadow the native
+    mount when both are present.
+    """
+
+    session = mount_plan.get("session")
+    if isinstance(session, dict):
+        context = session.get("context")
+        if isinstance(context, dict):
+            return context
     context = mount_plan.get("context")
+    return context if isinstance(context, dict) else None
+
+
+def _context_config(mount_plan: dict[str, Any]) -> dict[str, Any] | None:
+    context = _context_mount(mount_plan)
     if not isinstance(context, dict):
         return None
     config = context.get("config")
@@ -135,7 +153,7 @@ def apply_compaction_settings(
         key in requested for key in _SETTING_KEYS
     ):
         return mount_plan
-    context = mount_plan.get("context")
+    context = _context_mount(mount_plan)
     if isinstance(context, dict) and context.get("module") != "context-simple":
         logger.warning(
             "Ignoring context settings: module %r is not context-simple",
@@ -160,7 +178,7 @@ def apply_compaction_settings(
 def compaction_config(mount_plan: dict[str, Any]) -> CompactionConfig:
     """Read the effective compaction posture without mutating the plan."""
 
-    context = mount_plan.get("context")
+    context = _context_mount(mount_plan)
     raw = context.get("config") if isinstance(context, dict) else None
     config = raw if isinstance(raw, dict) else {}
 

@@ -266,7 +266,7 @@ class GovernanceHook:
             return self._deny(
                 CapabilityClass.OUTSIDE_PROJECT,
                 action,
-                safety.execution_reason,
+                safety.policy_reason,
             )
         decision = safety.approval
         target = safety.target or target

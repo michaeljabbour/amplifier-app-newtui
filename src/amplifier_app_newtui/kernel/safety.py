@@ -1,9 +1,10 @@
-"""Two-axis safety resolution: approval policy and execution confinement.
+"""Two-axis safety resolution: approval policy and execution path policy.
 
 Approval answers whether a tool call may proceed without a human decision.
-Confinement independently answers where the action may operate. Keeping both
-axes explicit prevents an allowlisted command from silently bypassing the
-workspace boundary and gives future OS sandboxes a stable policy seam.
+Path policy independently answers where a recognizable action may operate.
+Keeping both axes explicit prevents an allowlisted command from silently
+bypassing configured directory boundaries and gives future OS sandboxes a
+stable policy seam without claiming that one exists today.
 """
 
 from __future__ import annotations
@@ -15,26 +16,26 @@ from typing import Literal
 from ..model.trust import CapabilityClass, TrustDecision
 from .directory_permissions import DirectoryPolicy
 
-ExecutionDecision = Literal[
+ExecutionPolicyDecision = Literal[
     "not-applicable",
-    "workspace-confined",
-    "outside-boundary",
+    "within-policy",
+    "outside-policy",
     "blocked",
 ]
 
 
 @dataclass(frozen=True)
 class SafetyResolution:
-    """Independent approval and execution outcomes for one tool call."""
+    """Independent approval and path-policy outcomes for one tool call."""
 
     approval: TrustDecision
-    execution: ExecutionDecision
-    execution_reason: str = ""
+    execution_policy: ExecutionPolicyDecision
+    policy_reason: str = ""
     target: str = ""
 
     @property
     def blocked(self) -> bool:
-        return self.execution == "blocked"
+        return self.execution_policy == "blocked"
 
 
 def resolve_safety(
@@ -45,7 +46,7 @@ def resolve_safety(
     directory_policy: DirectoryPolicy | None,
     resolve_capability: Callable[[CapabilityClass], TrustDecision],
 ) -> SafetyResolution:
-    """Resolve confinement without changing approval-policy precedence."""
+    """Resolve path policy without changing approval-policy precedence."""
     if directory_policy is None:
         return SafetyResolution(approval, "not-applicable", target=target)
 
@@ -54,7 +55,7 @@ def resolve_safety(
         allowed, reason = directory_policy.check_write(target)
         return SafetyResolution(
             approval,
-            "workspace-confined" if allowed else "blocked",
+            "within-policy" if allowed else "blocked",
             reason,
             target,
         )
@@ -62,11 +63,11 @@ def resolve_safety(
     if capability == CapabilityClass.READ and target:
         if directory_policy.within_allowed(target):
             return SafetyResolution(
-                approval, "workspace-confined", "within allowed directories", target
+                approval, "within-policy", "within allowed directories", target
             )
         return SafetyResolution(
             resolve_capability(CapabilityClass.OUTSIDE_PROJECT),
-            "outside-boundary",
+            "outside-policy",
             "read target is outside allowed directories",
             target,
         )
@@ -76,7 +77,7 @@ def resolve_safety(
         if outside is None:
             return SafetyResolution(
                 approval,
-                "workspace-confined",
+                "within-policy",
                 "no outside or protected path detected",
                 target,
             )
@@ -85,7 +86,7 @@ def resolve_safety(
             return SafetyResolution(approval, "blocked", reason, path)
         return SafetyResolution(
             resolve_capability(CapabilityClass.OUTSIDE_PROJECT),
-            "outside-boundary",
+            "outside-policy",
             reason,
             path,
         )
@@ -93,4 +94,4 @@ def resolve_safety(
     return SafetyResolution(approval, "not-applicable", target=target)
 
 
-__all__ = ["ExecutionDecision", "SafetyResolution", "resolve_safety"]
+__all__ = ["ExecutionPolicyDecision", "SafetyResolution", "resolve_safety"]

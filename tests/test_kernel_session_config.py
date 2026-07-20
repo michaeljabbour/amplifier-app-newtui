@@ -191,13 +191,15 @@ def test_apply_module_overrides_merges_in_place() -> None:
 
 def test_context_compaction_settings_apply_to_effective_mount_plan() -> None:
     mount_plan = {
-        "context": {
-            "module": "context-simple",
-            "config": {
-                "max_tokens": 200_000,
-                "compact_threshold": 0.8,
-                "auto_compact": True,
-            },
+        "session": {
+            "context": {
+                "module": "context-simple",
+                "config": {
+                    "max_tokens": 200_000,
+                    "compact_threshold": 0.8,
+                    "auto_compact": True,
+                },
+            }
         }
     }
     result = apply_compaction_settings(
@@ -211,12 +213,49 @@ def test_context_compaction_settings_apply_to_effective_mount_plan() -> None:
         },
     )
     assert result is mount_plan
-    assert mount_plan["context"]["config"] == {
+    assert mount_plan["session"]["context"]["config"] == {
         "max_tokens": 128_000,
         "compact_threshold": 0.7,
         "auto_compact": False,
     }
     assert compaction_config(mount_plan).threshold_tokens == 89_600
+
+
+def test_context_compaction_settings_support_legacy_top_level_mount() -> None:
+    mount_plan = {
+        "context": {
+            "module": "context-simple",
+            "config": {"max_tokens": 200_000, "auto_compact": True},
+        }
+    }
+    apply_compaction_settings(
+        mount_plan,
+        {"context": {"max_tokens": 64_000, "auto_compact": False}},
+    )
+    assert mount_plan["context"]["config"] == {
+        "max_tokens": 64_000,
+        "auto_compact": False,
+    }
+    assert compaction_config(mount_plan).max_tokens == 64_000
+
+
+def test_native_session_context_wins_over_legacy_top_level_mount() -> None:
+    mount_plan = {
+        "session": {
+            "context": {
+                "module": "context-simple",
+                "config": {"max_tokens": 200_000},
+            }
+        },
+        "context": {
+            "module": "context-simple",
+            "config": {"max_tokens": 32_000},
+        },
+    }
+    apply_compaction_settings(mount_plan, {"context": {"max_tokens": 96_000}})
+    assert mount_plan["session"]["context"]["config"]["max_tokens"] == 96_000
+    assert mount_plan["context"]["config"]["max_tokens"] == 32_000
+    assert compaction_config(mount_plan).max_tokens == 96_000
 
 
 def test_runtime_binding_disables_legacy_threshold_only_context() -> None:
@@ -266,16 +305,18 @@ async def test_runtime_binding_uses_native_switch_and_observed_accounting() -> N
 
 def test_invalid_context_compaction_settings_are_ignored(caplog) -> None:
     mount_plan = {
-        "context": {
-            "module": "context-simple",
-            "config": {"max_tokens": 200_000, "compact_threshold": 0.8},
+        "session": {
+            "context": {
+                "module": "context-simple",
+                "config": {"max_tokens": 200_000, "compact_threshold": 0.8},
+            }
         }
     }
     apply_compaction_settings(
         mount_plan,
         {"context": {"max_tokens": -1, "compact_threshold": 2, "auto_compact": "yes"}},
     )
-    assert mount_plan["context"]["config"] == {
+    assert mount_plan["session"]["context"]["config"] == {
         "max_tokens": 200_000,
         "compact_threshold": 0.8,
     }
@@ -283,9 +324,9 @@ def test_invalid_context_compaction_settings_are_ignored(caplog) -> None:
 
 
 def test_context_compaction_settings_do_not_leak_into_other_modules(caplog) -> None:
-    mount_plan = {"context": {"module": "context-custom", "config": {"own": True}}}
+    mount_plan = {"session": {"context": {"module": "context-custom", "config": {"own": True}}}}
     apply_compaction_settings(mount_plan, {"context": {"auto_compact": True}})
-    assert mount_plan["context"]["config"] == {"own": True}
+    assert mount_plan["session"]["context"]["config"] == {"own": True}
     assert "is not context-simple" in caplog.text
 
 
@@ -466,6 +507,42 @@ async def test_resolve_config_golden_path_offline(
     assert resolved.mount_plan is resolved.prepared.mount_plan
     providers = resolved.mount_plan.get("providers") or []
     assert any(p.get("module") == "provider-anthropic" for p in providers)
+
+
+@pytest.mark.asyncio
+async def test_resolve_config_applies_compaction_to_prepared_default_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise Foundation's real ``session.context`` prepared-plan shape."""
+
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    root_bundle = Path(__file__).resolve().parents[1] / "bundle.md"
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    _write(
+        project / ".amplifier" / "settings.local.yaml",
+        "context:\n  max_tokens: 128000\n  compact_threshold: 0.7\n  auto_compact: false\n",
+    )
+
+    resolved = await resolve_config(
+        str(root_bundle),
+        project_dir=project,
+        amplifier_home=home,
+        install_deps=False,
+    )
+
+    context = resolved.mount_plan["session"]["context"]
+    assert context["module"] == "context-simple"
+    assert context["config"] == {
+        "max_tokens": 128_000,
+        "compact_threshold": 0.7,
+        "auto_compact": False,
+    }
+    assert compaction_config(resolved.mount_plan) == CompactionConfig(
+        max_tokens=128_000,
+        compact_threshold=0.7,
+        auto_compact=False,
+    )
 
 
 @pytest.mark.asyncio
