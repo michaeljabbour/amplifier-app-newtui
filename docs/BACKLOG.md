@@ -25,8 +25,10 @@ default; `tool-mcp` is the one addition beyond anchors, kept by request.
 - [x] **bundle CLI** — `list/show/use/clear/current/add/remove/update` over the shared foundation `BundleRegistry` (Rich table); scoped settings writes.
 - [x] **init (partial)** — writes a provider key to `keys.env` (interactive + `--yes`).
 
+- [x] **team-pulse** read tools mounted in the base bundle (12 GET-only lens tools; safe when unconfigured).
+- [x] **`update`** — `amplifier-newtui update` (`--check-only/--yes/--force`) over foundation `check_bundle_status`/`update_bundle`, scoped to the composed bundles (active + overlays); `--force` runs `uv cache clean`; self-update (app/platform) intentionally out of scope (printed hint). Rich table report.
+
 **Remaining (Bucket B):**
-- [ ] **`update`** — top-level command via foundation `check_bundle_status`/`update_bundle` (`BundleRegistry.check_update` is a stub — don't use); drop uv self-update.
 - [ ] **Complete `init`** — authoritative env-var via `provider.get_info().config_fields[secret].env_var` (current guess is wrong for azure/gemini/copilot), a `config.providers` settings writer, field wizard, provider install, first-run + auto-init-from-env.
 - [ ] **Remove/manage ingested sources** — delete knowledge/memory sources (needs scoping: which bundle owns fragments).
 - [ ] Nice-to-have: `routing list/use` CLI; `/config` live editing; session-manager ops (delete/rename/background); notifications; `--output-format json`.

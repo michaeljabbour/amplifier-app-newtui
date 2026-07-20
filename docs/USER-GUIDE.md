@@ -20,6 +20,7 @@ uv run amplifier-newtui doctor       # setup checkup (exit 1 when findings exist
 uv run amplifier-newtui init         # set up a provider key in ~/.amplifier/keys.env
 uv run amplifier-newtui bundle list  # bundles from the shared registry (--all for deps)
 uv run amplifier-newtui bundle use B # set the active bundle (--global/--project/--local)
+uv run amplifier-newtui update       # update the mounted bundles/modules (--check-only/--force)
 ```
 
 `bundle` also has `show · current · clear · add · remove · update`; run

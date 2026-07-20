@@ -67,6 +67,7 @@ uv run amplifier-newtui resume SESSION_ID      # relaunch the TUI resuming a sto
 uv run amplifier-newtui run "PROMPT"           # execute one prompt headlessly, print the response
 uv run amplifier-newtui bundle list            # bundles from the shared registry (--all incl. deps)
 uv run amplifier-newtui bundle use NAME        # set the active bundle (--global/--project/--local)
+uv run amplifier-newtui update --check-only     # check the mounted bundles/modules for updates
 ```
 
 A *bundle* is a packaged agent configuration — provider + tools + agents + behaviors. The app ships one (`newtui`), so you never need `--bundle` to get started. The `bundle` group (`list · show · use · clear · current · add · remove · update`) reads and writes the same registry and settings the reference `amplifier` CLI uses.

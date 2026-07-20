@@ -416,5 +416,65 @@ def init(
     raise SystemExit(asyncio.run(_init(provider, api_key, base_url, model, yes, from_env)))
 
 
+# --------------------------------------------------------------------------
+# update — refresh the bundles/modules newtui mounts (foundation cache)
+# --------------------------------------------------------------------------
+
+
+async def _update(check_only: bool, yes: bool, force: bool) -> int:
+    from rich.console import Console
+    from rich.table import Table
+
+    from .kernel import updater
+
+    console = Console()
+    if force:
+        console.print("clearing uv cache…", style="dim")
+        updater.uv_cache_clean()
+
+    statuses = await updater.check_bundles()
+    if not statuses:
+        console.print("no bundles to check")
+        console.print(updater.self_update_hint(), style="dim")
+        return 0
+
+    table = Table(title="Bundle updates", title_justify="center", header_style="bold cyan")
+    table.add_column("Bundle", style="green", no_wrap=True)
+    table.add_column("Status")
+    for status in statuses:
+        mark = "[yellow]●[/yellow]" if status.has_updates else "[green]✓[/green]"
+        table.add_row(status.name, f"{mark} {status.summary}")
+    console.print(table)
+
+    stale = [s for s in statuses if s.has_updates]
+    if not stale and not force:
+        console.print("✓ all bundles up to date", style="green")
+        console.print(updater.self_update_hint(), style="dim")
+        return 0
+    if check_only:
+        console.print(updater.self_update_hint(), style="dim")
+        return 0
+
+    targets = statuses if force else stale
+    if not yes and not click.confirm(f"update {len(targets)} bundle(s)?", default=True):
+        return 0
+    updated, failed = await updater.update_bundles([s.target for s in targets])
+    if updated:
+        console.print(f"✓ updated: {', '.join(updated)}", style="green")
+    if failed:
+        console.print(f"✗ failed: {', '.join(failed)}", style="red")
+    console.print(updater.self_update_hint(), style="dim")
+    return 1 if failed else 0
+
+
+@main.command()
+@click.option("--check-only", is_flag=True, help="Report available updates; change nothing.")
+@click.option("--yes", "-y", is_flag=True, help="Apply without the confirmation prompt.")
+@click.option("--force", is_flag=True, help="uv cache clean first, then re-fetch every source.")
+def update(check_only: bool, yes: bool, force: bool) -> None:
+    """Update the bundles/modules this app mounts (not the app or platform)."""
+    raise SystemExit(asyncio.run(_update(check_only, yes, force)))
+
+
 if __name__ == "__main__":
     main()
