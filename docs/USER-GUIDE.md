@@ -124,9 +124,11 @@ hand it over: the plan is already in the conversation — shift+tab to build and
 
 ## 5. Approvals
 
-In the default `auto` posture, in-project read/write/test calls proceed silently. Network,
-spend, shell and outside-project actions are reasoning-blind classifier gates: explicit,
-safe user requests proceed; destructive or unrequested boundary crossings deny and defer.
+In the default `auto` posture, read/test calls proceed silently anywhere outside denied
+directories — reads are denylist-bounded, not confined to the project — and in-project
+writes proceed silently too. Network, spend, shell and write-shaped outside-project
+actions are reasoning-blind classifier gates: explicit, safe user requests proceed;
+destructive or unrequested boundary crossings deny and defer.
 `chat` and `build` can ask more often, and `/mode careful` or another bundle mode can add
 native confirmations. An ask replaces the composer with **Allow once · Allow always ·
 Deny**.
@@ -209,8 +211,11 @@ the mounted filesystem tool is the hard enforcement point. `.git`, `.agents`, `.
 and `AGENTS.md` beneath the project are protected defaults and cannot be reopened by an
 approval. The kernel resolves two independent axes for each recognized action: whether it
 needs approval and whether its recognizable target satisfies the configured path policy.
-Shell calls also pass through this check for recognizable absolute, home-relative,
-parent-relative and redirection paths; this is not yet an operating-system sandbox around
+Reads are denylist-bounded: the AI may read anywhere outside denied directories, while
+writes stay confined to allowed paths. Shell calls pass through this check for
+recognizable absolute, home-relative, parent-relative and redirection paths — write-shaped
+commands (write-command heads, redirection targets) are gated outside the project while
+read-shaped commands may roam; this is not yet an operating-system sandbox around
 arbitrary interpreter code.
 
 ## 8. Keys

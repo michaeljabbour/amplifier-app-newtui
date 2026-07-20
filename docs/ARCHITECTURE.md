@@ -421,8 +421,10 @@ Two policies share Amplifier's hook/approval mechanism:
 
 - **`GovernanceHook`** (ephemeral `tool:pre`, priority 1000) enforces the app's five
   postures and `outside-project` slot. Direct writes are first checked against the mutable
-  `DirectoryPolicy`; obvious shell path escapes are classified as outside-project. Denials
-  are deny-and-continue and classifier boundary denials enter needs-you.
+  `DirectoryPolicy`; reads are denylist-bounded (they roam anywhere outside denied
+  directories); write-shaped shell escapes (write-command heads, redirection targets) are
+  classified as outside-project while read-shaped commands roam. Denials are
+  deny-and-continue and classifier boundary denials enter needs-you.
 - **`tool-filesystem`** receives the same effective allowed/denied lists. It remains the
   hard write-path enforcement point, with deny taking precedence. The resolved project
   root is always injected into `allowed_write_paths`; configured lists union rather than

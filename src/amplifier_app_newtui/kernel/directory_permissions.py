@@ -31,6 +31,31 @@ PROTECTED_PROJECT_PATHS: tuple[str, ...] = (
 )
 """Instruction and repository-control paths denied inside writable roots."""
 
+_WRITE_COMMANDS = frozenset(
+    {
+        "chgrp",
+        "chmod",
+        "chown",
+        "cp",
+        "dd",
+        "install",
+        "ln",
+        "mkdir",
+        "mv",
+        "rm",
+        "rmdir",
+        "rsync",
+        "shred",
+        "tee",
+        "touch",
+        "truncate",
+        "unlink",
+    }
+)
+"""Command heads that treat their path arguments as write targets."""
+
+_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|"})
+
 
 @dataclass(frozen=True)
 class DirectoryEntry:
@@ -180,9 +205,7 @@ class DirectoryPolicy:
 
     @property
     def denied(self) -> tuple[str, ...]:
-        return tuple(
-            self._stable([*self._protected, *self._base_denied, *self._session_denied])
-        )
+        return tuple(self._stable([*self._protected, *self._base_denied, *self._session_denied]))
 
     @property
     def protected(self) -> tuple[str, ...]:
@@ -229,6 +252,21 @@ class DirectoryPolicy:
             return (True, "within allowed write directories")
         return (False, f"path is outside allowed write directories · {resolved}")
 
+    def check_read(self, path: str | Path, *, cwd: Path | None = None) -> tuple[bool, str]:
+        """Reads roam anywhere except denied directories (within reason).
+
+        Reads are denylist-bounded, not allowlist-bounded — matching
+        amplifier-app-cli's permissive read defaults. Only user-configured
+        denied directories (and the protected set) gate read access.
+        """
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = (cwd or self.project_dir) / candidate
+        resolved = candidate.resolve(strict=False)
+        if self._within_any(resolved, self.denied):
+            return (False, f"path is within denied directories · {resolved}")
+        return (True, "read roams outside the project · denylist-bounded")
+
     def within_allowed(self, path: str | Path, *, cwd: Path | None = None) -> bool:
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
@@ -244,11 +282,15 @@ class DirectoryPolicy:
         return False
 
     def shell_outside_target(self, command: str) -> tuple[str, str] | None:
-        """Return the first obvious shell path outside/inside a deny rule.
+        """Return the first shell path that escapes the write boundary.
 
-        This is a governance signal, not a shell sandbox. It covers absolute,
-        home-relative, ``./``/``../`` and redirection targets while leaving
-        the mounted bash tool's own safety validator in charge of command form.
+        This is a governance signal, not a shell sandbox. Deny-listed and
+        protected paths are flagged wherever they appear; merely-outside
+        paths are flagged only in write contexts (write-command heads and
+        redirection targets). Read-shaped commands may roam outside the
+        project — reads are denylist-bounded, not allowlist-bounded — while
+        the mounted bash tool's own safety validator stays in charge of
+        command form.
         """
         try:
             lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -256,18 +298,33 @@ class DirectoryPolicy:
             tokens = list(lexer)
         except ValueError:
             tokens = command.split()
-        for raw in tokens:
-            token = raw.strip("'\";,(){}[]")
-            if token.startswith(("http://", "https://")):
+        cleaned = [raw.strip("'\";,(){}[]") for raw in tokens]
+        heads = {Path(cleaned[0]).name} if cleaned else set()
+        heads.update(
+            Path(cleaned[index + 1]).name
+            for index, token in enumerate(cleaned[:-1])
+            if token in _COMMAND_SEPARATORS
+        )
+        write_head = bool(heads & _WRITE_COMMANDS)
+        redirect_targets = {
+            index + 1 for index, token in enumerate(cleaned) if token in (">", ">>")
+        }
+        for index, token in enumerate(cleaned):
+            if token.startswith(("http://", "https://", "/dev/")):
                 continue
             protected_relative = any(
                 token == relative or token.startswith(f"{relative}/")
                 for relative in PROTECTED_PROJECT_PATHS
             )
-            if not protected_relative and not token.startswith(("/", "~/", "./", "../")):
+            pathish = token.startswith(("/", "~/", "./", "../"))
+            if not protected_relative and not pathish and index not in redirect_targets:
                 continue
             allowed, reason = self.check_write(token)
-            if not allowed:
+            if allowed:
+                continue
+            if reason.startswith(("path is protected", "path is within denied")):
+                return (token, reason)
+            if write_head or index in redirect_targets:
                 return (token, reason)
         return None
 
@@ -294,9 +351,7 @@ def policy_from_mount_plan(mount_plan: dict[str, Any], project_dir: Path) -> Dir
     )
 
 
-def apply_policy_to_mount_plan(
-    mount_plan: dict[str, Any], policy: DirectoryPolicy
-) -> None:
+def apply_policy_to_mount_plan(mount_plan: dict[str, Any], policy: DirectoryPolicy) -> None:
     """Write the effective policy back to the prepared plan in place."""
     for tool in mount_plan.get("tools") or []:
         if not isinstance(tool, dict) or tool.get("module") != "tool-filesystem":
