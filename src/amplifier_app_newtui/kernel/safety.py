@@ -9,6 +9,7 @@ stable policy seam without claiming that one exists today.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -43,6 +44,7 @@ def resolve_safety(
     action: str,
     target: str,
     directory_policy: DirectoryPolicy | None,
+    resolve_capability: Callable[[CapabilityClass], TrustDecision],
 ) -> SafetyResolution:
     """Resolve path policy without changing approval-policy precedence."""
     if directory_policy is None:
@@ -59,24 +61,34 @@ def resolve_safety(
         )
 
     if capability == CapabilityClass.READ and target:
-        return SafetyResolution(
-            approval,
-            "not-applicable",
-            "reads are not constrained by allowed write directories",
-            target,
-        )
+        if directory_policy.within_allowed(target):
+            return SafetyResolution(approval, "within-policy", "within allowed directories", target)
+        allowed, reason = directory_policy.check_read(target)
+        if not allowed:
+            return SafetyResolution(approval, "blocked", reason, target)
+        # Reads roam anywhere outside denied directories (within reason) —
+        # matching amplifier-app-cli's permissive read defaults. The
+        # outside-project gate applies to writes and write-shaped shell.
+        return SafetyResolution(approval, "within-policy", reason, target)
 
     if capability == CapabilityClass.EXEC:
-        violation = directory_policy.shell_write_violation(action)
-        if violation is None:
+        outside = directory_policy.shell_outside_target(action)
+        if outside is None:
             return SafetyResolution(
                 approval,
                 "within-policy",
-                "no recognizable shell write violates path policy",
+                "no outside or protected path detected",
                 target,
             )
-        path, reason = violation
-        return SafetyResolution(approval, "blocked", reason, path)
+        path, reason = outside
+        if reason.startswith(("path is protected", "path is within denied")):
+            return SafetyResolution(approval, "blocked", reason, path)
+        return SafetyResolution(
+            resolve_capability(CapabilityClass.OUTSIDE_PROJECT),
+            "outside-policy",
+            reason,
+            path,
+        )
 
     return SafetyResolution(approval, "not-applicable", target=target)
 

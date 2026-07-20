@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
 
 from ..kernel.directory_permissions import DirectoryKind
@@ -53,20 +54,25 @@ async def manage(host: DirectoryAdminHost, kind: str, args: str) -> None:
     operation = parts[0].lower() if parts else "list"
     if operation in ("", "list"):
         entries = await host.adapter.directory_entries(typed_kind)
-        host.append_block(
-            Answer(id=host.allocator.next_id(), spans=_spans(typed_kind, entries))
-        )
+        host.append_block(Answer(id=host.allocator.next_id(), spans=_spans(typed_kind, entries)))
         return
     if operation not in ("add", "remove") or len(parts) < 2:
         host.show_notice(f"usage: /{kind}-dirs list | add <path> | remove <path>")
         return
-    ok, detail = await host.adapter.update_directory(typed_kind, operation, parts[1])
+    raw_path = parts[1].strip().strip("'\"")
+    if operation == "add" and not Path(raw_path).expanduser().is_dir():
+        # Catches typos and doubled pastes (e.g. "add ~/x add ~/x" swallowed
+        # as one garbage path) before they poison the session allowlist.
+        # ``remove`` stays unvalidated so stale/garbage entries can be removed.
+        host.show_notice(
+            f"not an existing directory · {Path(raw_path).expanduser()} — nothing added"
+        )
+        return
+    ok, detail = await host.adapter.update_directory(typed_kind, operation, raw_path)
     host.show_notice(detail)
     if ok:
         entries = await host.adapter.directory_entries(typed_kind)
-        host.append_block(
-            Answer(id=host.allocator.next_id(), spans=_spans(typed_kind, entries))
-        )
+        host.append_block(Answer(id=host.allocator.next_id(), spans=_spans(typed_kind, entries)))
 
 
 __all__ = ["manage"]

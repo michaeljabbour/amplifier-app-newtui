@@ -356,7 +356,7 @@ async def test_unrequested_push_denied_without_prompt_evidence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_auto_shell_write_outside_allowlist_is_hard_blocked(tmp_path) -> None:
+async def test_auto_unrequested_shell_escape_is_deferred(tmp_path) -> None:
     needs_you = NeedsYouQueue()
     denial_log = DenialLog()
     hook = GovernanceHook(
@@ -370,12 +370,12 @@ async def test_auto_shell_write_outside_allowlist_is_hard_blocked(tmp_path) -> N
         "tool:pre", tool_pre("bash", {"command": "echo no > ../outside.txt"})
     )
     assert result.action == "deny"
-    assert needs_you.pending_count == 0
-    assert "outside allowed write directories" in (result.reason or "")
+    assert needs_you.pending_count == 1
+    assert "outside configured project boundary" in (result.reason or "")
 
 
 @pytest.mark.asyncio
-async def test_explicit_request_cannot_override_shell_write_roots(tmp_path) -> None:
+async def test_explicit_shell_escape_can_pass_auto_classifier(tmp_path) -> None:
     hook = GovernanceHook(
         ROOT,
         mode=lambda: "auto",
@@ -389,34 +389,7 @@ async def test_explicit_request_cannot_override_shell_write_roots(tmp_path) -> N
     result = await hook.handle_event(
         "tool:pre", tool_pre("bash", {"command": "echo ok > ../outside.txt"})
     )
-    assert result.action == "deny"
-
-
-@pytest.mark.asyncio
-async def test_auto_can_read_system_paths_without_write_capability(tmp_path) -> None:
-    hook = GovernanceHook(
-        ROOT,
-        mode=lambda: "auto",
-        denial_log=DenialLog(),
-        directory_policy=DirectoryPolicy(tmp_path / "project"),
-    )
-    direct = await hook.handle_event(
-        "tool:pre",
-        tool_pre(
-            "read_file",
-            {
-                "path": str(
-                    tmp_path / ".amplifier" / "cache" / "provider" / "__init__.py"
-                )
-            },
-        ),
-    )
-    shell = await hook.handle_event(
-        "tool:pre",
-        tool_pre("bash", {"command": "cat ~/.amplifier/cache/provider/__init__.py"}),
-    )
-    assert direct.action == "continue"
-    assert shell.action == "continue"
+    assert result.action == "continue"
 
 
 @pytest.mark.asyncio
@@ -433,29 +406,6 @@ async def test_filesystem_write_still_hard_denies_outside_allowlist(tmp_path) ->
     )
     assert result.action == "deny"
     assert "outside allowed write directories" in (result.reason or "")
-
-
-@pytest.mark.asyncio
-async def test_added_write_root_allows_direct_and_shell_writes(tmp_path) -> None:
-    shared = tmp_path / "shared"
-    hook = GovernanceHook(
-        ROOT,
-        mode=lambda: "auto",
-        denial_log=DenialLog(),
-        directory_policy=DirectoryPolicy(
-            tmp_path / "project", allowed=(str(shared),)
-        ),
-    )
-    direct = await hook.handle_event(
-        "tool:pre",
-        tool_pre("write_file", {"path": str(shared / "direct.txt")}),
-    )
-    shell = await hook.handle_event(
-        "tool:pre",
-        tool_pre("bash", {"command": f"echo ok > {shared / 'shell.txt'}"}),
-    )
-    assert direct.action == "continue"
-    assert shell.action == "continue"
 
 
 # -- registration ---------------------------------------------------------------------

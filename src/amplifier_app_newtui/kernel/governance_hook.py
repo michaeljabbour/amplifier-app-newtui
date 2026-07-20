@@ -270,6 +270,7 @@ class GovernanceHook:
             action=action,
             target=target,
             directory_policy=self._directory_policy,
+            resolve_capability=self._resolve_capability,
         )
         if safety.blocked:
             return self._deny(

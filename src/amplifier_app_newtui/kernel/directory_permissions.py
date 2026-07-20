@@ -31,22 +31,30 @@ PROTECTED_PROJECT_PATHS: tuple[str, ...] = (
 )
 """Instruction and repository-control paths denied inside writable roots."""
 
-_SHELL_WRITE_ALL_TARGETS = frozenset(
+_WRITE_COMMANDS = frozenset(
     {
+        "chgrp",
         "chmod",
         "chown",
-        "chgrp",
+        "cp",
+        "dd",
+        "install",
+        "ln",
         "mkdir",
+        "mv",
         "rm",
         "rmdir",
+        "rsync",
         "shred",
+        "tee",
         "touch",
         "truncate",
         "unlink",
     }
 )
-_SHELL_WRITE_DESTINATION = frozenset({"cp", "install", "ln", "mv", "rsync"})
-_SHELL_SEGMENT_BREAKS = frozenset({";", "&&", "||", "|"})
+"""Command heads that treat their path arguments as write targets."""
+
+_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|"})
 
 
 @dataclass(frozen=True)
@@ -197,9 +205,7 @@ class DirectoryPolicy:
 
     @property
     def denied(self) -> tuple[str, ...]:
-        return tuple(
-            self._stable([*self._protected, *self._base_denied, *self._session_denied])
-        )
+        return tuple(self._stable([*self._protected, *self._base_denied, *self._session_denied]))
 
     @property
     def protected(self) -> tuple[str, ...]:
@@ -246,6 +252,21 @@ class DirectoryPolicy:
             return (True, "within allowed write directories")
         return (False, f"path is outside allowed write directories · {resolved}")
 
+    def check_read(self, path: str | Path, *, cwd: Path | None = None) -> tuple[bool, str]:
+        """Reads roam anywhere except denied directories (within reason).
+
+        Reads are denylist-bounded, not allowlist-bounded — matching
+        amplifier-app-cli's permissive read defaults. Only user-configured
+        denied directories (and the protected set) gate read access.
+        """
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = (cwd or self.project_dir) / candidate
+        resolved = candidate.resolve(strict=False)
+        if self._within_any(resolved, self.denied):
+            return (False, f"path is within denied directories · {resolved}")
+        return (True, "read roams outside the project · denylist-bounded")
+
     def within_allowed(self, path: str | Path, *, cwd: Path | None = None) -> bool:
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
@@ -260,14 +281,16 @@ class DirectoryPolicy:
                 return True
         return False
 
-    def shell_write_violation(self, command: str) -> tuple[str, str] | None:
-        """Return the first recognizable shell write outside policy.
+    def shell_outside_target(self, command: str) -> tuple[str, str] | None:
+        """Return the first shell path that escapes the write boundary.
 
-        Allowed/denied directory settings are write capabilities, not a read
-        sandbox. Redirections and common mutating commands are checked here;
-        ordinary reads such as ``cat ~/.amplifier/cache/...`` remain governed
-        by the active trust posture instead of the write-root list. This is a
-        governance signal, not an operating-system sandbox.
+        This is a governance signal, not a shell sandbox. Deny-listed and
+        protected paths are flagged wherever they appear; merely-outside
+        paths are flagged only in write contexts (write-command heads and
+        redirection targets). Read-shaped commands may roam outside the
+        project — reads are denylist-bounded, not allowlist-bounded — while
+        the mounted bash tool's own safety validator stays in charge of
+        command form.
         """
         try:
             lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
@@ -275,66 +298,33 @@ class DirectoryPolicy:
             tokens = list(lexer)
         except ValueError:
             tokens = command.split()
-
-        candidates: list[str] = []
-        for index, token in enumerate(tokens[:-1]):
-            if token in {">", ">>", ">|"}:
-                candidates.append(tokens[index + 1])
-
-        segments: list[list[str]] = []
-        segment: list[str] = []
-        for token in tokens:
-            if token in _SHELL_SEGMENT_BREAKS:
-                if segment:
-                    segments.append(segment)
-                    segment = []
-            else:
-                segment.append(token)
-        if segment:
-            segments.append(segment)
-
-        for part in segments:
-            command_index = next(
-                (
-                    index
-                    for index, token in enumerate(part)
-                    if token not in {"sudo", "command", "env"}
-                    and not token.startswith("-")
-                    and "=" not in token
-                ),
-                None,
-            )
-            if command_index is None:
+        cleaned = [raw.strip("'\";,(){}[]") for raw in tokens]
+        heads = {Path(cleaned[0]).name} if cleaned else set()
+        heads.update(
+            Path(cleaned[index + 1]).name
+            for index, token in enumerate(cleaned[:-1])
+            if token in _COMMAND_SEPARATORS
+        )
+        write_head = bool(heads & _WRITE_COMMANDS)
+        redirect_targets = {
+            index + 1 for index, token in enumerate(cleaned) if token in (">", ">>")
+        }
+        for index, token in enumerate(cleaned):
+            if token.startswith(("http://", "https://", "/dev/")):
                 continue
-            name = Path(part[command_index]).name
-            arguments = part[command_index + 1 :]
-            positional = [token for token in arguments if not token.startswith("-")]
-            if name in _SHELL_WRITE_ALL_TARGETS:
-                candidates.extend(positional)
-            elif name in _SHELL_WRITE_DESTINATION and positional:
-                candidates.append(positional[-1])
-            elif name == "tee":
-                candidates.extend(positional)
-            elif name == "sed" and any(token.startswith("-i") for token in arguments):
-                if positional:
-                    candidates.append(positional[-1])
-            elif name == "dd":
-                candidates.extend(
-                    token.removeprefix("of=")
-                    for token in arguments
-                    if token.startswith("of=")
-                )
-            elif name == "git" and positional[:1] == ["config"]:
-                for index, token in enumerate(arguments[:-1]):
-                    if token == "-f":
-                        candidates.append(arguments[index + 1])
-
-        for raw in candidates:
-            token = raw.strip("'\";,(){}[]")
-            if not token or token in {"&", "1", "2", "/dev/null"}:
+            protected_relative = any(
+                token == relative or token.startswith(f"{relative}/")
+                for relative in PROTECTED_PROJECT_PATHS
+            )
+            pathish = token.startswith(("/", "~/", "./", "../"))
+            if not protected_relative and not pathish and index not in redirect_targets:
                 continue
             allowed, reason = self.check_write(token)
-            if not allowed:
+            if allowed:
+                continue
+            if reason.startswith(("path is protected", "path is within denied")):
+                return (token, reason)
+            if write_head or index in redirect_targets:
                 return (token, reason)
         return None
 
@@ -361,9 +351,7 @@ def policy_from_mount_plan(mount_plan: dict[str, Any], project_dir: Path) -> Dir
     )
 
 
-def apply_policy_to_mount_plan(
-    mount_plan: dict[str, Any], policy: DirectoryPolicy
-) -> None:
+def apply_policy_to_mount_plan(mount_plan: dict[str, Any], policy: DirectoryPolicy) -> None:
     """Write the effective policy back to the prepared plan in place."""
     for tool in mount_plan.get("tools") or []:
         if not isinstance(tool, dict) or tool.get("module") != "tool-filesystem":

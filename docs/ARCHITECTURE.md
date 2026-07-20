@@ -415,22 +415,22 @@ adds explicit slot overrides, command exceptions and blocks; `GovernanceHook` co
 live through adapter callables, so the pure model never imports kernel code.
 
 `kernel/safety.py` keeps approval and execution path policy as a typed two-axis result.
-An allow decision can therefore remain valid while a recognizable write target is still
-blocked by configured directory policy. `DirectoryPolicy` supplies the hard write-path
-check to filesystem tools and protects `.git`, `.agents`, `.codex`, and `AGENTS.md` by
-default; ordinary reads are not constrained by write roots, while shell redirections and
-common mutating commands use the same write resolution. This is policy enforcement, not
-an OS sandbox for opaque interpreter code.
+An allow decision can therefore remain valid while a recognizable target is still blocked
+by configured directory policy. `DirectoryPolicy` supplies the hard path check to
+filesystem tools and protects `.git`, `.agents`, `.codex`, and `AGENTS.md` by default;
+recognizable shell paths use the same resolution. This is policy enforcement, not an OS
+sandbox for opaque interpreter code.
 
 ### 7.2 Gating: app postures + native modes
 
 Two policies share Amplifier's hook/approval mechanism:
 
 - **`GovernanceHook`** (ephemeral `tool:pre`, priority 1000) enforces the app's five
-  postures. Direct writes are first checked against the mutable `DirectoryPolicy`;
-  recognizable shell writes use that same hard boundary, while system reads remain
-  available whenever the posture permits reading. Denials are deny-and-continue and
-  classifier boundary denials enter needs-you.
+  postures and `outside-project` slot. Direct writes are first checked against the mutable
+  `DirectoryPolicy`; reads are denylist-bounded (they roam anywhere outside denied
+  directories); write-shaped shell escapes (write-command heads, redirection targets) are
+  classified as outside-project while read-shaped commands roam. Denials are
+  deny-and-continue and classifier boundary denials enter needs-you.
 - **`tool-filesystem`** receives the same effective allowed/denied lists. It remains the
   hard write-path enforcement point, with deny taking precedence. The resolved project
   root is always injected into `allowed_write_paths`; configured lists union rather than
