@@ -61,7 +61,7 @@ def test_status_spans_include_mode_and_cost() -> None:
     assert "high" in text
     assert "2" in text  # agent count
     assert "auto compact" in text
-    assert "on · 80% · 200,000 token window" in text
+    assert "on · 80% · 200,000 token window · estimated accounting" in text
 
 
 def test_names_spans_roster_and_empty() -> None:
@@ -74,6 +74,21 @@ def test_diff_spans_states() -> None:
     assert "clean" in _text(diff_spans("", staged=False))
     body = _text(diff_spans("diff --git a/x b/x\n+added line\n", staged=False))
     assert "added line" in body
+
+
+def test_diff_spans_uses_theme_tokens_for_patch_semantics() -> None:
+    spans = diff_spans(
+        "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n same",
+        staged=False,
+    )
+    by_text = {span.text.strip(): span for span in spans}
+    assert by_text["@@ -1 +1 @@"].style_token == "blue"
+    assert by_text["@@ -1 +1 @@"].bold is True
+    assert by_text["-old"].style_token == "red"
+    assert by_text["-old"].bg_token == "bg-tab"
+    assert by_text["+new"].style_token == "green"
+    assert by_text["+new"].bg_token == "bg-tab"
+    assert by_text["same"].style_token == "dim"
 
 
 def test_diff_spans_truncates_long_patches() -> None:

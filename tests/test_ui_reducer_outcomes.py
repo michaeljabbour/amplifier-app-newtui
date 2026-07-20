@@ -119,6 +119,26 @@ def test_real_turn_with_file_changes_ships() -> None:
     assert reducer.ledger.last_shipped  # footer ▲ yield glyph
 
 
+def test_context_compaction_is_visible_and_persistent() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(
+        ev.ContextCompacted(
+            before_tokens=120_000,
+            after_tokens=60_000,
+            before_messages=42,
+            after_messages=23,
+            strategy_level=3,
+        )
+    )
+    narration = host.blocks[-1]
+    assert narration.kind == "narration"
+    assert narration.text == (
+        "Context compacted · 120,000 → 60,000 tokens"
+        " · 42 → 23 messages · strategy 3"
+    )
+    assert host.notices[-1] == narration.text
+
+
 def test_real_turn_with_unpriceable_usage_marks_rule_cost_estimated() -> None:
     """Never lie: an unknown model with no cost_usd renders ``~$`` not ``$0.00``."""
     reducer, host = make_reducer()

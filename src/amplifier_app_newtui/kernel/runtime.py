@@ -23,7 +23,7 @@ from .approval import ApprovalBroker
 from .bundle_admin import read_scope, settings_paths
 from .config import ResolvedConfig, resolve_config
 from .clipboard import ClipboardImageInjector, ImageAttachment
-from .compaction import CompactionConfig, compaction_config
+from .compaction import CompactionConfig, CompactionRuntimeBinding, compaction_config
 from .cost import CostTracker, restore_session_cost, start_live_pricing
 from .display import DisplaySystem
 from .events import (
@@ -32,6 +32,7 @@ from .events import (
     ContextInjected,
     PromptComplete,
     PromptSubmit,
+    ProviderResponseUsage,
     UIEvent,
 )
 from .evidence import EvidenceCollector
@@ -283,6 +284,7 @@ class RealRuntime:
         """(role, text) pairs replayed into the transcript on resume."""
         self.degraded_notice: str | None = None
         self.compaction = CompactionConfig()
+        self._compaction_binding: CompactionRuntimeBinding | None = None
 
     def _progress(self, action: str = "", detail: str = "", *rest: object) -> None:
         del rest
@@ -411,6 +413,9 @@ class RealRuntime:
         # content right before the provider call (amplifier-app-cli parity).
         context = initialized.coordinator.get("context")
         if context is not None:
+            binding = CompactionRuntimeBinding(context, self.compaction)
+            self.compaction = binding.apply()
+            self._compaction_binding = binding
             injector = ClipboardImageInjector(context)
             unregister = hooks.register(
                 "provider:request",
@@ -495,6 +500,13 @@ class RealRuntime:
             project = str(self._resolved.project_dir)
             if not any(entry.path == project for entry in result):
                 result.append(DirectoryEntry(project, "project-default"))
+        elif self.directory_policy is not None:
+            configured_paths = {entry.path for entry in result}
+            result.extend(
+                DirectoryEntry(path, "protected-default")
+                for path in self.directory_policy.protected
+                if path not in configured_paths
+            )
         seen: set[str] = set()
         unique: list[DirectoryEntry] = []
         for entry in result:
@@ -546,6 +558,14 @@ class RealRuntime:
         """
         self.evidence.observe(event)
         self.turn_yield.observe(event)
+        if (
+            isinstance(event, ProviderResponseUsage)
+            and self._compaction_binding is not None
+            and event.input_tokens > 0
+        ):
+            asyncio.create_task(
+                self._compaction_binding.observe_input_tokens(event.input_tokens)
+            )
         if self._store is not None and self._initialized is not None:
             self._store.append_event(self._initialized.session_id, event)
 
@@ -652,6 +672,12 @@ class RealRuntime:
         if resolved is not None and resolved.project_dir is not None:
             return Path(resolved.project_dir)
         return self._project_dir or Path.cwd()
+
+    async def workspace_files(self) -> tuple[str, ...]:
+        """Discover files for composer autocomplete without blocking a loop."""
+        from .file_mentions import discover_workspace_files
+
+        return await asyncio.to_thread(discover_workspace_files, self._turn_cwd())
 
     async def _capture_diff(self) -> GitDiffSnapshot:
         try:

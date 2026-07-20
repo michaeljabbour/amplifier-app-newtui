@@ -394,6 +394,8 @@ class TranscriptReducer:
                     self._turn.cancelled = True
             case ev.ContextInjected():
                 self._context_injected()
+            case ev.ContextCompacted():
+                self._context_compacted(event)
             case ev.PromptComplete():
                 self._finish_turn(event)
             case _:
@@ -916,6 +918,19 @@ class TranscriptReducer:
                 cost=lane.lane.cost + lane_cost,
             )
             self._host.lanes_changed()
+
+    def _context_compacted(self, event: ev.ContextCompacted) -> None:
+        """Persist a quiet but inspectable compaction boundary in history."""
+        token_delta = f"{event.before_tokens:,} → {event.after_tokens:,} tokens"
+        message_delta = (
+            f" · {event.before_messages} → {event.after_messages} messages"
+            if event.before_messages or event.after_messages
+            else ""
+        )
+        level = f" · strategy {event.strategy_level}" if event.strategy_level else ""
+        text = f"Context compacted · {token_delta}{message_delta}{level}"
+        self._append_content(Narration(id=self._ids.next_id(), text=text))
+        self._host.show_notice(text)
 
     # -- approvals / notifications -----------------------------------------------------
 

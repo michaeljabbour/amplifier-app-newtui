@@ -72,6 +72,7 @@ read the footer.
 | Queue a **full next turn** while one runs | **shift+enter** (**alt+enter** on legacy terminals — the hint adapts) |
 | Interrupt the running turn | **esc** |
 | Attach an image | paste it (ctrl+v) or paste a path — it becomes an `[Image #N]` chip |
+| Mention a workspace file | type `@` after whitespace, then **↑/↓** and **enter** (or **tab**) to insert |
 
 Things worth knowing:
 
@@ -87,6 +88,9 @@ Things worth knowing:
 - **Big pastes** (>10 lines or >800 chars) collapse to a `[Pasted #N · …]` stub so the
   composer stays readable; the full text is sent verbatim on submit. Deleting the stub
   removes the paste.
+- **File mentions** autocomplete bounded, relative workspace paths. They insert an `@path`
+  reference into your message; paths containing whitespace are quoted. **Esc** closes the
+  suggestions without interrupting a running turn.
 - There is **no input history** on ↑/↓ — on an empty composer those keys navigate the
   agent lanes panel instead.
 
@@ -168,7 +172,7 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | | `/mcp [add\|remove]` | list MCP servers + connected tools; add/remove in `mcp.json` |
 | Parallel | `/tasks` | toggle the agent lanes panel (ctrl+t) |
 | Ship | `/ledger` | session outcome ledger — spend vs. yield summary (ctrl+l) |
-| | `/diff [staged]` | working-tree (or staged) git patch |
+| | `/diff [staged]` | working-tree (or staged) git patch with theme-aware highlighting |
 | | `/export` | write the transcript as markdown to `exports/` |
 | | `/copy` | copy the last answer to the clipboard |
 | | `/about` | app / core / bundle / session identity |
@@ -188,7 +192,9 @@ makes). **`/model`** switches the mounted provider's model in place;
 The packaged newtui bundle also compacts automatically at 80% of its 200k
 window. Override `context.auto_compact`, `context.compact_threshold`, or
 `context.max_tokens` in settings; `/status` shows the effective policy and
-`/context` uses the effective window rather than a hard-coded size.
+whether accounting is provider-observed or estimated. `/context` uses the effective
+window rather than a hard-coded size, and native compaction events persist a before/after
+token and message-count narration in the transcript.
 
 **MCP & skills.** `/mcp` reads `~/.amplifier/mcp.json` (and `./.amplifier/mcp.json`);
 each configured server's tools mount as `mcp_<server>_<tool>` at session start, so
@@ -199,10 +205,12 @@ drive the mounted skills tool — the agent also loads skills on its own when re
 Top-level `amplifier-newtui allowed-dirs` / `denied-dirs` commands persist global, project,
 or local settings; the slash commands change the current session immediately and persist
 under that session for resume. Permission lists union across scopes, denied paths win, and
-the mounted filesystem tool is the hard enforcement point. Shell calls also pass through
-outside-project governance for recognizable absolute, home-relative, parent-relative and
-redirection paths; this is a trust gate like amplifier-app-cli's shell capability, not an
-operating-system sandbox around arbitrary interpreter code.
+the mounted filesystem tool is the hard enforcement point. `.git`, `.agents`, `.codex`,
+and `AGENTS.md` beneath the project are protected defaults and cannot be reopened by an
+approval. The kernel resolves two independent axes for each recognized action: whether it
+needs approval and whether its target is workspace-confined. Shell calls also pass through
+this check for recognizable absolute, home-relative, parent-relative and redirection
+paths; this is not yet an operating-system sandbox around arbitrary interpreter code.
 
 ## 8. Keys
 
@@ -211,6 +219,8 @@ operating-system sandbox around arbitrary interpreter code.
 | enter | send · steer · confirm | idle · running · in panels |
 | shift+enter (alt+enter) | queue next-turn message | any time |
 | ctrl+j | newline in composer | composing |
+| ↑ / ↓ | move file suggestion | `@file` suggestions open |
+| tab | insert selected file path | `@file` suggestions open |
 | shift+tab | cycle mode | any time |
 | ctrl+p | show trust posture | any time |
 | ctrl+t | agent lanes panel | any time |

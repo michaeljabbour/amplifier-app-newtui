@@ -8,6 +8,7 @@ from amplifier_app_newtui.kernel.bundle_admin import settings_paths
 from amplifier_app_newtui.kernel.directory_permissions import (
     DirectoryEntry,
     DirectoryPolicy,
+    PROTECTED_PROJECT_PATHS,
     configured_entries,
     update_configured_path,
 )
@@ -54,3 +55,23 @@ def test_shell_path_signal_respects_allowed_and_parent_escape(tmp_path: Path) ->
     outside = policy.shell_outside_target("echo no > ../outside.txt")
     assert outside is not None
     assert outside[0] == "../outside.txt"
+
+
+def test_repository_and_instruction_paths_are_protected_by_default(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    policy = DirectoryPolicy(project)
+    assert tuple(Path(path).name for path in policy.protected) == tuple(
+        Path(path).name for path in PROTECTED_PROJECT_PATHS
+    )
+    for relative in PROTECTED_PROJECT_PATHS:
+        allowed, reason = policy.check_write(project / relative)
+        assert not allowed, relative
+        assert "protected by default" in reason
+    assert policy.shell_outside_target("echo bad > ./AGENTS.md") is not None
+
+
+def test_protected_paths_reach_filesystem_tool_config(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    policy = DirectoryPolicy(project)
+    merged = policy.merged_tool_config({})
+    assert set(merged["denied_write_paths"]) == set(policy.protected)

@@ -14,6 +14,7 @@ uv run pytest tests/test_ui_reducer_outcomes.py   # one file
 uv run pytest -q -k "steer"                       # by keyword
 uv run ruff check .                  # lint
 uv run pyright src/                  # types
+(cd sdk/typescript && npm ci && npm test)  # TypeScript SDK build + tests
 uv run amplifier-newtui --demo       # eyeball changes on the scripted session
 ```
 
@@ -103,6 +104,7 @@ not from code:
 ## Before you open a PR
 
 - [ ] `uv run pytest -q` green, `ruff check .` clean, `pyright src/` clean
+- [ ] SDK changed? Python tests pass in the root suite; `sdk/typescript` passes `npm ci && npm test`
 - [ ] New behavior has a test at the right layer (see the map above)
 - [ ] Layering rules hold (no Textual in `kernel/`/`model/`, no amplifier-core in `model/`/`commands/`)
 - [ ] Rendering changed? Goldens regenerated **in the same commit**, diff reviewed

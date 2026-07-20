@@ -13,6 +13,7 @@ from amplifier_app_newtui.kernel.events import (
     CancelCompleted,
     CancelRequested,
     ContentBlockEnd,
+    ContextCompacted,
     ExecutionEnd,
     ExecutionStart,
     Notification,
@@ -251,6 +252,24 @@ def test_notification() -> None:
     event = normalize("user:notification", {**SID, "message": "saved", "level": "info"})
     assert isinstance(event, Notification)
     assert event.message == "saved"
+
+
+def test_context_compaction_stats_are_normalized() -> None:
+    event = normalize(
+        "context:compaction",
+        {
+            **SID,
+            "before_tokens": 120_000,
+            "after_tokens": 60_000,
+            "before_messages": 42,
+            "after_messages": 23,
+            "strategy_level": 3,
+        },
+    )
+    assert isinstance(event, ContextCompacted)
+    assert event.before_tokens == 120_000
+    assert event.after_tokens == 60_000
+    assert event.strategy_level == 3
 
 
 def test_unknown_events_return_none() -> None:

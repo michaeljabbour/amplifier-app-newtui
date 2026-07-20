@@ -85,6 +85,7 @@ def status_spans(
         compaction_label = f"off · {compaction.max_tokens:,} token window"
     else:
         compaction_label = f"bundle default · {compaction.max_tokens:,} token window"
+    compaction_label += f" · {compaction.accounting} accounting"
     rows: tuple[tuple[str, str], ...] = (
         ("bundle", bundle or "—"),
         ("mode", mode),
@@ -165,11 +166,13 @@ def mcp_spans(servers: dict[str, str], live_tools: tuple[str, ...]) -> tuple[Seg
 
 
 def diff_spans(patch: str | None, *, staged: bool) -> tuple[Segment, ...]:
-    """``/diff``: the git patch as a fenced code block (monospace render).
+    """``/diff``: a compact, theme-token-only git patch.
 
     ``None`` (git unavailable / not a repo) and a clean tree each get a
     plain dim line; long patches truncate to :data:`_DIFF_MAX_LINES` with
-    a note (never flood the transcript)."""
+    a note (never flood the transcript). Additions and deletions use the
+    active theme's green/red foreground on its tab background, so the
+    highlight follows runtime theme switches without embedding colors."""
     scope = "staged " if staged else ""
     if patch is None:
         return (
@@ -184,9 +187,27 @@ def diff_spans(patch: str | None, *, staged: bool) -> tuple[Segment, ...]:
         )
     lines = patch.splitlines()
     truncated = len(lines) > _DIFF_MAX_LINES
-    body = "\n".join(lines[:_DIFF_MAX_LINES])
-    source = f"```diff\n{body}\n```"
-    spans = list(answer_spans(source))
+    spans: list[Segment] = []
+    for line in lines[:_DIFF_MAX_LINES]:
+        token = "dim"
+        background = None
+        bold = False
+        if line.startswith("@@"):
+            token, bold = "blue", True
+        elif line.startswith(("diff --git ", "index ", "--- ", "+++ ")):
+            token = "teal"
+        elif line.startswith("+"):
+            token, background = "green", "bg-tab"
+        elif line.startswith("-"):
+            token, background = "red", "bg-tab"
+        spans.append(
+            Segment(
+                text=f"  {line}\n",
+                style_token=token,
+                bold=bold,
+                bg_token=background,
+            )
+        )
     if truncated:
         spans.append(
             Segment(

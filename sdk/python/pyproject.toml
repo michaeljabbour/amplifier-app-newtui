@@ -1,0 +1,16 @@
+[project]
+name = "amplifier-newtui-sdk"
+version = "0.1.0"
+description = "Thin Python wrapper for amplifier-newtui's versioned JSONL CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Microsoft MADE:Explorations Team" }]
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/amplifier_newtui_sdk"]

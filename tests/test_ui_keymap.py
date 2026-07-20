@@ -71,6 +71,7 @@ def test_footer_hints_exact_spec_strings() -> None:
         == "esc back to parent · transcript is the subagent's own"
     )
     assert FOOTER_HINTS["palette"] == "↑↓ select · enter run · esc close"
+    assert FOOTER_HINTS["mention"] == "↑↓ select · enter/tab insert · esc close"
     assert FOOTER_HINTS["running"] == "esc interrupt · enter steer · shift+enter queue"
     assert FOOTER_HINTS["idle"] == "/ commands · shift+tab mode · ctrl-t tasks"
 
@@ -117,6 +118,11 @@ def test_open_palette_is_display_only() -> None:
 def test_contexts_are_known() -> None:
     for binding in KEYMAP:
         assert binding.contexts <= ALL_CONTEXTS
+
+
+def test_file_mention_keys_live_in_the_keymap_table() -> None:
+    actions = {binding.action for binding in bindings_for("mention")}
+    assert {"mention_up", "mention_down", "mention_accept", "mention_close"} <= actions
 
 
 def test_approval_context_suppresses_global_chords() -> None:

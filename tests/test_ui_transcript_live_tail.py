@@ -16,6 +16,7 @@ from amplifier_app_newtui.ui.live_tail import (
     THROTTLE_SECONDS,
     LiveTail,
     answer_spans,
+    streaming_spans,
     visible_length,
 )
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
@@ -68,6 +69,31 @@ def test_visible_length_holds_back_trailing_table() -> None:
     assert visible_length(["Results:", "done"]) == 2
     # A paragraph break after the table completes it → paintable.
     assert visible_length(["Results:", "| a | b |", "", "Done"]) == 4
+
+
+def test_streaming_spans_commit_complete_lines_only() -> None:
+    spans = streaming_spans("# Result\nRun `pytest` — **done**.\npartial **mar")
+    assert spans == (
+        Segment(text="Result", style_token="bright", bold=True),
+        Segment(text="\n"),
+        Segment(text="\n"),
+        Segment(text="Run "),
+        Segment(text="pytest", style_token="teal"),
+        Segment(text=" — "),
+        Segment(text="done", style_token="bright", bold=True),
+        Segment(text="."),
+        Segment(text="\n"),
+        Segment(text="partial **mar"),
+    )
+
+
+def test_streaming_spans_hold_table_and_track_open_fence() -> None:
+    table = streaming_spans("Results:\n| Check | State |\n| tests | pass |")
+    assert table == (Segment(text="Results:"),)
+
+    code = streaming_spans("```python\nprint('ok')\nret")
+    assert code[-1] == Segment(text="  ret", style_token="teal")
+    assert all("```" not in segment.text for segment in code)
 
 
 # -- widget behavior -----------------------------------------------------------
@@ -160,6 +186,21 @@ async def test_thinking_blocks_paint_italic_dim() -> None:
         await pilot.pause(0.1)
         assert tail.block_type == "thinking"
         assert tail._markup().startswith("[italic $dim]")
+
+
+@pytest.mark.asyncio
+async def test_completed_stream_lines_use_final_markup_before_consolidation() -> None:
+    app = TailHarness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        tail = _tail(app)
+        tail.open_stream()
+        tail.feed("# Result\nRun `pytest`\npartial **mar")
+        await pilot.pause(0.1)
+        markup = tail._markup()
+        assert "# Result" not in markup
+        assert "[bold $bright]Result[/]" in markup
+        assert "[$teal]pytest[/]" in markup
+        assert "partial **mar" in markup
 
 
 @pytest.mark.asyncio

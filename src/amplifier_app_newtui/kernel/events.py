@@ -374,6 +374,17 @@ class ContextInjected(_Envelope):
     source: str = "steering"
 
 
+class ContextCompacted(_Envelope):
+    """The mounted context compacted its request view."""
+
+    kind: Literal["context_compacted"] = "context_compacted"
+    before_tokens: int = 0
+    after_tokens: int = 0
+    before_messages: int = 0
+    after_messages: int = 0
+    strategy_level: int = 0
+
+
 UIEvent = Annotated[
     StreamBlockStart
     | StreamBlockDelta
@@ -403,7 +414,8 @@ UIEvent = Annotated[
     | AgentSpawned
     | AgentCompleted
     | Notification
-    | ContextInjected,
+    | ContextInjected
+    | ContextCompacted,
     Field(discriminator="kind"),
 ]
 """Discriminated union of every normalized UI event (on ``kind``)."""
@@ -652,6 +664,15 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 notice=_NOTICE_KINDS[event_name],  # type: ignore[arg-type]
                 message=message or _str(payload, "message", "reason"),
             )
+        case "context:compaction":
+            return ContextCompacted(
+                **env,
+                before_tokens=_int(payload, "before_tokens"),
+                after_tokens=_int(payload, "after_tokens"),
+                before_messages=_int(payload, "before_messages"),
+                after_messages=_int(payload, "after_messages"),
+                strategy_level=_int(payload, "strategy_level"),
+            )
         # -- Session lifecycle -------------------------------------------------
         case "session:start":
             return SessionStart(**env)
@@ -732,6 +753,7 @@ __all__ = [
     "CancelRequested",
     "ContentBlockEnd",
     "ContentBlockStart",
+    "ContextCompacted",
     "ContextInjected",
     "ExecutionEnd",
     "ExecutionStart",

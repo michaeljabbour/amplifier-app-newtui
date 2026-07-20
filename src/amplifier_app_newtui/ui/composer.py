@@ -27,6 +27,8 @@ anything itself:
 
 from __future__ import annotations
 
+import re
+
 from textual import events
 from textual.containers import Horizontal
 from textual.message import Message
@@ -34,6 +36,7 @@ from textual.widgets import Static, TextArea
 
 from ..kernel.clipboard import ImageAttachment, pasted_image_attachments
 from ..model.modes import DEFAULT_MODE, ModeProfile, get_mode
+from .file_mentions import FileMentionIntent
 from .keymap import COMPOSER_PLACEHOLDER, hint_label
 
 MAX_INPUT_HEIGHT = 6
@@ -48,6 +51,31 @@ expanded verbatim at submit — so a big paste never floods the composer
 (what read as 'truncated') and nothing is lost."""
 
 _MODE_CLASSES = ("mode-chat", "mode-plan", "mode-brainstorm", "mode-build", "mode-auto")
+_FILE_MENTION_RE = re.compile(r"(?<!\S)@([^\s@]*)$")
+
+
+def _cursor_offset(text: str, location: tuple[int, int]) -> int:
+    """Translate TextArea's ``(row, column)`` cursor into a text offset."""
+    row, column = location
+    lines = text.splitlines(keepends=True)
+    return sum(len(line) for line in lines[:row]) + column
+
+
+def _cursor_location(text: str, offset: int) -> tuple[int, int]:
+    """Translate a text offset back into TextArea's cursor location."""
+    prefix = text[:offset]
+    return (prefix.count("\n"), len(prefix.rsplit("\n", 1)[-1]))
+
+
+def active_file_mention(
+    text: str, location: tuple[int, int]
+) -> tuple[str, int, int] | None:
+    """Return ``(query, start, end)`` for the mention under the cursor."""
+    end = _cursor_offset(text, location)
+    match = _FILE_MENTION_RE.search(text[:end])
+    if match is None:
+        return None
+    return (match.group(1), match.start(), end)
 
 
 class ModeBadge(Static):
@@ -104,7 +132,21 @@ class ComposerInput(TextArea):
         if composer is None:
             await super()._on_key(event)
             return
-        if event.key == "enter":
+        if composer.mention_open and event.key in ("up", "down"):
+            event.stop()
+            event.prevent_default()
+            composer.post_message(
+                FileMentionIntent("move", delta=-1 if event.key == "up" else 1)
+            )
+        elif composer.mention_open and event.key in ("enter", "tab"):
+            event.stop()
+            event.prevent_default()
+            composer.post_message(FileMentionIntent("accept"))
+        elif composer.mention_open and event.key == "escape":
+            event.stop()
+            event.prevent_default()
+            composer.post_message(FileMentionIntent("clear"))
+        elif event.key == "enter":
             event.stop()
             event.prevent_default()
             composer.handle_enter()
@@ -273,6 +315,8 @@ class Composer(Horizontal):
         self.running: bool = False
         self._mode: ModeProfile = get_mode(DEFAULT_MODE)
         self._palette_open = False
+        self._mention_filter_active = False
+        self.mention_open = False
         self._badge = ModeBadge()
         self._prompt = Static("❯", classes="composer-prompt")
         self._input = ComposerInput()
@@ -311,6 +355,7 @@ class Composer(Horizontal):
 
     def clear(self) -> None:
         self._input.clear()
+        self.mention_open = False
         self._pastes.clear()
         self._attachments.clear()
         self._image_seq = 0
@@ -354,6 +399,24 @@ class Composer(Horizontal):
         strips — e.g. typing while the lanes panel holds focus)."""
         self._input.insert(text)
 
+    def apply_file_mention(self, path: str) -> bool:
+        """Replace the active ``@query`` with *path* and keep typing."""
+        active = active_file_mention(self._input.text, self._input.cursor_location)
+        if active is None:
+            return False
+        _, start, end = active
+        rendered = f'@"{path}"' if any(char.isspace() for char in path) else f"@{path}"
+        text = self._input.text
+        replacement = f"{rendered} "
+        updated = f"{text[:start]}{replacement}{text[end:]}"
+        cursor = start + len(replacement)
+        self._input.load_text(updated)
+        self._input.cursor_location = _cursor_location(updated, cursor)
+        self.mention_open = False
+        self._mention_filter_active = False
+        self.post_message(FileMentionIntent("clear"))
+        return True
+
     def focus_input(self) -> None:
         self._input.focus()
 
@@ -396,9 +459,21 @@ class Composer(Horizontal):
             # Mockup onInput: the live filter is the TRIMMED value, so
             # "/mode " (trailing space) still matches /mode.
             self.post_message(self.OpenPalette(filter=text.strip()))
-        elif self._palette_open:
+            if self._mention_filter_active:
+                self._mention_filter_active = False
+                self.post_message(FileMentionIntent("clear"))
+            return
+        if self._palette_open:
             self._palette_open = False
             self.post_message(self.PaletteFilterCleared())
+        mention = active_file_mention(text, self._input.cursor_location)
+        if mention is not None:
+            self._mention_filter_active = True
+            self.post_message(FileMentionIntent("filter", query=mention[0]))
+        elif self._mention_filter_active:
+            self._mention_filter_active = False
+            self.mention_open = False
+            self.post_message(FileMentionIntent("clear"))
 
     # -- internals ---------------------------------------------------------------
 
@@ -415,4 +490,5 @@ __all__ = [
     "ComposerInput",
     "MAX_INPUT_HEIGHT",
     "ModeBadge",
+    "active_file_mention",
 ]

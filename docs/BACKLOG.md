@@ -32,7 +32,19 @@ default; `tool-mcp` is the one addition beyond anchors, kept by request.
 
 **Remaining (Bucket B) — all nice-to-have; core parity done:**
 - [ ] `source` command group (module-source overrides: add/remove/list/show) — parity with app-cli's `source` group; `bundle remove` already covers bundle un-registration.
-- [ ] `routing list/use` CLI; `/config` live editing; session-manager ops (delete/rename/background); notifications; `--output-format json`.
+- [ ] `routing list/use` CLI; `/config` live editing; session-manager ops (delete/rename/background); notifications.
+
+## 0.1 Codex-inspired core and interop — SHIPPED
+
+- [x] Durable `<turn_aborted>` context marker and step-boundary steering.
+- [x] Truthful automatic compaction binding, provider-observed accounting when supported,
+  and persistent `ContextCompacted` before/after telemetry.
+- [x] Progressive line-commit streaming with mutable-tail fence tracking and table holdback.
+- [x] Typed two-axis safety resolution: approval and execution confinement cannot override
+  one another; protected `.git/.agents/.codex/AGENTS.md` paths are denied by default.
+- [x] Composer `@file` autocomplete over a bounded workspace index.
+- [x] Theme-token diff highlighting for `/diff` additions, deletions, metadata, and hunks.
+- [x] Versioned live JSONL CLI plus thin Python and TypeScript subprocess SDKs.
 
 Dropped: ingested-source deletion (the corpus "Delete original" UI) — not a
 newtui feature; no amplifier tool exposes a corpus-document delete.
@@ -67,15 +79,11 @@ checklist with progress bar and in-place status updates.
 - [ ] **Decide ambient surfacing.** The ctrl-t panel is *lanes* (background delegates), not todos. Minimal: a `3/7 tasks` counter in the footer next to mode; the block in the transcript remains the source of truth.
 - [ ] Subagent todo events: currently root-session only; revisit whether lane todos surface at all.
 
-## 3. Streaming parity — kill "the pop"
+## 3. Streaming parity — SHIPPED
 
-The live tail streams raw-ish text, then the consolidated Answer reformats at
-stream end — the biggest perceived-quality gap. Fix: line-commit progressive
-rendering. Run each **completed** line through the same `_render_answer`
-pipeline as it streams (the 30 Hz throttle is the tick), keep only the trailing
-partial line plain, and track fence state so a half-open ``` never renders as
-prose. Golden-testable: streamed-then-committed output must equal one-shot
-rendering of the same text.
+Completed lines use the final answer renderer during streaming; only the trailing partial
+line stays plain and mutable. Pipe tables remain held until stable and open fences retain
+code styling. Focused tests lock the progressive behavior and performance budget.
 
 ## 4. Inline emphasis — mostly shipped, italic open
 
