@@ -159,6 +159,14 @@ def _cmd_permissions(ctx: CommandContext, args: str) -> None:
     ctx.open_permissions()
 
 
+def _cmd_allowed_dirs(ctx: CommandContext, args: str) -> None:
+    ctx.manage_directories("allowed", args)
+
+
+def _cmd_denied_dirs(ctx: CommandContext, args: str) -> None:
+    ctx.manage_directories("denied", args)
+
+
 def _cmd_doctor(ctx: CommandContext, args: str) -> None:
     del args
     mcp_stats = tuple(
@@ -407,6 +415,20 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="edit trust slots: boundary, blocks, exceptions",
         tag="built-in",
         handler=_cmd_permissions,
+    ),
+    CommandSpec(
+        group="Repair",
+        name="/allowed-dirs",
+        desc="list or edit session allowed write directories",
+        tag="built-in",
+        handler=_cmd_allowed_dirs,
+    ),
+    CommandSpec(
+        group="Repair",
+        name="/denied-dirs",
+        desc="list or edit session denied write directories",
+        tag="built-in",
+        handler=_cmd_denied_dirs,
     ),
     CommandSpec(
         group="Repair",

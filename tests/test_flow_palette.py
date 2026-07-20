@@ -50,6 +50,8 @@ ALL_COMMANDS = (
     "/rewind",
     "/quit",
     "/permissions",
+    "/allowed-dirs",
+    "/denied-dirs",
     "/doctor",
     "/improve",
     "/theme",

@@ -294,6 +294,11 @@ class NewTuiApp(App[None]):
             pass
 
     def show_notice(self, text: str, duration: float | None = None) -> None:
+        # The approval bar owns both input and its explanatory notice. A late
+        # notification from the preceding turn (notably an agents-done event)
+        # must not overwrite the instruction while the modal decision is live.
+        if self.approval_bar is not None and "approval required" not in text:
+            return
         self.notice_slot.show_notice(text, duration)
 
     def set_mode_by_id(self, mode_id: str, *, notify: bool = True) -> None:
@@ -510,6 +515,11 @@ class NewTuiApp(App[None]):
 
     def manage_mcp(self, args: str) -> None:
         self.run_worker(self._manage_mcp(args), exclusive=False)
+
+    def manage_directories(self, kind: str, args: str) -> None:
+        from .directory_admin import manage
+
+        self.run_worker(manage(self, kind, args), exclusive=False)
 
     async def _manage_mcp(self, args: str) -> None:
         from ..kernel import mcp_config

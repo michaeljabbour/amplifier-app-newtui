@@ -148,6 +148,10 @@ class CommandContext(Protocol):
         """Open the trust-slot editor (``/permissions``)."""
         ...
 
+    def manage_directories(self, kind: str, args: str) -> None:
+        """List/add/remove allowed or denied session directories."""
+        ...
+
     def quit_app(self) -> None:
         """Exit the app (``/quit`` — ctrl-d and ctrl-q are the key paths)."""
         ...

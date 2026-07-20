@@ -106,6 +106,9 @@ class FakeCommandContext:
     def open_permissions(self) -> None:
         self.calls.append("open_permissions")
 
+    def manage_directories(self, kind: str, args: str) -> None:
+        self.calls.append(f"manage_directories:{kind}:{args}")
+
     def export_transcript(self) -> str:
         self.calls.append("export_transcript")
         return "exports/a1b2c3-20260101-000000.md"

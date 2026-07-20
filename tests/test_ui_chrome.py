@@ -115,7 +115,7 @@ async def test_notice_shows_and_auto_dismisses() -> None:
     async with app.run_test() as pilot:
         slot = app.query_one("#notice", NoticeSlot)
         slot.show_notice("mode plan · read-only")
-        await pilot.pause()
+        await pilot.pause(0.01)  # stay well inside the test slot's 0.05s TTL
         assert slot.current == "mode plan · read-only"
         assert slot.has_class("-visible")
         await pilot.pause(0.3)  # duration is 0.05s in this test app
@@ -132,7 +132,7 @@ async def test_notice_is_single_slot_and_replaces() -> None:
         slot.show_notice(
             "steer queued · shift+enter queues a full next-turn message"
         )
-        await pilot.pause()
+        await pilot.pause(0.01)  # stay well inside the test slot's 0.05s TTL
         assert slot.current == (
             "steer queued · shift+enter queues a full next-turn message"
         )

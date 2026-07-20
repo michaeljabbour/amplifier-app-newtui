@@ -29,6 +29,8 @@ def test_mode_defaults_match_spec_table() -> None:
     # auto: auto read,write · classifier-gated elsewhere
     assert mode_default("auto", CapabilityClass.WRITE).decision == "allow"
     assert mode_default("auto", CapabilityClass.NET).classifier_gated
+    assert mode_default("auto", CapabilityClass.OUTSIDE_PROJECT).classifier_gated
+    assert mode_default("build", CapabilityClass.OUTSIDE_PROJECT).decision == "ask"
 
 
 def test_slots_listing_order_and_defaults() -> None:

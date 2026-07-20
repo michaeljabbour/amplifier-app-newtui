@@ -21,6 +21,7 @@ from amplifier_app_newtui.kernel.config import (
     bundle_search_paths,
     deep_merge,
     discover_bundle,
+    ensure_project_write_path,
     expand_env_placeholders,
     get_project_slug,
     is_bundle_uri,
@@ -179,7 +180,44 @@ def test_apply_module_overrides_merges_in_place() -> None:
     anthropic = mount_plan["providers"][0]
     assert anthropic["config"] == {"priority": 1, "default_model": "claude-x"}
     assert mount_plan["providers"][1]["module"] == "provider-openai"  # appended
-    assert mount_plan["tools"][0]["config"]["allowed_write_paths"] == ["/b"]
+    assert mount_plan["tools"][0]["config"]["allowed_write_paths"] == ["/a", "/b"]
+
+
+def test_permission_paths_union_across_settings_scopes(tmp_path: Path) -> None:
+    paths = SettingsPaths.default(tmp_path / "project", tmp_path / "home")
+    _write(
+        paths.global_settings,
+        "modules:\n  tools:\n    - module: tool-filesystem\n"
+        "      config:\n        allowed_write_paths: [/global]\n"
+        "        denied_write_paths: [/blocked-global]\n",
+    )
+    _write(
+        paths.project_settings,
+        "modules:\n  tools:\n    - module: tool-filesystem\n"
+        "      config:\n        allowed_write_paths: [/project-extra]\n"
+        "        denied_write_paths: [/blocked-project]\n",
+    )
+    settings = load_merged_settings(paths)
+    config = settings["modules"]["tools"][0]["config"]
+    assert config["allowed_write_paths"] == ["/global", "/project-extra"]
+    assert config["denied_write_paths"] == ["/blocked-global", "/blocked-project"]
+
+
+def test_project_path_is_always_preserved_in_filesystem_allowlist(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    plan = {
+        "tools": [
+            {
+                "module": "tool-filesystem",
+                "config": {"allowed_write_paths": [str(tmp_path / "shared")]},
+            }
+        ]
+    }
+    ensure_project_write_path(plan, project)
+    assert plan["tools"][0]["config"]["allowed_write_paths"] == [
+        str(project.resolve()),
+        str((tmp_path / "shared").resolve()),
+    ]
 
 
 def test_apply_generic_overrides_before_specific() -> None:

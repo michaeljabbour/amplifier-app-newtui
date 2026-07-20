@@ -35,8 +35,15 @@ from typing import Any, Protocol
 from amplifier_core import HookResult
 
 from ..model.queues import NeedsYouQueue
-from ..model.trust import CapabilityClass, DenialLog, TrustDecision, resolve
+from ..model.trust import (
+    CapabilityClass,
+    DenialLog,
+    TrustDecision,
+    resolve,
+    resolve_capability,
+)
 from .approval import STANDARD_OPTIONS, ApprovalBroker, ApprovalDetail
+from .directory_permissions import DirectoryPolicy
 
 _MAX_USER_MESSAGES = 12
 _MAX_MESSAGE_CHARS = 32_768
@@ -87,6 +94,7 @@ class OfflineAutoClassifier:
         CapabilityClass.EXEC: ("check", "execute", "inspect", "run", "verify"),
         CapabilityClass.NET: ("browse", "download", "fetch", "look up", "search", "upload"),
         CapabilityClass.SPEND: ("agent", "delegate", "parallel", "research", "spawn"),
+        CapabilityClass.OUTSIDE_PROJECT: ("change", "edit", "run", "write"),
     }
     _SEMANTIC_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("pytest", ("test", "verify")),
@@ -108,6 +116,8 @@ class OfflineAutoClassifier:
             return (False, "action has destructive or irreversible form")
         if self._is_authorized(action, capability, target, user_messages):
             return (True, "action matches an explicit user request")
+        if capability == CapabilityClass.OUTSIDE_PROJECT:
+            return (False, "outside configured project boundary without explicit authorization")
         if self._BOUNDARY.search(action):
             return (False, "outbound push crosses the trust boundary unrequested")
         return (True, "within amplifier's wide trust scope")
@@ -173,6 +183,12 @@ class GovernanceHook:
         needs_you: NeedsYouQueue | None = None,
         classifier: AutoClassifier | None = None,
         on_blocked: Callable[[str, str], None] | None = None,
+        directory_policy: DirectoryPolicy | None = None,
+        permission_resolver: Callable[
+            [str, Mapping[str, object] | None], TrustDecision
+        ]
+        | None = None,
+        capability_resolver: Callable[[CapabilityClass], TrustDecision] | None = None,
     ) -> None:
         self._root_session_id = root_session_id
         self._mode = mode
@@ -181,6 +197,9 @@ class GovernanceHook:
         self._needs_you = needs_you
         self._classifier: AutoClassifier = classifier or OfflineAutoClassifier()
         self._on_blocked = on_blocked
+        self._directory_policy = directory_policy
+        self._permission_resolver = permission_resolver
+        self._capability_resolver = capability_resolver
         self._user_messages: list[str] = []
 
     async def handle_event(self, event: str, data: dict[str, Any]) -> HookResult:
@@ -229,7 +248,31 @@ class GovernanceHook:
         tool_input = _mapping(data.get("tool_input") or data.get("input"))
         action = _action_text(tool_name, tool_input)
         target = _target(tool_input)
-        decision = resolve(self._mode(), tool_name, tool_input)
+        decision = (
+            self._permission_resolver(tool_name, tool_input)
+            if self._permission_resolver is not None
+            else resolve(self._mode(), tool_name, tool_input)
+        )
+
+        policy = self._directory_policy
+        if policy is not None and decision.capability == CapabilityClass.WRITE and target:
+            allowed, reason = policy.check_write(target)
+            if not allowed:
+                return self._deny(CapabilityClass.OUTSIDE_PROJECT, action, reason)
+        if (
+            policy is not None
+            and decision.capability == CapabilityClass.READ
+            and target
+            and not policy.within_allowed(target)
+        ):
+            decision = self._resolve_capability(CapabilityClass.OUTSIDE_PROJECT)
+        if policy is not None and decision.capability == CapabilityClass.EXEC:
+            outside = policy.shell_outside_target(action)
+            if outside is not None:
+                target, reason = outside
+                if "denied directories" in reason:
+                    return self._deny(CapabilityClass.OUTSIDE_PROJECT, action, reason)
+                decision = self._resolve_capability(CapabilityClass.OUTSIDE_PROJECT)
 
         if decision.classifier_gated:
             return await self._classify(decision, action, target)
@@ -239,6 +282,11 @@ class GovernanceHook:
         if decision.decision == "ask":
             return self._ask(decision, tool_name, tool_input, action, target)
         return self._deny(decision.capability, action, decision.reason)
+
+    def _resolve_capability(self, capability: CapabilityClass) -> TrustDecision:
+        if self._capability_resolver is not None:
+            return self._capability_resolver(capability)
+        return resolve_capability(self._mode(), capability)
 
     async def _classify(
         self, decision: TrustDecision, action: str, target: str

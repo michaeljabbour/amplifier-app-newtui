@@ -1,19 +1,25 @@
 # Settings Reference
 
-Every configuration surface the app reads, in one place. All settings loading lives in
-`kernel/config.py` (`resolve_config()` — the single configuration golden path); the only
-other consumer of the merged settings is `kernel/cost.py` (the `pricing.live` toggle), so
-this document is exhaustive.
+Every configuration surface the app reads, in one place. Startup settings loading lives in
+`kernel/config.py` (`resolve_config()` — the single configuration golden path); live
+session directory capabilities are administered in `kernel/directory_permissions.py`.
 
 ## Files and merge order
 
-Three YAML scopes, deep-merged in order (most specific wins; dicts merge recursively):
+Three startup YAML scopes are merged in order (most specific wins; dicts merge recursively):
 
 | Order | File | Scope |
 |---|---|---|
 | 1 | `~/.amplifier/settings.yaml` | global — you, on this machine |
 | 2 | `<project>/.amplifier/settings.yaml` | project — shared, committed |
 | 3 | `<project>/.amplifier/settings.local.yaml` | local — per-machine, gitignored |
+
+A resumed session additionally reads
+`~/.amplifier/projects/<slug>/sessions/<id>/settings.yaml`. `/allowed-dirs` and
+`/denied-dirs` write that session scope and update mounted filesystem tools immediately.
+The permission fields `allowed_write_paths`, `allowed_read_paths`, and
+`denied_write_paths` are stable-unioned across scopes; other lists retain overlay-wins
+semantics.
 
 Missing or malformed files are skipped with a warning — settings can never block startup.
 (`/doctor` surfaces parse failures.)
@@ -42,7 +48,7 @@ This is the complete set of keys the app consumes:
 | `routing.matrix` | Active model-routing matrix name for delegated sub-agents; feeds `hooks-routing` (`default_matrix`) when that hook is mounted (via an overlay). Not mounted in the base bundle | none (base) | global |
 | `routing.overrides` | Per-role candidate overrides merged onto the matrix | none | project |
 | `config.providers` | Provider entries merged by identity (`id` \| `instance_id` \| `module`): reconfigure the bundled provider or append new ones (see the README's Providers section) | none | global (credentials via `${VAR}`) |
-| `modules.tools` | Tool entries merged by identity into the mount plan, same mechanics as providers | none | project |
+| `modules.tools` | Tool entries merged by identity; filesystem permission lists union across scopes | project root is implicitly writable | global / project / local / session |
 | `pricing.live` | Live Helicone pricing: fresh `~/.amplifier/pricing_cache.json` (24 h TTL) applies at startup, else a background fetch swaps rates in for **new turns only**; `false` keeps the built-in offline table | `true` | global |
 | `sources.modules` | Map of `module_id → source URI`: redirect where a module is fetched from | none | local (dev checkouts) |
 | `overrides.<id>.source` | Per-module source redirect; wins over `sources.modules` | none | local |
@@ -62,8 +68,9 @@ as `mcp_<server>_<tool>`. `/mcp add|remove` edits this file (takes effect next l
 **Native modes** are discovered from `<project>/.amplifier/modes/` → `~/.amplifier/modes/`
 → the app's packaged `data/modes/` (plan/brainstorm/careful) → composed bundles' `modes/`.
 The base bundle mounts `hooks-mode` + `hooks-approval` + `tool-mode` matching the reference
-`anchors` default, with **approvals off** (`policy_driven_only: true`, no active mode ⇒
-nothing gated). Switch to a gating posture/mode to opt in.
+`anchors` default. Those native hooks are idle without an active native mode; the app's
+own posture/outside-project governance hook remains active and shares their approval
+provider.
 
 ## Environment variables
 

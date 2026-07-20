@@ -15,16 +15,23 @@ import — ``--demo`` boot never touches amplifier-foundation);
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from ..kernel.events import UIEvent
+from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
 from ..kernel.session_ops import ModelListing, StatusInfo
 from ..model.blocks import BlockIdAllocator, TranscriptBlock
 from ..model.evidence import EvidenceLink
 from ..model.queues import NeedsYouQueue, SteeringQueue
-from ..model.trust import DenialLog
+from ..model.trust import (
+    CapabilityClass,
+    DenialLog,
+    TrustDecision,
+    resolve,
+    resolve_capability,
+)
 
 if TYPE_CHECKING:
     from .reducer import LaneSeed, TurnSpecLike
@@ -136,6 +143,18 @@ class RuntimeAdapter:
 
     async def mcp_tools(self) -> tuple[str, ...]:
         return ()
+
+    async def directory_entries(
+        self, kind: DirectoryKind
+    ) -> tuple[DirectoryEntry, ...]:
+        del kind
+        return ()
+
+    async def update_directory(
+        self, kind: DirectoryKind, operation: str, path: str
+    ) -> tuple[bool, str]:
+        del kind, operation, path
+        return (False, "directory management needs a real session")
 
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Fork the session at *checkpoint_id*, then trim *ledger* (spec §9).
@@ -274,6 +293,8 @@ class RealRuntimeAdapter(RuntimeAdapter):
                 needs_you=self.needs_you,
                 denial_log=self.denial_log,
                 mode=self._current_mode,
+                permission_resolver=self._resolve_permission,
+                capability_resolver=self._resolve_capability,
                 on_progress=self._boot_progress,
             )
             await runtime.start()
@@ -304,7 +325,19 @@ class RealRuntimeAdapter(RuntimeAdapter):
         return await asyncio.wrap_future(future)
 
     def _current_mode(self) -> str:
-        return self.app.mode_id if self.app is not None else "chat"
+        return self.app.mode_id if self.app is not None else "auto"
+
+    def _resolve_permission(
+        self, tool_name: str, tool_input: Mapping[str, object] | None
+    ) -> TrustDecision:
+        if self.app is not None:
+            return self.app.permissions.resolve_call(tool_name, tool_input)
+        return resolve(self._current_mode(), tool_name, tool_input)
+
+    def _resolve_capability(self, capability: CapabilityClass) -> TrustDecision:
+        if self.app is not None:
+            return self.app.permissions.resolve_capability(capability)
+        return resolve_capability(self._current_mode(), capability)
 
     def _on_broker_change(self) -> None:
         # Fires on the runtime thread — presentation hops to the app loop.
@@ -403,6 +436,26 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is None:
             return ()
         return await self._in_runtime(self._runtime.mcp_tools())
+
+    async def directory_entries(
+        self, kind: DirectoryKind
+    ) -> tuple[DirectoryEntry, ...]:
+        if self._runtime is None:
+            return ()
+
+        async def read() -> tuple[DirectoryEntry, ...]:
+            return self._runtime.directory_entries(kind)
+
+        return await self._in_runtime(read())
+
+    async def update_directory(
+        self, kind: DirectoryKind, operation: str, path: str
+    ) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(
+            self._runtime.update_session_directory(kind, operation, path)
+        )
 
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Real fork: foundation in-memory fork + ``context.set_messages()``."""

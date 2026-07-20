@@ -65,6 +65,11 @@ uv run amplifier-newtui init                   # set up a provider key in ~/.amp
 uv run amplifier-newtui sessions               # list stored session ids for this project
 uv run amplifier-newtui resume SESSION_ID      # relaunch the TUI resuming a stored session
 uv run amplifier-newtui run "PROMPT"           # execute one prompt headlessly, print the response
+printf 'PROMPT\n' | uv run amplifier-newtui run # stdin one-shot
+uv run amplifier-newtui run --output-format json "PROMPT"       # JSON-only stdout
+uv run amplifier-newtui run --output-format json-trace "PROMPT" # JSON + normalized event trace
+uv run amplifier-newtui allowed-dirs add ../shared --project     # persistent write capability
+uv run amplifier-newtui denied-dirs add .git --project           # persistent write block
 uv run amplifier-newtui bundle list            # bundles from the shared registry (--all incl. deps)
 uv run amplifier-newtui bundle use NAME        # set the active bundle (--global/--project/--local)
 uv run amplifier-newtui update --check-only     # check the mounted bundles/modules for updates
@@ -72,7 +77,12 @@ uv run amplifier-newtui update --check-only     # check the mounted bundles/modu
 
 A *bundle* is a packaged agent configuration — provider + tools + agents + behaviors. The app ships one (`newtui`), so you never need `--bundle` to get started. The `bundle` group (`list · show · use · clear · current · add · remove · update`) reads and writes the same registry and settings the reference `amplifier` CLI uses.
 
-Inside the TUI, `/` opens the command palette: mode/plan/rewind/ledger, the live-session commands `/status · /model · /effort · /compact · /clear · /tools · /agents · /diff`, and `/skills · /skill <name> · /mcp` (see [User Guide §7](docs/USER-GUIDE.md#7-commands)). MCP servers (`~/.amplifier/mcp.json`) and skills are mounted natively; approvals are off by default — gating turns on only in a mode like `careful` ([§4/§5](docs/USER-GUIDE.md#4-modes)).
+Inside the TUI, `/` opens the command palette: mode/plan/rewind/ledger, live-session
+commands, `/allowed-dirs` and `/denied-dirs` for session-scoped path capabilities, and
+`/skills · /skill <name> · /mcp` (see [User Guide §7](docs/USER-GUIDE.md#7-commands)).
+The mounted filesystem tool hard-enforces write paths; the kernel governance hook applies
+the same posture and outside-project boundary to tool calls, while bundle-native modes
+such as `careful` can add their own confirmation policy.
 
 ### Use it on your own projects
 

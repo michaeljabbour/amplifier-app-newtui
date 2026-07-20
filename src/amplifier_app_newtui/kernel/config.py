@@ -57,6 +57,77 @@ def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+_UNION_TOOL_CONFIG_FIELDS = frozenset(
+    {"allowed_write_paths", "allowed_read_paths", "denied_write_paths"}
+)
+"""Tool permission lists extend across scopes instead of replacing each other."""
+
+
+def merge_tool_configs(
+    base: dict[str, Any], overlay: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge one tool config with stable union semantics for path policy.
+
+    Amplifier's directory settings are additive capabilities: adding a project-
+    scoped path must not erase a global path (or the implicit project root).
+    Other config values retain normal overlay-wins semantics.
+    """
+    merged = deep_merge(base, overlay)
+    for config_key in _UNION_TOOL_CONFIG_FIELDS:
+        if config_key not in base and config_key not in overlay:
+            continue
+        combined: list[Any] = []
+        for source in (base.get(config_key, []), overlay.get(config_key, [])):
+            if not isinstance(source, list):
+                continue
+            for value in source:
+                if value not in combined:
+                    combined.append(value)
+        merged[config_key] = combined
+    return merged
+
+
+def _merge_tool_lists(base: list[Any], overlay: list[Any]) -> list[Any]:
+    """Merge settings ``modules.tools`` by identity, preserving order."""
+    result = [dict(item) if isinstance(item, dict) else item for item in base]
+    index = {
+        str(item.get("id") or item.get("instance_id") or item.get("module")): offset
+        for offset, item in enumerate(result)
+        if isinstance(item, dict)
+        and (item.get("id") or item.get("instance_id") or item.get("module"))
+    }
+    for raw in overlay:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        key = str(item.get("id") or item.get("instance_id") or item.get("module") or "")
+        if key and key in index:
+            existing = result[index[key]]
+            assert isinstance(existing, dict)
+            merged = {**existing, **item}
+            merged["config"] = merge_tool_configs(
+                existing.get("config") or {}, item.get("config") or {}
+            )
+            result[index[key]] = merged
+        else:
+            result.append(item)
+            if key:
+                index[key] = len(result) - 1
+    return result
+
+
+def merge_settings(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Settings merge with Amplifier-native module/path semantics."""
+    merged = deep_merge(base, overlay)
+    base_tools = (base.get("modules") or {}).get("tools")
+    overlay_tools = (overlay.get("modules") or {}).get("tools")
+    if isinstance(base_tools, list) and isinstance(overlay_tools, list):
+        modules = merged.setdefault("modules", {})
+        if isinstance(modules, dict):
+            modules["tools"] = _merge_tool_lists(base_tools, overlay_tools)
+    return merged
+
+
 @dataclass(frozen=True)
 class SettingsPaths:
     """The three settings scopes, least → most specific."""
@@ -93,7 +164,7 @@ def load_merged_settings(paths: SettingsPaths) -> dict[str, Any]:
             logger.warning("Skipping malformed settings file: %s", path)
             continue
         if isinstance(content, dict):
-            merged = deep_merge(merged, content)
+            merged = merge_settings(merged, content)
     return merged
 
 
@@ -214,7 +285,10 @@ def apply_module_overrides(
                         continue
                     override_config = generic.get(str(entry.get("module")))
                     if override_config:
-                        entry["config"] = deep_merge(entry.get("config") or {}, override_config)
+                        merge = merge_tool_configs if section == "tools" else deep_merge
+                        entry["config"] = merge(
+                            entry.get("config") or {}, override_config
+                        )
 
     # config.providers — provider entries merged by identity (id | module).
     provider_overrides = (settings.get("config") or {}).get("providers")
@@ -303,7 +377,10 @@ def _merge_module_entries(
         if key and key in index_by_key:
             existing = entries[index_by_key[key]]
             merged = {**existing, **item}
-            merged["config"] = deep_merge(existing.get("config") or {}, item.get("config") or {})
+            merge = merge_tool_configs if section == "tools" else deep_merge
+            merged["config"] = merge(
+                existing.get("config") or {}, item.get("config") or {}
+            )
             entries[index_by_key[key]] = merged
         else:
             entries.append(item)
@@ -386,6 +463,30 @@ def inject_mode_search_paths(mount_plan: dict[str, Any], modes_dir: Path) -> Non
         target = str(modes_dir)
         if target not in paths:
             paths.append(target)
+
+
+def ensure_project_write_path(
+    mount_plan: dict[str, Any], project_dir: Path
+) -> None:
+    """Keep the session project writable when users add extra directories.
+
+    ``tool-filesystem`` defaults to the session working directory only while
+    ``allowed_write_paths`` is absent. Once a user supplies that list, its
+    default disappears, so stamp the resolved project root explicitly. This
+    mirrors amplifier-app-cli's ``'.'`` policy without depending on process cwd.
+    """
+    project = str(project_dir.resolve())
+    for tool in mount_plan.get("tools") or []:
+        if not isinstance(tool, dict) or tool.get("module") != "tool-filesystem":
+            continue
+        config = tool.get("config")
+        if not isinstance(config, dict):
+            config = {}
+            tool["config"] = config
+        paths = config.get("allowed_write_paths")
+        if not isinstance(paths, list):
+            paths = []
+        config["allowed_write_paths"] = [project, *(p for p in paths if p != project)]
 
 
 def bundle_search_paths(project_dir: Path, amplifier_home: Path) -> tuple[Path, ...]:
@@ -549,6 +650,7 @@ async def resolve_config(
     #    then ${VAR} placeholder expansion (reference: amplifier-app-cli
     #    expands the effective bundle config before session creation).
     mount_plan = apply_module_overrides(prepared.mount_plan, settings)
+    ensure_project_write_path(mount_plan, project_dir)
     # settings ``id`` → kernel ``instance_id`` so a provider mounts under
     # its configured id (reference CLI parity); prevents a false
     # 'provider unavailable' when the config names an instance.
@@ -596,6 +698,7 @@ __all__ = [
     "deep_merge",
     "discover_bundle",
     "expand_env_placeholders",
+    "ensure_project_write_path",
     "inject_mode_search_paths",
     "inject_routing_config",
     "packaged_modes_dir",
@@ -604,6 +707,8 @@ __all__ = [
     "list_available_bundles",
     "load_keys_env",
     "load_merged_settings",
+    "merge_settings",
+    "merge_tool_configs",
     "map_provider_ids_to_instance_ids",
     "overlay_uris",
     "packaged_bundles_dir",

@@ -100,6 +100,9 @@ class AppCommandContext:
     def open_permissions(self) -> None:
         self._app.open_permissions()
 
+    def manage_directories(self, kind: str, args: str) -> None:
+        self._app.manage_directories(kind, args)
+
     def quit_app(self) -> None:
         self._app.exit()
 

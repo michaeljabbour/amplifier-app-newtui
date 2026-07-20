@@ -122,6 +122,7 @@ src/amplifier_app_newtui/
 │   ├── clipboard.py       clipboard image ingestion
 │   ├── display.py         DisplaySystem: kernel messages → Notification UIEvents
 │   ├── demo.py            DemoRuntime: scripted offline event producer
+│   ├── directory_permissions.py  shared path policy + settings administration
 │   └── trackers/          task_status, stream_status, runtime_status
 ├── model/             pure domain state (no Textual, no amplifier-core)
 │   ├── blocks.py          TranscriptBlock discriminated union (20 kinds) + id allocator
@@ -143,6 +144,7 @@ src/amplifier_app_newtui/
     ├── runtime_adapter.py RuntimeAdapter seam; RealRuntimeAdapter (thread marshalling)
     ├── demo_wiring.py     DemoRuntimeAdapter
     ├── session_ops_view.py rendering for /status /tools /agents /skills output
+    ├── directory_admin.py session directory-command controller
     ├── reducer.py         TranscriptReducer: UIEvent → transcript mutations
     ├── transcript.py      TranscriptView + pure render_block() per block kind
     ├── live_tail.py       the single mutable streaming region
@@ -162,9 +164,11 @@ src/amplifier_app_newtui/
 
 `main()` is a click group. With no subcommand it runs `asyncio.run(_launch_tui(...))` — one
 `asyncio.run` for the whole app. Flags: `--demo` (scripted offline runtime), `--bundle`
-(name or URI). Subcommands: `run PROMPT` (headless one-shot), `sessions`, `resume ID`,
-`doctor`, `init` (provider setup), `update` (bundle/module refresh), and the `bundle`
-group (`list/show/use/clear/current/add/remove/update`).
+(name or URI). Subcommands: `run [PROMPT]` (headless one-shot; stdin plus
+`text|json|json-trace` output), `sessions`, `resume ID`, `doctor`, `init` (provider setup),
+`update` (bundle/module refresh), `allowed-dirs`, `denied-dirs`, and the `bundle` group
+(`list/show/use/clear/current/add/remove/update`). JSON modes redirect all runtime chatter
+to stderr so stdout is exactly one parseable document.
 
 `_launch_tui` picks the adapter — `DemoRuntimeAdapter` for `--demo`, otherwise
 `RealRuntimeAdapter(bundle, resume_id)` — and hands it to `NewTuiApp`. That adapter choice is
@@ -361,7 +365,7 @@ over the running app — tests substitute a plain fake. Dedicated modules (`doct
 Groups and built-ins: **During** `/mode /modes /plan /brainstorm /context /status /model
 /effort /compact /clear /tools /agents /skills /skill /mcp` · **Parallel** `/tasks` ·
 **Ship** `/ledger /export /copy /diff /about` · **Between** `/rewind /quit` ·
-**Repair** `/permissions /doctor /improve /theme`.
+**Repair** `/permissions /allowed-dirs /denied-dirs /doctor /improve /theme`.
 
 ### 6.3 Keymap (`ui/keymap.py`)
 
@@ -379,20 +383,28 @@ rather than executing anything itself.
 
 ### 7.1 Trust model (`model/trust.py`)
 
-Tools are classified into `CapabilityClass` — READ / WRITE / NET / TEST / SPEND / EXEC — via
+Tools are classified into `CapabilityClass` — READ / WRITE / NET / TEST / SPEND / EXEC /
+OUTSIDE_PROJECT — via
 an explicit table, then test-command sniffing, then name heuristics, with **EXEC as the
 fail-safe default** for anything unknown. `resolve(mode, tool, input)` yields a
 `TrustDecision`: `allow`, `ask`, or `deny` (plus `classifier_gated` in auto mode). The
-`DenialLog` counts denials and escalates at 3 consecutive or 20 total, and **is** used live
-(it backs `/improve` and denial escalation). **Caveat:** `resolve()` and the app-side
-governance gate below are the ported app-cli trust *design* but are **not the wired
-enforcement path** — gating is done natively (§7.2). `model/trust.py` remains the source for
-the posture vocabulary and the denial ledger.
+`DenialLog` counts denials and escalates at 3 consecutive or 20 total. `PermissionSurface`
+adds explicit slot overrides, command exceptions and blocks; `GovernanceHook` consults it
+live through adapter callables, so the pure model never imports kernel code.
 
-### 7.2 Gating: native modes + approval (off by default)
+### 7.2 Gating: app postures + native modes
 
-Enforcement is the amplifier-native mode/approval stack, mounted in the bundle to match the
-reference `anchors` default:
+Two policies share Amplifier's hook/approval mechanism:
+
+- **`GovernanceHook`** (ephemeral `tool:pre`, priority 1000) enforces the app's five
+  postures and `outside-project` slot. Direct writes are first checked against the mutable
+  `DirectoryPolicy`; obvious shell path escapes are classified as outside-project. Denials
+  are deny-and-continue and classifier boundary denials enter needs-you.
+- **`tool-filesystem`** receives the same effective allowed/denied lists. It remains the
+  hard write-path enforcement point, with deny taking precedence. The resolved project
+  root is always injected into `allowed_write_paths`; configured lists union rather than
+  replacing it.
+- The bundle-native stack remains mounted to match `anchors`:
 
 - **`hooks-mode`** (`tool:pre`, pri −20) reads `session_state["active_mode"]` and, per the
   mode's YAML, allows / warns / confirms / blocks a tool (and sets
@@ -407,11 +419,10 @@ reference `anchors` default:
   modes, and `data/modes/{plan,brainstorm,careful}.md` ship self-contained definitions
   (injected via `config.py::inject_mode_search_paths`).
 
-**Net effect — approvals are OFF by default:** in `auto` (and `chat`/`build`) no mode is
-active ⇒ `require_approval_tools` empty ⇒ nothing gated. Gating turns on only inside a mode
-that lists `confirm`/`block`/`warn`/`default_action: block` (`plan`, `brainstorm`, `careful`,
-or any composed bundle mode). `kernel/governance_hook.py` (the app-side alternative) is
-deliberately **left unregistered** so the two gates never double-fire.
+With no active native mode, `hooks-mode`/`hooks-approval` add no policy; the app posture
+still governs. Activating `plan`, `brainstorm`, `careful`, or a composed mode adds native
+policy. Both ask through the same `ApprovalBroker`, so presentation and allow-always
+semantics remain one path.
 
 ### 7.3 Approvals (`kernel/approval.py`)
 
@@ -437,6 +448,10 @@ inactive while the approval bar is up. A `min_timeout` floor exists because the 
 - **Queued messages** (shift+enter) occupy a single next-turn slot (a second enqueue
   replaces the first) and *do* increment `turn_id`; steers do not. `turn_id` is app-assigned
   and monotonic, stamped at prompt submit.
+- **Interrupt context** (`kernel/runtime.py`): after an accepted graceful cancel reaches
+  the turn boundary, the runtime appends an assistant `<turn_aborted>` marker before the
+  end-of-turn save. It persists and remains model-visible on the next request, but resume
+  replay filters it because the reducer already renders the interrupted recap.
 - **Turn yield** (`kernel/git_yield.py`, `kernel/turn_yield.py`): bounded git snapshots
   (`diff --numstat` + untracked files, no shell) taken before and after each turn produce
   the `files N · +A/−D` shipped-outcome label and the tests-ran heuristic that enrich

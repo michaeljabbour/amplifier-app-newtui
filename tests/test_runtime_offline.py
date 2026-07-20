@@ -324,10 +324,12 @@ async def _started_runtime(project: Path, mode: str = "chat") -> RealRuntime:
 
 
 def _register_policy_hook(runtime: RealRuntime) -> None:
-    """Stand-in for the NATIVE hooks-approval module (user directive: the
-    app registers no policy hook of its own — asks come from mounted
-    modules). Asks for write_file, continues everything else; the kernel's
-    real ``process_hook_result`` routes the ask to the ApprovalBroker."""
+    """Stand-in for the native ``hooks-approval`` bundle module.
+
+    The app governance hook owns its trust posture and directory boundary;
+    this fake native hook proves that bundle-defined asks remain additive and
+    still route through the same real ``process_hook_result``/broker path.
+    """
     from amplifier_core import HookResult
 
     async def policy(event: str, data: dict) -> HookResult:
@@ -377,6 +379,7 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
     runtime = await _started_runtime(offline_env["project"])
     try:
         assert runtime.bundle_name == "offline"
+        assert runtime.model_name == "fake/fake-model"
         assert "Provider: fake" in runtime.banner[1]
         assert runtime.degraded_notice is None
 
@@ -523,6 +526,43 @@ async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> 
         assert roles.count("user") == 1
         assert roles.count("assistant") == 1
         assert any(m["role"] == "system" for m in messages)
+    finally:
+        await resumed.cleanup()
+
+
+async def test_session_directory_capability_is_live_and_restored(offline_env) -> None:
+    """TUI add/remove writes session settings and updates the live policy;
+    a resumed session folds the same capability in before mounting tools."""
+    shared = offline_env["project"].parent / "shared"
+    runtime = await _started_runtime(offline_env["project"], mode="auto")
+    try:
+        ok, detail = await runtime.update_session_directory(
+            "allowed", "add", str(shared)
+        )
+        assert ok and "session scope" in detail
+        assert runtime.directory_policy is not None
+        assert runtime.directory_policy.check_write(shared / "ok.txt")[0]
+        session_id = runtime.session_id
+        assert runtime._store is not None
+        settings = runtime._store.session_dir(session_id) / "settings.yaml"
+        assert str(shared.resolve()) in settings.read_text(encoding="utf-8")
+    finally:
+        await runtime.cleanup()
+
+    resumed = RealRuntime(
+        bundle="offline",
+        resume_id=session_id[:8],
+        project_dir=offline_env["project"],
+        mode=lambda: "auto",
+    )
+    await resumed.start()
+    try:
+        assert resumed.directory_policy is not None
+        assert resumed.directory_policy.check_write(shared / "restored.txt")[0]
+        assert any(
+            entry.path == str(shared.resolve()) and entry.scope == "session"
+            for entry in resumed.directory_entries("allowed")
+        )
     finally:
         await resumed.cleanup()
 

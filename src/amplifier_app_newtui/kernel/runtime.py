@@ -18,14 +18,33 @@ from pathlib import Path
 from typing import Any
 
 from ..model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
-from ..model.trust import DenialLog
+from ..model.trust import CapabilityClass, DenialLog, TrustDecision
 from .approval import ApprovalBroker
+from .bundle_admin import read_scope, settings_paths
 from .config import ResolvedConfig, resolve_config
 from .clipboard import ClipboardImageInjector, ImageAttachment
 from .cost import CostTracker, restore_session_cost, start_live_pricing
 from .display import DisplaySystem
-from .events import ContentBlockEnd, ContextInjected, PromptComplete, PromptSubmit, UIEvent
+from .events import (
+    ApprovalDenied,
+    ContentBlockEnd,
+    ContextInjected,
+    PromptComplete,
+    PromptSubmit,
+    UIEvent,
+)
 from .evidence import EvidenceCollector
+from .directory_permissions import (
+    DirectoryEntry,
+    DirectoryKind,
+    DirectoryPolicy,
+    apply_policy_to_mount_plan,
+    configured_entries,
+    policy_from_mount_plan,
+    settings_path_values,
+    update_settings_path,
+)
+from .governance_hook import GovernanceHook
 from . import session_ops
 from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
@@ -36,6 +55,12 @@ from .spawner import SessionSpawner
 from .steering import StepBoundaryBridge
 
 logger = logging.getLogger(__name__)
+
+TURN_ABORTED_MARKER = """<turn_aborted>
+The user intentionally interrupted the previous turn. Any in-flight tools may
+have partially completed; verify current state before retrying unfinished work.
+</turn_aborted>"""
+"""Model-visible, persisted boundary after an accepted Esc interrupt."""
 
 
 def _core_version() -> str:
@@ -105,7 +130,11 @@ def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str],
         else:
             continue
         text = text.strip()
-        if not text or text.startswith("<system-reminder>"):
+        if (
+            not text
+            or text.startswith("<system-reminder>")
+            or text.startswith("<turn_aborted>")
+        ):
             continue
         pairs.append((str(role), text))
     return tuple(pairs)
@@ -175,7 +204,12 @@ class RealRuntime:
         steering: SteeringQueue | None = None,
         needs_you: NeedsYouQueue | None = None,
         denial_log: DenialLog | None = None,
-        mode: Callable[[], str] = lambda: "chat",
+        mode: Callable[[], str] = lambda: "auto",
+        permission_resolver: Callable[
+            [str, Mapping[str, object] | None], TrustDecision
+        ]
+        | None = None,
+        capability_resolver: Callable[[CapabilityClass], TrustDecision] | None = None,
         project_dir: Path | None = None,
         on_progress: Callable[[str, str], None] | None = None,
     ) -> None:
@@ -220,14 +254,20 @@ class RealRuntime:
         self._bundle = bundle
         self._resume_id = resume_id
         self._mode = mode
+        self._permission_resolver = permission_resolver
+        self._capability_resolver = capability_resolver
         self._project_dir = project_dir
         self._initialized: InitializedSession | None = None
         self._executing = False  # a submit() turn is live (fork must refuse)
+        self._interrupt_requested = False
         self._resolved: ResolvedConfig | None = None
         self._store: SessionStore | None = None
         self._saver: IncrementalSaver | None = None
         self._image_injector: ClipboardImageInjector | None = None
+        self.directory_policy: DirectoryPolicy | None = None
+        self._session_settings_path: Path | None = None
         self.bundle_name = ""
+        self.model_name = ""
         self.session_short = ""
         self.banner: tuple[str, str] = ("", "")
         self.session_cost_start = Decimal("0")
@@ -280,6 +320,23 @@ class RealRuntime:
             self.turn_base = sum(1 for m in transcript if m.get("role") == "user")
             self.restored_history = restored_history(transcript)
 
+        # Directory policy is derived from the prepared mount plan so the
+        # filesystem tool, child sessions, CLI administration and shell
+        # governance all consult one effective source. Session-scoped paths
+        # are folded in before a resumed session mounts its tools.
+        directory_policy = policy_from_mount_plan(
+            resolved.mount_plan, resolved.project_dir
+        )
+        if session_id is not None:
+            self._session_settings_path = store.session_dir(session_id) / "settings.yaml"
+            session_settings = read_scope(self._session_settings_path)
+            for kind in ("allowed", "denied"):
+                directory_policy.set_session(
+                    kind, settings_path_values(session_settings, kind)
+                )
+        apply_policy_to_mount_plan(resolved.mount_plan, directory_policy)
+        self.directory_policy = directory_policy
+
         display = DisplaySystem(self.bridge.emit)
         spawner = SessionSpawner(
             trackers=[self.bridge],
@@ -297,16 +354,31 @@ class RealRuntime:
             )
         )
         self._initialized = initialized
+        if self._session_settings_path is None:
+            self._session_settings_path = (
+                store.session_dir(initialized.session_id) / "settings.yaml"
+            )
+        self._sync_directory_tools()
         hooks = initialized.coordinator.hooks
         initialized.unregister_handles.append(self.bridge.register_hooks(hooks))
-        # NO app-level policy hook (user directive: permissions are managed
-        # natively — hooks-approval owns ask/allow-always policy, hooks-mode
-        # owns mode gating, allowed/denied dirs own write boundaries). The
-        # app's ApprovalBroker is presentation only: it renders whatever the
-        # kernel's ask_user path sends and hands the choice back. The native
-        # hooks-approval module additionally needs the app registered as its
-        # ApprovalProvider — without it, careful-mode confirms auto-deny
-        # ("No approval provider available", found live).
+        # App posture and outside-project gating is an ephemeral Amplifier
+        # hook over the same tool:pre contract as native hooks-mode. Mounted
+        # hooks still own bundle-defined modes; this hook owns only the TUI's
+        # five trust postures and directory boundary.
+        governance = GovernanceHook(
+            initialized.session_id,
+            mode=self._mode,
+            denial_log=self.denial_log,
+            broker=self.broker,
+            needs_you=self.needs_you,
+            directory_policy=directory_policy,
+            permission_resolver=self._permission_resolver,
+            capability_resolver=self._capability_resolver,
+            on_blocked=self._governance_blocked,
+        )
+        initialized.unregister_handles.append(governance.register_hooks(hooks))
+        # hooks-approval owns bundle-mode ask/allow-always policy. The app's
+        # broker is its presentation provider as well as governance's asker.
         self._register_approval_provider(initialized)
         boundary = StepBoundaryBridge(
             initialized.session_id,
@@ -359,6 +431,7 @@ class RealRuntime:
         self.session_short = initialized.session_id[:6]
         self.degraded_notice = initialized.degraded_notice
         provider, model = _provider_and_model(resolved.mount_plan)
+        self.model_name = "/".join(part for part in (provider, model) if part)
         from .. import __version__
 
         identity = " | ".join(
@@ -371,6 +444,93 @@ class RealRuntime:
             if part
         )
         self.banner = (f"Amplifier {__version__} · core {_core_version()}", identity)
+
+    @property
+    def session_id(self) -> str:
+        return self._initialized.session_id if self._initialized is not None else ""
+
+    def _governance_blocked(self, action: str, reason: str) -> None:
+        session_id = self._initialized.session_id if self._initialized else ""
+        self.bridge.emit(
+            ApprovalDenied(
+                session_id=session_id,
+                prompt=f"Allow {action}?",
+                command=action,
+                reason=reason,
+                continuation=f"continuing without {action}",
+            )
+        )
+
+    def _sync_directory_tools(self) -> None:
+        """Apply the current path lists to mounted filesystem tool objects."""
+        if self._initialized is None or self.directory_policy is None:
+            return
+        tools = self._initialized.coordinator.get("tools") or {}
+        values = tools.values() if isinstance(tools, Mapping) else ()
+        for tool in values:
+            if hasattr(tool, "allowed_write_paths"):
+                tool.allowed_write_paths = list(self.directory_policy.allowed)
+            if hasattr(tool, "denied_write_paths"):
+                tool.denied_write_paths = list(self.directory_policy.denied)
+
+    def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
+        """Effective paths with scope provenance for TUI display."""
+        if self._resolved is None or self.directory_policy is None:
+            return ()
+        result = list(
+            configured_entries(
+                settings_paths(self._resolved.project_dir, None), kind
+            )
+        )
+        session_values = (
+            self.directory_policy.session_allowed
+            if kind == "allowed"
+            else self.directory_policy.session_denied
+        )
+        result = [DirectoryEntry(path, "session") for path in session_values] + result
+        if kind == "allowed":
+            project = str(self._resolved.project_dir)
+            if not any(entry.path == project for entry in result):
+                result.append(DirectoryEntry(project, "project-default"))
+        seen: set[str] = set()
+        unique: list[DirectoryEntry] = []
+        for entry in result:
+            if entry.path in seen:
+                continue
+            seen.add(entry.path)
+            unique.append(entry)
+        return tuple(unique)
+
+    async def update_session_directory(
+        self,
+        kind: DirectoryKind,
+        operation: str,
+        path: str,
+    ) -> tuple[bool, str]:
+        """Persist and activate a session-scoped directory capability."""
+        if operation not in ("add", "remove"):
+            return (False, "operation must be add or remove")
+        if self.directory_policy is None or self._session_settings_path is None:
+            return (False, "session still starting")
+        if operation == "add":
+            changed, resolved = update_settings_path(
+                self._session_settings_path, kind, "add", path
+            )
+        else:
+            changed, resolved = update_settings_path(
+                self._session_settings_path, kind, "remove", path
+            )
+        if not changed:
+            return (False, f"path not found in session scope · {resolved}")
+        if operation == "add":
+            self.directory_policy.add_session(kind, resolved)
+        else:
+            self.directory_policy.remove_session(kind, resolved)
+        if self._resolved is not None:
+            apply_policy_to_mount_plan(self._resolved.mount_plan, self.directory_policy)
+        self._sync_directory_tools()
+        verb = "allowed" if kind == "allowed" else "denied"
+        return (True, f"{verb} · {resolved} · session scope")
 
     def _tap(self, event: UIEvent) -> None:
         """Bridge tap: evidence derivation + append-only events.jsonl.
@@ -428,21 +588,26 @@ class RealRuntime:
             if self._image_injector is None:
                 raise RuntimeError("session context cannot accept image attachments")
             self._image_injector.prepare(text, attachments)
-        # Turn-open first: the user's echo + working line paint NOW, not
-        # after the pre-prompt hook work inside ``session.execute``.
-        self.bridge.emit(
-            PromptSubmit(session_id=self._initialized.session_id, prompt=text)
-        )
-        self.turn_yield.start_turn()
-        starting_diff = await self._capture_diff()
+        self._interrupt_requested = False
         self._executing = True
         response: Any = ""
+        starting_diff = GitDiffSnapshot(False)
         try:
+            # Turn-open first: the user's echo + working line paint NOW, not
+            # after the pre-prompt hook work inside ``session.execute``.
+            self.bridge.emit(
+                PromptSubmit(session_id=self._initialized.session_id, prompt=text)
+            )
+            self.turn_yield.start_turn()
+            starting_diff = await self._capture_diff()
             response = await self._initialized.session.execute(text)
         finally:
             self._executing = False
             if self._image_injector is not None:
                 self._image_injector.clear()
+            if self._interrupt_requested:
+                await self._append_turn_aborted_marker()
+                self._interrupt_requested = False
             # End-of-turn save (reference: amplifier-app-cli persists after
             # every turn) — the incremental tool:post save misses the final
             # assistant message, which lands in the context only after the
@@ -457,6 +622,27 @@ class RealRuntime:
             # every turn event and (b) carry the end-of-turn yield.
             await self._emit_close_out(str(response or ""), starting_diff)
         return str(response or "")
+
+    async def _append_turn_aborted_marker(self) -> bool:
+        """Append the durable model-only boundary for an interrupted turn."""
+        initialized = self._initialized
+        if initialized is None:
+            return False
+        context = initialized.coordinator.get("context")
+        add_message = getattr(context, "add_message", None)
+        if not callable(add_message):
+            logger.warning("context cannot persist the turn-aborted marker")
+            return False
+        try:
+            result = add_message(
+                {"role": "assistant", "content": TURN_ABORTED_MARKER}
+            )
+            if asyncio.iscoroutine(result):
+                await result
+            return True
+        except Exception:  # noqa: BLE001 — interruption must still close cleanly
+            logger.warning("turn-aborted marker persistence failed", exc_info=True)
+            return False
 
     def _turn_cwd(self) -> Path:
         resolved = self._resolved
@@ -653,6 +839,8 @@ class RealRuntime:
                 result = request()
                 if asyncio.iscoroutine(result):
                     await result
+                if self._executing:
+                    self._interrupt_requested = True
                 return True
             except Exception:  # noqa: BLE001 — cancellation is best-effort
                 logger.debug("cancellation request failed", exc_info=True)
