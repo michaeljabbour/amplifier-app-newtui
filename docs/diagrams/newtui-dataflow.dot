@@ -44,9 +44,9 @@ digraph newtui_dataflow {
         style="rounded,filled"; fillcolor="#F7FAFC"; color="#4A5568"; fontname="Helvetica-Bold";
         orch [label="orchestrator loop-streaming\nLLM → tool calls → response loop", fillcolor="#E2E8F0"];
         provider [label="provider-anthropic\n(streaming)", fillcolor="#E2E8F0"];
-        toolexec [label="tools: filesystem · bash\nweb · search · task", fillcolor="#E2E8F0"];
+        toolexec [label="tools: filesystem · bash · web · search\ntask · mcp · skills · team-pulse · mode", fillcolor="#E2E8F0"];
         hooks [label="coordinator.hooks fire:\nChannel A: llm:stream_block_delta (live)\nChannel B: content_block:end · tool:pre/post\norchestrator:complete (durable)", fillcolor="#E2E8F0"];
-        childsession [label="child AmplifierSession\n(subagent — shares same QueueBridge)", fillcolor="#E2E8F0"];
+        childsession [label="child AmplifierSession\n(subagent — spawner re-registers the\nshared bridge/trackers on its hooks)", fillcolor="#E2E8F0"];
     }
 
     llm [label="☁ Anthropic API", shape=ellipse, fillcolor="#FAF089"];

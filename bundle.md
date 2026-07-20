@@ -71,7 +71,7 @@ tools:
     config:
       gate_policy: warn
 
-# Approval / mode enforcement — OFF BY DEFAULT (DESIGN: docs/notes/feature-mapping.md).
+# Approval / mode enforcement — OFF BY DEFAULT.
 # hooks-mode (tool:pre pri -20) sets require_approval_tools from the active
 # mode; hooks-approval (pri -10) prompts via the app's ApprovalBroker.
 # policy_driven_only + no active mode ⇒ require_approval_tools empty ⇒ NOTHING
@@ -84,7 +84,7 @@ hooks:
     config:
       search_paths: []
   - module: hooks-approval
-    source: git+https://github.com/microsoft/amplifier-module-hooks-approval
+    source: git+https://github.com/microsoft/amplifier-module-hooks-approval@main
     config:
       rules: []
       default_action: continue
@@ -96,6 +96,11 @@ hooks:
 # registers the model_role_resolver capability.
 
 agents:
+  # PRECONDITION: the `foundation:` namespace is provisioned by this app's
+  # BundleRegistry (registered as a well-known name at startup), NOT composed
+  # via `includes:`. Deliberate: composing foundation (or its agents behavior)
+  # would mount tools/hooks and heavy always-on context this app must not
+  # load. App-embedded bundle, not standalone-loadable — see body below.
   include:
     - foundation:explorer
     - foundation:zen-architect
@@ -115,6 +120,16 @@ A packaged copy ships inside the wheel at
 `amplifier_app_newtui/data/bundles/newtui.md` (lowest-precedence search
 path); project (`.amplifier/bundles/`) and user (`~/.amplifier/bundles/`)
 bundles override it by name.
+
+## Preconditions (app-embedded bundle)
+
+This bundle is loaded by amplifier-app-newtui, whose BundleRegistry registers
+`foundation` as a well-known name before load — that registration is what
+makes the `foundation:` agent references above resolve. It deliberately does
+not `include:` foundation (or `foundation:behaviors/agents`): doing so would
+mount foundation hooks (`hooks-streaming-ui`) and heavy always-on context
+that conflict with this app's design. It is not standalone-loadable via
+`amplifier run --bundle` in a bare environment.
 
 You are Amplifier, driven through a full-screen terminal UI. Be direct and
 concrete. Prefer running tools over speculating. When you complete work that

@@ -15,17 +15,17 @@ digraph newtui_architecture {
     subgraph cluster_entry {
         label="Entry Point";
         style="rounded,filled"; fillcolor="#FFF7E6"; color="#D69E2E"; fontname="Helvetica-Bold";
-        main [label="main.py — async Click CLI\namplifier-newtui  {run | sessions | resume | doctor}\nflags: --demo  --bundle", fillcolor="#FEEBC8"];
+        main [label="main.py — async Click CLI\namplifier-newtui  {run | sessions | resume | doctor | init | update | bundle ...}\nflags: --demo  --bundle", fillcolor="#FEEBC8"];
     }
 
     // ── UI layer (Textual-only) ─────────────────────────────────
     subgraph cluster_ui {
         label="ui/  — Textual presentation layer (never imports amplifier-core)";
         style="rounded,filled"; fillcolor="#EBF8FF"; color="#3182CE"; fontname="Helvetica-Bold";
-        app [label="NewTuiApp (ui/app.py)\ncomposition root, <500 lines", fillcolor="#BEE3F8"];
-        adapter [label="RuntimeAdapter seam\nRealRuntimeAdapter / DemoRuntimeAdapter\n(ui/runtime_adapter.py)", fillcolor="#BEE3F8"];
+        app [label="NewTuiApp (ui/app.py)\ncomposition root (+ app_support.py extraction)", fillcolor="#BEE3F8"];
+        adapter [label="RuntimeAdapter seam (ui/runtime_adapter.py)\nRealRuntimeAdapter · DemoRuntimeAdapter\n(demo wiring in ui/demo_wiring.py)", fillcolor="#BEE3F8"];
         reducer [label="TranscriptReducer\n(ui/reducer.py)\nUIEvent → transcript blocks", fillcolor="#BEE3F8"];
-        widgets [label="Widgets\nTitleBar | TranscriptView + LiveTail + NoticeSlot\nPaletteStrip | LanesPanel | RewindStrip | QueuedStrip\nComposer ⇄ ApprovalBar | FooterBar", fillcolor="#D6EFFF"];
+        widgets [label="Widgets\nTitleBar | TranscriptView + LiveTail + NoticeSlot\nPaletteStrip | LanesPanel | RewindStrip | QueuedStrip | NeedsYouList\nComposer ⇄ ApprovalBar | FooterBar", fillcolor="#D6EFFF"];
         uiaux [label="themes.py · keymap.py · segments.py\nterm_probe.py (kitty protocol)", fillcolor="#D6EFFF"];
     }
 
@@ -49,14 +49,14 @@ digraph newtui_architecture {
         label="kernel/ — the ONLY amplifier-core/foundation touchpoint (runs on dedicated 'real-runtime' thread)";
         style="rounded,filled"; fillcolor="#FFF5F5"; color="#E53E3E"; fontname="Helvetica-Bold";
         runtime [label="RealRuntime (runtime.py)\nfoundation 7-step lifecycle,\ndrives the event queue", fillcolor="#FED7D7"];
-        config [label="resolve_config() (config.py)\n3-scope settings merge +\nbundle discovery → load_bundle → prepare()", fillcolor="#FED7D7"];
+        config [label="resolve_config() (config.py)\n3-scope settings merge +\nbundle discovery → load_bundle → prepare()\n+ mode search-path & routing injection", fillcolor="#FED7D7"];
         factory [label="create_initialized_session()\n(session_factory.py)\nmount plan verification, MountReport", fillcolor="#FED7D7"];
         events [label="events.py — UIEvent contract\nnormalize(): raw hook payloads →\n~30 typed pydantic UIEvents", fillcolor="#FED7D7"];
         bridge [label="QueueBridge (queue_bridge.py)\nhooks → asyncio.Queue[UIEvent]\nnever blocks the engine", fillcolor="#FED7D7"];
         broker [label="ApprovalBroker (approval.py)\n+ StepBoundaryBridge (steering.py)", fillcolor="#FED7D7"];
         persist [label="SessionStore + IncrementalSaver\n(persistence.py)", fillcolor="#FED7D7"];
         spawner [label="SessionSpawner (spawner.py)\nregisters session.spawn capability", fillcolor="#FED7D7"];
-        kernelaux [label="RewindController · CostTracker\nEvidenceCollector · TurnYieldTracker\ngovernance_hook (tool:pre trust gate)\nDemoRuntime (offline scripted events)", fillcolor="#FED7D7"];
+        kernelaux [label="RewindController · CostTracker\nEvidenceCollector · TurnYieldTracker · trackers/\nsession_ops · bundle_admin · mcp_config · updater\ngovernance_hook (built, NOT wired — gating is\nhooks-mode + hooks-approval)\nDemoRuntime (offline scripted events)", fillcolor="#FED7D7"];
     }
 
     // ── Amplifier ecosystem (external) ──────────────────────────
@@ -83,7 +83,9 @@ digraph newtui_architecture {
             orch [label="orchestrator: loop-streaming\n(extended thinking)", fillcolor="#E2E8F0"];
             provider [label="provider: provider-anthropic", fillcolor="#E2E8F0"];
             ctx [label="context: context-simple\n(200k tokens, auto-compact)", fillcolor="#E2E8F0"];
-            tools [label="tools: filesystem · bash · web\nsearch · task (subagents)", fillcolor="#E2E8F0"];
+            tools [label="tools: filesystem · bash · web · search\ntask (subagents) · mcp · skills\nteam-pulse · mode", fillcolor="#E2E8F0"];
+            bhooks [label="hooks: hooks-mode (sets require_approval_tools)\nhooks-approval (prompts via ApprovalBroker)", fillcolor="#E2E8F0"];
+            bagents [label="agents: 6 foundation agents\nexplorer · zen-architect · bug-hunter\ntest-coverage · modular-builder · web-research", fillcolor="#E2E8F0"];
         }
     }
 

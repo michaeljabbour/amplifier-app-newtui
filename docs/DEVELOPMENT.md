@@ -9,7 +9,7 @@ checklist to run before a PR. Architecture background is in
 
 ```sh
 uv sync                              # install / update dependencies
-uv run pytest -q                     # full suite (offline, no credentials, ~62 files)
+uv run pytest -q                     # full suite (offline, no credentials, ~70 files)
 uv run pytest tests/test_ui_reducer_outcomes.py   # one file
 uv run pytest -q -k "steer"                       # by keyword
 uv run ruff check .                  # lint
@@ -64,6 +64,7 @@ uv run python scripts/regen_screenshot.py
 dot -Tpng docs/diagrams/newtui-architecture.dot -o docs/diagrams/newtui-architecture.png
 dot -Tpng docs/diagrams/newtui-dataflow.dot -o docs/diagrams/newtui-dataflow.png
 dot -Tpng docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui-amplifier-integration.png
+dot -Tsvg docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui-amplifier-integration.svg
 ```
 
 ## Test suite map
@@ -71,10 +72,10 @@ dot -Tpng docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui
 | Area | Where | Pattern |
 |---|---|---|
 | kernel logic | `tests/test_*` (events, approval, governance, cost, persistence, rewind, steering, spawner…) | pure-logic, events consumed directly |
-| model | `tests/model/` | pure dataclass/enum tests |
-| commands | `tests/commands/` | `FakeCommandContext` protocol fake — no Textual |
-| widgets & reducer | `tests/ui/` | per-widget + Textual Pilot headless driving |
-| end-to-end flows | `tests/flow/` | scripted turns via `DemoRuntime` (approval, interrupt, lanes, rewind, steer/queue…) |
+| model | `tests/test_model_*.py` | pure dataclass/enum tests |
+| commands | `tests/test_commands_*.py` | `FakeCommandContext` protocol fake — no Textual |
+| widgets & reducer | `tests/test_ui_*.py` | per-widget + Textual Pilot headless driving |
+| end-to-end flows | `tests/test_flow_*.py` | scripted turns via `DemoRuntime` (approval, interrupt, lanes, rewind, steer/queue…) |
 | real lifecycle | `tests/test_runtime_offline.py` | genuine foundation lifecycle with fake modules mounted via `file://` bundles |
 | renderer | `tests/test_golden_widths.py` | golden width matrix |
 | performance | `tests/test_perf_spike.py` | renderer + live-tail budgets enforced; the full-frame 5k layout check is currently `xfail` (known budget miss) |

@@ -93,7 +93,8 @@ These are the rules the whole design hangs on. Every one is enforced by tests an
 
 ```
 src/amplifier_app_newtui/
-├── main.py            click entry point: TUI launch, --demo, run/sessions/resume/doctor
+├── main.py            click entry point: TUI launch, --demo, run/sessions/resume/doctor,
+│                       init, update, and the bundle group (list/show/use/…)
 ├── kernel/            amplifier adapter layer (no Textual)
 │   ├── config.py          resolve_config(): keys.env → settings merge → bundle lifecycle
 │   │                       (+ mode search-path & routing-config injection)
@@ -103,6 +104,7 @@ src/amplifier_app_newtui/
 │   │                       /tools /agents /skills /mcp (over the coordinator)
 │   ├── bundle_admin.py    bundle CLI logic (list/show/use/… over the shared registry)
 │   ├── setup.py           init: provider discovery + keys.env writer
+│   ├── updater.py         update: foundation-backed bundle/module refresh (backs `update`)
 │   ├── mcp_config.py      ~/.amplifier/mcp.json read/modify/write (for /mcp)
 │   ├── events.py          UIEvent union + normalize() — THE normalization boundary
 │   ├── queue_bridge.py    hooks → asyncio.Queue[UIEvent]
@@ -122,7 +124,7 @@ src/amplifier_app_newtui/
 │   ├── demo.py            DemoRuntime: scripted offline event producer
 │   └── trackers/          task_status, stream_status, runtime_status
 ├── model/             pure domain state (no Textual, no amplifier-core)
-│   ├── blocks.py          TranscriptBlock discriminated union (19 kinds) + id allocator
+│   ├── blocks.py          TranscriptBlock discriminated union (20 kinds) + id allocator
 │   ├── lanes.py           LaneRegistry / LaneRecord / LaneState
 │   ├── queues.py          SteeringQueue + NeedsYouQueue (bounded)
 │   ├── modes.py           five interaction modes (chat/plan/brainstorm/build/auto)
@@ -140,6 +142,7 @@ src/amplifier_app_newtui/
     ├── command_context.py AppCommandContext: CommandContext protocol → running app
     ├── runtime_adapter.py RuntimeAdapter seam; RealRuntimeAdapter (thread marshalling)
     ├── demo_wiring.py     DemoRuntimeAdapter
+    ├── session_ops_view.py rendering for /status /tools /agents /skills output
     ├── reducer.py         TranscriptReducer: UIEvent → transcript mutations
     ├── transcript.py      TranscriptView + pure render_block() per block kind
     ├── live_tail.py       the single mutable streaming region
@@ -160,7 +163,8 @@ src/amplifier_app_newtui/
 `main()` is a click group. With no subcommand it runs `asyncio.run(_launch_tui(...))` — one
 `asyncio.run` for the whole app. Flags: `--demo` (scripted offline runtime), `--bundle`
 (name or URI). Subcommands: `run PROMPT` (headless one-shot), `sessions`, `resume ID`,
-`doctor`.
+`doctor`, `init` (provider setup), `update` (bundle/module refresh), and the `bundle`
+group (`list/show/use/clear/current/add/remove/update`).
 
 `_launch_tui` picks the adapter — `DemoRuntimeAdapter` for `--demo`, otherwise
 `RealRuntimeAdapter(bundle, resume_id)` — and hands it to `NewTuiApp`. That adapter choice is
@@ -315,7 +319,7 @@ values).
 commands"*), `PlanBlock`, `Blocked`, `WorkingStatus` (spinner pulse + live activity tree),
 `Recap`, `Answer` (with `evidence_refs`), `SteerEcho`, `TurnRule` (carries `checkpoint_id` —
 clickable → rewind), `EvidenceBlock`, `NeedsYouBlock`, `LedgerBlock`, `ContextBlock`,
-`DoctorBlock`, `ImproveBlock`, `BrainstormIdea`, `LiveCommand`. Every block has a monotonic
+`DoctorBlock`, `ImproveBlock`, `BrainstormIdea`, `LiveCommand`, `TodoBlock`. Every block has a monotonic
 string id (`BlockIdAllocator`) used for in-place mutation, click routing, and rewind
 trimming.
 
@@ -354,8 +358,9 @@ surfaces + actions), and the real implementation (`ui/command_context.py`) is a 
 over the running app — tests substitute a plain fake. Dedicated modules (`doctor.py`,
 `improve.py`, `permissions.py`, …) keep command logic pure; `builtin.py` is glue.
 
-Groups and built-ins: **During** `/mode /modes /plan /brainstorm /context` · **Parallel**
-`/tasks` · **Ship** `/ledger /export /copy /about` · **Between** `/rewind /quit` ·
+Groups and built-ins: **During** `/mode /modes /plan /brainstorm /context /status /model
+/effort /compact /clear /tools /agents /skills /skill /mcp` · **Parallel** `/tasks` ·
+**Ship** `/ledger /export /copy /diff /about` · **Between** `/rewind /quit` ·
 **Repair** `/permissions /doctor /improve /theme`.
 
 ### 6.3 Keymap (`ui/keymap.py`)

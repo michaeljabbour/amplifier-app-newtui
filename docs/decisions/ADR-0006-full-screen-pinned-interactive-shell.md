@@ -44,7 +44,8 @@ output without an alternate screen.
 A source-level comparison with the OpenAI Codex TUI (`codex-rs/tui/src`),
 which chose the opposite architecture (native scrollback via inserted
 history), validated this decision's concrete trade-offs. See
-`docs/designs/codex-lessons.md` for the full study record.
+`docs/designs/codex-lessons.md` for the full study record. *[Historical
+working doc; not retained in-repo.]*
 
 What we forgo by owning the viewport:
 
@@ -65,7 +66,7 @@ scrollback (its `insert_history.rs`, `custom_terminal.rs`, and
 - Reflow scheduling complexity: history already written to the terminal
   cannot be re-wrapped by the app, so resizes leave stale wrapping or
   require replay heuristics; our app-owned viewport reflows deterministically
-  (debounced in `ui/transcript_reflow.py`).
+  (debounced — implemented in `ui/transcript.py`).
 
 ## Non-Goals
 

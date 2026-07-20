@@ -194,6 +194,7 @@ drive the mounted skills tool — the agent also loads skills on its own when re
 | ↑ ↓ | select in palette/lanes (lanes from an empty composer) | panels |
 | ‹ › (← →) | navigate checkpoints · evidence refs | rewind · evidence |
 | ctrl+c | copy mouse-selected transcript text | after selecting |
+| ctrl+d | quit | any time |
 | esc | one step "out" | see below |
 
 **Esc does the nearest thing first:** leave a focused lane → close the palette → close
@@ -235,8 +236,9 @@ ledger accounting roll back with it.
   shipped changes vs. answered, cache hit rate. Per-turn cost and yield (files changed,
   `+added/−removed`, tests run) appear on each turn's rule line as it completes.
 - **`/context`** shows what's occupying the context window.
-- Costs come from provider-reported figures when available, otherwise a built-in pricing
-  table; resumed sessions restore their prior spend.
+- Costs come from provider-reported figures when available, otherwise a live pricing
+  table (fetched and cached at `~/.amplifier/pricing_cache.json`, on by default),
+  otherwise a built-in offline table; resumed sessions restore their prior spend.
 
 ## 12. Evidence
 

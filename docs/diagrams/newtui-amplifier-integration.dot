@@ -16,14 +16,14 @@ digraph newtui_amplifier {
         style="rounded,filled"; fillcolor="#fff8e1"; color="#e0c060";
         keys_env      [label="~/.amplifier/keys.env\n(API keys, env wins)", fillcolor="#fff3cd"];
         settings      [label="settings.yaml ×3\nuser → project → local\n(deep merge)", fillcolor="#fff3cd"];
-        bundle_md     [label="bundle: newtui.md\nloop-streaming · context-simple\nprovider-anthropic · fs/bash/web/search/task", fillcolor="#fff3cd"];
+        bundle_md     [label="bundle: newtui.md\nloop-streaming · context-simple · provider-anthropic\nfs/bash/web/search/task + mcp/skills/team-pulse/mode\nhooks-mode + hooks-approval · 6 foundation agents", fillcolor="#fff3cd"];
     }
 
     // ============ NEWTUI: UI LAYER (Textual) ============
     subgraph cluster_ui {
         label=<<b>newtui — UI layer (Textual ~8.2)</b>>;
         style="rounded,filled"; fillcolor="#e3f2fd"; color="#5b9bd5";
-        cli       [label="CLI entry\namplifier-newtui\nmain.py (run / resume / doctor)", fillcolor="#bbdefb"];
+        cli       [label="CLI entry\namplifier-newtui\nmain.py (run / sessions / resume / doctor\ninit / update / bundle …)", fillcolor="#bbdefb"];
         app       [label="NewTuiApp\nui/app.py", fillcolor="#bbdefb"];
         reducer   [label="reducer.py\nUIEvent → widget updates", fillcolor="#bbdefb"];
         composer  [label="composer.py\nlarge-paste stubs ·\nimage paste / drag-drop", fillcolor="#bbdefb"];
@@ -62,7 +62,7 @@ digraph newtui_amplifier {
         style="rounded,filled"; fillcolor="#fbe9e7"; color="#d98066";
         session   [label="AmplifierSession\n.execute(text)", fillcolor="#ffccbc"];
         coord     [label="Coordinator\nhooks · capabilities ·\ncancellation", fillcolor="#ffccbc"];
-        modules   [label="mounted modules\nloop-streaming orchestrator\nprovider-anthropic · context-simple\ntools: fs/bash/web/search/task\nhooks-approval (decides when)", fillcolor="#ffccbc"];
+        modules   [label="mounted modules\nloop-streaming orchestrator\nprovider-anthropic · context-simple\ntools: fs/bash/web/search/task\n+ mcp/skills/team-pulse/mode\nhooks-mode (decides) · hooks-approval (prompts)", fillcolor="#ffccbc"];
     }
 
     // ---------- config feeds ----------
@@ -95,7 +95,7 @@ digraph newtui_amplifier {
     // ---------- event flow back (amplifier → app) ----------
     coord   -> qbridge [label="~30 hook events:\nllm:stream_* · tool:pre/post/error\nprovider:response/error/retry\nsession:* · approval:* · task:agent_*\norchestrator:complete …",
                         color="#c62828", fontcolor="#c62828", penwidth=1.8];
-    qbridge -> adapter [label="asyncio.Queue[UIEvent]\n(30 typed pydantic events)", color="#c62828", fontcolor="#c62828", penwidth=1.8];
+    qbridge -> adapter [label="asyncio.Queue[UIEvent]\n(29 typed pydantic events)", color="#c62828", fontcolor="#c62828", penwidth=1.8];
     adapter -> reducer [label="hop to app loop", color="#c62828", fontcolor="#c62828"];
     reducer -> widgets [color="#c62828"];
 

@@ -1,8 +1,9 @@
 # Settings Reference
 
 Every configuration surface the app reads, in one place. All settings loading lives in
-`kernel/config.py` (`resolve_config()` — the single configuration golden path); nothing
-else in the app consumes the merged settings, so this document is exhaustive.
+`kernel/config.py` (`resolve_config()` — the single configuration golden path); the only
+other consumer of the merged settings is `kernel/cost.py` (the `pricing.live` toggle), so
+this document is exhaustive.
 
 ## Files and merge order
 
@@ -74,7 +75,9 @@ nothing gated). Switch to a gating posture/mode to opt in.
 | `TERM`, `TMUX`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `XTERM_VERSION`, `KITTY_WINDOW_ID`, `WEZTERM_PANE`, `GHOSTTY_RESOURCES_DIR`, `WT_SESSION` | terminal capability probe — affects only which key *hints* are advertised (bindings are unchanged) |
 | `WAYLAND_DISPLAY`, `DISPLAY` | clipboard backend selection on Linux (wl-copy vs xclip) |
 
-No `AMPLIFIER_*` environment variables are read.
+No `AMPLIFIER_*` environment variables are read by the app's own code. (Mounted bundle
+modules may read their own — e.g. `tool-team-pulse` reads `AMPLIFIER_TEAM_PULSE_URL` /
+`AMPLIFIER_TEAM_PULSE_KEY`.)
 
 ## Quirks worth knowing
 
