@@ -27,8 +27,11 @@ def _clean_svg(value: str) -> str:
     return "\n".join(line.rstrip() for line in stable_ids.splitlines()) + "\n"
 
 
-def test_double_esc_rewind_snapshot() -> None:
+def test_double_esc_rewind_snapshot(monkeypatch) -> None:
     """The stable post-interrupt rewind screen is regression-locked."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("COLORTERM", "truecolor")
     adapter = GatedDemoAdapter()
     app = NewTuiApp(adapter)
 
