@@ -16,6 +16,8 @@ uv run amplifier-newtui --bundle B   # pick a bundle by name or URI
 uv run amplifier-newtui sessions     # list stored sessions for this project
 uv run amplifier-newtui resume ID    # resume a stored session
 uv run amplifier-newtui run "PROMPT" # headless one-shot, prints the answer
+printf 'PROMPT\n' | uv run amplifier-newtui run # stdin one-shot
+uv run amplifier-newtui run --output-format json "PROMPT" # machine-readable stdout
 uv run amplifier-newtui doctor       # setup checkup (exit 1 when findings exist)
 uv run amplifier-newtui init         # set up a provider key in ~/.amplifier/keys.env
 uv run amplifier-newtui bundle list  # bundles from the shared registry (--all for deps)
@@ -89,32 +91,33 @@ Cycle with **shift+tab**, or jump with `/mode <name>`, `/plan`, `/brainstorm`.
 
 | Mode | Gating | Use it for |
 |---|---|---|
-| chat | none | Q&A and light work |
-| plan | **read-only** — writes/edits blocked, shell warns | exploring and planning |
+| chat | auto read; ask for other capabilities | Q&A and light work |
+| plan | **read-only** — non-read tools blocked | exploring and planning |
 | brainstorm | **no tools** — pure text | divergent thinking |
-| build | none | hands-on work |
-| **auto** *(default)* | **none** | Amplifier's natural wide scope |
+| build | auto read/test; ask write/net/spend/exec/outside-project | hands-on work |
+| **auto** *(default)* | auto read/write/test; classifier-gated boundaries | Amplifier's natural wide scope |
 
-**Approvals are OFF by default.** In auto (and chat/build) nothing is gated — the agent runs
-freely. Gating only turns on when you switch to a posture whose mode restricts tools:
-**plan** (read-only) and **brainstorm** (no tools) are enforced natively; `/mode careful`
-adds a posture that *confirms* file writes, edits, and shell before they run (see §5). Any
-bundle-composed mode (`/modes` lists them) works the same way via `/mode <name>`.
+The app's posture gate is an Amplifier `tool:pre` hook: it resolves the trust slots shown by
+`/permissions`, denies-and-continues when a capability is blocked, and sends asks through
+the same `ApprovalBroker` used by mounted modules. Bundle-native modes remain independent:
+**plan** and **brainstorm** also activate their matching `hooks-mode` definitions, while
+`/mode careful` adds native confirmation rules. The two layers share Amplifier's hook and
+approval contracts rather than bypassing the kernel.
 
-`ctrl+p` shows the current posture and `/permissions` prints the trust view; note that in
-this build the *enforcement* mechanism is the native mode system above, not a separate
-classifier.
+`ctrl+p` shows the current posture and `/permissions` prints the effective trust view,
+including the `outside-project` slot.
 
 Plan-mode turns that produce a plan end with a `· plan ready` rule. There's no ceremony to
 hand it over: the plan is already in the conversation — shift+tab to build and say go.
 
 ## 5. Approvals
 
-Approvals are **off by default** — in the default posture nothing prompts, nothing blocks.
-They turn on only inside a gating mode: `/mode careful` (confirm writes/edits/shell) or any
-bundle mode that lists `confirm` tools. When such a mode is active and the agent tries a
-gated action, the composer is replaced by an **approval bar** — **Allow once · Allow always
-· Deny**.
+In the default `auto` posture, in-project read/write/test calls proceed silently. Network,
+spend, shell and outside-project actions are reasoning-blind classifier gates: explicit,
+safe user requests proceed; destructive or unrequested boundary crossings deny and defer.
+`chat` and `build` can ask more often, and `/mode careful` or another bundle mode can add
+native confirmations. An ask replaces the composer with **Allow once · Allow always ·
+Deny**.
 
 - **arrows / tab** select · **enter** confirm · **esc** deny
 - Deferred decisions land in the *needs-you* queue (§6), where you can still answer later
@@ -164,6 +167,8 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | Between | `/rewind` | open the rewind picker (ctrl+r) |
 | | `/quit` | exit |
 | Repair | `/permissions` | show trust slots: boundary, blocks, exceptions |
+| | `/allowed-dirs [list\|add PATH\|remove PATH]` | edit allowed write paths for this session |
+| | `/denied-dirs [list\|add PATH\|remove PATH]` | edit denied write paths for this session |
 | | `/doctor` | setup checkup — reports findings and the fixes to make; changes nothing itself |
 | | `/improve` | suggests allowlist/trust tweaks from your approval history — never applies silently |
 | | `/theme [name]` | switch or cycle theme: slate · graphite · carbon (session-only — resets to slate on restart) |
@@ -177,6 +182,15 @@ makes). **`/model`** switches the mounted provider's model in place;
 each configured server's tools mount as `mcp_<server>_<tool>` at session start, so
 `/mcp add` / `/mcp remove` take effect on the next launch. `/skills` and `/skill`
 drive the mounted skills tool — the agent also loads skills on its own when relevant.
+
+**Directory capabilities.** The project root is always an implicit allowed write path.
+Top-level `amplifier-newtui allowed-dirs` / `denied-dirs` commands persist global, project,
+or local settings; the slash commands change the current session immediately and persist
+under that session for resume. Permission lists union across scopes, denied paths win, and
+the mounted filesystem tool is the hard enforcement point. Shell calls also pass through
+outside-project governance for recognizable absolute, home-relative, parent-relative and
+redirection paths; this is a trust gate like amplifier-app-cli's shell capability, not an
+operating-system sandbox around arbitrary interpreter code.
 
 ## 8. Keys
 
@@ -200,6 +214,11 @@ drive the mounted skills tool — the agent also loads skills on its own when re
 **Esc does the nearest thing first:** leave a focused lane → close the palette → close
 rewind → close the lanes panel → interrupt the running turn. During an approval, esc means
 *deny*.
+
+An accepted turn interrupt is also recorded in model context as a hidden
+`<turn_aborted>` boundary. The next turn therefore knows the prior response was cut off and
+is told to verify any possibly partial tool effects before retrying; the transcript keeps
+the human-facing interrupted recap instead of exposing the marker.
 
 While the **approval bar** is open it owns the keyboard: the "any time" shortcuts above
 pause, and tab/shift+tab move the approval selection instead.

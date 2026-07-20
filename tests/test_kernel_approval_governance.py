@@ -12,6 +12,7 @@ from amplifier_app_newtui.kernel.governance_hook import (
     GovernanceHook,
     OfflineAutoClassifier,
 )
+from amplifier_app_newtui.kernel.directory_permissions import DirectoryPolicy
 from amplifier_app_newtui.model.queues import NeedsYouQueue
 from amplifier_app_newtui.model.trust import CapabilityClass, DenialLog, resolve
 
@@ -319,6 +320,59 @@ async def test_unrequested_push_denied_without_prompt_evidence() -> None:
     assert result.action == "deny"
     assert needs_you.pending_count == 1
     assert log.total_count == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_unrequested_shell_escape_is_deferred(tmp_path) -> None:
+    needs_you = NeedsYouQueue()
+    denial_log = DenialLog()
+    hook = GovernanceHook(
+        ROOT,
+        mode=lambda: "auto",
+        denial_log=denial_log,
+        needs_you=needs_you,
+        directory_policy=DirectoryPolicy(tmp_path / "project"),
+    )
+    result = await hook.handle_event(
+        "tool:pre", tool_pre("bash", {"command": "echo no > ../outside.txt"})
+    )
+    assert result.action == "deny"
+    assert needs_you.pending_count == 1
+    assert "outside configured project boundary" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_explicit_shell_escape_can_pass_auto_classifier(tmp_path) -> None:
+    hook = GovernanceHook(
+        ROOT,
+        mode=lambda: "auto",
+        denial_log=DenialLog(),
+        directory_policy=DirectoryPolicy(tmp_path / "project"),
+    )
+    await hook.handle_event(
+        "prompt:submit",
+        {"session_id": ROOT, "prompt": "write ../outside.txt with the result"},
+    )
+    result = await hook.handle_event(
+        "tool:pre", tool_pre("bash", {"command": "echo ok > ../outside.txt"})
+    )
+    assert result.action == "continue"
+
+
+@pytest.mark.asyncio
+async def test_filesystem_write_still_hard_denies_outside_allowlist(tmp_path) -> None:
+    hook = GovernanceHook(
+        ROOT,
+        mode=lambda: "auto",
+        denial_log=DenialLog(),
+        directory_policy=DirectoryPolicy(tmp_path / "project"),
+    )
+    result = await hook.handle_event(
+        "tool:pre",
+        tool_pre("write_file", {"file_path": str(tmp_path / "outside" / "x.txt")}),
+    )
+    assert result.action == "deny"
+    assert "outside allowed write directories" in (result.reason or "")
 
 
 # -- registration ---------------------------------------------------------------------

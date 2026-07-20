@@ -250,9 +250,12 @@ async def mount_approval(
     if app.approval_bar is not None:
         app.approval_bar.remove()
     bar = ApprovalBar(ticket_id, prompt, options or ("Allow once", "Allow always", "Deny"))
-    app.approval_bar = bar
     app.composer.display = False
     await app.query_one("#composer-slot", Container).mount(bar)
+    # Publish the bar only once it is fully mounted. Callers use non-None as
+    # the ready signal; exposing it before this await raced the focus/notice
+    # setup and made approval presentation observably half-initialized.
+    app.approval_bar = bar
     bar.focus()
     app.show_notice(APPROVAL_NOTICE, duration=APPROVAL_NOTICE_DURATION)
     if lane_was_focused:

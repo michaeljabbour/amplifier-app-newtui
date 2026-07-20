@@ -4,7 +4,8 @@ Default invocation launches the full-screen TUI on a real amplifier
 session (RealRuntime); ``--demo`` swaps in the scripted DemoRuntime
 (fully offline — no bundle, no network, no credentials). Subcommands:
 
-- ``run PROMPT``   — one-shot session: execute one prompt, print result.
+- ``run [PROMPT]`` — one-shot session from an argument or piped stdin;
+  emits text, JSON, or JSON with a normalized event trace.
 - ``sessions``     — list stored session ids for this project.
 - ``resume ID``    — launch the TUI resuming a stored session.
 - ``doctor``       — plain-text setup checkup (exit 0 ok / 1 findings).
@@ -16,7 +17,13 @@ under a single ``asyncio.run`` — no sync/async bridging deeper down.
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+from contextlib import redirect_stdout
+from datetime import UTC, datetime
+import json
+from pathlib import Path
+import sys
+from time import monotonic
+from typing import Literal, cast
 
 import click
 
@@ -44,16 +51,87 @@ async def _launch_tui(
     return app.return_code or 0
 
 
-async def _run_once(prompt: str, bundle: str | None) -> int:
+async def _run_once(
+    prompt: str, bundle: str | None, output_format: Literal["text", "json", "json-trace"]
+) -> int:
     from .kernel.runtime import RealRuntime
 
     runtime = RealRuntime(bundle=bundle)
-    await runtime.start()
-    try:
-        click.echo(await runtime.submit(prompt))
-    finally:
-        await runtime.cleanup()
+    json_mode = output_format in ("json", "json-trace")
+    started = monotonic()
+    response = ""
+    error: Exception | None = None
+    session_id = ""
+    bundle_name = bundle or ""
+    model_name = ""
+
+    async def execute() -> None:
+        nonlocal response, error, session_id, bundle_name, model_name
+        try:
+            await runtime.start()
+            session_id = runtime.session_id
+            bundle_name = runtime.bundle_name
+            model_name = runtime.model_name
+            response = await runtime.submit(prompt)
+        except Exception as caught:  # structured error is part of the CLI contract
+            error = caught
+        finally:
+            try:
+                await runtime.cleanup()
+            except Exception as caught:
+                if error is None:
+                    error = caught
+
+    if json_mode:
+        # Bundle/module diagnostics and accidental print() calls belong on
+        # stderr. stdout is exactly one parseable JSON document.
+        with redirect_stdout(sys.stderr):
+            await execute()
+        if error is None:
+            payload: dict[str, object] = {
+                "status": "success",
+                "response": response,
+                "session_id": session_id,
+                "bundle": bundle_name,
+                "model": model_name,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        else:
+            payload = {
+                "status": "error",
+                "error": str(error),
+                "error_type": type(error).__name__,
+                "session_id": session_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        if output_format == "json-trace":
+            trace = []
+            while not runtime.queue.empty():
+                trace.append(runtime.queue.get_nowait().model_dump(mode="json"))
+            payload["execution_trace"] = trace
+            payload["metadata"] = {
+                "event_count": len(trace),
+                "duration_ms": round((monotonic() - started) * 1000, 3),
+            }
+        click.echo(json.dumps(payload, ensure_ascii=False, default=str))
+        return 0 if error is None else 1
+
+    await execute()
+    if error is not None:
+        click.echo(f"Error: {error}", err=True)
+        return 1
+    click.echo(response)
     return 0
+
+
+def _resolve_run_prompt(prompt: str | None) -> str:
+    if prompt is not None:
+        return prompt
+    if not sys.stdin.isatty():
+        piped = sys.stdin.read()
+        if piped.strip():
+            return piped
+    raise click.UsageError("Prompt required (pass PROMPT or pipe content on stdin)")
 
 
 @click.group(invoke_without_command=True)
@@ -69,11 +147,27 @@ def main(ctx: click.Context, demo: bool, bundle: str | None) -> None:
 
 
 @main.command()
-@click.argument("prompt")
+@click.argument("prompt", required=False)
 @click.option("--bundle", default=None, help="Bundle name or URI.")
-def run(prompt: str, bundle: str | None) -> None:
-    """Execute one prompt in a real session and print the response."""
-    raise SystemExit(asyncio.run(_run_once(prompt, bundle)))
+@click.option(
+    "--output-format",
+    type=click.Choice(("text", "json", "json-trace")),
+    default="text",
+    show_default=True,
+    help="Response format; JSON modes reserve stdout for one document.",
+)
+def run(prompt: str | None, bundle: str | None, output_format: str) -> None:
+    """Execute PROMPT (or piped stdin) in one real session."""
+    resolved_prompt = _resolve_run_prompt(prompt)
+    raise SystemExit(
+        asyncio.run(
+            _run_once(
+                resolved_prompt,
+                bundle,
+                cast(Literal["text", "json", "json-trace"], output_format),
+            )
+        )
+    )
 
 
 @main.command()
@@ -281,6 +375,136 @@ def bundle_update(name: str) -> None:
         click.echo(f"could not check updates for: {name}", err=True)
         raise SystemExit(1)
     click.echo(f"{name}: {summary}")
+
+
+# --------------------------------------------------------------------------
+# allowed-dirs / denied-dirs — tool-filesystem capability administration
+# --------------------------------------------------------------------------
+
+
+def _list_directories(kind: Literal["allowed", "denied"], scope_filter: str | None) -> None:
+    from .kernel import bundle_admin, directory_permissions
+
+    scope = cast(bundle_admin.Scope | None, scope_filter)
+    entries = directory_permissions.configured_entries(
+        bundle_admin.settings_paths(None, None), kind, scope_filter=scope
+    )
+    title = "Allowed write directories" if kind == "allowed" else "Denied write directories"
+    click.echo(f"{title}:")
+    if not entries:
+        click.echo("  none configured")
+    for entry in entries:
+        click.echo(f"  {entry.path}  ({entry.scope})")
+    if kind == "allowed":
+        click.echo(f"  {Path.cwd().resolve()}  (project-default)")
+
+
+def _update_directory(
+    kind: Literal["allowed", "denied"],
+    operation: Literal["add", "remove"],
+    path: str,
+    *,
+    is_global: bool,
+    is_project: bool,
+    is_local: bool,
+) -> None:
+    from .kernel import bundle_admin, directory_permissions
+
+    scope = _scope(is_global, is_project, is_local)
+    changed, resolved, settings_path = directory_permissions.update_configured_path(
+        bundle_admin.settings_paths(None, None), kind, operation, path, scope
+    )
+    if operation == "remove" and not changed:
+        click.echo(f"path not found at {scope} scope: {resolved}", err=True)
+        raise SystemExit(1)
+    if operation == "add" and not Path(resolved).exists():
+        click.echo(f"warning: path does not exist yet: {resolved}", err=True)
+    verb = "allowed" if kind == "allowed" else "denied"
+    state = "unchanged" if not changed else verb
+    click.echo(f"{state} · {resolved}  ({scope}: {settings_path})")
+
+
+def _directory_scope_filter(fn):  # noqa: ANN001 — click decorator stack
+    fn = click.option("--global", "scope_filter", flag_value="global")(fn)
+    fn = click.option("--project", "scope_filter", flag_value="project")(fn)
+    fn = click.option("--local", "scope_filter", flag_value="local")(fn)
+    return fn
+
+
+@main.group("allowed-dirs")
+def allowed_dirs() -> None:
+    """Manage directories the AI can write to."""
+
+
+@allowed_dirs.command("list")
+@_directory_scope_filter
+def allowed_dirs_list(scope_filter: str | None) -> None:
+    """List configured allowed write directories and their scopes."""
+    _list_directories("allowed", scope_filter)
+
+
+@allowed_dirs.command("add")
+@click.argument("path")
+@_scope_options
+def allowed_dirs_add(
+    path: str, is_global: bool, is_project: bool, is_local: bool
+) -> None:
+    """Allow PATH at the selected settings scope."""
+    _update_directory(
+        "allowed", "add", path,
+        is_global=is_global, is_project=is_project, is_local=is_local,
+    )
+
+
+@allowed_dirs.command("remove")
+@click.argument("path")
+@_scope_options
+def allowed_dirs_remove(
+    path: str, is_global: bool, is_project: bool, is_local: bool
+) -> None:
+    """Remove PATH from the selected settings scope."""
+    _update_directory(
+        "allowed", "remove", path,
+        is_global=is_global, is_project=is_project, is_local=is_local,
+    )
+
+
+@main.group("denied-dirs")
+def denied_dirs() -> None:
+    """Manage directories the AI is blocked from writing to."""
+
+
+@denied_dirs.command("list")
+@_directory_scope_filter
+def denied_dirs_list(scope_filter: str | None) -> None:
+    """List configured denied write directories and their scopes."""
+    _list_directories("denied", scope_filter)
+
+
+@denied_dirs.command("add")
+@click.argument("path")
+@_scope_options
+def denied_dirs_add(
+    path: str, is_global: bool, is_project: bool, is_local: bool
+) -> None:
+    """Deny PATH at the selected settings scope."""
+    _update_directory(
+        "denied", "add", path,
+        is_global=is_global, is_project=is_project, is_local=is_local,
+    )
+
+
+@denied_dirs.command("remove")
+@click.argument("path")
+@_scope_options
+def denied_dirs_remove(
+    path: str, is_global: bool, is_project: bool, is_local: bool
+) -> None:
+    """Remove PATH from the selected settings scope."""
+    _update_directory(
+        "denied", "remove", path,
+        is_global=is_global, is_project=is_project, is_local=is_local,
+    )
 
 
 # --------------------------------------------------------------------------

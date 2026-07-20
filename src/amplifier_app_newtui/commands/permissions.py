@@ -31,19 +31,8 @@ from ..model.trust import (
     TrustDecision,
     classify_tool,
     resolve,
+    resolve_capability,
 )
-
-# Representative tool per capability, used to read the mode default
-# decision back out of trust.resolve (single source — no second policy
-# table to drift).
-_REPRESENTATIVE_TOOL: dict[CapabilityClass, str] = {
-    CapabilityClass.READ: "read_file",
-    CapabilityClass.WRITE: "write_file",
-    CapabilityClass.NET: "web_fetch",
-    CapabilityClass.TEST: "run_tests",
-    CapabilityClass.SPEND: "task",
-    CapabilityClass.EXEC: "bash",
-}
 
 SLOT_ORDER: tuple[CapabilityClass, ...] = (
     CapabilityClass.READ,
@@ -52,6 +41,7 @@ SLOT_ORDER: tuple[CapabilityClass, ...] = (
     CapabilityClass.NET,
     CapabilityClass.SPEND,
     CapabilityClass.EXEC,
+    CapabilityClass.OUTSIDE_PROJECT,
 )
 """Display order of capability slots in the editor (safest first)."""
 
@@ -60,7 +50,7 @@ DEFAULT_BOUNDARY = "within project"
 
 def mode_default(mode: str, capability: CapabilityClass) -> TrustDecision:
     """The mode's static decision for one capability slot."""
-    return resolve(mode, _REPRESENTATIVE_TOOL[capability])
+    return resolve_capability(mode, capability)
 
 
 class TrustSlot(BaseModel):
@@ -167,6 +157,17 @@ class PermissionSurface:
 
     def clear_slot(self, capability: CapabilityClass) -> None:
         self._overrides.pop(capability, None)
+
+    def resolve_capability(self, capability: CapabilityClass) -> TrustDecision:
+        """Effective decision for a capability classified by the kernel."""
+        override = self._overrides.get(capability)
+        if override is not None:
+            return TrustDecision(
+                decision=override,
+                capability=capability,
+                reason=f"user trust slot · {capability.value} {override}",
+            )
+        return mode_default(self._mode, capability)
 
     def slots(self) -> tuple[TrustSlot, ...]:
         """All capability slots with effective decisions, in display order."""

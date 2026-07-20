@@ -38,6 +38,7 @@ class CapabilityClass(str, Enum):
     TEST = "test"
     SPEND = "spend"
     EXEC = "exec"
+    OUTSIDE_PROJECT = "outside-project"
 
 
 Decision = Literal["allow", "ask", "deny"]
@@ -185,6 +186,15 @@ def resolve(
     treat this decision as the fail-closed fallback.
     """
     capability = classify_tool(tool_name, tool_input)
+    return resolve_capability(mode, capability)
+
+
+def resolve_capability(mode: str, capability: CapabilityClass) -> TrustDecision:
+    """Resolve an already-classified capability against a mode.
+
+    The kernel uses this after concrete path inspection identifies an
+    outside-project action. The mode table remains the single policy source.
+    """
     if mode == "auto":
         if capability in _AUTO_STATIC_ALLOW:
             return TrustDecision(
@@ -310,4 +320,5 @@ __all__ = [
     "TrustDecision",
     "classify_tool",
     "resolve",
+    "resolve_capability",
 ]

@@ -50,6 +50,18 @@ MOCKUP_TABLE = [
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
     ("Repair", "/permissions", "edit trust slots: boundary, blocks, exceptions", "built-in"),
+    (
+        "Repair",
+        "/allowed-dirs",
+        "list or edit session allowed write directories",
+        "built-in",
+    ),
+    (
+        "Repair",
+        "/denied-dirs",
+        "list or edit session denied write directories",
+        "built-in",
+    ),
     ("Repair", "/doctor", "setup checkup; reports, then fixes on confirm", "skill"),
     ("Repair", "/improve", "tune config from ledger + denial log", "skill"),
     # Beyond the mockup table: runtime theme switch (DESIGN-SPEC §1).
@@ -64,7 +76,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 27  # 16 base + 8 in-session ops + skills/skill/mcp
+    assert len(registry.specs) == 29
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -128,6 +140,16 @@ def test_tasks_rewind_permissions_dispatch_actions(fake_command_context) -> None
     registry.run("/rewind", ctx)
     registry.run("/permissions", ctx)
     assert ctx.calls == ["toggle_lanes", "open_rewind", "open_permissions"]
+
+
+def test_directory_commands_dispatch_session_management(fake_command_context) -> None:
+    registry = build_registry()
+    registry.run("/allowed-dirs", fake_command_context, "add ../shared")
+    registry.run("/denied-dirs", fake_command_context, "remove .env")
+    assert fake_command_context.calls == [
+        "manage_directories:allowed:add ../shared",
+        "manage_directories:denied:remove .env",
+    ]
 
 
 def test_in_session_ops_dispatch_through_context(fake_command_context) -> None:

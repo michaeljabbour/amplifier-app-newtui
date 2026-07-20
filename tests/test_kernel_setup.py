@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
+from types import ModuleType, SimpleNamespace
 
 from amplifier_app_newtui.kernel import setup
 
@@ -51,9 +53,42 @@ def test_read_keys_ignores_comments_and_blank(tmp_path: Path) -> None:
     assert setup.read_keys(path) == {"ANTHROPIC_API_KEY": "quoted"}
 
 
-def test_load_provider_info_reads_authoritative_env_var() -> None:
-    # The installed anthropic provider declares its real secret env var; this
-    # must come from get_info(), not the <PREFIX>_API_KEY convention.
+def test_load_provider_info_reads_authoritative_env_var(monkeypatch) -> None:
+    # Keep the offline suite hermetic: the provider packages are runtime
+    # modules, not frozen app dependencies. A provider's get_info() remains
+    # the authoritative source rather than the <PREFIX>_API_KEY convention.
+    module_name = "amplifier_module_provider_anthropic"
+    module = ModuleType(module_name)
+
+    class AnthropicProvider:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def get_info(self):  # noqa: ANN201 - provider protocol fake
+            return SimpleNamespace(
+                config_fields=(
+                    SimpleNamespace(
+                        id="api_key",
+                        field_type="secret",
+                        env_var="ANTHROPIC_API_KEY",
+                        default=None,
+                    ),
+                    SimpleNamespace(
+                        id="base_url",
+                        field_type="string",
+                        env_var="ANTHROPIC_BASE_URL",
+                        default="https://api.anthropic.com",
+                    ),
+                )
+            )
+
+        async def list_models(self):  # noqa: ANN201 - provider protocol fake
+            return []
+
+    AnthropicProvider.__module__ = module_name
+    module.AnthropicProvider = AnthropicProvider
+    monkeypatch.setitem(sys.modules, module_name, module)
+
     info = setup.load_provider_info("provider-anthropic")
     assert info is not None
     assert info.key_var == "ANTHROPIC_API_KEY"
