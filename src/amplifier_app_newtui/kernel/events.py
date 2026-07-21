@@ -352,6 +352,21 @@ class AgentCompleted(_Envelope):
     """Short result summary for the lane line (e.g. ``tests ✔``)."""
 
 
+class AgentResumed(_Envelope):
+    """A subagent lane reopened (``delegate:agent_resumed``).
+
+    The resume payload carries only the child ``session_id`` (already the
+    envelope's own field) and ``parent_session_id`` -- no ``agent`` name.
+    That's intentional: the lane already exists from the original spawn
+    event, keyed by ``sub_session_id``, so there's nothing new to key on
+    here and ``agent`` is left empty rather than guessed.
+    """
+
+    kind: Literal["agent_resumed"] = "agent_resumed"
+    agent: str = ""
+    parent_session_id: str = ""
+
+
 class Notification(_Envelope):
     """User-facing notice (``user:notification``) → transient notice slot."""
 
@@ -413,6 +428,7 @@ UIEvent = Annotated[
     | CancelCompleted
     | AgentSpawned
     | AgentCompleted
+    | AgentResumed
     | Notification
     | ContextInjected
     | ContextCompacted,
@@ -475,9 +491,7 @@ def usage_from_content_block_end(event: "ContentBlockEnd") -> "ProviderResponseU
         input_tokens=_int(usage, "input_tokens", "prompt_tokens"),
         output_tokens=_int(usage, "output_tokens", "completion_tokens"),
         cache_read=_int(usage, "cache_read", "cache_read_input_tokens", "cache_read_tokens"),
-        cache_write=_int(
-            usage, "cache_write", "cache_creation_input_tokens", "cache_write_tokens"
-        ),
+        cache_write=_int(usage, "cache_write", "cache_creation_input_tokens", "cache_write_tokens"),
         cost_usd=_cost_usd(usage),
     )
 
@@ -739,6 +753,30 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 success=True if success is None else bool(success),
                 result=_str(payload, "result", "summary"),
             )
+        case "delegate:agent_resumed":
+            return AgentResumed(
+                **env,
+                agent=_str(payload, "agent", "agent_name", "name"),
+                parent_session_id=_str(payload, "parent_session_id"),
+            )
+        case "delegate:agent_cancelled":
+            return AgentCompleted(
+                **env,
+                agent=_str(payload, "agent", "agent_name", "name"),
+                sub_session_id=_str(payload, "sub_session_id", "child_session_id"),
+                parent_session_id=_str(payload, "parent_session_id"),
+                success=False,
+                result="cancelled",
+            )
+        case "delegate:error":
+            return AgentCompleted(
+                **env,
+                agent=_str(payload, "agent", "agent_name", "name"),
+                sub_session_id=_str(payload, "sub_session_id", "child_session_id"),
+                parent_session_id=_str(payload, "parent_session_id"),
+                success=False,
+                result="error",
+            )
         case "user:notification":
             return Notification(
                 **env,
@@ -752,6 +790,7 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
 
 __all__ = [
     "AgentCompleted",
+    "AgentResumed",
     "AgentSpawned",
     "ApprovalDenied",
     "ApprovalGranted",

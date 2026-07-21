@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from amplifier_app_newtui.kernel.events import (
     AgentCompleted,
+    AgentResumed,
     AgentSpawned,
     ApprovalRequired,
     CancelCompleted,
@@ -35,6 +36,7 @@ from amplifier_app_newtui.kernel.events import (
 )
 
 SID = {"session_id": "sess-1", "parent_id": None}
+ROOT = "root-session"
 
 
 def test_stream_block_start() -> None:
@@ -61,9 +63,7 @@ def test_delta_text_key_variants() -> None:
 
 
 def test_delta_prefers_delta_key_over_others() -> None:
-    event = normalize(
-        "llm:stream_block_delta", {**SID, "delta": "right", "text": "wrong"}
-    )
+    event = normalize("llm:stream_block_delta", {**SID, "delta": "right", "text": "wrong"})
     assert isinstance(event, StreamBlockDelta)
     assert event.text == "right"
 
@@ -120,7 +120,12 @@ def test_tool_post_non_mapping_result_preserved() -> None:
 def test_tool_error() -> None:
     event = normalize(
         "tool:error",
-        {**SID, "tool_name": "web_fetch", "tool_call_id": "c9", "error": {"type": "Timeout", "msg": "30s"}},
+        {
+            **SID,
+            "tool_name": "web_fetch",
+            "tool_call_id": "c9",
+            "error": {"type": "Timeout", "msg": "30s"},
+        },
     )
     assert isinstance(event, ToolError)
     assert event.tool_call_id == "c9"
@@ -334,6 +339,50 @@ def test_delegate_agent_lifecycle_aliases() -> None:
     assert isinstance(completed, AgentCompleted)
     assert completed.success
     assert completed.result == "review complete"
+
+
+def test_normalize_delegate_agent_resumed() -> None:
+    """Resume reopens a lane without changing parent session."""
+    raw = {
+        "session_id": "kid-1_worker",  # child session
+        "parent_session_id": ROOT,
+    }
+    result = normalize("delegate:agent_resumed", raw)
+    assert isinstance(result, AgentResumed)
+    assert result.kind == "agent_resumed"
+    assert result.session_id == "kid-1_worker"
+
+
+def test_normalize_delegate_agent_cancelled() -> None:
+    """Cancellation is a terminal event with explicit state."""
+    raw = {
+        "session_id": ROOT,
+        "agent": "worker",
+        "sub_session_id": "kid-1_worker",
+        "parent_session_id": ROOT,
+    }
+    result = normalize("delegate:agent_cancelled", raw)
+    assert isinstance(result, AgentCompleted)
+    assert result.kind == "agent_completed"  # normalized to agent_completed
+    assert result.session_id == ROOT
+    assert result.result == "cancelled"
+    assert result.success is False
+
+
+def test_normalize_delegate_error() -> None:
+    """Errors become agent_completed with error result."""
+    raw = {
+        "session_id": ROOT,
+        "agent": "worker",
+        "sub_session_id": "kid-1_worker",
+        "parent_session_id": ROOT,
+        "error": "boom",
+    }
+    result = normalize("delegate:error", raw)
+    assert isinstance(result, AgentCompleted)
+    assert result.kind == "agent_completed"
+    assert result.result == "error"
+    assert result.success is False
 
 
 def test_event_ids_are_unique() -> None:
