@@ -65,5 +65,19 @@ def test_wrapper_overlays_only_tui_specific_tools() -> None:
     tools = _frontmatter().get("tools") or []
     modules = {t.get("module") for t in tools if isinstance(t, dict)}
     # tool-task is gone (was inert; superseded by anchors' tool-delegate);
-    # filesystem/bash/web/search/skills/mode etc. arrive via anchors.
-    assert modules == {"tool-mcp", "tool-team-pulse"}
+    # filesystem/bash/web/search/mode etc. arrive via anchors. tool-skills
+    # is re-mounted deliberately: anchors pins it to the foundation skill
+    # set, which replaces the ~/.amplifier/skills default scan — the
+    # wrapper restores the user dir (later bundles override earlier ones).
+    assert modules == {"tool-mcp", "tool-team-pulse", "tool-skills"}
+
+
+def test_wrapper_tool_skills_keeps_foundation_set_and_adds_user_dir() -> None:
+    tools = _frontmatter().get("tools") or []
+    skills_mounts = [
+        t for t in tools if isinstance(t, dict) and t.get("module") == "tool-skills"
+    ]
+    assert len(skills_mounts) == 1
+    sources = skills_mounts[0].get("config", {}).get("skills", [])
+    assert any("amplifier-foundation" in s and "skills" in s for s in sources)
+    assert "~/.amplifier/skills" in sources
