@@ -271,3 +271,45 @@ def test_lane_registry_reopen_resets_done_lane() -> None:
 
 def test_lane_update_unknown_session_is_dropped() -> None:
     assert LaneRegistry().update("ghost", activity="x") is None
+
+
+# -- lane tail focus (DESIGN-SPEC §8: live tail) -------------------------------
+
+
+def test_tail_lane_defaults_to_first_running_then_most_recent_stream() -> None:
+    lanes = LaneRegistry()
+    assert lanes.tail_lane is None
+    lanes.register("s1", parent_id="root", name="researcher")
+    lanes.register("s2", parent_id="root", name="coder")
+    tailed = lanes.tail_lane
+    assert tailed is not None and tailed.session_id == "s1"  # fallback: first running
+    lanes.note_stream_activity("s2")
+    tailed = lanes.tail_lane
+    assert tailed is not None and tailed.session_id == "s2"  # most recent stream wins
+
+
+def test_cycle_tail_focus_pins_and_falls_back_when_lane_completes() -> None:
+    lanes = LaneRegistry()
+    lanes.register("s1", parent_id="root", name="researcher")
+    lanes.register("s2", parent_id="root", name="coder")
+    lanes.note_stream_activity("s2")
+    pinned = lanes.cycle_tail_focus()  # from s2 → next running lane: s1
+    assert pinned is not None and pinned.session_id == "s1"
+    lanes.note_stream_activity("s2")  # recent changes, but the pin holds
+    tailed = lanes.tail_lane
+    assert tailed is not None and tailed.session_id == "s1"
+    lanes.complete("s1")  # pinned lane done → falls back to most recent
+    tailed = lanes.tail_lane
+    assert tailed is not None and tailed.session_id == "s2"
+    lanes.complete("s2")
+    assert lanes.tail_lane is None
+    assert lanes.cycle_tail_focus() is None
+
+
+def test_note_stream_activity_ignores_done_and_unknown_lanes() -> None:
+    lanes = LaneRegistry()
+    lanes.register("s1", parent_id="root", name="researcher")
+    lanes.note_stream_activity("never-registered")  # dropped, not fatal
+    lanes.complete("s1")
+    lanes.note_stream_activity("s1")  # done lanes never become the tail
+    assert lanes.tail_lane is None

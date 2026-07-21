@@ -128,6 +128,8 @@ class LaneRegistry:
         self._order: list[str] = []
         self._aliases: dict[str, str] = {}
         self._pending_sessions: dict[str, str | None] = {}
+        self._tail_focus: str | None = None
+        self._tail_recent: str | None = None
 
     @property
     def lanes(self) -> tuple[LaneRecord, ...]:
@@ -282,6 +284,52 @@ class LaneRegistry:
         """Mark a lane done (``✔`` dim), recording its result summary."""
         activity = f"done · {result}" if result else "done"
         return self.update(session_id, state="done", activity=activity)
+
+    # -- lane tail focus (DESIGN-SPEC §8: live tail) ------------------------
+
+    @property
+    def tail_lane(self) -> LaneRecord | None:
+        """The lane whose stream feeds the live tail.
+
+        An explicit ctrl-o choice wins while that lane still runs; then the
+        most-recently-streaming running lane; then the first running lane.
+        None when nothing is running (the tail goes dark).
+        """
+        for candidate in (self._tail_focus, self._tail_recent):
+            if candidate is None:
+                continue
+            key = self._resolve_id(candidate)
+            record = self._records.get(key) if key is not None else None
+            if record is not None and record.lane.state != "done":
+                return record
+        active = self.active
+        return active[0] if active else None
+
+    def note_stream_activity(self, session_id: str) -> None:
+        """Record *session_id* as the most-recently-streaming lane.
+
+        Unknown or finished lanes are dropped, not fatal (same tolerance
+        as :meth:`update`).
+        """
+        key = self._resolve_id(session_id)
+        record = self._records.get(key) if key is not None else None
+        if record is not None and record.lane.state != "done":
+            self._tail_recent = key
+
+    def cycle_tail_focus(self) -> LaneRecord | None:
+        """Pin the tail to the next running lane (ctrl-o), in lane order."""
+        active = self.active
+        if not active:
+            self._tail_focus = None
+            return None
+        ids = [record.session_id for record in active]
+        current = self.tail_lane
+        if current is not None and current.session_id in ids:
+            index = (ids.index(current.session_id) + 1) % len(ids)
+        else:
+            index = 0
+        self._tail_focus = ids[index]
+        return self._records[ids[index]]
 
     def _patch_child_depths(self, parent_id: str) -> None:
         """Fix depths of children registered before their parent (spawn race)."""
