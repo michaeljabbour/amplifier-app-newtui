@@ -98,7 +98,7 @@ digraph newtui_dataflow {
 
     // ═══ SUBAGENTS (teal) ═══════════════════════════════════════
     edge [color="#2C7A7B", fontcolor="#2C7A7B", penwidth=1.4, style=solid];
-    toolexec -> spawner [label="tool-task"];
+    toolexec -> spawner [label="tool-delegate"];
     spawner -> childsession;
     childsession -> hooks [label="same bridge"];
     hooks -> lanes [label="AgentSpawned/Completed\n→ LaneRegistry", style=dashed];
