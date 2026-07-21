@@ -52,6 +52,7 @@ This is the complete set of keys the app consumes:
 | `context.compact_threshold` | `context-simple` window fraction that triggers automatic compaction (`0 < value <= 1`) | `0.8` in the packaged newtui bundle | global or project |
 | `context.auto_compact` | Enable `context-simple` automatic compaction; the runtime binding also disables legacy threshold-only context modules truthfully | `true` in the packaged newtui bundle | global or project |
 | `modules.tools` | Tool entries merged by identity; filesystem permission lists union across scopes | project root is implicitly writable | global / project / local / session |
+| `permissions.write_boundary` | App-level write gate. `open` (default, amplifier-app-cli parity): no governance pre-flight for writes outside the project and no write-shaped shell gating — the mounted filesystem tool stays the sole write enforcement (graceful tool error, never an approval). `guarded`: outside writes are blocked pre-flight and write-shaped shell escapes are classified outside-project. Denied and protected paths are enforced in both | `open` | global or project |
 | `pricing.live` | Live Helicone pricing: fresh `~/.amplifier/pricing_cache.json` (24 h TTL) applies at startup, else a background fetch swaps rates in for **new turns only**; `false` keeps the built-in offline table | `true` | global |
 | `sources.modules` | Map of `module_id → source URI`: redirect where a module is fetched from | none | local (dev checkouts) |
 | `overrides.<id>.source` | Per-module source redirect; wins over `sources.modules` | none | local |

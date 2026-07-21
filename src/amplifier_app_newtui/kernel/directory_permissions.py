@@ -23,6 +23,26 @@ _CONFIG_KEY: dict[DirectoryKind, str] = {
     "denied": "denied_write_paths",
 }
 
+WriteBoundary = Literal["open", "guarded"]
+"""App-level write-boundary posture.
+
+``open`` (default) matches amplifier-app-cli: no governance pre-flight for
+writes outside the project and no write-shaped shell gating — the mounted
+filesystem tool remains the sole write-path enforcement (a graceful tool
+error, never an approval gate). ``guarded`` restores the app-level gate:
+outside writes are blocked pre-flight and write-shaped shell escapes are
+classified outside-project. Denied and protected paths are enforced in
+both postures.
+"""
+
+
+def write_boundary_setting(settings: dict[str, Any]) -> WriteBoundary:
+    """Resolve ``permissions.write_boundary`` from merged settings."""
+    permissions = settings.get("permissions")
+    raw = permissions.get("write_boundary") if isinstance(permissions, dict) else None
+    return "guarded" if raw == "guarded" else "open"
+
+
 PROTECTED_PROJECT_PATHS: tuple[str, ...] = (
     ".git",
     ".agents",
@@ -180,7 +200,9 @@ class DirectoryPolicy:
         *,
         allowed: tuple[str, ...] = (),
         denied: tuple[str, ...] = (),
+        write_boundary: WriteBoundary = "open",
     ) -> None:
+        self.write_boundary: WriteBoundary = write_boundary
         self.project_dir = project_dir.resolve()
         self._base_allowed = self._stable((str(self.project_dir), *allowed))
         self._base_denied = self._stable(denied)
@@ -250,6 +272,13 @@ class DirectoryPolicy:
             return (False, f"path is within denied directories · {resolved}")
         if self._within_any(resolved, self.allowed):
             return (True, "within allowed write directories")
+        if self.write_boundary == "open":
+            # App-cli parity: no app-level gate outside the project. The
+            # mounted filesystem tool stays the hard write enforcement
+            # (its allowlist is injected via merged_tool_config), so write
+            # tools get a graceful tool error there — never a governance
+            # block or an approval.
+            return (True, f"outside project · filesystem tool enforces writes · {resolved}")
         return (False, f"path is outside allowed write directories · {resolved}")
 
     def check_read(self, path: str | Path, *, cwd: Path | None = None) -> tuple[bool, str]:
@@ -335,7 +364,12 @@ class DirectoryPolicy:
         return merged
 
 
-def policy_from_mount_plan(mount_plan: dict[str, Any], project_dir: Path) -> DirectoryPolicy:
+def policy_from_mount_plan(
+    mount_plan: dict[str, Any],
+    project_dir: Path,
+    *,
+    write_boundary: WriteBoundary = "open",
+) -> DirectoryPolicy:
     config: dict[str, Any] = {}
     for tool in mount_plan.get("tools") or []:
         if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
@@ -348,6 +382,7 @@ def policy_from_mount_plan(mount_plan: dict[str, Any], project_dir: Path) -> Dir
         project_dir,
         allowed=tuple(str(value) for value in allowed) if isinstance(allowed, list) else (),
         denied=tuple(str(value) for value in denied) if isinstance(denied, list) else (),
+        write_boundary=write_boundary,
     )
 
 

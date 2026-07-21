@@ -364,7 +364,7 @@ async def test_auto_unrequested_shell_escape_is_deferred(tmp_path) -> None:
         mode=lambda: "auto",
         denial_log=denial_log,
         needs_you=needs_you,
-        directory_policy=DirectoryPolicy(tmp_path / "project"),
+        directory_policy=DirectoryPolicy(tmp_path / "project", write_boundary="guarded"),
     )
     result = await hook.handle_event(
         "tool:pre", tool_pre("bash", {"command": "echo no > ../outside.txt"})
@@ -393,7 +393,26 @@ async def test_explicit_shell_escape_can_pass_auto_classifier(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_filesystem_write_still_hard_denies_outside_allowlist(tmp_path) -> None:
+async def test_filesystem_write_hard_denies_outside_allowlist_when_guarded(tmp_path) -> None:
+    hook = GovernanceHook(
+        ROOT,
+        mode=lambda: "auto",
+        denial_log=DenialLog(),
+        directory_policy=DirectoryPolicy(tmp_path / "project", write_boundary="guarded"),
+    )
+    result = await hook.handle_event(
+        "tool:pre",
+        tool_pre("write_file", {"file_path": str(tmp_path / "outside" / "x.txt")}),
+    )
+    assert result.action == "deny"
+    assert "outside allowed write directories" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_open_boundary_write_is_not_governance_denied(tmp_path) -> None:
+    """Default posture (app-cli parity): the hook does not pre-flight-deny an
+    outside write — the mounted filesystem tool remains the enforcement point
+    and fails gracefully there instead."""
     hook = GovernanceHook(
         ROOT,
         mode=lambda: "auto",
@@ -404,8 +423,7 @@ async def test_filesystem_write_still_hard_denies_outside_allowlist(tmp_path) ->
         "tool:pre",
         tool_pre("write_file", {"file_path": str(tmp_path / "outside" / "x.txt")}),
     )
-    assert result.action == "deny"
-    assert "outside allowed write directories" in (result.reason or "")
+    assert result is None or result.action != "deny"
 
 
 # -- registration ---------------------------------------------------------------------

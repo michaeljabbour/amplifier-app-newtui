@@ -13,8 +13,8 @@ def _capability(capability: CapabilityClass):
     return resolve_capability("build", capability)
 
 
-def test_allowlisted_write_still_cannot_cross_path_policy(tmp_path: Path) -> None:
-    policy = DirectoryPolicy(tmp_path / "project")
+def test_guarded_boundary_blocks_outside_write_preflight(tmp_path: Path) -> None:
+    policy = DirectoryPolicy(tmp_path / "project", write_boundary="guarded")
     approval = resolve("auto", "write_file", {"path": "../outside.txt"})
     assert approval.decision == "allow"
     safety = resolve_safety(
@@ -26,6 +26,23 @@ def test_allowlisted_write_still_cannot_cross_path_policy(tmp_path: Path) -> Non
     )
     assert safety.approval.decision == "allow"
     assert safety.execution_policy == "blocked"
+
+
+def test_open_boundary_defers_outside_write_to_filesystem_tool(tmp_path: Path) -> None:
+    """Default posture (app-cli parity): no governance pre-flight block for an
+    outside write — the mounted filesystem tool remains the hard enforcement
+    point and returns a graceful tool error instead of a governance denial."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    approval = resolve("auto", "write_file", {"path": "../outside.txt"})
+    safety = resolve_safety(
+        approval,
+        action="write_file · ../outside.txt",
+        target="../outside.txt",
+        directory_policy=policy,
+        resolve_capability=_capability,
+    )
+    assert safety.execution_policy == "within-policy"
+    assert "filesystem tool" in safety.policy_reason
 
 
 def test_inside_write_preserves_approval_and_satisfies_path_policy(tmp_path: Path) -> None:
@@ -92,8 +109,8 @@ def test_read_shaped_shell_outside_project_roams(tmp_path: Path) -> None:
     assert safety.execution_policy == "within-policy"
 
 
-def test_write_shaped_shell_outside_project_is_gated(tmp_path: Path) -> None:
-    policy = DirectoryPolicy(tmp_path / "project")
+def test_write_shaped_shell_outside_project_is_gated_when_guarded(tmp_path: Path) -> None:
+    policy = DirectoryPolicy(tmp_path / "project", write_boundary="guarded")
     approval = resolve("auto", "bash", {"command": "rm /tmp/elsewhere/x.txt"})
     safety = resolve_safety(
         approval,
@@ -104,6 +121,21 @@ def test_write_shaped_shell_outside_project_is_gated(tmp_path: Path) -> None:
     )
     assert safety.execution_policy == "outside-policy"
     assert safety.approval.capability == CapabilityClass.OUTSIDE_PROJECT
+
+
+def test_write_shaped_shell_outside_project_roams_when_open(tmp_path: Path) -> None:
+    """Default posture (app-cli parity): bash writes are not path-confined —
+    like amplifier-app-cli's unconfined bash tool."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    approval = resolve("auto", "bash", {"command": "rm /tmp/elsewhere/x.txt"})
+    safety = resolve_safety(
+        approval,
+        action="rm /tmp/elsewhere/x.txt",
+        target="",
+        directory_policy=policy,
+        resolve_capability=_capability,
+    )
+    assert safety.execution_policy == "within-policy"
 
 
 def test_protected_shell_target_is_blocked_even_when_exec_is_allowlisted(
