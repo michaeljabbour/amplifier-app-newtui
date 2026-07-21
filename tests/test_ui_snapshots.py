@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from amplifier_app_newtui.kernel.demo import BRAINSTORM_PROMPT
+from amplifier_app_newtui.kernel.demo import BRAINSTORM_PROMPT, BUILD_PROMPT
 from amplifier_app_newtui.ui.app import NewTuiApp
 from textual._doc import take_svg_screenshot
 
@@ -17,6 +17,12 @@ _SNAPSHOT = (
     / "__snapshots__"
     / "test_ui_snapshots"
     / "test_double_esc_rewind_snapshot.raw"
+)
+_PLAN_SNAPSHOT = (
+    Path(__file__).parent
+    / "__snapshots__"
+    / "test_ui_snapshots"
+    / "test_plan_panel_bottom_strip_snapshot.raw"
 )
 _DYNAMIC_TERMINAL_ID = re.compile(r"terminal-\d+")
 
@@ -51,5 +57,27 @@ def test_double_esc_rewind_snapshot(monkeypatch) -> None:
         run_before=interrupt_then_rewind,
     )
     expected = _SNAPSHOT.read_text(encoding="utf-8")
+    assert expected == _clean_svg(expected), "snapshot must remain whitespace-clean"
+    assert _clean_svg(actual) == expected
+
+
+def test_plan_panel_bottom_strip_snapshot(monkeypatch) -> None:
+    """Post-build-turn bottom strip: plan collapsed to 'Plan 3/3', still visible."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    adapter = GatedDemoAdapter()
+    app = NewTuiApp(adapter)
+
+    async def run_build(pilot) -> None:
+        await seed_done(pilot, app)
+        app.submit_prompt(BUILD_PROMPT)
+        assert await wait_for(pilot, lambda: app.plan_panel.display)
+        adapter.release()
+        assert await wait_for(pilot, lambda: not app.turn_active)
+        assert app.plan_panel.plan_lines == ("Plan 3/3",)
+
+    actual = take_svg_screenshot(app=app, terminal_size=SIZE, run_before=run_build)
+    expected = _PLAN_SNAPSHOT.read_text(encoding="utf-8")
     assert expected == _clean_svg(expected), "snapshot must remain whitespace-clean"
     assert _clean_svg(actual) == expected
