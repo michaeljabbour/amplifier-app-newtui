@@ -226,3 +226,17 @@ async def test_set_focused_snaps_highlight() -> None:
         panel.set_focused("tester")
         await pilot.pause()
         assert panel.selected_record is RECORDS[2]
+
+
+def test_format_lane_lines_marks_the_tailed_lane_and_keeps_alignment() -> None:
+    lanes = (
+        LaneState.for_state(name="researcher", state="running", activity="scanning docs"),
+        LaneState.for_state(name="coder", state="working", activity="migrating store"),
+    )
+    lines = format_lane_lines(lanes, tailed_index=1)
+    assert "coder ▸" in lines[1]
+    assert "▸" not in lines[0]
+    # The name column still pads to the widest entry (marker included):
+    assert lines[0].index(" · ") == lines[1].index(" · ")
+    # No marker → identical to today's output shape.
+    assert "▸" not in "".join(format_lane_lines(lanes))

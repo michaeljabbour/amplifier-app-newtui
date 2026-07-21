@@ -18,7 +18,6 @@ from amplifier_app_newtui.kernel.demo import (
     AGENTS_PROMPT,
     BUILD_PROMPT,
     DEMO_LANE_BY_NAME,
-    DEMO_LANES,
     DEMO_SESSION_ID,
 )
 from amplifier_app_newtui.ui.app import NewTuiApp
@@ -37,6 +36,15 @@ from .test_flow_helpers import (
 )
 
 _LANE_LINE = re.compile(r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$")
+
+# The mockup tri-state snapshot (DEMO_LANES panel_line) with the DESIGN-SPEC
+# §8 live-tail ``▸`` marker on the default tailed lane — researcher, the
+# first running lane — and the name column re-padded to fit it.
+TAILED_PANEL_LINES = [
+    "  ◐ researcher ▸ · scanning provider docs · 41s    · ↓ 100.1k tokens · $0.09",
+    "  ■ coder        · migrating store        · 2m 04s · ↓ 48.3k tokens  · $0.31",
+    "  ✔ tester       · done · tests ✔         · 55s    · ↓ 3.2k tokens   · $0.07",
+]
 
 
 async def _run_agents_turn(pilot, app: NewTuiApp) -> None:
@@ -140,9 +148,10 @@ async def test_lanes_panel_tri_state_matches_mockup_mid_turn() -> None:
         await seed_done(pilot, app)
         app.submit_prompt(AGENTS_PROMPT)
         # The turn parks after spawning all three lanes: the panel shows
-        # the mockup's tri-state snapshot verbatim.
+        # the mockup's tri-state snapshot verbatim (plus the ▸ tail marker
+        # on the default tailed lane).
         assert await wait_for(pilot, lambda: len(app.lanes.lanes) == 3)
-        assert list(app.lanes_panel.lane_lines) == [lane.panel_line for lane in DEMO_LANES]
+        assert list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES
         states = [(r.lane.state, r.lane.glyph, r.lane.color_token) for r in app.lanes_panel.records]
         assert states == [
             ("running", "◐", "teal"),
@@ -176,7 +185,7 @@ async def test_replayed_agents_turn_reopens_done_lanes() -> None:
             pilot,
             lambda: [r.lane.state for r in app.lanes.lanes] == ["running", "working", "done"],
         )
-        assert list(app.lanes_panel.lane_lines) == [lane.panel_line for lane in DEMO_LANES]
+        assert list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES
         adapter.release()
         assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
         assert all(r.lane.state == "done" for r in app.lanes.lanes)

@@ -629,7 +629,11 @@ class NewTuiApp(App[None]):
         self.refresh_status()
 
     def lanes_changed(self) -> None:
-        self.lanes_panel.update_lanes(self.lanes.lanes)
+        tailed = self.lanes.tail_lane
+        self.lanes_panel.update_lanes(
+            self.lanes.lanes,
+            tailed_session_id=None if tailed is None else tailed.session_id,
+        )
         active = self.lanes.active_count > 0
         if active and not self._lanes_fanout_open and not self.lanes_panel.display:
             # Mockup runAgentsTurn: the panel opens automatically at fan-out.

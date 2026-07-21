@@ -56,23 +56,31 @@ def lane_elapsed(seconds: float) -> str:
     return f"{total // 60}m {total % 60:02d}s"
 
 
-def format_lane_lines(lanes: Sequence[LaneState]) -> tuple[str, ...]:
+def format_lane_lines(
+    lanes: Sequence[LaneState], tailed_index: int | None = None
+) -> tuple[str, ...]:
     """Aligned lane lines per Claude Code's live agent panel:
     ``  <glyph> <name> · <activity> · <elapsed> · ↓ Nk tokens · $<cost>``.
 
     Name, activity, elapsed and token columns are padded to the widest
     entry so every ``·`` separator column lines up (mockup alignment).
+    ``tailed_index`` appends the DESIGN-SPEC §8 ``▸`` tail marker to that
+    lane's name (inside the padded name column, so alignment holds).
     """
     if not lanes:
         return ()
+    names = [
+        f"{lane.name} ▸" if index == tailed_index else lane.name
+        for index, lane in enumerate(lanes)
+    ]
     elapsed = [lane_elapsed(lane.elapsed) for lane in lanes]
     tokens = [f"↓ {_format_tokens(lane.tokens)} tokens" for lane in lanes]
-    name_w = max(len(lane.name) for lane in lanes)
+    name_w = max(len(name) for name in names)
     act_w = max(len(lane.activity) for lane in lanes)
     el_w = max(len(text) for text in elapsed)
     tok_w = max(len(text) for text in tokens)
     return tuple(
-        f"  {lane.glyph} {lane.name:<{name_w}} · {lane.activity:<{act_w}}"
+        f"  {lane.glyph} {names[i]:<{name_w}} · {lane.activity:<{act_w}}"
         f" · {elapsed[i]:<{el_w}} · {tokens[i]:<{tok_w}} · ${lane.cost:.2f}"
         for i, lane in enumerate(lanes)
     )
@@ -216,6 +224,7 @@ class LanesPanel(Vertical):
         super().__init__(id=id)
         self._records: tuple[LaneRecord, ...] = ()
         self._selected = 0
+        self._tailed: str | None = None
         self._motion_frame = 0
         self._motion_timer: Timer | None = None
         self._remount_pending = False
@@ -232,7 +241,17 @@ class LanesPanel(Vertical):
     @property
     def lane_lines(self) -> tuple[str, ...]:
         """The exact aligned lane line strings currently displayed."""
-        return format_lane_lines(tuple(r.lane for r in self._records))
+        tailed_index = next(
+            (
+                index
+                for index, record in enumerate(self._records)
+                if record.session_id == self._tailed
+            ),
+            None,
+        )
+        return format_lane_lines(
+            tuple(record.lane for record in self._records), tailed_index
+        )
 
     @property
     def selected_record(self) -> LaneRecord | None:
@@ -240,9 +259,15 @@ class LanesPanel(Vertical):
             return None
         return self._records[self._selected]
 
-    def update_lanes(self, records: Sequence[LaneRecord]) -> None:
+    def update_lanes(
+        self,
+        records: Sequence[LaneRecord],
+        *,
+        tailed_session_id: str | None = None,
+    ) -> None:
         """Replace the lane listing (registration order, per LaneRegistry)."""
         self._records = tuple(records)
+        self._tailed = tailed_session_id
         self._selected = min(self._selected, max(0, len(self._records) - 1))
         self._sync_motion()
         self._refresh_or_rebuild_rows()
