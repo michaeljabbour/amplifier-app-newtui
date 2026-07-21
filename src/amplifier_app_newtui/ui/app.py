@@ -673,14 +673,29 @@ class NewTuiApp(App[None]):
         action = action.replace("_", " ")  # foundation emits snake_case phases
         if self._splash is None:
             self._splash = BootSplash(id="boot-splash")
-            self.query_one("#transcript-region").mount(self._splash)
+            # This runs as a raw call_soon_threadsafe callback — no Textual
+            # context (active_app unset). Mounting here would create the
+            # widget's pump and timer tasks in that empty context, and the
+            # splash timer would die on its first tick (Timer._tick reads
+            # active_app with no fallback). call_later hops into the app's
+            # message pump, same as present_approval.
+            self.call_later(self._mount_splash, self._splash)
         self._splash.set_status(f"{action} · {detail}" if detail else action)
 
+    async def _mount_splash(self, splash: BootSplash) -> None:
+        await self.query_one("#transcript-region").mount(splash)
+
     def clear_boot_progress(self, *, immediate: bool = False) -> None:
-        """Dismiss the splash — dissolving normally, instantly on failure."""
+        """Dismiss the splash — dissolving normally, instantly on failure.
+
+        The dismissal hops through call_later so it queues FIFO behind a
+        still-pending ``_mount_splash`` (ready can land while the mount
+        callback is queued) and runs with proper Textual context.
+        """
         if self._splash is not None:
-            self._splash.dismiss_splash(immediate=immediate)
+            splash = self._splash
             self._splash = None
+            self.call_later(splash.dismiss_splash, immediate=immediate)
 
     def present_approval(self, ticket_id: str, prompt: str, options: tuple[str, ...]) -> None:
         """Show the inline approval bar for one ticket (spec §7)."""

@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import random
 
+from rich.text import Text
 from textual.timer import Timer
 from textual.widgets import Static
 
 from ..model.blocks import GLYPH_SPINNER_FRAMES, Segment, StyleToken
 from .motion import shimmer_band
-from .segments import Line, lines_markup
+from .segments import Line, to_rich_text
 
 FRAME_SECONDS = 1 / 20
 """Splash frame cadence — smooth motion, trivially cheap repaints."""
@@ -260,7 +261,14 @@ class BootSplash(Static):
             ]
             rows.append(())
             rows.append(status_line(len(self._art[0]), self._status, glyph))
-        self.update(lines_markup(rows))
+        # Rich Text, not content markup: the wordmark is full of backslashes,
+        # and a style split landing right after one (the shimmer band moves
+        # every frame) makes markup swallow its own close tag — a literal
+        # ``[/]`` painted on screen. to_rich_text renders glyphs verbatim.
+        variables = self.app.theme_variables
+        self.update(
+            Text("\n").join(to_rich_text(row, variables) for row in rows)
+        )
 
 
 __all__ = [

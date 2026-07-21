@@ -9,6 +9,7 @@ the first ``boot_progress``, guards mid-boot ops, dissolved by
 from __future__ import annotations
 
 import asyncio
+import contextvars
 
 import pytest
 
@@ -183,6 +184,32 @@ async def test_splash_mounts_during_boot_and_dissolves_on_ready() -> None:
         adapter.release.set()
         assert await _wait_for(pilot, lambda: app._splash is None)
         assert await _wait_for(pilot, lambda: not _splash_widgets(app))
+
+
+@pytest.mark.asyncio
+async def test_boot_progress_from_contextless_callback_still_animates() -> None:
+    """RealRuntimeAdapter delivers boot phases via ``loop.call_soon_threadsafe``,
+    whose callbacks run WITHOUT Textual's ``active_app`` context. Mounting the
+    splash straight from that context created its message pump — and therefore
+    its frame timer task — in the empty context, and the timer died on its
+    first tick (``Timer._tick`` reads ``active_app`` with no fallback). Found
+    live: a blank screen for the entire boot. ``boot_progress`` must hop
+    through the app's message pump, so the splash must visibly animate here.
+    """
+    adapter = RuntimeAdapter()  # its instant ready() fires before we boot; harmless
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=(110, 40)) as pilot:
+        contextvars.Context().run(
+            app.boot_progress, "installing", "amplifier-foundation"
+        )
+        assert await _wait_for(pilot, lambda: bool(_splash_widgets(app)))
+        widget = _splash_widgets(app)[0]
+        # Frames only advance if the timer task survived — the regression
+        # left the splash mounted but permanently blank.
+        assert await _wait_for(pilot, lambda: bool(widget._lines))
+        contextvars.Context().run(app.clear_boot_progress)
+        assert await _wait_for(pilot, lambda: not _splash_widgets(app))
+        assert app._splash is None
 
 
 @pytest.mark.asyncio
