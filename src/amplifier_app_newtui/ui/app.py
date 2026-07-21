@@ -88,6 +88,7 @@ from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_the
 from .transcript import (
     BlockWidget,
     CloseEvidence,
+    DelegateSummaryToggled,
     ExpandEvidenceClaim,
     LaneFocusChanged,
     OpenRewind,
@@ -967,6 +968,12 @@ class NewTuiApp(App[None]):
 
     def on_lane_focus_changed(self, message: LaneFocusChanged) -> None:
         app_support.handle_lane_focus_change(self, message.lane_id)
+
+    def on_delegate_summary_toggled(self, message: DelegateSummaryToggled) -> None:
+        """Drill-down v1 (ambient-progress D5): an expanded summary opens the
+        lanes panel — the full lane transcript stays one Enter away there."""
+        if message.expanded:
+            self.lanes_panel.show_panel(focus=False)
 
     def on_rewind_strip_fork_requested(self, message: RewindStrip.ForkRequested) -> None:
         message.stop()

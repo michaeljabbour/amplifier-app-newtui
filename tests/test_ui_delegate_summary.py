@@ -120,3 +120,33 @@ async def test_archived_summary_still_toggles() -> None:
         collapsed = view.get_block("ds1")
         assert isinstance(collapsed, DelegateSummaryBlock)
         assert collapsed.expanded is False
+
+
+@pytest.mark.asyncio
+async def test_expanding_summary_opens_lanes_panel() -> None:
+    """Drill-down v1 (ambient-progress D5): expansion opens the LanesPanel;
+    collapsing does NOT close it (the panel's own esc/ctrl-t does)."""
+
+    from amplifier_app_newtui.ui.app import NewTuiApp
+    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+
+    from .test_flow_helpers import SIZE, seed_done
+
+    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        assert app.lanes_panel.display is False
+        app.transcript.append(SUMMARY)
+        await pilot.pause()
+
+        widget = app.transcript.get_widget("ds1")
+        assert isinstance(widget, BlockWidget)
+        widget._activate()
+        await pilot.pause()
+        assert app.lanes_panel.display is True  # expanded → panel opens
+        # Display only — the composer keeps focus (type to steer).
+        assert not app.lanes_panel.has_focus
+
+        widget._activate()
+        await pilot.pause()
+        assert app.lanes_panel.display is True  # collapse does NOT close it
