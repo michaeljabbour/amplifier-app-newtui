@@ -1213,6 +1213,13 @@ class TranscriptReducer:
         if turn is not None:
             turn.todo_items = items
         self._host.plan_changed(items)
+        if self._delegate_summary_id is not None:
+            # The runtime closes the plan AFTER the last AgentCompleted
+            # (demo beat order: agent_completed → todo) — fold the fresh
+            # todo state into the durable summary so its ``Plan X/Y``
+            # header ends true, not one beat behind (D3 plan-fold). Still
+            # an in-turn replace: post-turn toggles are never clobbered.
+            self._render_delegate_summary()
 
     # -- telemetry -------------------------------------------------------------------
 

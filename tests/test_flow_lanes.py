@@ -72,6 +72,12 @@ async def test_ctrl_t_toggles_lanes_panel_with_tree_in_transcript() -> None:
         ]
         assert all(e.state == "done" for e in summaries[0].entries)
         assert summaries[0].entries[2].snippet == "tests ✔"
+        # The scripted todo beats fold into the durable block: the final
+        # all-completed beat lands after the last completion and the
+        # header must end on Plan 4/4 (ambient-progress D3 plan-fold).
+        plan_final = summaries[0].plan_final
+        assert plan_final is not None
+        assert [item.status for item in plan_final] == ["completed"] * 4
 
         # The panel auto-opened at fan-out (mockup ``lanesOpen = true``):
         # exact header + one aligned line per agent.

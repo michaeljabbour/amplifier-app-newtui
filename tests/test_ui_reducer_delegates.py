@@ -191,6 +191,37 @@ def test_plan_final_captured_from_turn_todos() -> None:
     assert [i.content for i in block.plan_final] == ["scan docs", "synthesize"]
 
 
+def test_todo_beat_after_last_completion_folds_into_plan_final() -> None:
+    """The runtime closes the plan AFTER the last AgentCompleted (demo:
+    ``…agent_completed + TODO``) — the durable summary must fold that
+    final todo state in, so its header ends ``Plan 4/4``, not one beat
+    behind (design D3 plan-fold)."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    reducer.handle(
+        ev.ToolPre(
+            **_env(0.5),
+            tool_name="todo",
+            tool_call_id="t1",
+            tool_input={"todos": [{"content": "scan docs", "status": "in_progress"}]},
+        )
+    )
+    _spawn(reducer, "coder", "s1", 1.0)
+    _complete(reducer, "coder", "s1", 2.0, result="ok")
+    reducer.handle(
+        ev.ToolPre(
+            **_env(2.1),
+            tool_name="todo",
+            tool_call_id="t2",
+            tool_input={"todos": [{"content": "scan docs", "status": "completed"}]},
+        )
+    )
+    block = _summaries(host)[0]
+    assert block.plan_final is not None
+    assert [i.status for i in block.plan_final] == ["completed"]
+    assert len(_summaries(host)) == 1  # replaced in place, never re-appended
+
+
 def test_no_todos_means_plan_final_none() -> None:
     reducer, host = make_reducer()
     _start(reducer)
