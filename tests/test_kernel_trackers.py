@@ -444,6 +444,35 @@ async def test_queue_bridge_registers_every_consumed_event() -> None:
     assert len(hooks.unregistered) == len(CONSUMED_EVENTS)
 
 
+def test_consumed_events_cover_delegate_lifecycle() -> None:
+    for name in (
+        "delegate:agent_spawned",
+        "delegate:agent_completed",
+        "delegate:agent_resumed",
+        "delegate:agent_cancelled",
+        "delegate:error",
+    ):
+        assert name in CONSUMED_EVENTS
+
+
+@pytest.mark.asyncio
+async def test_queue_bridge_normalizes_delegate_error() -> None:
+    bridge = QueueBridge()
+    await bridge.handle_event(
+        "delegate:error",
+        {
+            "session_id": ROOT,
+            "agent": "worker",
+            "sub_session_id": "kid-1_worker",
+            "parent_session_id": ROOT,
+            "error": "boom",
+        },
+    )
+    event = bridge.queue.get_nowait()
+    assert event.kind == "agent_completed"
+    assert event.success is False
+
+
 # =============================================================================
 # DisplaySystem
 # =============================================================================
