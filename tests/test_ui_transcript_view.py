@@ -14,10 +14,15 @@ from typing import TypeVar, cast
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
+from textual.selection import SELECT_ALL
 
 from amplifier_app_newtui.model.blocks import (
     Answer,
+    EvidenceBlock,
     Narration,
+    NeedsYouBlock,
+    NeedsYouChoice,
+    NeedsYouEntry,
     Segment,
     SessionBanner,
     ToolLine,
@@ -26,9 +31,15 @@ from amplifier_app_newtui.model.blocks import (
     UserLine,
 )
 from amplifier_app_newtui.model.evidence import EvidenceLink
+from amplifier_app_newtui.ui.needs_you import NeedsYouList
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 from amplifier_app_newtui.ui.transcript import (
     BlockWidget,
+    CloseEvidence,
+    ExpandEvidenceClaim,
+    HISTORY_COMPACT_TRIGGER,
+    HISTORY_WIDGET_LIMIT,
+    HistoryArchive,
     LaneFocusChanged,
     OpenRewind,
     ShowEvidence,
@@ -47,6 +58,9 @@ class Harness(App[None]):
         self.rewinds: list[OpenRewind] = []
         self.toggles: list[ToolLineToggled] = []
         self.lane_changes: list[LaneFocusChanged] = []
+        self.expanded_claims: list[ExpandEvidenceClaim] = []
+        self.closed_evidence: list[CloseEvidence] = []
+        self.decisions: list[NeedsYouList.DecisionTaken] = []
 
     def on_mount(self) -> None:
         self.theme = theme_id(DEFAULT_THEME)
@@ -65,6 +79,17 @@ class Harness(App[None]):
 
     def on_lane_focus_changed(self, message: LaneFocusChanged) -> None:
         self.lane_changes.append(message)
+
+    def on_expand_evidence_claim(self, message: ExpandEvidenceClaim) -> None:
+        self.expanded_claims.append(message)
+
+    def on_close_evidence(self, message: CloseEvidence) -> None:
+        self.closed_evidence.append(message)
+
+    def on_needs_you_list_decision_taken(
+        self, message: NeedsYouList.DecisionTaken
+    ) -> None:
+        self.decisions.append(message)
 
 
 def _view(app: Harness) -> TranscriptView:
@@ -360,3 +385,98 @@ async def test_working_status_widget_pulses_spinner() -> None:
         view.remove_block("b1")
         await pilot.pause()
         assert widget._spin_timer is None
+
+
+@pytest.mark.asyncio
+async def test_old_history_compacts_without_losing_text_or_actions() -> None:
+    """The archive preserves infinite scroll/copy and old tool interactivity."""
+
+    app = Harness()
+    async with app.run_test(size=(100, 30)) as pilot:
+        view = _view(app)
+        old_tool = ToolLine(
+            id="old-tool",
+            summary="Read the original setup",
+            body=("README.md", "config.yaml"),
+            status="completed",
+        )
+        view.append(old_tool)
+        for index in range(HISTORY_COMPACT_TRIGGER + 20):
+            view.append(Narration(id=f"archive-{index}", text=f"history line {index}"))
+        await pilot.pause(0.2)
+
+        archive = view.query_one(HistoryArchive)
+        assert len(view._widgets) <= HISTORY_WIDGET_LIMIT
+        assert view.get_widget("old-tool") is None
+        assert view.get_block("old-tool") == old_tool
+        selected = archive.get_selection(SELECT_ALL)
+        assert selected is not None
+        assert "Read the original setup" in selected[0]
+        assert "history line 0" in selected[0]
+
+        view.release_anchor()
+        view.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        await pilot.click(archive, offset=(10, 0))
+        await pilot.pause()
+        expanded = _block(view, "old-tool", ToolLine)
+        assert expanded.expanded is True
+        assert "README.md" in str(archive.content)
+        assert app.toggles[-1].block_id == "old-tool"
+
+        view.remove_block("old-tool")
+        await pilot.pause()
+        assert view.get_block("old-tool") is None
+        assert "Read the original setup" not in str(archive.content)
+
+
+@pytest.mark.asyncio
+async def test_archived_history_retains_answer_rewind_evidence_and_decisions() -> None:
+    """Consolidation retains every non-tool interaction contract."""
+
+    app = Harness()
+    async with app.run_test(size=(100, 30)) as pilot:
+        view = _view(app)
+        link = EvidenceLink(claim_quote="the claim", tool_ref="read_file · source.py")
+        view.append(
+            Answer(
+                id="old-answer",
+                spans=(Segment(text="Grounded answer"),),
+                evidence_refs=(link,),
+            )
+        )
+        view.append(
+            TurnRule(id="old-turn", checkpoint_id="checkpoint-7", label="7s · answer")
+        )
+        view.append(EvidenceBlock(id="old-evidence", links=(link,)))
+        view.append(
+            NeedsYouBlock(
+                id="old-decision",
+                items=(
+                    NeedsYouEntry(
+                        decision_id="decision-1",
+                        question="Apply the safe change?",
+                        choices=(NeedsYouChoice(label="yes", answer="apply it"),),
+                    ),
+                ),
+            )
+        )
+        for index in range(HISTORY_COMPACT_TRIGGER + 20):
+            view.append(Narration(id=f"tail-{index}", text=f"tail line {index}"))
+        await pilot.pause(0.2)
+
+        archive = view.query_one(HistoryArchive)
+        archive.action_archive_activate("old-answer")
+        archive.action_archive_activate("old-turn")
+        archive.action_archive_activate("old-evidence")
+        archive.action_evidence_expand()
+        archive.action_close_evidence()
+        archive.action_archive_decision("old-decision", 0, 0)
+        await pilot.pause()
+
+        assert app.evidence[-1].block_id == "old-answer"
+        assert app.rewinds[-1].checkpoint_id == "checkpoint-7"
+        assert app.expanded_claims[-1].link == link
+        assert app.closed_evidence[-1].block_id == "old-evidence"
+        assert app.decisions[-1].item_id == "decision-1"
+        assert app.decisions[-1].choice == "apply it"

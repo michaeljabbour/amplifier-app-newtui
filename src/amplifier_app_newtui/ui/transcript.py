@@ -1,10 +1,11 @@
 """The transcript: durable history rendered per DESIGN-SPEC §3 + §11.
 
-Two-region model (ADR-0007): this module is the *durable history* region —
-one :class:`BlockWidget` per :class:`TranscriptBlock`, mounted inside a
-:class:`TranscriptView` (``VerticalScroll``). The mutable streaming region
-lives in ``ui/live_tail.py`` and consolidates into an ``Answer`` block that
-gets appended here.
+Two-region model (ADR-0007): this module is the *durable history* region.
+Recent blocks use one interactive :class:`BlockWidget` each; finalized older
+blocks consolidate into one selectable, action-aware :class:`HistoryArchive`
+so arbitrarily long chats do not burden Textual's compositor. The mutable
+streaming region lives in ``ui/live_tail.py`` and consolidates into an
+``Answer`` block that gets appended here.
 
 Rendering is a pure function :func:`render_block` of ``(block, width)``
 producing lines of :class:`Segment` — exact spec glyphs and strings, no
@@ -34,11 +35,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Sequence
 from time import monotonic
-from typing import cast
+from typing import Any, cast
 
 from rich.cells import cell_len
 from textual import events
 from textual.binding import Binding
+from textual.content import Content
 from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.reactive import Reactive, ReactiveType
@@ -77,7 +79,7 @@ from ..model.modes import get_mode
 from .keymap import KEYMAP
 from .motion import SHIMMER_INTERVAL_SECONDS, shimmer_band
 from .needs_you import NeedsYouList
-from .segments import Line, lines_markup
+from .segments import Line, lines_markup, segment_markup
 
 REFLOW_DEBOUNCE_SECONDS = 0.075
 """Trailing debounce for resize reflow (per ADR-0007 / codex precedent)."""
@@ -95,6 +97,12 @@ TOOL_EXPAND_HINT = " · click to expand"
 
 FALLBACK_WIDTH = 80
 """Width used before first layout (corrected by the first real resize)."""
+
+HISTORY_WIDGET_LIMIT = 1_000
+"""Recent blocks kept as fully independent widgets."""
+
+HISTORY_COMPACT_TRIGGER = 1_200
+"""Hysteresis avoids rebuilding the archive for every new durable block."""
 
 _SUPERSCRIPTS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
 
@@ -1139,8 +1147,219 @@ def build_block_widget(
     return BlockWidget(block, reflow_router=reflow_router)
 
 
+def _block_margin_top(block: TranscriptBlock) -> int:
+    """Mirror the per-kind CSS rhythm inside the consolidated archive."""
+
+    if block.kind in {
+        "user_line",
+        "turn_rule",
+        "todo",
+        "ledger",
+        "context",
+        "doctor",
+        "improve",
+        "needs_you",
+    }:
+        return 1
+    if isinstance(block, PlanBlock):
+        return 0 if block.read_only else 1
+    if isinstance(block, Answer):
+        return 0 if block.compact else 1
+    return 0
+
+
+class HistoryArchive(Static):
+    """One selectable, interactive visual for finalized older history.
+
+    It removes thousands of children from Textual's compositor without
+    removing a single line from the conversation. Theme-token markup keeps
+    archived text visually identical, and ``@click`` metadata preserves tool,
+    evidence, rewind, and deferred-decision actions even after consolidation.
+    """
+
+    DEFAULT_CSS = """
+    HistoryArchive {
+        width: 100%;
+        height: auto;
+    }
+    """
+
+    BINDINGS = [
+        Binding(key, binding.action, binding.label, show=False)
+        for binding in _EVIDENCE_BINDINGS
+        for key in binding.keys
+    ]
+
+    def __init__(self, owner: "TranscriptView") -> None:
+        super().__init__("", id="transcript-history-archive")
+        self._owner = owner
+        self._blocks: tuple[TranscriptBlock, ...] = ()
+        self._painted_width: int | None = None
+        self._block_offsets: dict[str, int] = {}
+        self._active_evidence_id: str | None = None
+        self.can_focus = True
+
+    @property
+    def blocks(self) -> tuple[TranscriptBlock, ...]:
+        return self._blocks
+
+    def update_blocks(self, blocks: Sequence[TranscriptBlock]) -> None:
+        self._blocks = tuple(blocks)
+        if self._active_evidence_id not in {block.id for block in self._blocks}:
+            self._active_evidence_id = None
+        if self.is_mounted:
+            self.repaint_archive()
+
+    def on_mount(self) -> None:
+        self.repaint_archive()
+
+    def on_resize(self, event: events.Resize) -> None:
+        if event.size.width <= 0 or event.size.width == self._painted_width:
+            return
+        if self._owner._route_archive_reflow():
+            return
+        self.repaint_archive()
+
+    @staticmethod
+    def _block_action(block: TranscriptBlock) -> str | None:
+        if block.kind == "tool_line" and block.body:
+            return f"archive_activate({block.id!r})"
+        if block.kind == "answer" and block.clickable:
+            return f"archive_activate({block.id!r})"
+        if block.kind in ("turn_rule", "evidence"):
+            return f"archive_activate({block.id!r})"
+        return None
+
+    @staticmethod
+    def _styled_segment(segment: Segment, action: str | None) -> str:
+        markup = segment_markup(segment)
+        return f"[@click={action}]{markup}[/]" if action and markup else markup
+
+    def _block_markup(self, block: TranscriptBlock, width: int) -> str:
+        lines = render_block(block, width)
+        default_action = self._block_action(block)
+        rendered_lines: list[str] = []
+        for line_index, line in enumerate(lines):
+            default_line_action = default_action
+            choice_index = 0
+            item_index = line_index - 1
+            if isinstance(block, NeedsYouBlock) and 0 <= item_index < len(block.items):
+                entry = block.items[item_index]
+                default_line_action = (
+                    f"archive_decision({block.id!r}, {item_index}, 0)"
+                    if entry.choices
+                    else None
+                )
+            parts: list[str] = []
+            for segment in line:
+                action = default_line_action
+                if (
+                    isinstance(block, NeedsYouBlock)
+                    and 0 <= item_index < len(block.items)
+                    and segment.bg_token == "bg-tab"
+                ):
+                    action = f"archive_decision({block.id!r}, {item_index}, {choice_index})"
+                    choice_index += 1
+                parts.append(self._styled_segment(segment, action))
+            rendered_lines.append("".join(parts))
+        return "\n".join(rendered_lines)
+
+    def repaint_archive(self) -> None:
+        width = self.size.width or FALLBACK_WIDTH
+        self._painted_width = width
+        parts: list[str] = []
+        offsets: dict[str, int] = {}
+        row = 0
+        for index, block in enumerate(self._blocks):
+            if index:
+                parts.append("\n")
+            margin = _block_margin_top(block)
+            if margin:
+                parts.append("\n" * margin)
+                row += margin
+            offsets[block.id] = row
+            markup = self._block_markup(block, width)
+            parts.append(markup)
+            content = Content.from_markup(markup)
+            row += max(1, content.get_height(cast(Any, self.styles), width))
+        self._block_offsets = offsets
+        self.update(Content.from_markup("".join(parts)))
+
+    def block_offset(self, block_id: str) -> int | None:
+        return self._block_offsets.get(block_id)
+
+    def action_archive_activate(self, block_id: str) -> None:
+        block = self._owner.get_block(block_id)
+        if block is None:
+            return
+        if block.kind == "tool_line" and block.body:
+            toggled = block.model_copy(update={"expanded": not block.expanded})
+            self._owner.replace(toggled)
+            self.post_message(ToolLineToggled(toggled.id, toggled.expanded))
+        elif block.kind == "answer" and block.clickable:
+            self.post_message(ShowEvidence(block.id, block.evidence_refs))
+        elif block.kind == "turn_rule":
+            self.post_message(OpenRewind(block.checkpoint_id))
+        elif block.kind == "evidence":
+            self._active_evidence_id = block.id
+            self.focus()
+
+    def action_archive_decision(
+        self, block_id: str, item_index: int, choice_index: int
+    ) -> None:
+        block = self._owner.get_block(block_id)
+        if not isinstance(block, NeedsYouBlock):
+            return
+        try:
+            entry = block.items[item_index]
+            choice = entry.choices[choice_index]
+        except IndexError:
+            return
+        self.post_message(NeedsYouList.DecisionTaken(entry.decision_id, choice.answer))
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in _EVIDENCE_ACTIONS:
+            return self._active_evidence_id is not None
+        return True
+
+    def action_evidence_prev(self) -> None:
+        self._move_evidence_selection(-1)
+
+    def action_evidence_next(self) -> None:
+        self._move_evidence_selection(1)
+
+    def _active_evidence(self) -> EvidenceBlock | None:
+        if self._active_evidence_id is None:
+            return None
+        block = self._owner.get_block(self._active_evidence_id)
+        return block if isinstance(block, EvidenceBlock) else None
+
+    def _move_evidence_selection(self, delta: int) -> None:
+        block = self._active_evidence()
+        if block is None or not block.links:
+            return
+        selected = max(0, min(len(block.links) - 1, block.selected + delta))
+        if selected != block.selected:
+            self._owner.replace(block.model_copy(update={"selected": selected}))
+
+    def action_evidence_expand(self) -> None:
+        block = self._active_evidence()
+        if block is not None and block.links:
+            self.post_message(ExpandEvidenceClaim(block.id, block.links[block.selected]))
+
+    def action_close_evidence(self) -> None:
+        block = self._active_evidence()
+        if block is not None:
+            self.post_message(CloseEvidence(block.id))
+
+
 class TranscriptView(VerticalScroll):
-    """Scrollable durable-history region: one BlockWidget per block.
+    """Scrollable durable history with a bounded interactive widget tail.
+
+    The newest ~1k blocks retain their independent widgets. Older blocks are
+    painted by one :class:`HistoryArchive`, which remains selectable and keeps
+    the same click/keyboard actions through Textual action metadata. This
+    preserves the infinite-chat feel while bounding compositor layout work.
 
     - **Tail-follow anchor**: sticks to the bottom whenever content
       height grows (append, async child mounts, wrap reflow) unless the
@@ -1173,8 +1392,12 @@ class TranscriptView(VerticalScroll):
 
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002
         super().__init__(id=id)
+        self._blocks: dict[str, TranscriptBlock] = {}
         self._widgets: dict[str, TranscriptWidget] = {}
         self._order: list[str] = []
+        self._archive: HistoryArchive | None = None
+        self._archive_ids: list[str] = []
+        self._compaction_pending = False
         self._focused_lane: str | None = None
         self._main_stash: list[TranscriptBlock] | None = None
         self._streaming = False
@@ -1198,11 +1421,20 @@ class TranscriptView(VerticalScroll):
 
     @property
     def blocks(self) -> tuple[TranscriptBlock, ...]:
-        return tuple(self._widgets[block_id].block for block_id in self._order)
+        # A mounted widget may hold transient UI-local state (for example
+        # the selected evidence claim) before it ever becomes archival
+        # state. Read that live state first; archived blocks come directly
+        # from the canonical store.
+        return tuple(
+            self._widgets[block_id].block
+            if block_id in self._widgets
+            else self._blocks[block_id]
+            for block_id in self._order
+        )
 
     def get_block(self, block_id: str) -> TranscriptBlock | None:
         widget = self._widgets.get(block_id)
-        return widget.block if widget is not None else None
+        return widget.block if widget is not None else self._blocks.get(block_id)
 
     def get_widget(self, block_id: str) -> TranscriptWidget | None:
         """The mounted widget for *block_id* (None while stashed/unknown)."""
@@ -1220,9 +1452,10 @@ class TranscriptView(VerticalScroll):
                 raise ValueError(f"duplicate block id: {block.id!r}")
             self._main_stash.append(block)
             return None
-        if block.id in self._widgets:
+        if block.id in self._blocks:
             raise ValueError(f"duplicate block id: {block.id!r}")
         widget = build_block_widget(block, reflow_router=self._route_reflow)
+        self._blocks[block.id] = block
         self._widgets[block.id] = widget
         self._order.append(block.id)
         # No one-shot scroll here: while the tail anchor is engaged the
@@ -1230,6 +1463,7 @@ class TranscriptView(VerticalScroll):
         # any later height growth of the mounted widget (async child rows,
         # wrap reflow); while released (user scrolled up) it must not move.
         self.mount(widget)
+        self._schedule_compaction()
         return widget
 
     def replace(self, block: TranscriptBlock) -> None:
@@ -1244,10 +1478,17 @@ class TranscriptView(VerticalScroll):
                     self._main_stash[index] = block
                     return
             raise KeyError(f"unknown block id: {block.id!r}")
-        widget = self._widgets.get(block.id)
-        if widget is None:
+        if block.id not in self._blocks:
             raise KeyError(f"unknown block id: {block.id!r}")
-        widget.update_block(block)
+        self._blocks[block.id] = block
+        if widget := self._widgets.get(block.id):
+            widget.update_block(block)
+        elif block.id in self._archive_ids and self._archive is not None:
+            self._archive.update_blocks(
+                tuple(self._blocks[archive_id] for archive_id in self._archive_ids)
+            )
+        else:  # pragma: no cover - internal representation invariant
+            raise RuntimeError(f"block {block.id!r} is neither mounted nor archived")
 
     def remove_block(self, block_id: str) -> None:
         """Unmount a block (e.g. the working status line at turn end).
@@ -1262,11 +1503,90 @@ class TranscriptView(VerticalScroll):
                     del self._main_stash[index]
                     return
             raise KeyError(f"unknown block id: {block_id!r}")
-        widget = self._widgets.pop(block_id, None)
-        if widget is None:
+        block = self._blocks.pop(block_id, None)
+        if block is None:
             raise KeyError(f"unknown block id: {block_id!r}")
         self._order.remove(block_id)
-        widget.remove()
+        widget = self._widgets.pop(block_id, None)
+        if widget is not None:
+            widget.remove()
+            return
+        if block_id in self._archive_ids:
+            self._archive_ids.remove(block_id)
+            if self._archive is not None:
+                if self._archive_ids:
+                    self._archive.update_blocks(
+                        tuple(self._blocks[item_id] for item_id in self._archive_ids)
+                    )
+                else:
+                    self._archive.remove()
+                    self._archive = None
+
+    def _schedule_compaction(self) -> None:
+        if (
+            len(self._widgets) <= HISTORY_COMPACT_TRIGGER
+            or self._compaction_pending
+            or not self.is_mounted
+        ):
+            return
+        self._compaction_pending = True
+        self.call_later(self._compact_history)
+
+    async def _compact_history(self) -> None:
+        """Move the old prefix into one visual without changing its text."""
+
+        try:
+            if len(self._widgets) <= HISTORY_COMPACT_TRIGGER:
+                return
+            archive_count = max(0, len(self._order) - HISTORY_WIDGET_LIMIT)
+            archive_ids = self._order[:archive_count]
+            newly_archived = [
+                self._widgets[block_id]
+                for block_id in archive_ids
+                if block_id in self._widgets
+            ]
+            if not newly_archived:
+                return
+            archived_blocks = tuple(self._blocks[block_id] for block_id in archive_ids)
+            async with self.batch():
+                if self._archive is None:
+                    archive = HistoryArchive(self)
+                    archive.update_blocks(archived_blocks)
+                    self._archive = archive
+                    first_recent = self._widgets.get(self._order[archive_count])
+                    if first_recent is None:  # pragma: no cover - limit keeps a tail
+                        await self.mount(archive)
+                    else:
+                        await self.mount(archive, before=first_recent)
+                else:
+                    self._archive.update_blocks(archived_blocks)
+                await self.remove_children(newly_archived)
+            for block_id in archive_ids:
+                self._widgets.pop(block_id, None)
+            self._archive_ids = list(archive_ids)
+        finally:
+            self._compaction_pending = False
+
+    def scroll_block_visible(self, block_id: str) -> None:
+        """Reveal a mounted or archived block without rehydrating history."""
+
+        if widget := self._widgets.get(block_id):
+            widget.scroll_visible(animate=False)
+            return
+        if self._archive is None:
+            return
+        offset = self._archive.block_offset(block_id)
+        if offset is None:
+            return
+        target = self._archive.virtual_region.y + offset
+        self.scroll_to(y=max(0, target - 2), animate=False)
+
+    def on_tool_line_toggled(self, message: ToolLineToggled) -> None:
+        """Keep canonical history aligned with a tail widget's local toggle."""
+
+        widget = self._widgets.get(message.block_id)
+        if isinstance(widget, BlockWidget) and isinstance(widget.block, ToolLine):
+            self._blocks[message.block_id] = widget.block
 
     # -- tail-follow anchor --------------------------------------------------
 
@@ -1333,16 +1653,35 @@ class TranscriptView(VerticalScroll):
 
     async def _swap(self, blocks: Sequence[TranscriptBlock]) -> None:
         await self.remove_children()
+        self._blocks.clear()
         self._widgets.clear()
         self._order.clear()
+        self._archive = None
+        self._archive_ids.clear()
+        self._compaction_pending = False
+        block_list = list(blocks)
+        self._blocks.update((block.id, block) for block in block_list)
+        self._order.extend(block.id for block in block_list)
+        archive_count = (
+            len(block_list) - HISTORY_WIDGET_LIMIT
+            if len(block_list) > HISTORY_COMPACT_TRIGGER
+            else 0
+        )
+        mounted: list[HistoryArchive | TranscriptWidget] = []
+        if archive_count:
+            archive = HistoryArchive(self)
+            archive.update_blocks(block_list[:archive_count])
+            self._archive = archive
+            self._archive_ids = [block.id for block in block_list[:archive_count]]
+            mounted.append(archive)
         widgets: list[TranscriptWidget] = []
-        for block in blocks:
+        for block in block_list[archive_count:]:
             widget = build_block_widget(block, reflow_router=self._route_reflow)
             self._widgets[block.id] = widget
-            self._order.append(block.id)
             widgets.append(widget)
-        if widgets:
-            await self.mount(*widgets)
+        mounted.extend(widgets)
+        if mounted:
+            await self.mount(*mounted)
         self.anchor()  # a lane swap always lands anchored at the bottom
 
     # -- resize reflow (75ms trailing debounce; streaming deferral) -----------
@@ -1389,8 +1728,10 @@ class TranscriptView(VerticalScroll):
         """Repaint every block at the current width (pure fn of width)."""
         self._reflow_hold = False
         self._reflow_deferred = False
-        for block_id in self._order:
-            self._widgets[block_id].repaint_block()
+        if self._archive is not None:
+            self._archive.repaint_archive()
+        for widget in self._widgets.values():
+            widget.repaint_block()
 
     def _route_reflow(self, widget: BlockWidget) -> bool:
         """BlockWidget resize hook: True = deferred to the debounced flush.
@@ -1404,9 +1745,17 @@ class TranscriptView(VerticalScroll):
             return True
         return self._reflow_hold
 
+    def _route_archive_reflow(self) -> bool:
+        if self._streaming:
+            self._reflow_deferred = True
+            return True
+        return self._reflow_hold
+
 
 __all__ = [
     "FALLBACK_WIDTH",
+    "HISTORY_COMPACT_TRIGGER",
+    "HISTORY_WIDGET_LIMIT",
     "REFLOW_DEBOUNCE_SECONDS",
     "MOTION_INTERVAL_SECONDS",
     "SPINNER_INTERVAL_SECONDS",
@@ -1414,6 +1763,7 @@ __all__ = [
     "BlockWidget",
     "CloseEvidence",
     "ExpandEvidenceClaim",
+    "HistoryArchive",
     "LaneFocusChanged",
     "NeedsYouBlockWidget",
     "OpenRewind",

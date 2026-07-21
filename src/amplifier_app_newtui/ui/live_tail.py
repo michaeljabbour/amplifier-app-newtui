@@ -21,6 +21,7 @@ dim. All styles are theme-variable references — no colors here.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from time import monotonic
 
@@ -34,6 +35,9 @@ from .segments import segment_markup
 
 THROTTLE_SECONDS = 1 / 30
 """Minimum interval between tail repaints (30Hz — inside the 30–60Hz budget)."""
+
+ASYNC_RENDER_THRESHOLD = 100_000
+"""Long streams parse off-thread so markdown can never stall the UI loop."""
 
 _ANSWER_SPAN_RE = re.compile(
     r"(\*\*.+?\*\*|`[^`\n]+`|\[[^\]\n]+\]\((?:https?|file)://[^)\s]+\))", re.DOTALL
@@ -342,16 +346,25 @@ class LiveTail(Static):
 
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002
         super().__init__(id=id)
-        self._source = ""
+        self._source_chunks: list[str] = []
+        self._source_cache = ""
         self._block_type = "text"
         self._timer: Timer | None = None
         self._last_paint = 0.0
         self._paint_count = 0
+        self._render_generation = 0
+        self._render_pending: tuple[int, str, str] | None = None
+        self._async_render_active = False
 
     @property
     def source(self) -> str:
         """The full accumulated raw text (holdback never applies here)."""
-        return self._source
+        if len(self._source_chunks) > 1 or (
+            self._source_chunks and not self._source_cache
+        ):
+            self._source_cache = "".join(self._source_chunks)
+            self._source_chunks = [self._source_cache] if self._source_cache else []
+        return self._source_cache
 
     @property
     def block_type(self) -> str:
@@ -365,14 +378,17 @@ class LiveTail(Static):
     def open_stream(self, block_type: str = "text") -> None:
         """Reset for a new streaming block (``llm:stream_block_start``)."""
         self._cancel_timer()
-        self._source = ""
+        self._reset_source()
+        self._invalidate_async_render()
         self._block_type = block_type
         self._last_paint = 0.0
         self._paint_now()
 
     def feed(self, text: str) -> None:
         """Accumulate one delta; schedule a throttled repaint."""
-        self._source += text
+        if text:
+            self._source_chunks.append(text)
+            self._source_cache = ""
         if self._timer is not None:
             return  # a trailing paint is already scheduled
         now = monotonic()
@@ -390,10 +406,11 @@ class LiveTail(Static):
         Evidence refs are attached later by the app (they need tool
         correlation) — the block id is stable for that.
         """
-        source = self._source.rstrip("\n")
+        source = self.source.rstrip("\n")
         answer = Answer(id=block_id, spans=answer_spans(source))
         self._cancel_timer()
-        self._source = ""
+        self._reset_source()
+        self._invalidate_async_render()
         self._last_paint = 0.0
         self.update("")
         self.post_message(self.Consolidated(answer))
@@ -407,10 +424,11 @@ class LiveTail(Static):
 
     def visible_source(self) -> str:
         """The paintable portion of the source (trailing tables withheld)."""
-        lines = self._source.split("\n")
+        source = self.source
+        lines = source.split("\n")
         cut = visible_length(lines)
         if cut >= len(lines):
-            return self._source
+            return source
         return "\n".join(lines[:cut])
 
     # -- painting ------------------------------------------------------------
@@ -420,24 +438,64 @@ class LiveTail(Static):
             self._timer.stop()
             self._timer = None
 
+    def _reset_source(self) -> None:
+        self._source_chunks.clear()
+        self._source_cache = ""
+
+    def _invalidate_async_render(self) -> None:
+        self._render_generation += 1
+        self._render_pending = None
+
     def _paint_now(self) -> None:
         self._timer = None
         self._last_paint = monotonic()
-        self._paint_count += 1
-        self.update(self._markup())
+        source = self.source
+        self._render_generation += 1
+        generation = self._render_generation
+        if len(source) < ASYNC_RENDER_THRESHOLD:
+            self._render_pending = None
+            self._paint_count += 1
+            self.update(self._markup_for(source, self._block_type))
+            return
+        # Keep only the newest requested frame. The parser is pure and the
+        # generation fence prevents a stale worker from repainting after a
+        # stream closes or a newer delta arrives.
+        self._render_pending = (generation, source, self._block_type)
+        if not self._async_render_active:
+            self._async_render_active = True
+            self.run_worker(self._drain_async_renders(), exclusive=False)
+
+    async def _drain_async_renders(self) -> None:
+        try:
+            while self._render_pending is not None:
+                generation, source, block_type = self._render_pending
+                self._render_pending = None
+                markup = await asyncio.to_thread(self._markup_for, source, block_type)
+                if generation == self._render_generation:
+                    self._paint_count += 1
+                    self.update(markup)
+        finally:
+            self._async_render_active = False
 
     def _markup(self) -> str:
-        visible = self.visible_source()
+        return self._markup_for(self.source, self._block_type)
+
+    @staticmethod
+    def _markup_for(source: str, block_type: str) -> str:
+        lines = source.split("\n")
+        cut = visible_length(lines)
+        visible = source if cut >= len(lines) else "\n".join(lines[:cut])
         if not visible:
             return ""
-        if self._block_type == "thinking":
+        if block_type == "thinking":
             from textual.markup import escape
 
             return f"[italic $dim]{escape(visible)}[/]"
-        return "".join(segment_markup(segment) for segment in streaming_spans(self._source))
+        return "".join(segment_markup(segment) for segment in streaming_spans(source))
 
 
 __all__ = [
+    "ASYNC_RENDER_THRESHOLD",
     "THROTTLE_SECONDS",
     "LiveTail",
     "answer_spans",

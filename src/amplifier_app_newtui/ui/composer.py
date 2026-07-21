@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from time import monotonic
 
 from textual import events
 from textual.containers import Horizontal
@@ -53,6 +54,15 @@ PASTE_CHAR_THRESHOLD = 800
 ``[Pasted #N · … ]`` placeholder while the full text is retained and
 expanded verbatim at submit — so a big paste never floods the composer
 (what read as 'truncated') and nothing is lost."""
+
+PASTE_DUPLICATE_WINDOW_SECONDS = 0.15
+"""Ignore an identical terminal paste replayed immediately.
+
+Some terminal/input stacks occasionally deliver the same bracketed-paste
+sequence twice.  The fence is deliberately narrow and also requires the
+composer text and cursor to be unchanged since the first insertion, so a
+later intentional repeat or any intervening edit still works normally.
+"""
 
 _MODE_CLASSES = ("mode-chat", "mode-plan", "mode-brainstorm", "mode-build", "mode-auto")
 _FILE_MENTION_RE = re.compile(r"(?<!\S)@([^\s@]*)$")
@@ -130,6 +140,24 @@ class ComposerInput(TextArea):
 
     def __init__(self) -> None:
         super().__init__(placeholder=COMPOSER_PLACEHOLDER, soft_wrap=True)
+        self._last_paste: tuple[str, str, tuple[int, int], float] | None = None
+
+    def _is_duplicate_paste(self, payload: str) -> bool:
+        """True only for an unchanged, immediate replay of *payload*."""
+
+        stamp = self._last_paste
+        if stamp is None:
+            return False
+        previous_payload, result_text, result_cursor, accepted_at = stamp
+        return (
+            payload == previous_payload
+            and monotonic() - accepted_at <= PASTE_DUPLICATE_WINDOW_SECONDS
+            and self.text == result_text
+            and self.cursor_location == result_cursor
+        )
+
+    def _remember_paste(self, payload: str) -> None:
+        self._last_paste = (payload, self.text, self.cursor_location, monotonic())
 
     async def _on_key(self, event: events.Key) -> None:
         composer = self._composer()
@@ -218,6 +246,10 @@ class ComposerInput(TextArea):
         if composer is None or not event.text:
             await super()._on_paste(event)
             return
+        if self._is_duplicate_paste(event.text):
+            event.stop()
+            event.prevent_default()
+            return
         composer.end_history_navigation()
         # Cmd+V of an image file and drag-and-drop both arrive here as a
         # bracketed paste of the file path — attach them, don't insert text.
@@ -227,14 +259,23 @@ class ComposerInput(TextArea):
             event.prevent_default()
             for image in images:
                 composer.add_image(image)
+            self._remember_paste(event.text)
             return
         stub = composer.register_paste(event.text)
         if stub is None:
+            # Paste bubbles in Textual. We invoke TextArea's insertion
+            # explicitly, so stop the original event here; otherwise the same
+            # event is re-dispatched while it climbs the composer/app tree and
+            # the payload is inserted repeatedly.
+            event.stop()
+            event.prevent_default()
             await super()._on_paste(event)
+            self._remember_paste(event.text)
             return
         event.stop()
         event.prevent_default()
         self.insert(stub)
+        self._remember_paste(event.text)
 
     def _composer(self) -> "Composer | None":
         node = self.parent

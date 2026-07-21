@@ -79,7 +79,7 @@ dot -Tsvg docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui
 | end-to-end flows | `tests/test_flow_*.py` | scripted turns via `DemoRuntime` (approval, interrupt, lanes, rewind, steer/queue…) |
 | real lifecycle | `tests/test_runtime_offline.py` | genuine foundation lifecycle with fake modules mounted via `file://` bundles |
 | renderer | `tests/test_golden_widths.py` | golden width matrix |
-| performance | `tests/test_perf_spike.py` | renderer + live-tail budgets enforced; the full-frame 5k layout check is currently `xfail` (known budget miss) |
+| performance | `tests/test_perf_spike.py` | renderer + live-tail budgets and the hybrid infinite-history 5k frame budget are enforced |
 
 Everything runs offline. If your test needs credentials or network, it's designed wrong —
 look at `test_runtime_offline.py` for how to fake the provider side.

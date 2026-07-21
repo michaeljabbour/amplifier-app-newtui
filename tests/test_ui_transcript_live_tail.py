@@ -13,6 +13,7 @@ from textual.app import App, ComposeResult
 from amplifier_app_newtui.model.blocks import Answer, Segment
 from amplifier_app_newtui.model.evidence import EvidenceLink
 from amplifier_app_newtui.ui.live_tail import (
+    ASYNC_RENDER_THRESHOLD,
     THROTTLE_SECONDS,
     LiveTail,
     answer_spans,
@@ -214,3 +215,31 @@ async def test_open_stream_resets_previous_source() -> None:
         tail.open_stream()
         assert tail.source == ""
         assert tail.visible_source() == ""
+
+
+@pytest.mark.asyncio
+async def test_long_stream_render_keeps_event_loop_responsive() -> None:
+    """Large markdown parsing is coalesced off the Textual event loop."""
+    import time
+
+    app = TailHarness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        tail = _tail(app)
+        tail.open_stream()
+        payload = "A **bold** line with `code`.\n" * (
+            ASYNC_RENDER_THRESHOLD // 20
+        )
+        started = time.perf_counter()
+        tail.feed(payload)
+        assert time.perf_counter() - started < 0.05
+
+        event_loop_ran = False
+
+        def mark() -> None:
+            nonlocal event_loop_ran
+            event_loop_ran = True
+
+        app.call_later(mark)
+        await pilot.pause(0.05)
+        assert event_loop_ran
+        assert tail.source == payload
