@@ -48,7 +48,7 @@ from ..model.blocks import (
     WorkingStatus,
 )
 from ..model.evidence import EvidenceLink
-from ..model.lanes import LaneRegistry, LaneStateName
+from ..model.lanes import LaneRecord, LaneRegistry, LaneStateName
 from ..model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
 from .live_tail import answer_spans
 
@@ -59,6 +59,14 @@ _MODE_NOTICE_RE = re.compile(r"^mode (\w+)")
 _PLAN_STATES = frozenset({"pending", "active", "done"})
 
 _CHARS_PER_TOKEN = 4
+
+LANE_TAIL_NOTIFY_SECONDS = 0.05
+"""Lane-tail repaint floor — mirrors ``_DELTA_NOTIFY_SECONDS`` in
+``kernel/trackers/stream_status.py``. The per-lane buffer accumulates
+between paints, so throttling drops paints — never text."""
+
+_LANE_TAIL_MAX_CHARS = 2_000
+"""Per-lane tail buffer cap; the widget paints only the last 3 lines."""
 
 
 def _plan_state(value: object) -> PlanItemState:
@@ -316,6 +324,8 @@ class ReducerHost(Protocol):
     def stream_opened(self, block_type: str) -> None: ...
     def stream_delta(self, text: str) -> None: ...
     def stream_closed(self) -> None: ...
+    def lane_tail_updated(self, text: str) -> None: ...
+    def lane_tail_cleared(self) -> None: ...
 
 
 @dataclass
@@ -387,6 +397,7 @@ class TranscriptReducer:
         lane_seed_lookup: Any = None,
         evidence_lookup: Any = None,
         session_cost_start: Decimal = Decimal("0"),
+        tail_clock: Any = None,
     ) -> None:
         self._host = host
         self._ids = allocator
@@ -425,6 +436,12 @@ class TranscriptReducer:
         self._fanout_start_ts: float = 0.0
         self._fanout_duration_s: float = 0.0
         self._delegate_plan_final: tuple[TodoItem, ...] | None = None
+        # -- lane live tail (DESIGN-SPEC §8, design doc D4) ------------------
+        self._tail_clock = tail_clock or time.monotonic
+        self._lane_tails: dict[str, str] = {}
+        self._lane_tail_last = 0.0
+        self._lane_tail_shown: str | None = None
+        self._root_streaming = False
 
     # -- public state -------------------------------------------------------
 
@@ -601,6 +618,7 @@ class TranscriptReducer:
                 activity = "thinking" if event.block_type == "thinking" else "writing response"
             case ev.StreamBlockDelta():
                 activity = "thinking" if event.block_type == "thinking" else "writing response"
+                self._lane_tail_delta(record, event)
             case ev.StreamBlockEnd():
                 activity = "reviewing response"
             case ev.ContentBlockEnd():
@@ -615,6 +633,54 @@ class TranscriptReducer:
         if updated is None:
             return
         self._host.lanes_changed()
+
+    # -- lane live tail (DESIGN-SPEC §8, design doc D4) ---------------------
+
+    def _lane_tail_delta(self, record: LaneRecord, event: ev.StreamBlockDelta) -> None:
+        """Buffer a child text delta; repaint the focused lane's tail.
+
+        Accumulate-then-notify (the ``StreamStatusTracker._on_delta``
+        shape): the host is repainted with the whole buffer at most every
+        ``LANE_TAIL_NOTIFY_SECONDS``, so throttling drops paints, never
+        text. The root stream always preempts; thinking blocks stay dark.
+        """
+        if event.block_type not in ("", "text"):
+            return
+        if event.text:
+            buffered = self._lane_tails.get(record.session_id, "") + event.text
+            self._lane_tails[record.session_id] = buffered[-_LANE_TAIL_MAX_CHARS:]
+        self.lanes.note_stream_activity(record.session_id)
+        if self._root_streaming:
+            return  # root always preempts (D4)
+        focused = self.lanes.tail_lane
+        if focused is None or focused.session_id != record.session_id:
+            return
+        now = self._tail_clock()
+        # 1e-9 slack: a clock landing exactly on the 0.05s boundary must
+        # paint (float subtraction alone under-reports the elapsed time).
+        if self._lane_tail_shown == record.session_id and (
+            now - self._lane_tail_last < LANE_TAIL_NOTIFY_SECONDS - 1e-9
+        ):
+            return
+        self._lane_tail_last = now
+        self._lane_tail_shown = record.session_id
+        self._host.lane_tail_updated(self._lane_tails.get(record.session_id, ""))
+
+    def _clear_lane_tail(self, session_id: str | None = None) -> None:
+        """Drop lane-tail state: one lane's buffer, or everything.
+
+        Ephemeral by design — tail text never becomes a transcript block
+        (durable content arrives via Channel B; see app.py stream_closed).
+        """
+        if session_id is None:
+            self._lane_tails.clear()
+        else:
+            self._lane_tails.pop(session_id, None)
+        if self._lane_tail_shown is not None and (
+            session_id is None or self._lane_tail_shown == session_id
+        ):
+            self._lane_tail_shown = None
+            self._host.lane_tail_cleared()
 
     def _record_change(
         self, turn: _Turn, actor: str, tool: str, tool_input: dict[str, Any]
