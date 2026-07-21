@@ -62,7 +62,7 @@ Reading the data-flow diagram, a turn end to end (colors in the diagram):
   ApprovalBar → answer routes back to the kernel.
 - **Steering (purple)** — mid-turn composer text → `SteeringQueue` →
   `StepBoundaryBridge` injects at step boundaries.
-- **Subagents (teal)** — `tool-task` → `SessionSpawner` (`session.spawn`) → child session
+- **Subagents (teal)** — `tool-delegate` → `SessionSpawner` (`session.spawn`) → child session
   shares the same bridge → LanesPanel.
 - **Persistence (gray)** — debounced `transcript.jsonl`/`metadata.json`, append-only
   `events.jsonl`; resume restores history into both the context and the transcript view.
@@ -194,8 +194,11 @@ the *only* place demo and real diverge.
    - foundation lifecycle: `load_bundle` → compose settings overlays → `prepare()` exactly
      once; then apply module overrides and expand `${VAR}` / `${VAR:default}` placeholders
      into the mount plan.
-2. **Strip printing hooks.** Any line-mode stdout hook (e.g. `hooks-streaming-ui`) would
-   corrupt the Textual screen; `_strip_printing_hooks()` removes them from the plan.
+2. **Suppress noisy hooks.** Any line-mode stdout hook (e.g. `hooks-streaming-ui`) would
+   corrupt the Textual screen; `_apply_hook_suppression()` strips them (plus `hooks-logging`,
+   which would double-write the app-owned `events.jsonl`) from the mount plan at boot, emits a
+   notice naming what was removed, and honours the `hooks.suppress` settings key for user
+   extensions.
 3. **`create_initialized_session()`** (`kernel/session_factory.py`) — the canonical order:
    mint/accept a session id → stamp root metadata into the mount plan (fill-only, so child
    sessions inherit) → `create_session` (foundation mounts modules) → register
@@ -450,7 +453,8 @@ Two policies share Amplifier's hook/approval mechanism:
   hard write-path enforcement point, with deny taking precedence. The resolved project
   root is always injected into `allowed_write_paths`; configured lists union rather than
   replacing it.
-- The bundle-native stack remains mounted to match `anchors`:
+- The bundle-native stack arrives FROM the composed `anchors` bundle (the packaged newtui
+  bundle is a thin wrapper that includes anchors at a pinned SHA):
 
 - **`hooks-mode`** (`tool:pre`, pri −20) reads `session_state["active_mode"]` and, per the
   mode's YAML, allows / warns / confirms / blocks a tool (and sets
