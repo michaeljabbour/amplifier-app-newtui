@@ -45,6 +45,7 @@ from ..model.blocks import (
     BlockIdAllocator,
     EvidenceBlock,
     Segment,
+    TodoItem,
     TranscriptBlock,
     UserLine,
 )
@@ -175,6 +176,7 @@ class NewTuiApp(App[None]):
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
         self._lanes_fanout_open = False  # active-lane edge for the auto-open
+        self.plan_items: tuple[TodoItem, ...] = ()  # latest root todo list
         self.title_bar = TitleBar(id="title-bar")
         self.transcript = TranscriptView(id="transcript")
         self.live_tail = LiveTail(id="live-tail")
@@ -629,6 +631,9 @@ class NewTuiApp(App[None]):
             self._refresh_footer()
         self._lanes_fanout_open = active
         self._refresh_title()
+
+    def plan_changed(self, items: tuple[TodoItem, ...]) -> None:
+        self.plan_items = items  # panel wiring lands with the bottom strip
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
         del prompt, options  # presentation runs via present_approval

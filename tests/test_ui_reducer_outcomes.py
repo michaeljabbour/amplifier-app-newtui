@@ -23,6 +23,7 @@ from amplifier_app_newtui.model.blocks import (
     Answer,
     BlockIdAllocator,
     Narration,
+    TodoItem,
     TranscriptBlock,
     TurnRule,
 )
@@ -40,6 +41,7 @@ class FakeHost:
         self.blocks: list[TranscriptBlock] = []
         self.notices: list[str] = []
         self.stream_events: list[tuple[str, str]] = []
+        self.plan_changes: list[tuple[TodoItem, ...]] = []
 
     def append_block(self, block: TranscriptBlock) -> None:
         self.blocks.append(block)
@@ -67,6 +69,9 @@ class FakeHost:
 
     def lanes_changed(self) -> None:
         pass
+
+    def plan_changed(self, items: tuple[TodoItem, ...]) -> None:
+        self.plan_changes.append(items)
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
         pass

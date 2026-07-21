@@ -37,7 +37,6 @@ from ..model.blocks import (
     PlanItemState,
     Recap,
     Segment,
-    TodoBlock,
     TodoItem,
     TodoStatus,
     ToolLine,
@@ -307,6 +306,7 @@ class ReducerHost(Protocol):
     def turn_started(self) -> None: ...
     def turn_finished(self) -> None: ...
     def lanes_changed(self) -> None: ...
+    def plan_changed(self, items: tuple[TodoItem, ...]) -> None: ...
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None: ...
     def decision_deferred(self, message: str) -> None: ...
     def stream_opened(self, block_type: str) -> None: ...
@@ -325,7 +325,6 @@ class _Turn:
     tokens: int = 0
     working_id: str | None = None
     plan_ids: dict[str, str] = field(default_factory=dict)
-    todo_id: str | None = None
     active_step: str | None = None
     calls: dict[str, dict[str, Any]] = field(default_factory=dict)
     blocked: set[str] = field(default_factory=set)
@@ -1004,8 +1003,8 @@ class TranscriptReducer:
     def _tool_post(self, event: ev.ToolPost) -> None:
         turn = self._turn
         if event.tool_name in ("update_plan", "todo") or turn is None:
-            # Plans and todos are their own blocks (rendered from tool:pre),
-            # never folded into the activity digest.
+            # Plans are their own blocks (rendered from tool:pre); todos
+            # feed the ambient plan panel — neither joins the digest.
             return
         info = turn.calls.pop(event.tool_call_id, None)
         if info is None:
@@ -1131,33 +1130,25 @@ class TranscriptReducer:
                 turn.active_step = active
 
     def _update_todo(self, event: ev.ToolPre) -> None:
-        """Render the amplifier ``todo`` tool as a native checklist block.
+        """Route the ``todo`` tool to the ambient plan panel — never the
+        transcript (design 2026-07-21 D1/D3).
 
         The printing ``hooks-todo-display`` is stripped under the TUI, so
-        newtui draws the list itself from the tool call's ``todos`` payload
-        (``create``/``update`` ops carry the full list; ``list`` carries
-        none). One TodoBlock per turn, replaced in place as it updates."""
+        newtui renders the list itself from the tool call's ``todos``
+        payload (``create``/``update`` ops carry the full list; ``list``
+        carries none). Root-session only: child ToolPre events are
+        diverted before dispatch (see ``_is_foreign_turn_event``).
+        """
         raw = event.tool_input or {}
         raw_todos = raw.get("todos")
         if not isinstance(raw_todos, list) or not raw_todos:
             return  # a 'list' op or empty payload — nothing to redraw
         items = tuple(
-            TodoItem(
-                content=str(todo.get("content", "")),
-                status=_todo_status(todo.get("status")),
-            )
+            TodoItem(content=str(todo.get("content", "")), status=_todo_status(todo.get("status")))
             for todo in raw_todos
             if isinstance(todo, dict)
         )
-        turn = self._turn
-        block_id = turn.todo_id if turn is not None else None
-        block = TodoBlock(id=block_id or self._ids.next_id(), items=items)
-        if block_id is not None:
-            self._host.replace_block(block)
-        else:
-            if turn is not None:
-                turn.todo_id = block.id
-            self._append_content(block)
+        self._host.plan_changed(items)
 
     # -- telemetry -------------------------------------------------------------------
 

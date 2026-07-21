@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import BlockIdAllocator, TranscriptBlock
+from amplifier_app_newtui.model.blocks import BlockIdAllocator, TodoItem, TranscriptBlock
 from amplifier_app_newtui.model.lanes import LaneRegistry
 from amplifier_app_newtui.model.turn import OutcomeLedger
 from amplifier_app_newtui.ui.reducer import TranscriptReducer
@@ -49,6 +49,9 @@ class FakeHost:
         pass
 
     def lanes_changed(self) -> None:
+        pass
+
+    def plan_changed(self, items: tuple[TodoItem, ...]) -> None:
         pass
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:

@@ -764,7 +764,9 @@ def test_todo_block_renders_header_glyphs_and_progress_bar() -> None:
     assert "█" * filled in bar and "░" * (TODO_BAR_WIDTH - filled) in bar
 
 
-def test_todo_tool_becomes_a_todo_block_updated_in_place_not_digested() -> None:
+def test_todo_tool_reroutes_to_plan_changed_never_the_transcript() -> None:
+    """Design 2026-07-21 D1/D3: the todo tool feeds the plan panel via
+    host.plan_changed(); no TodoBlock, no tool_line, no digest entry."""
     import sys
 
     from amplifier_app_newtui.kernel import events as ev
@@ -808,10 +810,21 @@ def test_todo_tool_becomes_a_todo_block_updated_in_place_not_digested() -> None:
         )
 
     todo_call("t1", ["in_progress", "pending"])
-    todo_call("t2", ["completed", "in_progress"])  # same turn → updates in place
+    todo_call("t2", ["completed", "in_progress"])
+    # a 'list' op carries no todos — must not fire plan_changed
+    reducer.handle(
+        ev.ToolPre(
+            session_id="s",
+            tool_call_id="t3",
+            tool_name="todo",
+            tool_input={"operation": "list"},
+            ts=2.0,
+        )
+    )
 
-    todos = [b for b in host.blocks if b.kind == "todo"]
-    assert len(todos) == 1  # one block, replaced in place
-    assert [i.status for i in todos[0].items] == ["completed", "in_progress"]
-    # never folded into the activity digest
+    assert len(host.plan_changes) == 2  # one push per create/update call
+    assert [i.status for i in host.plan_changes[-1]] == ["completed", "in_progress"]
+    assert [i.content for i in host.plan_changes[-1]] == ["step 0", "step 1"]
+    # never in the transcript, never in the activity digest
+    assert not [b for b in host.blocks if b.kind == "todo"]
     assert not [b for b in host.blocks if b.kind == "tool_line"]
