@@ -32,7 +32,7 @@ from pathlib import Path
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from .events import ProviderResponseUsage
+from .events import ContentBlockEnd, ProviderResponseUsage, usage_from_content_block_end
 
 logger = logging.getLogger(__name__)
 
@@ -305,39 +305,84 @@ class CostTracker:
 # --------------------------------------------------------------------------
 
 _USAGE_KIND = "provider_response_usage"
+_CONTENT_BLOCK_KIND = "content_block_end"
 
 
 def sum_prior_cost(events_path: Path, pricing: PricingTable | None = None) -> Decimal | None:
-    """Sum the cost of every usage event in a session's events.jsonl.
+    """Sum provider responses in a session's ``events.jsonl`` exactly once.
 
     Reads line-by-line (events files can be large) with a substring
-    pre-filter, replaying each ``provider_response_usage`` record
-    through the same pricing math. Returns ``None`` when the file is
-    missing/unreadable or holds no priceable usage. Never raises.
+    pre-filter. Older NewTUI logs wrote the same usage record before every
+    block in one response; the following ``content_block_end`` identifies
+    whether that record belongs to the response's final block. Standalone
+    provider usage records retain their original behavior. Returns ``None``
+    when the file is missing/unreadable or holds no priceable usage. Never
+    raises.
     """
     if not events_path.is_file():
         return None
 
     total: Decimal | None = None
+    pending: ProviderResponseUsage | None = None
+
+    def add(usage: ProviderResponseUsage) -> None:
+        nonlocal total
+        cost = cost_of(usage, pricing)
+        if cost is not None:
+            total = (total or Decimal("0")) + cost
+
     try:
         with events_path.open("r", encoding="utf-8") as handle:
             for line in handle:
-                if _USAGE_KIND not in line:
+                if _USAGE_KIND not in line and _CONTENT_BLOCK_KIND not in line:
+                    if pending is not None:
+                        add(pending)
+                        pending = None
                     continue
                 try:
                     record = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
-                if not isinstance(record, dict) or record.get("kind") != _USAGE_KIND:
+                if not isinstance(record, dict):
                     continue
+
+                kind = record.get("kind")
+                if kind == _USAGE_KIND:
+                    if pending is not None:
+                        add(pending)
+                    try:
+                        pending = ProviderResponseUsage.model_validate(record)
+                    except Exception:  # noqa: BLE001 — skip malformed records
+                        pending = None
+                    continue
+
+                if kind != _CONTENT_BLOCK_KIND:
+                    if pending is not None:
+                        add(pending)
+                        pending = None
+                    continue
+
                 try:
-                    usage = ProviderResponseUsage.model_validate(record)
-                except Exception:  # noqa: BLE001 — skip malformed records
+                    block = ContentBlockEnd.model_validate(record)
+                except Exception:  # noqa: BLE001 — preserve an adjacent usage record
+                    if pending is not None:
+                        add(pending)
+                        pending = None
                     continue
-                cost = cost_of(usage, pricing)
-                if cost is None:
-                    continue
-                total = (total or Decimal("0")) + cost
+
+                final_block = (
+                    block.total_blocks <= 0
+                    or block.block_index == block.total_blocks - 1
+                )
+                if block.usage:
+                    usage = pending or usage_from_content_block_end(block)
+                    if final_block and usage is not None:
+                        add(usage)
+                elif pending is not None:
+                    add(pending)
+                pending = None
+        if pending is not None:
+            add(pending)
     except OSError:
         logger.debug("Could not read events for prior cost: %s", events_path, exc_info=True)
         return None

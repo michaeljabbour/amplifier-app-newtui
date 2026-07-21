@@ -100,12 +100,17 @@ list bullets, map to the Segment `italic` flag, golden in the same commit.
 Cap **prose** wrap at ~100 cells while code and tables keep full width. One
 constant in the pure renderer; the w120 golden shows exactly what changed.
 
-## 6. Model-side rendering contract
+## 6. Model-side rendering contract — static baseline shipped, dynamic hint open
 
-Inject a one-line surface hint at `provider:request`: *"terminal, ~N cols;
-markdown subset: no images, tables ≤4 columns, prefer fenced code with language
-tags, short paragraphs."* Zero renderer code; prevents the pathological cases
-(wide tables, deep nesting) instead of rendering them badly.
+The packaged default bundle now carries a static terminal response contract:
+answer-first, concise output using the supported Markdown subset, with no images,
+tables limited to four columns, shallow lists, and language-tagged fenced code.
+
+**Remaining:** inject a width-aware surface hint at `provider:request` for every
+active bundle: *"terminal, ~N cols; markdown subset: no images, tables ≤4 columns,
+prefer fenced code with language tags, short paragraphs."* The app-level hint
+prevents project/user bundle overrides from losing the contract and prevents
+pathological output (wide tables, deep nesting) instead of rendering it badly.
 
 ## 7. Smaller wins
 

@@ -19,7 +19,14 @@ from __future__ import annotations
 from decimal import Decimal
 
 from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import Answer, BlockIdAllocator, TranscriptBlock, TurnRule
+from amplifier_app_newtui.model.blocks import (
+    Answer,
+    BlockIdAllocator,
+    Narration,
+    TranscriptBlock,
+    TurnRule,
+)
+from amplifier_app_newtui.model.evidence import EvidenceLink
 from amplifier_app_newtui.model.lanes import LaneRegistry
 from amplifier_app_newtui.model.turn import OutcomeLedger
 from amplifier_app_newtui.ui.reducer import TranscriptReducer
@@ -32,6 +39,7 @@ class FakeHost:
         self.mode_id = mode_id
         self.blocks: list[TranscriptBlock] = []
         self.notices: list[str] = []
+        self.stream_events: list[tuple[str, str]] = []
 
     def append_block(self, block: TranscriptBlock) -> None:
         self.blocks.append(block)
@@ -67,13 +75,13 @@ class FakeHost:
         pass
 
     def stream_opened(self, block_type: str) -> None:
-        pass
+        self.stream_events.append(("opened", block_type))
 
     def stream_delta(self, text: str) -> None:
-        pass
+        self.stream_events.append(("delta", text))
 
     def stream_closed(self) -> None:
-        pass
+        self.stream_events.append(("closed", ""))
 
 
 def make_reducer(mode_id: str = "chat") -> tuple[TranscriptReducer, FakeHost]:
@@ -91,6 +99,144 @@ def last_rule(host: FakeHost) -> TurnRule:
     rules = [b for b in host.blocks if isinstance(b, TurnRule)]
     assert rules, f"no TurnRule in {[type(b).__name__ for b in host.blocks]}"
     return rules[-1]
+
+
+def answer_text(block: Answer) -> str:
+    return "".join(segment.text for segment in block.spans)
+
+
+def test_production_text_stays_narration_until_final_response_promotes_it() -> None:
+    evidence = (EvidenceLink(claim_quote="Done", tool_ref="$ pytest"),)
+    host = FakeHost()
+    reducer = TranscriptReducer(
+        host,
+        allocator=BlockIdAllocator(),
+        ledger=OutcomeLedger(),
+        lanes=LaneRegistry(),
+        evidence_lookup=lambda text: evidence if text.strip() == "Done." else (),
+    )
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="do it", ts=1.0))
+    reducer.handle(
+        ev.ContentBlockEnd(
+            session_id="root",
+            block_type="text",
+            block={"type": "text", "text": "Checking the files."},
+            ts=2.0,
+        )
+    )
+    reducer.handle(
+        ev.ContentBlockEnd(
+            session_id="root",
+            block_type="text",
+            block={"type": "text", "text": "Done."},
+            ts=3.0,
+        )
+    )
+
+    narrations = [block for block in host.blocks if isinstance(block, Narration)]
+    assert [block.text for block in narrations] == ["Checking the files.", "Done."]
+    promoted_id = narrations[-1].id
+    assert not any(isinstance(block, Answer) for block in host.blocks)
+
+    reducer.handle(ev.PromptComplete(session_id="root", response="Done.", ts=4.0))
+
+    answers = [block for block in host.blocks if isinstance(block, Answer)]
+    assert len(answers) == 1
+    assert answers[0].id == promoted_id
+    assert answer_text(answers[0]) == "Done."
+    assert answers[0].evidence_refs == evidence
+    assert [block.text for block in host.blocks if isinstance(block, Narration)] == [
+        "Checking the files."
+    ]
+
+
+def test_prompt_complete_appends_one_fallback_answer_without_durable_text() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="answer me", ts=1.0))
+    reducer.handle(ev.PromptComplete(session_id="root", response="The final answer.", ts=2.0))
+
+    answers = [block for block in host.blocks if isinstance(block, Answer)]
+    assert len(answers) == 1
+    assert answer_text(answers[0]) == "The final answer."
+
+
+def test_explicit_demo_answer_is_not_duplicated_at_prompt_complete() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="demo", ts=1.0))
+    reducer.handle(
+        ev.ContentBlockEnd(
+            session_id="root",
+            block_type="text",
+            block={"type": "text", "text": "Scripted answer.", "demo_role": "answer"},
+            ts=2.0,
+        )
+    )
+    reducer.handle(ev.PromptComplete(session_id="root", response="Scripted answer.", ts=3.0))
+
+    answers = [block for block in host.blocks if isinstance(block, Answer)]
+    assert len(answers) == 1
+    assert answer_text(answers[0]) == "Scripted answer."
+
+
+def test_foreign_session_execution_cannot_mutate_root_transcript_or_close_out() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="delegate", ts=1.0))
+    reducer.handle(
+        ev.StreamBlockStart(session_id="child", parent_id="root", block_type="text", ts=2.0)
+    )
+    reducer.handle(
+        ev.StreamBlockDelta(
+            session_id="child", parent_id="root", block_type="text", text="child", ts=2.1
+        )
+    )
+    reducer.handle(
+        ev.StreamBlockEnd(session_id="child", parent_id="root", block_type="text", ts=2.2)
+    )
+    reducer.handle(
+        ev.ToolPre(
+            session_id="child",
+            parent_id="root",
+            tool_name="bash",
+            tool_call_id="child-call",
+            tool_input={"command": "cat secret"},
+            ts=2.3,
+        )
+    )
+    reducer.handle(
+        ev.ToolPost(
+            session_id="child",
+            parent_id="root",
+            tool_name="bash",
+            tool_call_id="child-call",
+            tool_input={"command": "cat secret"},
+            result={"output": "child output"},
+            ts=2.4,
+        )
+    )
+    reducer.handle(
+        ev.ContentBlockEnd(
+            session_id="child",
+            parent_id="root",
+            block_type="text",
+            block={"type": "text", "text": "child internal narration"},
+            ts=2.5,
+        )
+    )
+    reducer.handle(
+        ev.OrchestratorComplete(session_id="child", parent_id="root", status="cancelled", ts=2.6)
+    )
+
+    assert host.stream_events == []
+    assert not any(block.kind == "tool_line" for block in host.blocks)
+    assert not any(
+        isinstance(block, Narration) and block.text == "child internal narration"
+        for block in host.blocks
+    )
+
+    reducer.handle(ev.PromptComplete(session_id="root", response="Root answer.", ts=3.0))
+    answers = [block for block in host.blocks if isinstance(block, Answer)]
+    assert [answer_text(block) for block in answers] == ["Root answer."]
+    assert last_rule(host).label.endswith(" · answer")
 
 
 def test_real_turn_with_file_changes_ships() -> None:

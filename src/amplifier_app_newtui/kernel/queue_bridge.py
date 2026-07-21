@@ -61,6 +61,8 @@ CONSUMED_EVENTS: tuple[str, ...] = (
     "task:agent_completed",
     "task:spawned",
     "task:completed",
+    "delegate:agent_spawned",
+    "delegate:agent_completed",
     "user:notification",
 )
 """Every raw hook event :func:`normalize` produces a UIEvent for."""

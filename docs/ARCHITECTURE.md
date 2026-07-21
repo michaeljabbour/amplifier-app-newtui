@@ -246,7 +246,10 @@ approvals/cancel (`ApprovalRequired/Granted/Denied`, `CancelRequested/Completed`
 `tap` observes every event for the evidence collector, turn-yield tracker, and the
 `events.jsonl` log. The bridge also synthesizes `ProviderResponseUsage` from
 `content_block:end` usage data, because the streaming orchestrator does not fire
-`provider:response`.
+`provider:response`. Providers repeat that usage on every block in a response, so the
+bridge emits telemetry only for the final block. Resume replay applies the same
+exactly-once rule and repairs logs written by older NewTUI builds that recorded every
+repeated block usage.
 
 Two events are deliberately **app-synthesized** rather than hook-driven:
 

@@ -461,11 +461,13 @@ def usage_from_content_block_end(event: "ContentBlockEnd") -> "ProviderResponseU
 
     The streaming orchestrator does not fire ``provider:response`` hooks;
     each response's usage (including a provider-computed ``cost_usd``)
-    rides on the final content block instead. Without this, real-mode
-    turn rules and the footer read ``0.0k tok · $0.00`` forever.
+    rides on every content block. Emit it only for the final block so one
+    provider response is counted once. A missing ``total_blocks`` remains
+    the legacy single-block shape. Without this, real-mode turn rules and
+    the footer read ``0.0k tok · $0.00`` forever.
     """
     usage = event.usage
-    if not usage:
+    if not usage or (event.total_blocks > 0 and event.block_index != event.total_blocks - 1):
         return None
     return ProviderResponseUsage(
         session_id=event.session_id,
@@ -614,12 +616,17 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 total_blocks=_int(payload, "total_blocks"),
             )
         case "content_block:end":
+            block = _dict(payload, "block")
             return ContentBlockEnd(
                 **env,
-                block_type=_str(payload, "block_type", default="text"),
+                block_type=_str(
+                    payload,
+                    "block_type",
+                    default=_str(block, "type", default="text"),
+                ),
                 block_index=_int(payload, "block_index", "index"),
                 total_blocks=_int(payload, "total_blocks"),
-                block=_dict(payload, "block"),
+                block=block,
                 usage=_dict(payload, "usage"),
             )
         case "orchestrator:complete":
@@ -714,15 +721,15 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
             return CancelRequested(**env)
         case "cancel:completed":
             return CancelCompleted(**env)
-        # -- Subagents (task:agent_* canonical; task:* legacy) --------------------
-        case "task:agent_spawned" | "task:spawned":
+        # -- Subagents (task:agent_* canonical; task:* + delegate:* aliases) ------
+        case "task:agent_spawned" | "task:spawned" | "delegate:agent_spawned":
             return AgentSpawned(
                 **env,
                 agent=_str(payload, "agent", "agent_name", "name"),
                 sub_session_id=_str(payload, "sub_session_id", "child_session_id"),
                 parent_session_id=_str(payload, "parent_session_id"),
             )
-        case "task:agent_completed" | "task:completed":
+        case "task:agent_completed" | "task:completed" | "delegate:agent_completed":
             success = payload.get("success")
             return AgentCompleted(
                 **env,
