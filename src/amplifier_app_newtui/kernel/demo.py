@@ -880,6 +880,30 @@ class DemoRuntime:
             {"ok": True},
         )
 
+    _TODO_STATUS_BY_PLAN = {
+        "pending": "pending",
+        "active": "in_progress",
+        "done": "completed",
+    }
+
+    async def _todo(self, steps: Sequence[str], statuses: Sequence[str]) -> None:
+        """Mirror the plan as a ``todo`` tool call (ambient plan panel beat)."""
+        await self._tool(
+            "todo",
+            {
+                "operation": "update",
+                "todos": [
+                    {
+                        "content": step,
+                        "status": self._TODO_STATUS_BY_PLAN[status],
+                        "activeForm": step,
+                    }
+                    for step, status in zip(steps, statuses, strict=True)
+                ],
+            },
+            {"ok": True},
+        )
+
     async def _apply_steer(self) -> None:
         """Step boundary: consume one queued steer (mockup lines 326-329).
 
@@ -1018,6 +1042,7 @@ class DemoRuntime:
         spec = await self._begin_turn("auto" if auto else "build")
         statuses = ["pending"] * len(STORE_STEPS)
         await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
+        await self._todo(STORE_STEPS, statuses)
         denied = False
         for i, (step, narration, command) in enumerate(
             zip(STORE_STEPS, STORE_NARRATIONS, STORE_COMMANDS, strict=True)
@@ -1027,6 +1052,7 @@ class DemoRuntime:
             await self._apply_steer()
             statuses[i] = "active"
             await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
+            await self._todo(STORE_STEPS, statuses)
             await self._text(narration, "narration")
             await self._wait(1300)
             if self._interrupted:
@@ -1088,6 +1114,7 @@ class DemoRuntime:
                         denied = True
                         statuses[i] = "done"
                         await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
+                        await self._todo(STORE_STEPS, statuses)
                         continue
                     await self._emit(
                         ApprovalGranted(
@@ -1106,6 +1133,7 @@ class DemoRuntime:
                 )
             statuses[i] = "done"
             await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
+            await self._todo(STORE_STEPS, statuses)
             await self._wait(400)
         self._ticks = None
         if self._interrupted:

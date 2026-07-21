@@ -38,6 +38,7 @@ from amplifier_app_newtui.kernel.demo import (
 
 TEXT = ["stream_block_start", "stream_block_delta", "stream_block_end", "content_block_end"]
 PLAN = ["tool_pre", "tool_post"]
+TODO = ["tool_pre", "tool_post"]
 U = ["provider_response_usage"]
 
 
@@ -103,14 +104,14 @@ def test_seed_sequence() -> None:
 
 _BUILD_KINDS = (
     ["prompt_submit", "execution_start"]
-    + PLAN  # plan seeded: all pending
+    + PLAN + TODO  # plan seeded: all pending
     # step 0
-    + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
+    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
     # step 1 — chat-mode pytest approval
-    + PLAN + TEXT + U + ["approval_required", "approval_granted"]
-    + ["tool_pre"] + U + ["tool_post"] + PLAN + U
+    + PLAN + TODO + TEXT + U + ["approval_required", "approval_granted"]
+    + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
     # step 2
-    + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
+    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
     + TEXT  # answer
     + TEXT  # recap
     + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
@@ -152,6 +153,23 @@ def test_build_turn_plan_progression() -> None:
     assert all(p.tool_input["title"] == "Refactor session store" for p in plans)
     assert plans[0].tool_input["read_only"] is False
     assert [s["step"] for s in plans[0].tool_input["steps"]] == list(STORE_STEPS)
+
+
+def test_build_turn_todo_progression_mirrors_the_plan() -> None:
+    _, events = play("run_build_turn")
+    todos = [e for e in events if e.kind == "tool_pre" and e.tool_name == "todo"]
+    statuses = [tuple(t["status"] for t in e.tool_input["todos"]) for e in todos]
+    assert statuses == [
+        ("pending", "pending", "pending"),
+        ("in_progress", "pending", "pending"),
+        ("completed", "pending", "pending"),
+        ("completed", "in_progress", "pending"),
+        ("completed", "completed", "pending"),
+        ("completed", "completed", "in_progress"),
+        ("completed", "completed", "completed"),
+    ]
+    assert all(e.tool_input["operation"] == "update" for e in todos)
+    assert [t["content"] for t in todos[0].tool_input["todos"]] == list(STORE_STEPS)
 
 
 def test_build_turn_approval_contract() -> None:
@@ -199,10 +217,10 @@ def test_build_turn_deny_path() -> None:
     runtime, events = play("run_build_turn", approver=deny)
     expected = (
         ["prompt_submit", "execution_start"]
-        + PLAN
-        + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
-        + PLAN + TEXT + U + ["approval_required", "approval_denied"] + PLAN
-        + PLAN + TEXT + U + ["tool_pre"] + U + U + ["tool_post"] + PLAN
+        + PLAN + TODO
+        + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+        + PLAN + TODO + TEXT + U + ["approval_required", "approval_denied"] + PLAN + TODO
+        + PLAN + TODO + TEXT + U + ["tool_pre"] + U + U + ["tool_post"] + PLAN + TODO
         + TEXT + TEXT
         + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
     )
@@ -227,14 +245,14 @@ def test_build_turn_deny_path() -> None:
 
 _AUTO_KINDS = (
     ["notification", "prompt_submit", "execution_start"]
-    + PLAN
-    + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
-    + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
-    + PLAN + TEXT + U
+    + PLAN + TODO
+    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+    + PLAN + TODO + TEXT + U
     + ["tool_pre"] + U + ["tool_post", "approval_denied"] + U
     + TEXT  # defer narration
     + ["notification"]  # decision deferred to needs-you
-    + PLAN
+    + PLAN + TODO
     + TEXT + TEXT
     + ["orchestrator_complete", "execution_end", "prompt_complete"]  # no end notice
 )
