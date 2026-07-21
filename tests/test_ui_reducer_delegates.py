@@ -249,3 +249,42 @@ def test_second_turn_gets_a_fresh_summary_block() -> None:
     reducer.handle(ev.PromptSubmit(**_env(10.0), prompt="again"))
     _spawn(reducer, "tester", "s9", 11.0)
     assert len(_summaries(host)) == 2
+
+
+# -- heartbeat vs scripted lanes (found live in forge, 2026-07-21) --------------
+
+
+def test_demo_turn_heartbeat_keeps_virtual_lane_clocks() -> None:
+    """Scripted lanes are stamped with the demo's virtual clock (~seconds);
+    the app heartbeat passes wall time. Advancing them with wall time paints
+    epoch-scale elapsed (``29744551m 45s``) in the lanes panel."""
+
+    class Spec:
+        duration_ms = 6000
+
+    host = FakeHost()
+    reducer = TranscriptReducer(
+        host,
+        allocator=BlockIdAllocator(),
+        ledger=OutcomeLedger(),
+        lanes=LaneRegistry(),
+        spec_lookup=lambda prompt: Spec(),
+    )
+    reducer.handle(ev.PromptSubmit(**_env(0.0), prompt="fan out"))
+    _spawn(reducer, "researcher", "s1", 1.0)
+    # Precondition: the working pulse is mounted, so tick() reaches the lanes.
+    assert any(b.kind == "working_status" for b in host.blocks)
+    reducer.tick(1_753_000_000.0)  # wall clock, ~55 years after ts=1.0
+    lane = reducer.lanes.active[0].lane
+    assert lane.elapsed < 60.0  # virtual-clock telemetry kept, not clobbered
+
+
+def test_real_turn_heartbeat_advances_lane_clocks() -> None:
+    """Spec-less (real) turns DO tick per-lane clocks on the heartbeat —
+    both spawn ts and tick now are wall clock there."""
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(**_env(100.0), prompt="fan out"))
+    _spawn(reducer, "researcher", "s1", 100.0)
+    reducer.tick(103.0)
+    lane = reducer.lanes.active[0].lane
+    assert lane.elapsed == 3.0

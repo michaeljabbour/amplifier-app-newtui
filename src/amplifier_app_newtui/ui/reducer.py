@@ -1266,8 +1266,10 @@ class TranscriptReducer:
         if turn.spec is None:
             turn.last_ts = max(turn.last_ts, now)
         self._update_working()
-        # Per-agent lane clocks tick on the same heartbeat.
-        if self.lanes.advance(now):
+        # Per-agent lane clocks tick on the same heartbeat — real turns only.
+        # Scripted lanes were stamped with the demo's virtual clock; advancing
+        # them with wall time paints epoch-scale elapsed in the panel.
+        if turn.spec is None and self.lanes.advance(now):
             self._host.lanes_changed()
 
     def set_activity(self, activity: str) -> None:
