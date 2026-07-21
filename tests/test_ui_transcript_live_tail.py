@@ -17,6 +17,7 @@ from amplifier_app_newtui.ui.live_tail import (
     THROTTLE_SECONDS,
     LiveTail,
     answer_spans,
+    lane_tail_markup,
     streaming_spans,
     visible_length,
 )
@@ -243,3 +244,38 @@ async def test_long_stream_render_keeps_event_loop_responsive() -> None:
         await pilot.pause(0.05)
         assert event_loop_ran
         assert tail.source == payload
+
+
+# -- lane mode (design doc D4: focused-lane live tail) --------------------------
+
+
+def test_lane_tail_markup_gutters_dims_and_caps_at_three_lines() -> None:
+    markup = lane_tail_markup("one\ntwo\nthree\nfour\n")
+    assert markup == "[$dim]┆ two\n┆ three\n┆ four[/]"
+
+
+def test_lane_tail_markup_escapes_and_handles_empty() -> None:
+    assert lane_tail_markup("") == ""
+    assert lane_tail_markup("   \n") == ""
+    markup = lane_tail_markup("[red]not markup")
+    assert markup.startswith("[$dim]")
+    assert "┆ \\[red]not markup" in markup  # escaped — content is never interpreted
+
+
+@pytest.mark.asyncio
+async def test_lane_mode_yields_to_root_stream_and_clears() -> None:
+    app = TailHarness()
+    async with app.run_test():
+        tail = _tail(app)
+        tail.show_lane_tail("agent prose")
+        assert tail.lane_mode
+        tail.open_stream("text")  # root preempts instantly
+        assert not tail.lane_mode
+        tail.show_lane_tail("ignored while root streams")
+        assert not tail.lane_mode  # refused: root owns the tail
+        tail.feed("root text")
+        tail.consolidate("blk-1")  # root stream closed
+        tail.show_lane_tail("agent prose again")
+        assert tail.lane_mode  # lanes may resume after the root goes idle
+        tail.clear_lane_tail()
+        assert not tail.lane_mode
