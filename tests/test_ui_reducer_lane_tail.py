@@ -153,3 +153,60 @@ def test_explicit_cycle_pin_wins_over_recent_activity() -> None:
     clock.now += LANE_TAIL_NOTIFY_SECONDS
     delta(reducer, CHILD_B, "bbb")
     assert host.tail_updates == ["aaa", "bbb"]
+
+
+def test_root_stream_preempts_clears_and_suppresses_the_tail() -> None:
+    reducer, host, clock = make()
+    spawn(reducer, CHILD_A, "researcher")
+    delta(reducer, CHILD_A, "child text")
+    assert host.tail_updates == ["child text"]
+    reducer.handle(
+        ev.StreamBlockStart(
+            session_id=ROOT, request_id="req-root", block_index=0, block_type="text"
+        )
+    )
+    assert host.tail_cleared == 1  # cleared the instant the root speaks
+    clock.now += LANE_TAIL_NOTIFY_SECONDS
+    delta(reducer, CHILD_A, " while root streams")  # buffered, never painted
+    assert host.tail_updates == ["child text"]
+    reducer.handle(
+        ev.StreamBlockEnd(
+            session_id=ROOT, request_id="req-root", block_index=0, block_type="text"
+        )
+    )
+    clock.now += LANE_TAIL_NOTIFY_SECONDS
+    delta(reducer, CHILD_A, ", resumes")
+    # Preemption DISCARDED the old buffer (ephemeral, D4) — the tail
+    # restarts from whatever streamed after the root went idle again.
+    assert host.tail_updates[-1] == " while root streams, resumes"
+
+
+def test_lane_completion_clears_a_shown_tail() -> None:
+    reducer, host, _ = make()
+    spawn(reducer, CHILD_A, "researcher")
+    delta(reducer, CHILD_A, "child text")
+    reducer.handle(
+        ev.AgentCompleted(
+            session_id=ROOT,
+            agent="researcher",
+            sub_session_id=CHILD_A,
+            parent_session_id=ROOT,
+            success=True,
+            result="3 findings",
+        )
+    )
+    assert host.tail_cleared == 1
+
+
+def test_turn_end_discards_all_tail_state_and_leaves_no_block_behind() -> None:
+    reducer, host, _ = make()
+    spawn(reducer, CHILD_A, "researcher")
+    delta(reducer, CHILD_A, "ephemeral child prose")
+    reducer.handle(ev.PromptComplete(ts=2.0, session_id=ROOT))
+    assert host.tail_cleared == 1
+    # Ephemeral: the tail text never became transcript content.
+    assert not any(
+        "ephemeral child prose" in getattr(span, "text", "")
+        for block in host.blocks
+        for span in getattr(block, "spans", ())
+    )

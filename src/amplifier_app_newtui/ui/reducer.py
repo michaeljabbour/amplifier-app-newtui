@@ -499,14 +499,18 @@ class TranscriptReducer:
             case ev.PromptSubmit():
                 self._start_turn(event)
             case ev.StreamBlockStart():
+                self._root_streaming = True
+                self._clear_lane_tail()
                 self._host.stream_opened(event.block_type)
                 if event.block_type == "thinking":
                     self.set_activity("thinking")
             case ev.StreamBlockDelta():
                 self._host.stream_delta(event.text)
             case ev.StreamBlockEnd():
+                self._root_streaming = False
                 self._host.stream_closed()
             case ev.StreamAborted():
+                self._root_streaming = False
                 self._host.stream_closed()
                 self._host.show_notice(f"stream aborted · {event.error_message}".rstrip(" ·"))
             case ev.ContentBlockEnd():
@@ -776,6 +780,8 @@ class TranscriptReducer:
         turn = self._turn
         if turn is None:
             return
+        self._clear_lane_tail()
+        self._root_streaming = False
         # A cancelled turn strands running delegates: settle them as ⊘ so the
         # durable summary never claims work that was interrupted (edge-case
         # table, ambient-progress design).
@@ -1373,6 +1379,10 @@ class TranscriptReducer:
 
     def _agent_completed(self, event: ev.AgentCompleted) -> None:
         result = event.result or ("" if event.success else "failed")
+        record = self.lanes.get(event.sub_session_id)
+        self._clear_lane_tail(
+            record.session_id if record is not None else event.sub_session_id
+        )
         self.lanes.complete(event.sub_session_id, result=result)
         row = self._delegate_rows.get(event.sub_session_id)
         if row is not None:
