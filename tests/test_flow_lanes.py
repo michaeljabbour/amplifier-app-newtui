@@ -36,9 +36,7 @@ from .test_flow_helpers import (
     wait_for,
 )
 
-_LANE_LINE = re.compile(
-    r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$"
-)
+_LANE_LINE = re.compile(r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$")
 
 
 async def _run_agents_turn(pilot, app: NewTuiApp) -> None:
@@ -55,11 +53,17 @@ async def test_ctrl_t_toggles_lanes_panel_with_tree_in_transcript() -> None:
         assert len(app.lanes.lanes) == 3
         assert app.notice_slot.current == AGENTS_END_NOTICE
 
-        # The multi-agent turn rendered a live tree that completed to ✔
-        # lines — └─ corner glyph on the last-spawned lane, ├─ above it.
-        answers = ["".join(s.text for s in b.spans) for b in blocks_of(app, "answer")]
-        for lane, branch in zip(DEMO_LANES, ("├─ ", "├─ ", "└─ "), strict=True):
-            assert any(branch in text and lane.tree_done in text for text in answers)
+        # The multi-agent turn rendered ONE durable, collapsed delegate
+        # summary block (ambient-progress D5) — no per-agent tree lines.
+        summaries = [b for b in app.transcript.blocks if b.kind == "delegate_summary"]
+        assert len(summaries) == 1
+        assert [e.agent for e in summaries[0].entries] == [
+            "researcher",
+            "coder",
+            "tester",
+        ]
+        assert all(e.state == "done" for e in summaries[0].entries)
+        assert summaries[0].entries[2].snippet == "tests ✔"
 
         # The panel auto-opened at fan-out (mockup ``lanesOpen = true``):
         # exact header + one aligned line per agent.
@@ -138,9 +142,7 @@ async def test_lanes_panel_tri_state_matches_mockup_mid_turn() -> None:
         # The turn parks after spawning all three lanes: the panel shows
         # the mockup's tri-state snapshot verbatim.
         assert await wait_for(pilot, lambda: len(app.lanes.lanes) == 3)
-        assert list(app.lanes_panel.lane_lines) == [
-            lane.panel_line for lane in DEMO_LANES
-        ]
+        assert list(app.lanes_panel.lane_lines) == [lane.panel_line for lane in DEMO_LANES]
         states = [(r.lane.state, r.lane.glyph, r.lane.color_token) for r in app.lanes_panel.records]
         assert states == [
             ("running", "◐", "teal"),
@@ -172,12 +174,9 @@ async def test_replayed_agents_turn_reopens_done_lanes() -> None:
         app.submit_prompt(AGENTS_PROMPT)
         assert await wait_for(
             pilot,
-            lambda: [r.lane.state for r in app.lanes.lanes]
-            == ["running", "working", "done"],
+            lambda: [r.lane.state for r in app.lanes.lanes] == ["running", "working", "done"],
         )
-        assert list(app.lanes_panel.lane_lines) == [
-            lane.panel_line for lane in DEMO_LANES
-        ]
+        assert list(app.lanes_panel.lane_lines) == [lane.panel_line for lane in DEMO_LANES]
         adapter.release()
         assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
         assert all(r.lane.state == "done" for r in app.lanes.lanes)
@@ -199,9 +198,7 @@ async def test_focus_lane_child_transcript_banner_and_esc_back() -> None:
         await pilot.press("down")
         await pilot.press("enter")
         lane = DEMO_LANE_BY_NAME["coder"]
-        assert await wait_for(
-            pilot, lambda: app.transcript.focused_lane == lane.sub_session_id
-        )
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane == lane.sub_session_id)
         # The panel stays open while a lane is focused (mockup focusLane
         # never touches lanesOpen); the focused lane's row is highlighted.
         assert app.lanes_panel.display

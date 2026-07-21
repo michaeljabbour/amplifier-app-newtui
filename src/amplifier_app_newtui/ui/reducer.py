@@ -31,6 +31,8 @@ from ..model.blocks import (
     BlockIdAllocator,
     Blocked,
     BrainstormIdea,
+    DelegateEntry,
+    DelegateSummaryBlock,
     Narration,
     PlanBlock,
     PlanItem,
@@ -285,12 +287,14 @@ class LaneSeed:
 
 
 @dataclass
-class _TreeLine:
-    """One in-transcript agent tree line (spawn/done label + position)."""
+class _DelegateRow:
+    """Live state for one agent in the current fan-out summary (D5)."""
 
-    block_id: str
-    label: str
-    done: bool = False
+    agent: str
+    spawned_ts: float
+    state: str = "running"  # DelegateState
+    elapsed_s: float = 0.0
+    snippet: str = ""
 
 
 class ReducerHost(Protocol):
@@ -364,6 +368,9 @@ class _Turn:
     """
     rendered_answers: set[str] = field(default_factory=set)
     """Normalized answer texts already rendered for exact-once close-out."""
+    todo_items: tuple[TodoItem, ...] = ()
+    """Latest root-todo list this turn (ambient-progress D3) — folded into
+    the delegate summary's ``plan_final`` at fan-out close (D5)."""
 
 
 class TranscriptReducer:
@@ -409,8 +416,15 @@ class TranscriptReducer:
         is 1-indexed over ALL user messages in the context — including
         persistent steering/decision injections — so checkpoint turn ids
         must offset past the restored history (spec §9)."""
-        self._tree_lines: dict[str, _TreeLine] = {}
-        self._tree_order: list[str] = []
+        # -- delegate fan-out summary (ambient-progress D5) -----------------
+        # Reducer-held (not turn-held) so completions landing after turn end
+        # still update the block, mirroring the old tree-line lifetime.
+        self._delegate_summary_id: str | None = None
+        self._delegate_rows: dict[str, _DelegateRow] = {}
+        self._delegate_order: list[str] = []
+        self._fanout_start_ts: float = 0.0
+        self._fanout_duration_s: float = 0.0
+        self._delegate_plan_final: tuple[TodoItem, ...] | None = None
 
     # -- public state -------------------------------------------------------
 
@@ -573,21 +587,13 @@ class TranscriptReducer:
                 state = "working"
             case ev.ToolPost():
                 if self._turn is not None:
-                    call = self._turn.child_calls.pop(
-                        (record.session_id, event.tool_call_id), None
-                    )
+                    call = self._turn.child_calls.pop((record.session_id, event.tool_call_id), None)
                     tool = str(call.get("tool", "")) if call else event.tool_name
-                    tool_input = (
-                        dict(call.get("input", {}))
-                        if call
-                        else (event.tool_input or {})
-                    )
+                    tool_input = dict(call.get("input", {})) if call else (event.tool_input or {})
                     status = str(event.result.get("status", "")).lower()
                     success = event.result.get("success", True)
                     if success is not False and status not in {"denied", "error", "failed"}:
-                        self._record_change(
-                            self._turn, record.lane.name, tool, tool_input
-                        )
+                        self._record_change(self._turn, record.lane.name, tool, tool_input)
                 activity = "reviewing tool result"
             case ev.ToolError():
                 activity = f"recovering from {event.tool_name.replace('_', ' ')} error"
@@ -603,14 +609,11 @@ class TranscriptReducer:
                 activity = "wrapping up"
             case _:
                 return
-        if activity is None or (
-            record.lane.activity == activity and record.lane.state == state
-        ):
+        if activity is None or (record.lane.activity == activity and record.lane.state == state):
             return
         updated = self.lanes.update(event.session_id, activity=activity, state=state)
         if updated is None:
             return
-        self._update_tree_activity(updated.session_id, activity)
         self._host.lanes_changed()
 
     def _record_change(
@@ -642,21 +645,6 @@ class TranscriptReducer:
         else:
             self._host.replace_block(block)
 
-    def _update_tree_activity(self, session_id: str, activity: str) -> None:
-        """Replace the matching structural tree row without adding history."""
-
-        for tree_id in self._tree_order:
-            tree_record = self.lanes.get(tree_id)
-            if tree_record is None or tree_record.session_id != session_id:
-                continue
-            line = self._tree_lines.get(tree_id)
-            if line is None:
-                return
-            line.label = f"{tree_record.lane.name} · {activity}"
-            line.done = False
-            self._host.replace_block(self._tree_block(tree_id))
-            return
-
     # -- turn lifecycle -------------------------------------------------------
 
     def _start_turn(self, event: ev.PromptSubmit) -> None:
@@ -681,10 +669,13 @@ class TranscriptReducer:
         )
         self._turn = turn
         self._cost.start_turn()
-        self._tree_order = []
-        self._host.append_block(
-            UserLine(id=self._ids.next_id(), text=event.prompt, mode=turn.mode)
-        )
+        self._delegate_summary_id = None
+        self._delegate_rows = {}
+        self._delegate_order = []
+        self._fanout_start_ts = 0.0
+        self._fanout_duration_s = 0.0
+        self._delegate_plan_final = None
+        self._host.append_block(UserLine(id=self._ids.next_id(), text=event.prompt, mode=turn.mode))
         if turn.spec is None:
             # Real turn: the working line mounts IMMEDIATELY — pre-model
             # hook work and provider latency can run for seconds before
@@ -719,6 +710,16 @@ class TranscriptReducer:
         turn = self._turn
         if turn is None:
             return
+        # A cancelled turn strands running delegates: settle them as ⊘ so the
+        # durable summary never claims work that was interrupted (edge-case
+        # table, ambient-progress design).
+        if turn.cancelled and any(row.state == "running" for row in self._delegate_rows.values()):
+            for row in self._delegate_rows.values():
+                if row.state == "running":
+                    row.state = "cancelled"
+                    row.elapsed_s = max(0.0, turn.last_ts - row.spawned_ts)
+            self._fanout_duration_s = max(0.0, turn.last_ts - self._fanout_start_ts)
+            self._render_delegate_summary()
         # Re-resolve at close: mid-turn events (e.g. a denied approval)
         # may have changed the adapter's close-out spec for this prompt.
         spec = self._spec_lookup(turn.prompt) or turn.spec
@@ -874,9 +875,7 @@ class TranscriptReducer:
             # Commit the same formatted shape the streaming tail just showed.
             # It remains non-clickable/provisional until PromptComplete adds
             # evidence and authoritatively identifies the final response.
-            block = Answer(
-                id=self._ids.next_id(), spans=answer_spans(text), clickable=False
-            )
+            block = Answer(id=self._ids.next_id(), spans=answer_spans(text), clickable=False)
             self._append_content(block)
             if self._turn is not None:
                 self._turn.response_candidates.append((text.strip(), block.id))
@@ -889,16 +888,12 @@ class TranscriptReducer:
             match = _IDEA_RE.match(text)
             number = int(match.group(1)) if match else 0
             body = match.group(2) if match else text
-            self._append_content(
-                BrainstormIdea(id=self._ids.next_id(), text=body, number=number)
-            )
+            self._append_content(BrainstormIdea(id=self._ids.next_id(), text=body, number=number))
         elif role == "recap":
             self._append_recap(text)
         else:
             links: tuple[EvidenceLink, ...] = tuple(self._evidence(text))
-            answer = Answer(
-                id=self._ids.next_id(), spans=answer_spans(text), evidence_refs=links
-            )
+            answer = Answer(id=self._ids.next_id(), spans=answer_spans(text), evidence_refs=links)
             self._append_content(answer)
             if self._turn is not None:
                 self._turn.rendered_answers.add(text.strip())
@@ -1052,15 +1047,11 @@ class TranscriptReducer:
         if turn.digest_id is None:
             turn.digest_id = self._ids.next_id()
             self._append_content(
-                ToolLine(
-                    id=turn.digest_id, summary=summary, body=body, status="completed"
-                )
+                ToolLine(id=turn.digest_id, summary=summary, body=body, status="completed")
             )
         else:
             self._host.replace_block(
-                ToolLine(
-                    id=turn.digest_id, summary=summary, body=body, status="completed"
-                )
+                ToolLine(id=turn.digest_id, summary=summary, body=body, status="completed")
             )
 
     def _flush_burst(self) -> None:
@@ -1087,9 +1078,7 @@ class TranscriptReducer:
                 ToolLine(id=info["block_id"], summary=summary, status="failed")
             )
         else:
-            self._append_content(
-                ToolLine(id=self._ids.next_id(), summary=summary, status="failed")
-            )
+            self._append_content(ToolLine(id=self._ids.next_id(), summary=summary, status="failed"))
 
     def _update_plan(self, event: ev.ToolPre) -> None:
         turn = self._turn
@@ -1148,6 +1137,9 @@ class TranscriptReducer:
             for todo in raw_todos
             if isinstance(todo, dict)
         )
+        turn = self._turn
+        if turn is not None:
+            turn.todo_items = items
         self._host.plan_changed(items)
 
     # -- telemetry -------------------------------------------------------------------
@@ -1156,14 +1148,12 @@ class TranscriptReducer:
         turn = self._turn
         if turn is None:
             return TurnTelemetry(secs=0)
-        return TurnTelemetry(
-            secs=max(0.0, turn.last_ts - turn.start_ts), tokens_down=turn.tokens
-        )
+        return TurnTelemetry(secs=max(0.0, turn.last_ts - turn.start_ts), tokens_down=turn.tokens)
 
     def _working_block(self, turn: _Turn) -> WorkingStatus:
         assert turn.working_id is not None
         # The live activity tree only rides single-agent turns; fan-out
-        # turns get the dedicated agent tree (``_tree_block``) instead.
+        # turns get the dedicated DelegateSummaryBlock instead (D5).
         lines = () if turn.agent_total > 1 else tuple(turn.activity_ring)
         return WorkingStatus(
             id=turn.working_id,
@@ -1277,27 +1267,6 @@ class TranscriptReducer:
 
     # -- agent lanes --------------------------------------------------------------------
 
-    def _tree_block(self, sub_session_id: str) -> Answer:
-        """Render one agent tree line (mockup lines 469-480).
-
-        The last-spawned lane uses the ``└─`` corner glyph, earlier lanes
-        ``├─``; spawn prefix is all dimmer, done prefix all green.
-        """
-        line = self._tree_lines[sub_session_id]
-        last = bool(self._tree_order) and self._tree_order[-1] == sub_session_id
-        branch = "└─" if last else "├─"
-        if line.done:
-            prefix = Segment(text=f"  {branch} ✔ ", style_token="green")
-        else:
-            prefix = Segment(text=f"  {branch} ● ", style_token="dimmer")
-        return Answer(
-            id=line.block_id,
-            spans=(prefix, Segment(text=line.label, style_token="dim")),
-            # Mockup tree lines are plain this.L(...) rows — click: null.
-            clickable=False,
-            compact=True,
-        )
-
     def _agent_spawned(self, event: ev.AgentSpawned) -> None:
         turn = self._turn
         if turn is not None:
@@ -1324,30 +1293,61 @@ class TranscriptReducer:
                 cost=seed.cost,
                 tokens=seed.tokens,
             )
-        label = seed.tree_spawn or f"{event.agent} · running"
-        previous_last = self._tree_order[-1] if self._tree_order else None
-        self._tree_lines[event.sub_session_id] = _TreeLine(
-            block_id=self._ids.next_id(), label=label
-        )
-        self._tree_order.append(event.sub_session_id)
-        self._append_content(self._tree_block(event.sub_session_id))
-        if previous_last is not None and previous_last in self._tree_lines:
-            # The previous tail is no longer the last child: ├─ again.
-            self._host.replace_block(self._tree_block(previous_last))
+        now = event.ts or time.time()
+        if not self._delegate_rows:
+            self._fanout_start_ts = now
+        if event.sub_session_id not in self._delegate_rows:
+            self._delegate_order.append(event.sub_session_id)
+        # A known sub-session re-spawning is a replayed turn reusing its ids
+        # (see lanes.register reopen above) — reset the row live either way.
+        self._delegate_rows[event.sub_session_id] = _DelegateRow(agent=event.agent, spawned_ts=now)
+        self._render_delegate_summary()
         self._update_working()
         self._host.lanes_changed()
 
     def _agent_completed(self, event: ev.AgentCompleted) -> None:
-        seed: LaneSeed = self._lane_seed(event.agent) or LaneSeed()
         result = event.result or ("" if event.success else "failed")
         self.lanes.complete(event.sub_session_id, result=result)
-        line = self._tree_lines.get(event.sub_session_id)
-        if line is not None:
-            line.label = seed.tree_done or f"{event.agent} · done"
-            line.done = True
-            self._host.replace_block(self._tree_block(event.sub_session_id))
+        row = self._delegate_rows.get(event.sub_session_id)
+        if row is not None:
+            end_ts = event.ts or time.time()
+            row.state = "done" if event.success else "error"
+            row.elapsed_s = max(0.0, end_ts - row.spawned_ts)
+            row.snippet = result
+            if all(r.state != "running" for r in self._delegate_rows.values()):
+                self._fanout_duration_s = max(0.0, end_ts - self._fanout_start_ts)
+            self._render_delegate_summary()
         self._update_working()
         self._host.lanes_changed()
+
+    def _render_delegate_summary(self) -> None:
+        """Append-once / replace-in-place, exactly like the todo path
+        (turn.todo_id pattern). Always rendered expanded=False — expansion is
+        UI-local state; a mid-flight replace collapsing it matches the
+        ToolLine-digest precedent (_render_digest)."""
+        turn = self._turn
+        if turn is not None and turn.todo_items:
+            self._delegate_plan_final = turn.todo_items
+        block = DelegateSummaryBlock(
+            id=self._delegate_summary_id or self._ids.next_id(),
+            entries=tuple(
+                DelegateEntry(
+                    agent=row.agent,
+                    state=row.state,  # type: ignore[arg-type]
+                    elapsed_s=row.elapsed_s,
+                    snippet=row.snippet,
+                )
+                for key in self._delegate_order
+                for row in (self._delegate_rows[key],)
+            ),
+            plan_final=self._delegate_plan_final,
+            duration_s=self._fanout_duration_s,
+        )
+        if self._delegate_summary_id is None:
+            self._delegate_summary_id = block.id
+            self._append_content(block)
+        else:
+            self._host.replace_block(block)
 
 
 __all__ = ["LaneSeed", "ReducerHost", "TranscriptReducer", "TurnSpecLike"]
