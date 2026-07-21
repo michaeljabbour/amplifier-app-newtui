@@ -278,6 +278,35 @@ def test_tool_line_collapsed_exact() -> None:
     lines = render_block(_blocks()["tool_collapsed"], 80)
     assert lines_plain(lines) == "  ● Ran 2 shell commands · click to expand"
     assert lines[0][-1].style_token == "dimmer"
+
+
+def test_expanded_change_line_uses_theme_aware_diff_styles() -> None:
+    block = ToolLine(
+        id="changes",
+        summary="Changed 1 file",
+        body=(
+            "foundation:coder · edit file · src/app.py",
+            "--- src/app.py",
+            "+++ src/app.py",
+            "@@ replaced text @@",
+            "-old",
+            "+new",
+        ),
+        expanded=True,
+        status="completed",
+        body_style="diff",
+    )
+    lines = render_block(block, 100)
+    assert line_plain(lines[0]) == "  ● Changed 1 file · click to expand"
+    assert [line[0].style_token for line in lines[2:]] == [
+        "teal",
+        "teal",
+        "blue",
+        "red",
+        "green",
+    ]
+    assert lines[-2][0].bg_token == "bg-tab"
+    assert lines[-1][0].bg_token == "bg-tab"
     assert TOOL_EXPAND_HINT == " · click to expand"
 
 
@@ -355,6 +384,16 @@ def test_working_label_has_a_chasing_highlight_without_changing_text() -> None:
     first_bright = [segment.text for segment in first if segment.style_token == "bright"]
     second_bright = [segment.text for segment in second if segment.style_token == "bright"]
     assert first_bright and second_bright and first_bright != second_bright
+
+
+def test_working_label_shimmer_is_a_soft_multi_cell_band() -> None:
+    line = render_block(_blocks()["working"].model_copy(update={"motion_frame": 2}), 80)[0]
+    label = line[1:-2]
+    bright = [segment for segment in label if segment.style_token == "bright"]
+    assert len("".join(segment.text for segment in bright)) >= 3
+    assert any(segment.bold for segment in bright)
+    assert any(not segment.bold for segment in bright)
+    assert any(segment.style_token == "fg" for segment in label)
 
 
 def test_working_status_single_agent_exact() -> None:

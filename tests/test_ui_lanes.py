@@ -147,6 +147,27 @@ async def test_active_lane_labels_shimmer_and_stop_when_all_done() -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_telemetry_patches_rows_without_remounting_motion() -> None:
+    app = LanesHost()
+    async with app.run_test() as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes(RECORDS[:1])
+        panel.show_panel()
+        await pilot.pause()
+
+        from amplifier_app_newtui.ui.lanes_panel import _LaneRow  # test-only
+
+        row = panel.query_one(_LaneRow)
+        updated = _record(
+            "s1", "researcher", "working", "reading README.md", 42, "0.10", 120000
+        )
+        panel.update_lanes((updated,))
+        await pilot.pause()
+        assert panel.query_one(_LaneRow) is row
+        assert "reading README.md" in row.line
+
+
+@pytest.mark.asyncio
 async def test_arrows_move_selection_and_enter_focuses_lane() -> None:
     app = LanesHost()
     async with app.run_test() as pilot:

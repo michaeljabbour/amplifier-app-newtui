@@ -111,6 +111,27 @@ _TOOL_VERBS: dict[str, tuple[str, str | None]] = {
 _VERB_ORDER = ("read", "searched", "searched web", "ran", "edited", "wrote", "fetched", "loaded")
 _ACTIVITY_TAIL = 3  # live-tree rows kept beneath the pulse
 _OP_LABEL_MAX = 52
+_CHANGE_PREVIEW_LINES = 80
+_CHANGE_DETAIL_LINES = 240
+_CHANGE_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
+
+_LIVE_TOOL_VERBS: dict[str, str] = {
+    "bash": "running",
+    "shell": "running",
+    "read_file": "reading",
+    "write_file": "writing",
+    "edit_file": "editing",
+    "apply_patch": "editing",
+    "multi_edit": "editing",
+    "grep": "searching",
+    "glob": "finding files",
+    "search": "searching",
+    "web_fetch": "fetching",
+    "web_search": "searching web",
+    "load_skill": "loading",
+    "delegate": "delegating",
+}
+"""Present-tense labels for the compact per-agent activity ticker."""
 
 
 def _verb_noun(tool: str) -> tuple[str, str | None]:
@@ -158,6 +179,63 @@ def _op_label(tool: str, tool_input: dict[str, Any]) -> str:
     verb = _verb_noun(tool)[0]
     target = _op_target(tool, tool_input)
     return _truncate(f"{verb} {_basename(target)}".strip() if target else verb)
+
+
+def _live_op_label(tool: str, tool_input: dict[str, Any]) -> str:
+    """Short present-tense child activity suitable for an in-place ticker."""
+
+    verb = _LIVE_TOOL_VERBS.get(tool, f"using {tool.replace('_', ' ')}")
+    target = _op_target(tool, tool_input)
+    if tool in ("bash", "shell") and target.startswith("$ "):
+        target = target[2:]
+    return _truncate(f"{verb} {_basename(target)}".strip() if target else verb)
+
+
+def _change_preview(
+    tool: str, tool_input: dict[str, Any]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return ``(paths, bounded diff-like detail)`` for a native file write."""
+
+    path = str(tool_input.get("file_path") or tool_input.get("path") or "").strip()
+    if tool not in _CHANGE_TOOLS:
+        return (), ()
+    if tool == "apply_patch":
+        patch = str(tool_input.get("patch") or tool_input.get("diff") or "")
+        paths = tuple(
+            dict.fromkeys(
+                marker.split(" File:", 1)[1].strip()
+                for marker in patch.splitlines()
+                if marker.startswith(("*** Add File:", "*** Update File:", "*** Delete File:"))
+            )
+        )
+        if path:
+            paths = tuple(dict.fromkeys((*paths, path)))
+        lines = tuple(patch.splitlines())
+    elif not path:
+        return (), ()
+    elif tool == "edit_file":
+        paths = (path,)
+        old = str(tool_input.get("old_string", "")).splitlines()
+        new = str(tool_input.get("new_string", "")).splitlines()
+        lines = (
+            f"--- {path}",
+            f"+++ {path}",
+            "@@ replaced text @@",
+            *(f"-{line}" for line in old),
+            *(f"+{line}" for line in new),
+        )
+    else:
+        paths = (path,)
+        content = str(tool_input.get("content", "")).splitlines()
+        lines = (
+            f"+++ {path}",
+            f"@@ wrote file · {len(content)} lines @@",
+            *(f"+{line}" for line in content),
+        )
+    if len(lines) > _CHANGE_PREVIEW_LINES:
+        hidden = len(lines) - _CHANGE_PREVIEW_LINES
+        lines = (*lines[:_CHANGE_PREVIEW_LINES], f"… {hidden} more lines")
+    return paths, tuple(lines)
 
 
 def _digest_summary(counts: dict[tuple[str, str | None], int]) -> str:
@@ -271,6 +349,12 @@ class _Turn:
     burst_detail: list[str] = field(default_factory=list)
     activity_ring: list[ActivityBranch] = field(default_factory=list)
     """Bounded newest-last live tree beneath the pulse (single-agent)."""
+    child_calls: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    """Child tool inputs retained until post so successful edits can be shown."""
+    change_id: str | None = None
+    change_files: set[str] = field(default_factory=set)
+    change_detail: list[str] = field(default_factory=list)
+    """One in-place, expandable change summary shared by root and children."""
     response_candidates: list[tuple[str, str]] = field(default_factory=list)
     """Production durable text as ``(text, block_id)`` candidates.
 
@@ -374,6 +458,7 @@ class TranscriptReducer:
     def handle(self, event: ev.UIEvent) -> None:  # noqa: C901 - one dispatch table
         """Apply one normalized event; unknown kinds are ignored."""
         if self._is_foreign_turn_event(event):
+            self._track_child_activity(event)
             return
         if self._turn is not None and event.ts:
             self._turn.last_ts = event.ts
@@ -463,6 +548,115 @@ class TranscriptReducer:
                 ev.OrchestratorComplete,
             ),
         )
+
+    def _track_child_activity(self, event: ev.UIEvent) -> None:
+        """Project child execution into one compact lane/tree status line.
+
+        Child prose and tools stay out of the parent transcript, but their
+        high-signal lifecycle events make the existing lane and agent-tree
+        labels useful as an in-place activity ticker.
+        """
+
+        record = self.lanes.get(event.session_id)
+        if record is None or record.lane.state == "done":
+            return
+        activity: str | None = None
+        state: LaneStateName = "running"
+        match event:
+            case ev.ToolPre():
+                if self._turn is not None:
+                    self._turn.child_calls[(record.session_id, event.tool_call_id)] = {
+                        "tool": event.tool_name,
+                        "input": event.tool_input or {},
+                        "actor": record.lane.name,
+                    }
+                activity = _live_op_label(event.tool_name, event.tool_input or {})
+                state = "working"
+            case ev.ToolPost():
+                if self._turn is not None:
+                    call = self._turn.child_calls.pop(
+                        (record.session_id, event.tool_call_id), None
+                    )
+                    tool = str(call.get("tool", "")) if call else event.tool_name
+                    tool_input = (
+                        dict(call.get("input", {}))
+                        if call
+                        else (event.tool_input or {})
+                    )
+                    status = str(event.result.get("status", "")).lower()
+                    success = event.result.get("success", True)
+                    if success is not False and status not in {"denied", "error", "failed"}:
+                        self._record_change(
+                            self._turn, record.lane.name, tool, tool_input
+                        )
+                activity = "reviewing tool result"
+            case ev.ToolError():
+                activity = f"recovering from {event.tool_name.replace('_', ' ')} error"
+            case ev.StreamBlockStart():
+                activity = "thinking" if event.block_type == "thinking" else "writing response"
+            case ev.StreamBlockDelta():
+                activity = "thinking" if event.block_type == "thinking" else "writing response"
+            case ev.StreamBlockEnd():
+                activity = "reviewing response"
+            case ev.ContentBlockEnd():
+                activity = "reporting findings" if event.block_type == "text" else "thinking"
+            case ev.OrchestratorComplete():
+                activity = "wrapping up"
+            case _:
+                return
+        if activity is None or (
+            record.lane.activity == activity and record.lane.state == state
+        ):
+            return
+        updated = self.lanes.update(event.session_id, activity=activity, state=state)
+        if updated is None:
+            return
+        self._update_tree_activity(updated.session_id, activity)
+        self._host.lanes_changed()
+
+    def _record_change(
+        self, turn: _Turn, actor: str, tool: str, tool_input: dict[str, Any]
+    ) -> None:
+        """Roll a successful native file write into one expandable diff row."""
+
+        paths, preview = _change_preview(tool, tool_input)
+        if not paths or not preview:
+            return
+        turn.change_files.update(paths)
+        path_label = ", ".join(paths)
+        detail = [f"{actor} · {tool.replace('_', ' ')} · {path_label}", *preview]
+        remaining = _CHANGE_DETAIL_LINES - len(turn.change_detail)
+        if remaining > 0:
+            turn.change_detail.extend(detail[:remaining])
+        count = len(turn.change_files)
+        summary = f"Changed {count} file{'s' if count != 1 else ''}"
+        block = ToolLine(
+            id=turn.change_id or self._ids.next_id(),
+            summary=summary,
+            body=tuple(turn.change_detail),
+            status="completed",
+            body_style="diff",
+        )
+        if turn.change_id is None:
+            turn.change_id = block.id
+            self._append_content(block)
+        else:
+            self._host.replace_block(block)
+
+    def _update_tree_activity(self, session_id: str, activity: str) -> None:
+        """Replace the matching structural tree row without adding history."""
+
+        for tree_id in self._tree_order:
+            tree_record = self.lanes.get(tree_id)
+            if tree_record is None or tree_record.session_id != session_id:
+                continue
+            line = self._tree_lines.get(tree_id)
+            if line is None:
+                return
+            line.label = f"{tree_record.lane.name} · {activity}"
+            line.done = False
+            self._host.replace_block(self._tree_block(tree_id))
+            return
 
     # -- turn lifecycle -------------------------------------------------------
 
@@ -838,6 +1032,11 @@ class TranscriptReducer:
             self._update_working()
             return
         # Success: roll into the burst tally + live tree, update the digest.
+        if event.result.get("success", True) is not False and status.lower() not in {
+            "error",
+            "failed",
+        }:
+            self._record_change(turn, "main agent", tool, tool_input)
         self._settle_activity(turn, _op_label(tool, tool_input))
         key = _verb_noun(tool)
         turn.burst_counts[key] = turn.burst_counts.get(key, 0) + 1
@@ -1105,6 +1304,7 @@ class TranscriptReducer:
             spans=(prefix, Segment(text=line.label, style_token="dim")),
             # Mockup tree lines are plain this.L(...) rows — click: null.
             clickable=False,
+            compact=True,
         )
 
     def _agent_spawned(self, event: ev.AgentSpawned) -> None:

@@ -32,14 +32,15 @@ from textual.widgets import Static
 
 from ..model.lanes import LaneRecord, LaneState
 from ..model.turn import _format_tokens
+from .motion import SHIMMER_INTERVAL_SECONDS, shimmer_band
 
 LANES_HEADER_TITLE = "Agent lanes"
 LANES_HEADER_HINT = "· ↑↓ select · enter focus · esc close"
 LANES_HEADER = f"{LANES_HEADER_TITLE} {LANES_HEADER_HINT}"
 """Exact header line per DESIGN-SPEC §8."""
 
-LANE_MOTION_INTERVAL_SECONDS = 0.14
-"""Active-only chasing highlight cadence for agent names."""
+LANE_MOTION_INTERVAL_SECONDS = SHIMMER_INTERVAL_SECONDS
+"""Active-only soft-band cadence for agent names."""
 
 
 def lane_elapsed(seconds: float) -> str:
@@ -125,13 +126,25 @@ class _LaneRow(Static):
         )
         lane = self.record.lane
         if lane.state != "done" and lane.name:
-            phase = self.motion_frame % (len(lane.name) + 4)
-            if phase < len(lane.name):
-                start = self.line.find(lane.name) + phase
+            name_start = self.line.find(lane.name)
+            for offset, token, bold in shimmer_band(
+                len(lane.name), self.motion_frame
+            ):
+                start = name_start + offset
                 text.stylize(
-                    Style(color=tokens.get("bright"), bold=True), start, start + 1
+                    Style(color=tokens.get(token), bold=bold), start, start + 1
                 )
         return text
+
+    def update_record(
+        self, record: LaneRecord, line: str, *, motion_frame: int
+    ) -> None:
+        """Refresh telemetry in place so motion is not reset by row remounts."""
+
+        self.record = record
+        self.line = line
+        self.motion_frame = motion_frame
+        self.refresh(layout=False)
 
     def set_motion_frame(self, frame: int) -> None:
         self.motion_frame = frame
@@ -205,6 +218,7 @@ class LanesPanel(Vertical):
         self._selected = 0
         self._motion_frame = 0
         self._motion_timer: Timer | None = None
+        self._remount_pending = False
 
     def on_unmount(self) -> None:
         self._stop_motion()
@@ -231,7 +245,7 @@ class LanesPanel(Vertical):
         self._records = tuple(records)
         self._selected = min(self._selected, max(0, len(self._records) - 1))
         self._sync_motion()
-        self._rebuild()
+        self._refresh_or_rebuild_rows()
 
     def show_panel(self, *, focus: bool = True) -> None:
         self.display = True
@@ -293,23 +307,46 @@ class LanesPanel(Vertical):
 
     # -- internals -------------------------------------------------------
 
+    def _refresh_or_rebuild_rows(self) -> None:
+        """Patch stable rows when shape is unchanged; remount only on fan-out."""
+
+        rows = list(self.query(_LaneRow)) if self.is_mounted else []
+        has_header = bool(list(self.query(_LanesHeader))) if self.is_mounted else False
+        if has_header and len(rows) == len(self._records):
+            lines = self.lane_lines
+            for index, row in enumerate(rows):
+                row.update_record(
+                    self._records[index],
+                    lines[index],
+                    motion_frame=self._motion_frame,
+                )
+            self._apply_selection()
+            return
+        self._rebuild()
+
     def _rebuild(self) -> None:
         # remove_children is asynchronous: await it before remounting so
         # rebuilt rows never collide with the ids of outgoing ones.
+        if self._remount_pending:
+            return
+        self._remount_pending = True
         self.call_later(self._remount_rows)
 
     async def _remount_rows(self) -> None:
-        await self.remove_children()
-        lines = self.lane_lines
-        rows: list[Static] = [_LanesHeader()]
-        rows.extend(
-            _LaneRow(
-                record, lines[index], index, motion_frame=self._motion_frame
+        try:
+            await self.remove_children()
+            lines = self.lane_lines
+            rows: list[Static] = [_LanesHeader()]
+            rows.extend(
+                _LaneRow(
+                    record, lines[index], index, motion_frame=self._motion_frame
+                )
+                for index, record in enumerate(self._records)
             )
-            for index, record in enumerate(self._records)
-        )
-        await self.mount(*rows)
-        self._apply_selection()
+            await self.mount(*rows)
+            self._apply_selection()
+        finally:
+            self._remount_pending = False
 
     def _apply_selection(self) -> None:
         for row in self.query(_LaneRow):

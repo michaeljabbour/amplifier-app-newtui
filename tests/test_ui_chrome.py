@@ -9,6 +9,7 @@ from amplifier_app_newtui.ui.chrome import (
     APP_TITLE_NAME,
     SPINNER_INTERVAL,
     TERMINAL_TITLE_MAX_CHARS,
+    TERMINAL_SPINNER_FRAMES,
     TitleBar,
     terminal_title_sequence,
     write_terminal_title,
@@ -59,6 +60,16 @@ def test_running_title_prefixes_spinner_and_cycles_frames() -> None:
         bar._frame_index = (bar._frame_index + 1) % 4
         seen.append(bar.spinner_glyph)
     assert seen == ["✳", "✦", "✧", "✦"]
+
+
+def test_native_terminal_title_uses_obvious_braille_spinner() -> None:
+    bar = TitleBar()
+    bar.set_reactive(TitleBar.running, True)
+    first = bar.terminal_title_text()
+    assert first.startswith(f"{TERMINAL_SPINNER_FRAMES[0]} ")
+    bar.advance_spinner()
+    assert bar.terminal_title_text().startswith(f"{TERMINAL_SPINNER_FRAMES[1]} ")
+    assert bar.terminal_title_text() != first
 
 
 def test_spinner_interval_is_260ms() -> None:

@@ -88,11 +88,11 @@ async def test_demo_boot_banner_seed_and_typed_turn() -> None:
         assert app.turn_active
         assert app.title_bar.running
         await pilot.pause()
-        assert app.title == app.title_bar.title_text()
+        assert app.title == app.title_bar.terminal_title_text()
         first_terminal_title = app.title
         app.title_bar.advance_spinner()
         await pilot.pause()
-        assert app.title == app.title_bar.title_text()
+        assert app.title == app.title_bar.terminal_title_text()
         assert app.title != first_terminal_title
 
 

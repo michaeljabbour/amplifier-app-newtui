@@ -218,3 +218,110 @@ def test_tick_advances_lanes_and_fires_lanes_changed() -> None:
     reducer.tick(105.0)
     assert reducer.lanes.get("child").lane.elapsed == 5.0
     assert host.lanes_changed_calls > before
+
+
+def test_child_events_stream_compact_activity_into_lane_and_tree() -> None:
+    reducer, host = make_reducer("auto")
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="fan out", ts=1.0))
+    reducer.handle(
+        ev.AgentSpawned(
+            session_id="root",
+            parent_session_id="root",
+            sub_session_id="child",
+            agent="foundation:explorer",
+            ts=2.0,
+        )
+    )
+
+    reducer.handle(
+        ev.ToolPre(
+            session_id="child",
+            tool_call_id="read-1",
+            tool_name="read_file",
+            tool_input={"file_path": "/repo/README.md"},
+            ts=3.0,
+        )
+    )
+    lane = reducer.lanes.get("child")
+    assert lane is not None
+    assert lane.lane.state == "working"
+    assert lane.lane.activity == "reading README.md"
+    tree = next(block for block in host.blocks if block.kind == "answer")
+    assert tree.compact
+    assert "foundation:explorer · reading README.md" == "".join(
+        segment.text for segment in tree.spans
+    ).strip().removeprefix("├─ ").removeprefix("└─ ").removeprefix("● ")
+
+    reducer.handle(
+        ev.ToolPre(
+            session_id="child",
+            tool_call_id="edit-1",
+            tool_name="edit_file",
+            tool_input={
+                "file_path": "/repo/src/app.py",
+                "old_string": "old_value = 1",
+                "new_string": "new_value = 2",
+            },
+            ts=3.5,
+        )
+    )
+    reducer.handle(
+        ev.ToolPost(
+            session_id="child",
+            tool_call_id="edit-1",
+            tool_name="edit_file",
+            result={"success": True},
+            ts=3.6,
+        )
+    )
+    changes = next(block for block in host.blocks if block.kind == "tool_line")
+    assert changes.summary == "Changed 1 file"
+    assert changes.body_style == "diff"
+    assert "foundation:explorer · edit file · /repo/src/app.py" in changes.body
+    assert "-old_value = 1" in changes.body
+    assert "+new_value = 2" in changes.body
+
+    reducer.handle(
+        ev.ToolPre(
+            session_id="child",
+            tool_call_id="patch-1",
+            tool_name="apply_patch",
+            tool_input={
+                "patch": "\n".join(
+                    (
+                        "*** Begin Patch",
+                        "*** Update File: src/one.py",
+                        "-old",
+                        "+new",
+                        "*** Add File: src/two.py",
+                        "+created",
+                        "*** End Patch",
+                    )
+                )
+            },
+            ts=3.7,
+        )
+    )
+    reducer.handle(
+        ev.ToolPost(
+            session_id="child",
+            tool_call_id="patch-1",
+            tool_name="apply_patch",
+            result={"success": True},
+            ts=3.8,
+        )
+    )
+    changes = next(block for block in host.blocks if block.kind == "tool_line")
+    assert changes.summary == "Changed 3 files"
+    assert "foundation:explorer · apply patch · src/one.py, src/two.py" in changes.body
+
+    reducer.handle(
+        ev.StreamBlockStart(
+            session_id="child", block_type="text", request_id="r1", ts=4.0
+        )
+    )
+    lane = reducer.lanes.get("child")
+    assert lane is not None
+    assert lane.lane.state == "running"
+    assert lane.lane.activity == "writing response"
+    assert sum(block.kind == "tool_line" for block in host.blocks) == 1

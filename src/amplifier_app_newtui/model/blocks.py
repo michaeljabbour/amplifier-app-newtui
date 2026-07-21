@@ -143,6 +143,7 @@ class Narration(_FrozenModel):
 
 
 ToolLineStatus = Literal["running", "completed", "failed", "blocked"]
+ToolLineBodyStyle = Literal["plain", "diff"]
 
 
 class ToolLine(_FrozenModel):
@@ -161,6 +162,8 @@ class ToolLine(_FrozenModel):
     expanded: bool = False
     status: ToolLineStatus = "running"
     tool_call_ids: tuple[str, ...] = ()
+    body_style: ToolLineBodyStyle = "plain"
+    """``diff`` gives expanded +/-/@@ lines theme-aware patch styling."""
 
 
 class LiveCommand(_FrozenModel):
@@ -303,6 +306,8 @@ class Answer(_FrozenModel):
     spans: tuple[Segment, ...]
     evidence_refs: tuple[EvidenceLink, ...] = ()
     clickable: bool = True
+    compact: bool = False
+    """Suppress paragraph spacing for structural rows such as agent trees."""
 
 
 class SteerEcho(_FrozenModel):
