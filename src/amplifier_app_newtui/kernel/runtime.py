@@ -45,6 +45,7 @@ from .directory_permissions import (
     policy_from_mount_plan,
     settings_path_values,
     update_settings_path,
+    write_boundary_setting,
 )
 from .governance_hook import GovernanceHook
 from . import session_ops
@@ -132,11 +133,7 @@ def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str],
         else:
             continue
         text = text.strip()
-        if (
-            not text
-            or text.startswith("<system-reminder>")
-            or text.startswith("<turn_aborted>")
-        ):
+        if not text or text.startswith("<system-reminder>") or text.startswith("<turn_aborted>"):
             continue
         pairs.append((str(role), text))
     return tuple(pairs)
@@ -146,9 +143,7 @@ def _strip_printing_hooks(mount_plan: dict[str, Any]) -> None:
     hooks = mount_plan.get("hooks")
     if isinstance(hooks, list):
         mount_plan["hooks"] = [
-            h
-            for h in hooks
-            if not (isinstance(h, dict) and h.get("module") in _PRINTING_HOOKS)
+            h for h in hooks if not (isinstance(h, dict) and h.get("module") in _PRINTING_HOOKS)
         ]
 
 
@@ -207,9 +202,7 @@ class RealRuntime:
         needs_you: NeedsYouQueue | None = None,
         denial_log: DenialLog | None = None,
         mode: Callable[[], str] = lambda: "auto",
-        permission_resolver: Callable[
-            [str, Mapping[str, object] | None], TrustDecision
-        ]
+        permission_resolver: Callable[[str, Mapping[str, object] | None], TrustDecision]
         | None = None,
         capability_resolver: Callable[[CapabilityClass], TrustDecision] | None = None,
         project_dir: Path | None = None,
@@ -330,15 +323,15 @@ class RealRuntime:
         # governance all consult one effective source. Session-scoped paths
         # are folded in before a resumed session mounts its tools.
         directory_policy = policy_from_mount_plan(
-            resolved.mount_plan, resolved.project_dir
+            resolved.mount_plan,
+            resolved.project_dir,
+            write_boundary=write_boundary_setting(resolved.settings),
         )
         if session_id is not None:
             self._session_settings_path = store.session_dir(session_id) / "settings.yaml"
             session_settings = read_scope(self._session_settings_path)
             for kind in ("allowed", "denied"):
-                directory_policy.set_session(
-                    kind, settings_path_values(session_settings, kind)
-                )
+                directory_policy.set_session(kind, settings_path_values(session_settings, kind))
         apply_policy_to_mount_plan(resolved.mount_plan, directory_policy)
         self.directory_policy = directory_policy
 
@@ -394,9 +387,7 @@ class RealRuntime:
             # message in the live context; the reducer shifts checkpoint
             # turn ids past it so rewind forks at the true turn boundary
             # (DESIGN-SPEC §9).
-            on_inject=lambda: self.bridge.emit(
-                ContextInjected(session_id=initialized.session_id)
-            ),
+            on_inject=lambda: self.bridge.emit(ContextInjected(session_id=initialized.session_id)),
         )
         initialized.unregister_handles.append(boundary.register_hooks(hooks))
         saver = IncrementalSaver(
@@ -447,7 +438,9 @@ class RealRuntime:
             for part in (
                 f"Bundle: {resolved.bundle_name}",
                 f"Provider: {provider}" if provider else "",
-                f"{model} · session {self.session_short}" if model else f"session {self.session_short}",
+                f"{model} · session {self.session_short}"
+                if model
+                else f"session {self.session_short}",
             )
             if part
         )
@@ -485,11 +478,7 @@ class RealRuntime:
         """Effective paths with scope provenance for TUI display."""
         if self._resolved is None or self.directory_policy is None:
             return ()
-        result = list(
-            configured_entries(
-                settings_paths(self._resolved.project_dir, None), kind
-            )
-        )
+        result = list(configured_entries(settings_paths(self._resolved.project_dir, None), kind))
         session_values = (
             self.directory_policy.session_allowed
             if kind == "allowed"
@@ -528,9 +517,7 @@ class RealRuntime:
         if self.directory_policy is None or self._session_settings_path is None:
             return (False, "session still starting")
         if operation == "add":
-            changed, resolved = update_settings_path(
-                self._session_settings_path, kind, "add", path
-            )
+            changed, resolved = update_settings_path(self._session_settings_path, kind, "add", path)
         else:
             changed, resolved = update_settings_path(
                 self._session_settings_path, kind, "remove", path
@@ -563,9 +550,7 @@ class RealRuntime:
             and self._compaction_binding is not None
             and event.input_tokens > 0
         ):
-            asyncio.create_task(
-                self._compaction_binding.observe_input_tokens(event.input_tokens)
-            )
+            asyncio.create_task(self._compaction_binding.observe_input_tokens(event.input_tokens))
         if self._store is not None and self._initialized is not None:
             self._store.append_event(self._initialized.session_id, event)
 
@@ -590,9 +575,7 @@ class RealRuntime:
             )
         )
 
-    async def submit(
-        self, text: str, attachments: tuple[ImageAttachment, ...] = ()
-    ) -> str:
+    async def submit(self, text: str, attachments: tuple[ImageAttachment, ...] = ()) -> str:
         """Execute one user turn; returns the final response text.
 
         Git-yield capture (reference: amplifier-app-cli
@@ -618,9 +601,7 @@ class RealRuntime:
         try:
             # Turn-open first: the user's echo + working line paint NOW, not
             # after the pre-prompt hook work inside ``session.execute``.
-            self.bridge.emit(
-                PromptSubmit(session_id=self._initialized.session_id, prompt=text)
-            )
+            self.bridge.emit(PromptSubmit(session_id=self._initialized.session_id, prompt=text))
             self.turn_yield.start_turn()
             starting_diff = await self._capture_diff()
             response = await self._initialized.session.execute(text)
@@ -657,9 +638,7 @@ class RealRuntime:
             logger.warning("context cannot persist the turn-aborted marker")
             return False
         try:
-            result = add_message(
-                {"role": "assistant", "content": TURN_ABORTED_MARKER}
-            )
+            result = add_message({"role": "assistant", "content": TURN_ABORTED_MARKER})
             if asyncio.iscoroutine(result):
                 await result
             return True

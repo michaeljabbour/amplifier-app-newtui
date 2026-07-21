@@ -11,6 +11,7 @@ from amplifier_app_newtui.kernel.directory_permissions import (
     PROTECTED_PROJECT_PATHS,
     configured_entries,
     update_configured_path,
+    write_boundary_setting,
 )
 
 
@@ -37,6 +38,7 @@ def test_deny_wins_and_project_is_implicit(tmp_path: Path) -> None:
         project,
         allowed=(str(outside),),
         denied=(str(blocked),),
+        write_boundary="guarded",
     )
     assert policy.check_write(project / "ok.txt")[0]
     assert policy.check_write(outside / "ok.txt")[0]
@@ -44,10 +46,33 @@ def test_deny_wins_and_project_is_implicit(tmp_path: Path) -> None:
     assert not policy.check_write(tmp_path / "elsewhere" / "no.txt")[0]
 
 
+def test_open_boundary_is_the_default_and_matches_app_cli(tmp_path: Path) -> None:
+    """Default posture: no app-level write gate outside the project — the
+    mounted filesystem tool remains the sole write enforcement (app-cli
+    parity). Denied and protected paths still deny pre-flight."""
+    project = tmp_path / "project"
+    blocked = project / "blocked"
+    policy = DirectoryPolicy(project, denied=(str(blocked),))
+    assert policy.write_boundary == "open"
+    allowed, reason = policy.check_write(tmp_path / "elsewhere" / "ok.txt")
+    assert allowed
+    assert "filesystem tool" in reason
+    assert not policy.check_write(blocked / "no.txt")[0]
+    assert not policy.check_write(project / "AGENTS.md")[0]
+
+
+def test_write_boundary_setting_resolution() -> None:
+    assert write_boundary_setting({}) == "open"
+    assert write_boundary_setting({"permissions": {}}) == "open"
+    assert write_boundary_setting({"permissions": {"write_boundary": "guarded"}}) == "guarded"
+    assert write_boundary_setting({"permissions": {"write_boundary": "bogus"}}) == "open"
+    assert write_boundary_setting({"permissions": "not-a-dict"}) == "open"
+
+
 def test_shell_path_signal_respects_allowed_and_parent_escape(tmp_path: Path) -> None:
     project = tmp_path / "project"
     shared = tmp_path / "shared"
-    policy = DirectoryPolicy(project, allowed=(str(shared),))
+    policy = DirectoryPolicy(project, allowed=(str(shared),), write_boundary="guarded")
     assert policy.shell_outside_target("echo ok > ./inside.txt") is None
     assert policy.shell_outside_target(f"echo ok > {shared / 'out.txt'}") is None
     outside = policy.shell_outside_target("echo no > ../outside.txt")
@@ -63,11 +88,22 @@ def test_read_shaped_shell_roams_outside_project(tmp_path: Path) -> None:
     assert policy.shell_outside_target("grep -r needle ~/somewhere/src") is None
 
 
-def test_write_shaped_shell_is_flagged_outside_project(tmp_path: Path) -> None:
-    policy = DirectoryPolicy(tmp_path / "project")
+def test_write_shaped_shell_is_flagged_outside_project_when_guarded(tmp_path: Path) -> None:
+    policy = DirectoryPolicy(tmp_path / "project", write_boundary="guarded")
     assert policy.shell_outside_target("rm /tmp/elsewhere/x.txt") is not None
     assert policy.shell_outside_target("echo x > /tmp/elsewhere/x.txt") is not None
     assert policy.shell_outside_target("cd /tmp && rm /tmp/elsewhere/x.txt") is not None
+
+
+def test_write_shaped_shell_roams_when_open(tmp_path: Path) -> None:
+    """Default open posture: bash writes roam like app-cli's unconfined bash.
+    Denied and protected paths are still flagged."""
+    blocked = tmp_path / "project" / "blocked"
+    policy = DirectoryPolicy(tmp_path / "project", denied=(str(blocked),))
+    assert policy.shell_outside_target("rm /tmp/elsewhere/x.txt") is None
+    assert policy.shell_outside_target("echo x > /tmp/elsewhere/x.txt") is None
+    assert policy.shell_outside_target(f"rm {blocked / 'x.txt'}") is not None
+    assert policy.shell_outside_target("echo bad > ./AGENTS.md") is not None
 
 
 def test_denied_paths_flag_even_in_read_shaped_commands(tmp_path: Path) -> None:

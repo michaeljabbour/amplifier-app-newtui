@@ -132,10 +132,13 @@ hand it over: the plan is already in the conversation — shift+tab to build and
 ## 5. Approvals
 
 In the default `auto` posture, read/test calls proceed silently anywhere outside denied
-directories — reads are denylist-bounded, not confined to the project — and in-project
-writes proceed silently too. Network, spend, shell and write-shaped outside-project
-actions are reasoning-blind classifier gates: explicit, safe user requests proceed;
-destructive or unrequested boundary crossings deny and defer.
+directories — reads are denylist-bounded, not confined to the project — and writes
+proceed silently too. Outside the project, the write tools defer to the filesystem
+tool's own boundary (a graceful tool error, never an approval) and shell writes roam —
+the same defaults as the amplifier CLI. Network, spend and shell actions are
+reasoning-blind classifier gates: explicit, safe user requests proceed; destructive or
+unrequested boundary crossings deny and defer. Set `permissions.write_boundary: guarded`
+in settings to restore app-level gating of outside-project writes.
 `chat` and `build` can ask more often, and `/mode careful` or another bundle mode can add
 native confirmations. An ask replaces the composer with **Allow once · Allow always ·
 Deny**.
@@ -218,12 +221,16 @@ the mounted filesystem tool is the hard enforcement point. `.git`, `.agents`, `.
 and `AGENTS.md` beneath the project are protected defaults and cannot be reopened by an
 approval. The kernel resolves two independent axes for each recognized action: whether it
 needs approval and whether its recognizable target satisfies the configured path policy.
-Reads are denylist-bounded: the AI may read anywhere outside denied directories, while
-writes stay confined to allowed paths. Shell calls pass through this check for
-recognizable absolute, home-relative, parent-relative and redirection paths — write-shaped
-commands (write-command heads, redirection targets) are gated outside the project while
-read-shaped commands may roam; this is not yet an operating-system sandbox around
-arbitrary interpreter code.
+Reads are denylist-bounded: the AI may read anywhere outside denied directories. Write
+*tools* stay confined to allowed paths — enforced by the mounted filesystem tool itself,
+which fails gracefully outside them. By default (`permissions.write_boundary: open`,
+amplifier-CLI parity) there is no additional app-level gate: shell writes roam, and only
+denied or protected paths are stopped. Setting `permissions.write_boundary: guarded`
+restores the app-level gate: outside writes are blocked pre-flight, and shell calls are
+checked for recognizable absolute, home-relative, parent-relative and redirection paths —
+write-shaped commands (write-command heads, redirection targets) get gated outside the
+project while read-shaped commands still roam. Neither posture is an operating-system
+sandbox around arbitrary interpreter code.
 
 ## 8. Keys
 
