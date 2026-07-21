@@ -45,6 +45,18 @@ tools:
     config:
       url: ""
       key: ""
+  # Skills: anchors pins tool-skills to the foundation skill set, which
+  # REPLACES tool-skills' default scan of ~/.amplifier/skills (its source-
+  # resolution priority 1 wins). Re-mount here (later bundles override
+  # earlier ones) with the same foundation set PLUS the user dir, so skills
+  # installed for other harnesses (Claude Code, Codex) are visible to
+  # amplifier too. Missing local dirs are skipped, not fatal.
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+    config:
+      skills:
+        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+        - "~/.amplifier/skills"
 ---
 
 # Amplifier NewTUI Bundle
