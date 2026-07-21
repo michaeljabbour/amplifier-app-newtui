@@ -305,8 +305,9 @@ NewTuiApp
 ```
 
 `TitleBar` owns the only 260 ms active-turn spinner timer. Each changed frame
-is emitted as a Textual message; `NewTuiApp` mirrors that already-rendered text
-to the native terminal window/tab title with a sanitized, bounded OSC 0 write.
+is emitted as a Textual message; `NewTuiApp` mirrors a higher-motion braille
+frame to the native terminal window/tab title with a sanitized, bounded OSC 0
+write while the in-app chrome keeps the product's star pulse.
 The timer is stopped at idle, and unmount restores a static application title.
 
 ### 5.2 State management (`ui/reducer.py`)
@@ -529,9 +530,11 @@ unwinds in `finally`.
 
 On the model side, `LaneRegistry` (`model/lanes.py`) keys lanes by `session_id` and routes by
 `parent_id`, tolerating spawn/start races (idempotent registration; retro-patched depths).
-The UI shows agent activity three ways: inline activity-tree lines in the transcript, the
+The UI shows agent activity three ways: compact activity-tree lines in the transcript, the
 `WorkingStatus` pulse ("Coordinating N agents…"), and the `LanesPanel` overlay (one row per
 agent: state glyph · activity · elapsed · tokens · cost), which auto-opens on fan-out.
+Child tool/stream events update the first and third surfaces in place; successful native
+file writes also feed one bounded, expandable, diff-styled `Changed N files` ToolLine.
 
 ---
 

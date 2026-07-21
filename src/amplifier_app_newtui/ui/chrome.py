@@ -27,6 +27,9 @@ TITLE_SEPARATOR = " — "
 SPINNER_INTERVAL = 0.26
 """Seconds between spinner frames (~260ms per DESIGN-SPEC §2)."""
 
+TERMINAL_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+"""Unmistakable terminal-window spinner; the in-app chrome keeps its stars."""
+
 TERMINAL_TITLE_MAX_CHARS = 180
 """Keep macOS terminal tabs useful when a plan step has a long title."""
 
@@ -90,8 +93,9 @@ class TitleBar(Static):
     class TitleChanged(Message):
         """The rendered title changed, including an active spinner frame."""
 
-        def __init__(self, title: str) -> None:
+        def __init__(self, title: str, terminal_title: str) -> None:
             self.title = title
+            self.terminal_title = terminal_title
             super().__init__()
 
     def __init__(self, *, id: str | None = None, classes: str | None = None) -> None:
@@ -107,6 +111,14 @@ class TitleBar(Static):
         """The current spinner frame (``✳``/``✦``/``✧``/``✦``)."""
         return GLYPH_SPINNER_FRAMES[self._frame_index % len(GLYPH_SPINNER_FRAMES)]
 
+    @property
+    def terminal_spinner_glyph(self) -> str:
+        """The current high-motion braille frame for native terminal chrome."""
+
+        return TERMINAL_SPINNER_FRAMES[
+            self._frame_index % len(TERMINAL_SPINNER_FRAMES)
+        ]
+
     def title_text(self) -> str:
         """Plain rendered title, spinner prefix included while running."""
         title = self._plain_title()
@@ -114,10 +126,19 @@ class TitleBar(Static):
             return f"{self.spinner_glyph} {title}"
         return title
 
+    def terminal_title_text(self) -> str:
+        """Native terminal title with a visibly rotating braille spinner."""
+
+        title = self._plain_title()
+        if self.running:
+            return f"{self.terminal_spinner_glyph} {title}"
+        return title
+
     # -- painting ----------------------------------------------------------
 
     def _repaint(self) -> None:
         title = self.title_text()
+        terminal_title = self.terminal_title_text()
         if self.running:
             # Substitution kwargs insert values literally (no markup parse).
             self.update(
@@ -129,9 +150,9 @@ class TitleBar(Static):
             )
         else:
             self.update(Content.from_markup("$title", title=title))
-        if self.is_mounted and title != self._last_emitted_title:
-            self._last_emitted_title = title
-            self.post_message(self.TitleChanged(title))
+        if self.is_mounted and terminal_title != self._last_emitted_title:
+            self._last_emitted_title = terminal_title
+            self.post_message(self.TitleChanged(title, terminal_title))
 
     def _plain_title(self) -> str:
         parts = [APP_TITLE_NAME, PRODUCT_NAME, self.state_text]
@@ -143,7 +164,7 @@ class TitleBar(Static):
 
     def advance_spinner(self) -> None:
         """Step to the next spinner frame and repaint (timer callback)."""
-        self._frame_index = (self._frame_index + 1) % len(GLYPH_SPINNER_FRAMES)
+        self._frame_index += 1
         self._repaint()
 
     # -- reactive watchers ---------------------------------------------------
@@ -189,6 +210,7 @@ __all__ = [
     "APP_TITLE_NAME",
     "PRODUCT_NAME",
     "SPINNER_INTERVAL",
+    "TERMINAL_SPINNER_FRAMES",
     "TERMINAL_TITLE_MAX_CHARS",
     "TITLE_SEPARATOR",
     "TitleBar",

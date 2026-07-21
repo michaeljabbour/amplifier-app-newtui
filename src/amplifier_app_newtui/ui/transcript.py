@@ -65,6 +65,7 @@ from ..model.blocks import (
     TodoBlock,
     SessionBanner,
     SteerEcho,
+    StyleToken,
     ToolLine,
     TranscriptBlock,
     TurnRule,
@@ -74,6 +75,7 @@ from ..model.blocks import (
 from ..model.evidence import EvidenceLink
 from ..model.modes import get_mode
 from .keymap import KEYMAP
+from .motion import SHIMMER_INTERVAL_SECONDS, shimmer_band
 from .needs_you import NeedsYouList
 from .segments import Line, lines_markup
 
@@ -85,8 +87,8 @@ SPINNER_INTERVAL_SECONDS = 1.0
 1000ms telemetry tick (design-v3-cohesive.html runTurn, ``secs % 4``) —
 the faster 260ms spinTimer is the §2 TITLE-bar spinner only."""
 
-MOTION_INTERVAL_SECONDS = 0.14
-"""Active-only chasing highlight cadence for working/coordinating labels."""
+MOTION_INTERVAL_SECONDS = SHIMMER_INTERVAL_SECONDS
+"""Active-only soft-band cadence for working/coordinating labels."""
 
 TOOL_EXPAND_HINT = " · click to expand"
 """Exact collapsed-tool-line hint (DESIGN-SPEC §3)."""
@@ -235,7 +237,30 @@ def _render_tool_line(block: ToolLine, width: int) -> tuple[Line, ...]:
     lines: list[Line] = [tuple(head)]
     if block.expanded:
         for body_line in block.body:
-            lines.append((Segment(text=f"      {body_line}", style_token="dimmer"),))
+            token = "dimmer"
+            background = None
+            bold = False
+            if block.body_style == "diff":
+                if body_line.startswith("@@"):
+                    token, bold = "blue", True
+                elif body_line.startswith(("--- ", "+++ ")):
+                    token = "teal"
+                elif body_line.startswith("+"):
+                    token, background = "green", "bg-tab"
+                elif body_line.startswith("-"):
+                    token, background = "red", "bg-tab"
+                elif " · " in body_line:
+                    token = "dim"
+            lines.append(
+                (
+                    Segment(
+                        text=f"      {body_line}",
+                        style_token=token,
+                        bold=bold,
+                        bg_token=background,
+                    ),
+                )
+            )
     return tuple(lines)
 
 
@@ -350,22 +375,26 @@ def _render_blocked(block: Blocked, width: int) -> tuple[Line, ...]:
 
 
 def _shimmer_segments(label: str, frame: int) -> tuple[Segment, ...]:
-    """A restrained one-cell highlight that chases across *label*.
+    """A soft five-cell highlight band that travels across *label*.
 
     The quiet gap keeps this from reading like a marquee; plain text never
     changes, so copy/paste and snapshots remain stable.
     """
-    phase = frame % (len(label) + 4)
-    if phase >= len(label):
-        return (Segment(text=label, style_token="dim"),)
+    band: dict[int, tuple[StyleToken, bool]] = {
+        index: (token, bold)
+        for index, token, bold in shimmer_band(len(label), frame)
+    }
+    base_style: tuple[StyleToken, bool] = ("dim", False)
     segments: list[Segment] = []
-    if phase:
-        segments.append(Segment(text=label[:phase], style_token="dim"))
-    segments.append(
-        Segment(text=label[phase], style_token="bright", bold=True)
-    )
-    if phase + 1 < len(label):
-        segments.append(Segment(text=label[phase + 1 :], style_token="dim"))
+    for index, character in enumerate(label):
+        token, bold = band.get(index, base_style)
+        if segments and segments[-1].style_token == token and segments[-1].bold == bold:
+            previous = segments[-1]
+            segments[-1] = previous.model_copy(
+                update={"text": previous.text + character}
+            )
+        else:
+            segments.append(Segment(text=character, style_token=token, bold=bold))
     return tuple(segments)
 
 
@@ -868,6 +897,9 @@ class BlockWidget(Static):
     BlockWidget.kind-answer {
         margin-top: 1;
     }
+    BlockWidget.kind-answer.compact {
+        margin-top: 0;
+    }
     """
 
     BINDINGS = [
@@ -906,6 +938,8 @@ class BlockWidget(Static):
         self.add_class(f"kind-{block.kind.replace('_', '-')}")
         if isinstance(block, PlanBlock) and block.read_only:
             self.add_class("read-only")
+        if isinstance(block, Answer) and block.compact:
+            self.add_class("compact")
         if block.kind in ("tool_line", "evidence"):
             # Evidence blocks take keyboard focus so the header's
             # advertised keys work (keymap "evidence" context, spec §10).
@@ -956,6 +990,8 @@ class BlockWidget(Static):
         self._block = block
         if isinstance(block, PlanBlock):
             self.set_class(block.read_only, "read-only")
+        if isinstance(block, Answer):
+            self.set_class(block.compact, "compact")
         if block.kind == "working_status":
             # Fresh event telemetry: re-anchor the wall-clock secs tick.
             self._telemetry_anchor = monotonic()

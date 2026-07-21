@@ -36,7 +36,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 
 ## 2. Screen layout (top → bottom)
 
-1. **Title bar** (bg-chrome): centered title `amplifier-app-newtui — Amplifier — <state> — <bundle> — <session-short>`; while running, prefix with orange spinner glyph cycling `✳ ✦ ✧ ✦` every ~260ms; title's `<state>` reflects current plan step (lowercased) or `ready` / `planning` / `brainstorming` / `✳ coordinating N agents`.
+1. **Title bar** (bg-chrome): centered title `amplifier-app-newtui — Amplifier — <state> — <bundle> — <session-short>`; while running, prefix with orange spinner glyph cycling `✳ ✦ ✧ ✦` every ~260ms and mirror a visibly rotating braille frame into native terminal chrome; title's `<state>` reflects current plan step (lowercased) or `ready` / `planning` / `brainstorming` / `✳ coordinating N agents`.
 2. **Transcript** (bg-term): scrollable region, the main body.
 3. **Notice slot**: transient right-aligned dim text floating at transcript bottom edge (auto-dismiss ~4s), e.g. `mode plan · read-only`, `steer queued · shift+enter queues a full next-turn message`.
 4. **Overlay strips** (each a bordered strip above composer, shown when active):
@@ -120,7 +120,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 ## 8. Agent lanes & subagent focus
 
 - [ ] ctrl-t (or `/tasks`) toggles lanes panel: header `Agent lanes · ↑↓ select · enter focus · esc close` + one aligned line per subagent: `  <glyph> <name> · <activity> · <elapsed> · $<cost>` (glyph/color per state: ◐ teal running, ■ fg working, ✔ dim done).
-- [ ] Multi-agent turn renders a live tree in transcript: `  ├─ ● <name> · <activity> · $<cost>` dim, completing to `  ├─ ✔ … · done · <result> · <t> · $<cost>` green check.
+- [ ] Multi-agent turn renders a compact live tree in transcript: `  ├─ ● <name> · <activity>` dim, updating the activity in place from child tool/stream events and completing to `  ├─ ✔ … · done` with no paragraph gap between rows. Successful native file writes aggregate into one expandable, diff-styled `Changed N files` row.
 - [ ] Selecting a lane focuses that subagent: transcript swaps to the child's own transcript with banner `focused: <name> · subagent of <parent-session> · own context window · results report back to parent · esc back`, its delegated brief as user-line `[delegated]`, its log, its state recap. Esc returns to parent (`back to parent session`).
 - [ ] Title while coordinating: `… — ✳ coordinating N agents — …`.
 

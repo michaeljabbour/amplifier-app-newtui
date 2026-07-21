@@ -58,9 +58,10 @@ wired? `--demo` always works and exercises the whole UI offline.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-While Amplifier is working, the small title-bar spinner is mirrored into your
-terminal window or tab title. It uses the same active-turn timer, so it stops
-immediately when the turn finishes and consumes no idle redraw loop.
+While Amplifier is working, the title bar pulses in-app and an unmistakable
+braille spinner is mirrored into your terminal window or tab title. Both use
+the same active-turn timer, so they stop immediately when the turn finishes and
+consume no idle redraw loop.
 
 The footer always shows your current mode, trust posture, and session cost on the left, and
 the keys that work *right now* on the right. The hints change with context — when in doubt,
@@ -269,6 +270,11 @@ hints.)*
 When the agent fans work out to subagents, the **lanes panel** opens automatically (or
 toggle with **ctrl+t**): one live row per agent — state glyph (◐ running · ■ working ·
 ✔ done), current activity, elapsed time, tokens, cost.
+
+Child tool and stream events update that row and its compact transcript-tree row in place
+(`reading README.md`, `editing reducer.py`, `writing response`) without accumulating status
+lines. Successful native file edits roll into one `Changed N files · click to expand` row;
+click it (or focus it and press **enter**) for bounded, theme-aware red/green details.
 
 Select a lane with ↑↓ and press **enter** to *focus* it: the transcript switches to that
 subagent's own work. **esc** steps back out — first unfocusing the lane, then closing the

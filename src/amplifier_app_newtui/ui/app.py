@@ -809,8 +809,8 @@ class NewTuiApp(App[None]):
     def on_title_bar_title_changed(self, message: TitleBar.TitleChanged) -> None:
         """Mirror the in-app title into the native terminal window/tab title."""
         message.stop()
-        self.title = message.title
-        write_terminal_title(self._driver, message.title)
+        self.title = message.terminal_title
+        write_terminal_title(self._driver, message.terminal_title)
 
     def copy_to_clipboard(self, text: str) -> None:
         """Clipboard writes go BOTH ways: OSC 52 (Textual's built-in, works
