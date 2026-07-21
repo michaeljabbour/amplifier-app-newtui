@@ -1,4 +1,4 @@
-"""Task status tracker: agent lanes from ``task:agent_*`` events.
+"""Task status tracker: agent lanes from ``task:agent_*`` / ``delegate:*`` events.
 
 Hook-tracker pattern feeding a :class:`~model.lanes.LaneRegistry` — lanes
 are keyed by ``session_id`` and routed by ``parent_id`` (the entire
@@ -20,7 +20,7 @@ from typing import Any
 from amplifier_core import HookResult
 
 from ...model.lanes import LaneRecord, LaneRegistry
-from ..events import AgentCompleted, AgentSpawned, normalize
+from ..events import AgentCompleted, AgentResumed, AgentSpawned, normalize
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,11 @@ class TaskStatusTracker:
         "task:agent_completed",
         "task:spawned",
         "task:completed",
+        "delegate:agent_spawned",
+        "delegate:agent_completed",
+        "delegate:agent_resumed",
+        "delegate:agent_cancelled",
+        "delegate:error",
         "session:start",
         "session:end",
     )
@@ -100,9 +105,7 @@ class TaskStatusTracker:
             if not child_id or child_id == self.root_session_id:
                 return
             parent_id = (
-                normalized.parent_session_id
-                or normalized.session_id
-                or self.root_session_id
+                normalized.parent_session_id or normalized.session_id or self.root_session_id
             )
             if parent_id == child_id:
                 parent_id = self.root_session_id
@@ -125,7 +128,25 @@ class TaskStatusTracker:
                     name=normalized.agent or _agent_from_session_id(child_id),
                 )
             self.lanes.complete(
-                child_id, result="" if normalized.success else "failed"
+                child_id,
+                result=normalized.result or ("" if normalized.success else "failed"),
+            )
+            self._notify()
+        elif isinstance(normalized, AgentResumed):
+            # delegate:agent_resumed carries only the child session_id (the
+            # envelope's own field) + parent_session_id -- no `agent` name
+            # (intentional, see AgentResumed docstring): the lane already
+            # exists from the original spawn, keyed by this same id, so
+            # reopening it needs nothing new to key on.
+            child_id = normalized.session_id
+            if not child_id or child_id == self.root_session_id:
+                return
+            self.lanes.register(
+                child_id,
+                parent_id=normalized.parent_session_id or self.root_session_id,
+                name=normalized.agent or _agent_from_session_id(child_id),
+                activity="running",
+                reopen=True,
             )
             self._notify()
 

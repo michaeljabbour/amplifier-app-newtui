@@ -201,7 +201,7 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 Amplifier session through the coordinator (the same calls the reference CLI
 makes). **`/model`** switches the mounted provider's model in place;
 **`/compact`** and **`/clear`** drive the context module directly.
-The packaged newtui bundle also compacts automatically at 80% of its 200k
+The packaged newtui bundle also compacts automatically at 80% of its 300k
 window. Override `context.auto_compact`, `context.compact_threshold`, or
 `context.max_tokens` in settings; `/status` shows the effective policy and
 whether accounting is provider-observed or estimated. `/context` uses the effective

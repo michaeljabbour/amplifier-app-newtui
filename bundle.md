@@ -1,59 +1,41 @@
 ---
 bundle:
   name: newtui
-  version: 0.1.0
+  version: 0.2.0
   description: |
-    Default bundle for amplifier-app-newtui — the Amplifier full-screen
-    Textual TUI (v3 Cohesive). A lean, real bundle: streaming orchestrator
-    (both event channels), simple context, Anthropic provider, core tools.
-    The TUI renders everything itself, so no printing hook modules are
-    mounted here (hooks-streaming-ui must never be mounted by this app).
+    Thin wrapper bundle for amplifier-app-newtui — the Amplifier full-screen
+    Textual TUI. Composes foundation's `anchors` bundle (the amplifier-app-cli
+    default: streaming orchestrator, 300k context, standard tool roster with
+    tool-delegate subagents, and six bundle-local agents) and overlays only
+    what the TUI needs: a default provider so fresh installs boot, tool-mcp,
+    tool-team-pulse, and the terminal response contract. The TUI renders
+    everything itself; printing hooks composed in via anchors and the
+    double-writing hooks-logging are suppressed at boot by the app kernel
+    (built-in suppression list + the `hooks.suppress` setting).
 
-session:
-  raw: true
-  orchestrator:
-    module: loop-streaming
-    source: git+https://github.com/microsoft/amplifier-module-loop-streaming@main
-    config:
-      extended_thinking: true
-  context:
-    module: context-simple
-    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
-    config:
-      max_tokens: 200000
-      compact_threshold: 0.8
-      auto_compact: true
+includes:
+  # anchors, pinned to a specific amplifier-foundation commit.
+  # PARTIAL PIN: this pins only anchors' own bundle.md — its internal
+  # includes (behaviors/*.yaml) and module sources still reference @main
+  # and keep floating until upstream pins them. No worse than the previous
+  # vendored bundle (which floated 8 modules @main).
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@93615d9847ce40313cc0d60583cb886de4337f9e#subdirectory=bundles/anchors/bundle.md
 
 providers:
+  # anchors is provider-agnostic by design; this app hard-fails boot at zero
+  # providers, so the wrapper keeps a default. Reconfigure or add providers
+  # via settings `config.providers`.
   - module: provider-anthropic
     source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
     config:
       priority: 1
 
 tools:
-  - module: tool-filesystem
-    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
-  - module: tool-bash
-    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
-  - module: tool-web
-    source: git+https://github.com/microsoft/amplifier-module-tool-web@main
-  - module: tool-search
-    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
-  - module: tool-task
-    source: git+https://github.com/microsoft/amplifier-module-tool-task@main
   # MCP servers: tool-mcp reads ~/.amplifier/mcp.json (+ ./.amplifier/mcp.json)
   # and mounts each remote server's tools as mcp_<server>_<tool>. No mcp.json
   # ⇒ no-op. Managed in-app via /mcp.
   - module: tool-mcp
     source: git+https://github.com/microsoft/amplifier-module-tool-mcp@main
-  # Skills: tool-skills exposes the load_skill tool (list/load). Driven
-  # in-app via /skills and /skill. visibility.enabled: false matches the
-  # anchors default (no per-request auto-injection — the TUI lists on demand).
-  - module: tool-skills
-    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
-    config:
-      visibility:
-        enabled: false
   # team-pulse: read-only lens over a team corpus (all GET endpoints). url/key
   # are empty here by design — mount() resolves them from settings or the
   # AMPLIFIER_TEAM_PULSE_URL / _KEY env vars, and is skipped (degraded, not
@@ -63,51 +45,6 @@ tools:
     config:
       url: ""
       key: ""
-  # Native modes: tool-mode lets the app switch the active mode (the app
-  # drives it from its shift+tab posture bridge). gate_policy warn = the
-  # first agent-initiated set is confirmed (the app retries once).
-  - module: tool-mode
-    source: git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=modules/tool-mode
-    config:
-      gate_policy: warn
-
-# Approval / mode enforcement — OFF BY DEFAULT.
-# hooks-mode (tool:pre pri -20) sets require_approval_tools from the active
-# mode; hooks-approval (pri -10) prompts via the app's ApprovalBroker.
-# policy_driven_only + no active mode ⇒ require_approval_tools empty ⇒ NOTHING
-# is gated. Gating only turns on when a posture activates a mode whose YAML
-# lists confirm/block/warn tools. default_action: continue ⇒ a provider
-# timeout falls through to allow, never a spurious deny.
-hooks:
-  - module: hooks-mode
-    source: git+https://github.com/microsoft/amplifier-bundle-modes@main#subdirectory=modules/hooks-mode
-    config:
-      search_paths: []
-  - module: hooks-approval
-    source: git+https://github.com/microsoft/amplifier-module-hooks-approval@main
-    config:
-      rules: []
-      default_action: continue
-      policy_driven_only: true
-# Model routing (hooks-routing) is intentionally NOT mounted here — the
-# anchors default doesn't mount it either; it arrives via a bundle.app
-# overlay (routing-matrix) when the user wants it. The spawner still threads
-# provider_preferences/model_role, so routing works the moment an overlay
-# registers the model_role_resolver capability.
-
-agents:
-  # PRECONDITION: the `foundation:` namespace is provisioned by this app's
-  # BundleRegistry (registered as a well-known name at startup), NOT composed
-  # via `includes:`. Deliberate: composing foundation (or its agents behavior)
-  # would mount tools/hooks and heavy always-on context this app must not
-  # load. App-embedded bundle, not standalone-loadable — see body below.
-  include:
-    - foundation:explorer
-    - foundation:zen-architect
-    - foundation:bug-hunter
-    - foundation:test-coverage
-    - foundation:modular-builder
-    - foundation:web-research
 ---
 
 # Amplifier NewTUI Bundle
@@ -116,20 +53,18 @@ This is the app's REAL bundle — `resolve_config()` discovers it by name
 (`newtui`), loads it via foundation's `load_bundle`, composes any settings
 overlays (`bundle.app`), and `prepare()`s it exactly once per app start.
 
+It is a THIN WRAPPER: the session (streaming orchestrator + 300k context),
+tool roster (including `tool-delegate` subagents), hooks, and the six
+bundle-local agents all come from the composed `anchors` bundle above. This
+file overlays only the default provider, two TUI-specific tools, and the
+terminal response contract below (which composes alongside anchors'
+system.md). Printing hooks and `hooks-logging` composed in via anchors are
+stripped at boot by the app kernel's suppressed-hooks mechanism.
+
 A packaged copy ships inside the wheel at
 `amplifier_app_newtui/data/bundles/newtui.md` (lowest-precedence search
 path); project (`.amplifier/bundles/`) and user (`~/.amplifier/bundles/`)
 bundles override it by name.
-
-## Preconditions (app-embedded bundle)
-
-This bundle is loaded by amplifier-app-newtui, whose BundleRegistry registers
-`foundation` as a well-known name before load — that registration is what
-makes the `foundation:` agent references above resolve. It deliberately does
-not `include:` foundation (or `foundation:behaviors/agents`): doing so would
-mount foundation hooks (`hooks-streaming-ui`) and heavy always-on context
-that conflict with this app's design. It is not standalone-loadable via
-`amplifier run --bundle` in a bare environment.
 
 ## Terminal response contract
 

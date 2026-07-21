@@ -30,6 +30,7 @@ from .events import (
     ApprovalDenied,
     ContentBlockEnd,
     ContextInjected,
+    Notification,
     PromptComplete,
     PromptSubmit,
     ProviderResponseUsage,
@@ -105,6 +106,33 @@ live: the whole turn rendered blank in real mode. Stripped for the
 headless ``run`` subcommand too, where the same printers double-echo.
 """
 
+_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging"})
+"""Built-in default set of hook module ids suppressed at mount time.
+
+The four line-mode printers write raw ANSI (cursor moves, line erases)
+that corrupts the full-screen TUI; ``hooks-logging`` (composed in
+transitively via an anchors ``include``) double-writes the app-owned
+``events.jsonl``. Settings-extensible via ``suppressed_hooks_setting``
+below — user ``hooks.suppress`` entries are unioned in, never replace
+this baseline.
+"""
+
+
+def suppressed_hooks_setting(settings: dict[str, Any]) -> frozenset[str]:
+    """Resolve the suppressed-hooks set from merged settings.
+
+    Copies the ``write_boundary_setting`` resolver pattern
+    (``kernel/directory_permissions.py``): the built-in default is always
+    present, and a well-shaped ``hooks.suppress`` list is unioned in.
+    Junk shapes (missing/non-dict ``hooks``, non-list ``suppress``) fall
+    back to the default set alone; blank entries are stripped.
+    """
+    hooks = settings.get("hooks")
+    raw = hooks.get("suppress") if isinstance(hooks, dict) else None
+    if not isinstance(raw, list):
+        return _SUPPRESSED_HOOKS_DEFAULT
+    return _SUPPRESSED_HOOKS_DEFAULT | {str(item).strip() for item in raw if str(item).strip()}
+
 
 def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
     """Simplified (role, text) pairs from a stored transcript for replay.
@@ -139,12 +167,57 @@ def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str],
     return tuple(pairs)
 
 
-def _strip_printing_hooks(mount_plan: dict[str, Any]) -> None:
-    hooks = mount_plan.get("hooks")
+def _apply_hook_suppression(
+    mount_plan: dict[str, Any],
+    notify: Callable[[Any], None],
+    suppressed: frozenset[str] | None = None,
+) -> list[str]:
+    """Strip suppressed hooks from the mount plan; notify what was removed.
+
+    Replaces the old silent ``_strip_printing_hooks``: stripping hooks
+    behind the user's back (even for good reasons \u2014 corrupted-screen
+    printers, double-logging) is a surprise waiting to happen. One
+    ``Notification`` names every removed module id so it never is.
+    """
+    suppress_set = _SUPPRESSED_HOOKS_DEFAULT if suppressed is None else suppressed
+    hooks = mount_plan.get("hooks", [])
+    kept: list[Any] = []
+    removed: list[str] = []
     if isinstance(hooks, list):
-        mount_plan["hooks"] = [
-            h for h in hooks if not (isinstance(h, dict) and h.get("module") in _PRINTING_HOOKS)
-        ]
+        for entry in hooks:
+            if isinstance(entry, dict) and entry.get("module") in suppress_set:
+                removed.append(str(entry.get("module")))
+            else:
+                kept.append(entry)
+    mount_plan["hooks"] = kept
+    removed_sorted = sorted(removed)
+    if removed_sorted:
+        notify(Notification(message=f"suppressed hooks: {', '.join(removed_sorted)}"))
+    return removed_sorted
+
+
+def _resume_bundle_notice(
+    metadata: dict[str, Any],
+    current_bundle: str,
+    notify: Callable[[Any], None],
+) -> None:
+    """Notice when a resumed session's stored bundle differs from the one
+    currently resolved.
+
+    Resuming under a different bundle than the session was created with can
+    silently change which modules/tools/hooks govern the turn - one
+    ``Notification`` surfaces the mismatch instead of reattaching quietly.
+    """
+    stored_bundle = metadata.get("bundle")
+    if stored_bundle and stored_bundle != current_bundle:
+        notify(
+            Notification(
+                message=(
+                    f"resuming session from '{stored_bundle}' bundle "
+                    f"under '{current_bundle}' bundle"
+                )
+            )
+        )
 
 
 class _BrokerApprovalProvider:
@@ -296,7 +369,9 @@ class RealRuntime:
         resolved = await resolve_config(
             self._bundle, project_dir=self._project_dir, progress=self._progress
         )
-        _strip_printing_hooks(resolved.mount_plan)
+        _apply_hook_suppression(
+            resolved.mount_plan, self.bridge.emit, suppressed_hooks_setting(resolved.settings)
+        )
         self._resolved = resolved
         self.compaction = compaction_config(resolved.mount_plan)
         # Live pricing (BACKLOG item 1, behind settings ``pricing.live``,
@@ -312,7 +387,8 @@ class RealRuntime:
         transcript: list[dict[str, Any]] | None = None
         if self._resume_id:
             session_id = store.find_session(self._resume_id)
-            transcript, _metadata = store.load(session_id)
+            transcript, metadata = store.load(session_id)
+            _resume_bundle_notice(metadata, resolved.bundle_name, self.bridge.emit)
             # Same turn semantics as foundation's fork slicing: every
             # user-role message in the restored history is one turn.
             self.turn_base = sum(1 for m in transcript if m.get("role") == "user")

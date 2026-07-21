@@ -16,7 +16,7 @@ digraph newtui_amplifier {
         style="rounded,filled"; fillcolor="#fff8e1"; color="#e0c060";
         keys_env      [label="~/.amplifier/keys.env\n(API keys, env wins)", fillcolor="#fff3cd"];
         settings      [label="settings.yaml ×3\nuser → project → local\n(deep merge)", fillcolor="#fff3cd"];
-        bundle_md     [label="bundle: newtui.md\nloop-streaming · context-simple · provider-anthropic\nfs/bash/web/search/task + mcp/skills/team-pulse/mode\nhooks-mode + hooks-approval · 6 foundation agents", fillcolor="#fff3cd"];
+        bundle_md     [label="bundle: newtui.md (thin wrapper)\nincludes: anchors @ pinned SHA (amplifier-foundation)\nloop-streaming · context-simple 300k · provider-anthropic (overlay)\nfs/bash/web/search/todo/apply-patch/delegate/skills/mode/recipes + mcp/team-pulse\nhooks via anchors (printers + logging suppressed) · 6 anchors agents", fillcolor="#fff3cd"];
     }
 
     // ============ NEWTUI: UI LAYER (Textual) ============

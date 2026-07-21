@@ -1,84 +1,69 @@
-"""Guard: the packaged newtui bundle must advertise delegatable agents.
+"""Guard: the packaged newtui bundle is a THIN WRAPPER over anchors.
 
-Without a top-level ``agents:`` section the coordinator's ``config["agents"]``
-is empty and the mounted ``tool-task`` reports itself unavailable, making
-multi-agent delegation silently inert. This test parses the packaged bundle's
-YAML frontmatter and asserts the ``agents.include`` list is non-empty and
-contains the chosen foundation agents.
+The bundle composes foundation's `anchors` bundle (SHA-pinned includes) and
+overlays only a default provider, tool-mcp, and tool-team-pulse. Everything
+else — session (300k context), tool roster (incl. tool-delegate subagents),
+hooks, and the six bundle-local agents — arrives via the include. These tests
+parse the packaged bundle's YAML frontmatter and pin that shape offline.
+
+NOTE: the pin covers only anchors' own bundle.md — its internal includes and
+module sources still float @main (partial pin, documented in docs).
 """
 
 from __future__ import annotations
+
+import re
 
 import yaml
 
 from amplifier_app_newtui.kernel.config import packaged_bundles_dir
 
-EXPECTED_AGENTS = {
-    "foundation:explorer",
-    "foundation:zen-architect",
-    "foundation:bug-hunter",
-    "foundation:test-coverage",
-    "foundation:modular-builder",
-    "foundation:web-research",
-}
+ANCHORS_INCLUDE_RE = re.compile(
+    r"^git\+https://github\.com/microsoft/amplifier-foundation"
+    r"@(?P<sha>[0-9a-f]{40})#subdirectory=bundles/anchors/bundle\.md$"
+)
 
 
-def _parse_frontmatter(text: str) -> dict:
+def _frontmatter() -> dict:
+    text = (packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8")
     assert text.startswith("---"), "bundle must open with a YAML frontmatter fence"
-    # Split on the fence lines: '', <frontmatter>, <body...>
-    parts = text.split("---", 2)
-    frontmatter = parts[1]
-    data = yaml.safe_load(frontmatter)
+    data = yaml.safe_load(text.split("---", 2)[1])
     assert isinstance(data, dict)
     return data
 
 
-def test_newtui_bundle_advertises_agents() -> None:
-    bundle_path = packaged_bundles_dir() / "newtui.md"
-    data = _parse_frontmatter(bundle_path.read_text(encoding="utf-8"))
+def test_wrapper_keeps_bundle_name() -> None:
+    """Discovery/override mechanics depend on the name staying `newtui`."""
+    assert _frontmatter().get("bundle", {}).get("name") == "newtui"
 
-    agents = data.get("agents")
-    assert isinstance(agents, dict), "bundle frontmatter must have an 'agents' section"
 
-    include = agents.get("include")
-    assert isinstance(include, list) and include, "agents.include must be a non-empty list"
-
-    assert EXPECTED_AGENTS.issubset(set(include)), (
-        f"expected {sorted(EXPECTED_AGENTS)} in agents.include, got {include}"
+def test_wrapper_includes_sha_pinned_anchors() -> None:
+    includes = _frontmatter().get("includes")
+    assert isinstance(includes, list) and len(includes) == 1
+    uri = includes[0].get("bundle", "")
+    assert ANCHORS_INCLUDE_RE.match(uri), (
+        f"includes[0].bundle must be a SHA-pinned anchors URI, got {uri!r}"
     )
 
 
-def test_newtui_bundle_mounts_mcp_and_skills_tools() -> None:
-    """Bucket A: tool-mcp + tool-skills must be declared so MCP servers and
-    skills are actually usable (not just displayed)."""
-    bundle_path = packaged_bundles_dir() / "newtui.md"
-    data = _parse_frontmatter(bundle_path.read_text(encoding="utf-8"))
-    modules = {t.get("module") for t in (data.get("tools") or []) if isinstance(t, dict)}
-    assert "tool-mcp" in modules
-    assert "tool-skills" in modules
-    # team-pulse read tools by default (mounts unconfigured without crashing).
-    assert "tool-team-pulse" in modules
+def test_wrapper_keeps_default_provider() -> None:
+    """anchors is provider-agnostic; the app hard-fails boot at 0 providers,
+    so the wrapper must keep a default for fresh installs."""
+    providers = _frontmatter().get("providers")
+    modules = {p.get("module") for p in (providers or []) if isinstance(p, dict)}
+    assert "provider-anthropic" in modules
 
 
-def test_newtui_bundle_mounts_native_mode_system() -> None:
-    """Native modes: tool-mode + hooks-mode must be mounted so postures can
-    activate modes."""
-    data = _parse_frontmatter((packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8"))
-    tools = {t.get("module") for t in (data.get("tools") or []) if isinstance(t, dict)}
-    hooks = {h.get("module") for h in (data.get("hooks") or []) if isinstance(h, dict)}
-    assert "tool-mode" in tools
-    assert "hooks-mode" in hooks
-    assert "hooks-approval" in hooks
+def test_wrapper_has_no_vendored_sections() -> None:
+    data = _frontmatter()
+    assert "session" not in data, "inherit anchors' 300k context"
+    assert "hooks" not in data, "anchors brings hooks-mode/hooks-approval"
+    assert "agents" not in data, "anchors ships 6 bundle-local agents"
 
 
-def test_approvals_are_off_by_default() -> None:
-    """hooks-approval must be policy-driven (no built-in gating) with a
-    continue fallback, so NOTHING is gated until a mode opts in."""
-    data = _parse_frontmatter((packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8"))
-    approval = next(
-        h for h in data["hooks"] if isinstance(h, dict) and h.get("module") == "hooks-approval"
-    )
-    config = approval.get("config") or {}
-    assert config.get("policy_driven_only") is True  # skip built-in high-risk checks
-    assert config.get("default_action") == "continue"  # timeout/degraded → allow, not deny
-    assert config.get("rules") == []  # no static gating rules
+def test_wrapper_overlays_only_tui_specific_tools() -> None:
+    tools = _frontmatter().get("tools") or []
+    modules = {t.get("module") for t in tools if isinstance(t, dict)}
+    # tool-task is gone (was inert; superseded by anchors' tool-delegate);
+    # filesystem/bash/web/search/skills/mode etc. arrive via anchors.
+    assert modules == {"tool-mcp", "tool-team-pulse"}

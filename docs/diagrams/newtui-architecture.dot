@@ -78,14 +78,15 @@ digraph newtui_architecture {
         }
 
         subgraph cluster_bundle {
-            label="newtui bundle (packaged: data/bundles/newtui.md)\n_strip_printing_hooks(): no ANSI-printing hooks allowed";
+            label="newtui bundle — thin wrapper over anchors (packaged: data/bundles/newtui.md)\n_apply_hook_suppression(): printers + hooks-logging stripped at boot";
             style="rounded,filled"; fillcolor="#EDF2F7"; color="#2D3748";
-            orch [label="orchestrator: loop-streaming\n(extended thinking)", fillcolor="#E2E8F0"];
-            provider [label="provider: provider-anthropic", fillcolor="#E2E8F0"];
-            ctx [label="context: context-simple\n(200k tokens, auto-compact)", fillcolor="#E2E8F0"];
-            tools [label="tools: filesystem · bash · web · search\ntask (subagents) · mcp · skills\nteam-pulse · mode", fillcolor="#E2E8F0"];
-            bhooks [label="hooks: hooks-mode (sets require_approval_tools)\nhooks-approval (prompts via ApprovalBroker)", fillcolor="#E2E8F0"];
-            bagents [label="agents: 6 foundation agents\nexplorer · zen-architect · bug-hunter\ntest-coverage · modular-builder · web-research", fillcolor="#E2E8F0"];
+            anchors_inc [label="includes: anchors @ pinned SHA\n(amplifier-foundation bundles/anchors)", fillcolor="#E2E8F0"];
+            orch [label="orchestrator: loop-streaming\n(extended thinking) — via anchors", fillcolor="#E2E8F0"];
+            provider [label="provider: provider-anthropic\n(wrapper overlay)", fillcolor="#E2E8F0"];
+            ctx [label="context: context-simple\n(300k tokens, auto-compact) — via anchors", fillcolor="#E2E8F0"];
+            tools [label="tools via anchors: filesystem · bash · web · search\ntodo · apply-patch · delegate (subagents) · skills · mode · recipes\n+ wrapper overlay: mcp · team-pulse", fillcolor="#E2E8F0"];
+            bhooks [label="hooks via anchors: todo-reminder · session-naming\nhooks-mode · hooks-approval · status-context · redaction\n(streaming-ui / todo-display / logging suppressed at boot)", fillcolor="#E2E8F0"];
+            bagents [label="agents via anchors: explorer · architect · builder\ndebugger · git-ops · researcher", fillcolor="#E2E8F0"];
         }
     }
 

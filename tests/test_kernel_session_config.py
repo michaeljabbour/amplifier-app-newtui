@@ -509,23 +509,55 @@ async def test_resolve_config_golden_path_offline(
     assert any(p.get("module") == "provider-anthropic" for p in providers)
 
 
+CONTEXT_SIMPLE_BUNDLE = """---
+bundle:
+  name: context-simple-default
+  version: 0.0.1
+  description: offline bundle mirroring Foundation's session.context shape
+
+session:
+  context:
+    module: context-simple
+    config:
+      max_tokens: 200000
+      compact_threshold: 0.8
+      auto_compact: true
+---
+
+Test instruction body.
+"""
+
+
 @pytest.mark.asyncio
 async def test_resolve_config_applies_compaction_to_prepared_default_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercise Foundation's real ``session.context`` prepared-plan shape."""
+    """Exercise Foundation's real ``session.context`` prepared-plan shape.
+
+    Uses a local bundle declaring ``session.context`` directly (no ``source:``
+    on the module spec, so ``Bundle.prepare()`` never adds it to
+    ``modules_to_activate`` / never touches the network) rather than the
+    repo-root ``bundle.md`` \u2014 that file's ``includes:`` is a SHA-pinned
+    ``git+https://`` fetch of Foundation's anchors bundle, and resolving it
+    live would break this file's documented offline-only convention (see
+    module docstring) and depends on network reachability this suite must
+    not require.
+    """
 
     project = tmp_path / "project"
     home = tmp_path / "home"
-    root_bundle = Path(__file__).resolve().parents[1] / "bundle.md"
     monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    _write(
+        project / ".amplifier" / "bundles" / "context-simple-default.md",
+        CONTEXT_SIMPLE_BUNDLE,
+    )
     _write(
         project / ".amplifier" / "settings.local.yaml",
         "context:\n  max_tokens: 128000\n  compact_threshold: 0.7\n  auto_compact: false\n",
     )
 
     resolved = await resolve_config(
-        str(root_bundle),
+        "context-simple-default",
         project_dir=project,
         amplifier_home=home,
         install_deps=False,
@@ -591,12 +623,3 @@ tools over speculating. This surface renders a supported Markdown subset:
 - Expand only when the user asks or correctness requires the detail.
 """
     assert contract in text
-
-
-def test_packaged_bundle_declares_automatic_compaction() -> None:
-    from amplifier_app_newtui.kernel.config import packaged_bundles_dir
-
-    text = (packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8")
-    assert "max_tokens: 200000" in text
-    assert "compact_threshold: 0.8" in text
-    assert "auto_compact: true" in text

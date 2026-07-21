@@ -89,7 +89,10 @@ look at `test_runtime_offline.py` for how to fake the provider side.
 The app's capabilities (orchestrator, provider, tools, agents) come from its **bundle**,
 not from code:
 
-- `bundle.md` at the repo root is the source of truth; the packaged copy at
+- `bundle.md` at the repo root is a **thin wrapper**: it `includes:` foundation's `anchors`
+  bundle at a pinned `amplifier-foundation` SHA (partial pin — only anchors' own `bundle.md`
+  is pinned; its internal includes and module sources still float `@main`) and overlays only
+  a default provider, `tool-mcp`, and `tool-team-pulse`. The packaged copy at
   `src/amplifier_app_newtui/data/bundles/newtui.md` must stay **byte-identical** (compare
   with `diff` after editing).
 - Users can point `--bundle` at any bundle file/URI, drop bundles into
@@ -97,7 +100,8 @@ not from code:
   via settings — see [SETTINGS.md](SETTINGS.md).
 - **Never mount printing hooks** (`hooks-streaming-ui` and friends): they write ANSI to
   stdout and corrupt the Textual screen. The runtime strips them defensively
-  (`_strip_printing_hooks`), but don't add them to the bundle in the first place.
+  (`_apply_hook_suppression`; extend via the `hooks.suppress` setting), but don't add them
+  to the bundle in the first place.
 - Bundle authoring itself is an Amplifier-ecosystem topic — see the
   [foundation Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md).
 

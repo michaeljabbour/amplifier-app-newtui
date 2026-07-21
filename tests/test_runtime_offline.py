@@ -298,9 +298,7 @@ def offline_workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
     project = root / "proj"
     bundles = project / ".amplifier" / "bundles"
     bundles.mkdir(parents=True)
-    (bundles / "offline.md").write_text(
-        _BUNDLE_TEMPLATE.format(modules=modules), encoding="utf-8"
-    )
+    (bundles / "offline.md").write_text(_BUNDLE_TEMPLATE.format(modules=modules), encoding="utf-8")
 
     home = root / "home"
     home.mkdir()
@@ -388,8 +386,7 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
         await answer
 
         assert response == (
-            "Hello from the fake provider. "
-            "[{'success': True, 'output': 'wrote hello.txt'}]"
+            "Hello from the fake provider. [{'success': True, 'output': 'wrote hello.txt'}]"
         )
 
         events = _drain_kinds(runtime)
@@ -482,8 +479,7 @@ async def test_offline_steer_injected_at_provider_request_boundary(offline_env) 
         narrations = [
             e.block.get("text")
             for e in events
-            if e.kind == "content_block_end"
-            and e.block.get("demo_role") == "narration"
+            if e.kind == "content_block_end" and e.block.get("demo_role") == "narration"
         ]
         assert narrations == ["Applying steer: prefer short answers"]
 
@@ -536,9 +532,7 @@ async def test_session_directory_capability_is_live_and_restored(offline_env) ->
     shared = offline_env["project"].parent / "shared"
     runtime = await _started_runtime(offline_env["project"], mode="auto")
     try:
-        ok, detail = await runtime.update_session_directory(
-            "allowed", "add", str(shared)
-        )
+        ok, detail = await runtime.update_session_directory("allowed", "add", str(shared))
         assert ok and "session scope" in detail
         assert runtime.directory_policy is not None
         assert runtime.directory_policy.check_write(shared / "ok.txt")[0]
@@ -567,24 +561,112 @@ async def test_session_directory_capability_is_live_and_restored(offline_env) ->
         await resumed.cleanup()
 
 
-def test_strip_printing_hooks_removes_line_mode_printers() -> None:
+def test_apply_hook_suppression_strips_and_notifies() -> None:
     """App overlays can drag in stdout printers (hooks-streaming-ui et al);
-    raw ANSI under the full-screen TUI corrupts the screen (found live)."""
-    from amplifier_app_newtui.kernel.runtime import _strip_printing_hooks
+    raw ANSI under the full-screen TUI corrupts the screen (found live).
+    Stripping is no longer silent - exactly one Notification lists what
+    was removed so it's never a silent surprise."""
+    from amplifier_app_newtui.kernel.events import Notification
+    from amplifier_app_newtui.kernel.runtime import _apply_hook_suppression
 
     plan = {
         "hooks": [
             {"module": "hooks-streaming-ui"},
             {"module": "hooks-approval"},
-            {"module": "hooks-todo-display"},
-            {"module": "hooks-insight-blocks"},
-            {"module": "hooks-inline-blocks"},
+            {"module": "hooks-logging"},
             {"module": "hooks-mode"},
         ]
     }
-    _strip_printing_hooks(plan)
-    assert [h["module"] for h in plan["hooks"]] == ["hooks-approval", "hooks-mode"]
-    _strip_printing_hooks({})  # tolerates missing/odd shapes
+    emitted: list[Notification] = []
+    removed = _apply_hook_suppression(plan, emitted.append)
+
+    assert removed == ["hooks-logging", "hooks-streaming-ui"]
+    assert plan["hooks"] == [{"module": "hooks-approval"}, {"module": "hooks-mode"}]
+    assert len(emitted) == 1
+    assert isinstance(emitted[0], Notification)
+    assert "hooks-logging" in emitted[0].message
+    assert "hooks-streaming-ui" in emitted[0].message
+
+
+def test_apply_hook_suppression_with_user_suppress_setting() -> None:
+    """A caller-supplied ``suppressed`` set (e.g. from ``hooks.suppress``)
+    overrides the implicit default, so user-added hooks can be stripped too."""
+    from amplifier_app_newtui.kernel.runtime import (
+        _SUPPRESSED_HOOKS_DEFAULT,
+        _apply_hook_suppression,
+    )
+
+    plan = {
+        "hooks": [
+            {"module": "hooks-streaming-ui"},
+            {"module": "hooks-custom"},
+            {"module": "hooks-mode"},
+        ]
+    }
+    suppressed = _SUPPRESSED_HOOKS_DEFAULT | frozenset({"hooks-logging", "hooks-custom"})
+    emitted: list[object] = []
+    removed = _apply_hook_suppression(plan, emitted.append, suppressed)
+
+    assert "hooks-custom" in removed
+    assert "hooks-streaming-ui" in removed
+    assert plan["hooks"] == [{"module": "hooks-mode"}]
+
+
+def test_suppressed_hooks_setting_defaults_and_union() -> None:
+    """Copies the ``write_boundary_setting`` resolver pattern: the built-in
+    default set is always present, and a user ``hooks.suppress`` list is
+    unioned in (junk shapes fall back to defaults, blanks are stripped)."""
+    from amplifier_app_newtui.kernel.runtime import (
+        _SUPPRESSED_HOOKS_DEFAULT,
+        suppressed_hooks_setting,
+    )
+
+    assert _SUPPRESSED_HOOKS_DEFAULT == frozenset(
+        {
+            "hooks-streaming-ui",
+            "hooks-todo-display",
+            "hooks-insight-blocks",
+            "hooks-inline-blocks",
+            "hooks-logging",
+        }
+    )
+    assert suppressed_hooks_setting({}) == _SUPPRESSED_HOOKS_DEFAULT
+    assert suppressed_hooks_setting({"hooks": "junk"}) == _SUPPRESSED_HOOKS_DEFAULT
+    assert (
+        suppressed_hooks_setting({"hooks": {"suppress": "not-a-list"}}) == _SUPPRESSED_HOOKS_DEFAULT
+    )
+
+    resolved = suppressed_hooks_setting({"hooks": {"suppress": ["hooks-custom", ""]}})
+    assert "hooks-custom" in resolved
+    assert "" not in resolved
+    assert _SUPPRESSED_HOOKS_DEFAULT <= resolved
+
+
+def test_resume_notices_bundle_name_mismatch() -> None:
+    """Resuming a session stored under a different bundle than the one
+    currently resolved must not silently reattach it - one Notification
+    names both the stored and current bundle."""
+    from amplifier_app_newtui.kernel.events import Notification
+    from amplifier_app_newtui.kernel.runtime import _resume_bundle_notice
+
+    emitted: list[Notification] = []
+    _resume_bundle_notice({"bundle": "offline"}, "newtui", emitted.append)
+
+    assert len(emitted) == 1
+    notif = emitted[0]
+    assert "offline" in notif.message
+    assert "newtui" in notif.message
+
+
+def test_resume_notice_silent_on_same_bundle() -> None:
+    """No notice when the stored bundle matches the current one - the
+    common case must stay quiet."""
+    from amplifier_app_newtui.kernel.runtime import _resume_bundle_notice
+
+    emitted: list[object] = []
+    _resume_bundle_notice({"bundle": "newtui"}, "newtui", emitted.append)
+
+    assert len(emitted) == 0
 
 
 def test_restored_history_extracts_prose_and_skips_tool_traffic() -> None:

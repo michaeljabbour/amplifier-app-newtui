@@ -46,11 +46,12 @@ This is the complete set of keys the app consumes:
 | `bundle.app` | List of overlay bundle URIs composed onto **every** session (behavior add-ons) | none | global |
 | `bundle.added` | Registry of `name → URI` for discoverable bundles (written by `bundle add`) | none | global |
 | `routing.matrix` | Active model-routing matrix name for delegated sub-agents; feeds `hooks-routing` (`default_matrix`) when that hook is mounted (via an overlay). Not mounted in the base bundle | none (base) | global |
+| `hooks.suppress` | Extra hook module IDs stripped from the mount plan at boot, unioned with the built-in suppression list (`hooks-streaming-ui`, `hooks-todo-display`, `hooks-insight-blocks`, `hooks-inline-blocks`, `hooks-logging`). A boot notice lists everything suppressed | none (built-ins always apply) | global or project |
 | `routing.overrides` | Per-role candidate overrides merged onto the matrix | none | project |
 | `config.providers` | Provider entries merged by identity (`id` \| `instance_id` \| `module`): reconfigure the bundled provider or append new ones (see the README's Providers section) | none | global (credentials via `${VAR}`) |
-| `context.max_tokens` | Effective context window used by `context-simple` and `/context` | `200000` in the packaged newtui bundle | global or project |
-| `context.compact_threshold` | `context-simple` window fraction that triggers automatic compaction (`0 < value <= 1`) | `0.8` in the packaged newtui bundle | global or project |
-| `context.auto_compact` | Enable `context-simple` automatic compaction; the runtime binding also disables legacy threshold-only context modules truthfully | `true` in the packaged newtui bundle | global or project |
+| `context.max_tokens` | Effective context window used by `context-simple` and `/context` | `300000` (inherited from the composed anchors bundle) | global or project |
+| `context.compact_threshold` | `context-simple` window fraction that triggers automatic compaction (`0 < value <= 1`) | `0.8` (inherited from the composed anchors bundle) | global or project |
+| `context.auto_compact` | Enable `context-simple` automatic compaction; the runtime binding also disables legacy threshold-only context modules truthfully | `true` (inherited from the composed anchors bundle) | global or project |
 | `modules.tools` | Tool entries merged by identity; filesystem permission lists union across scopes | project root is implicitly writable | global / project / local / session |
 | `permissions.write_boundary` | App-level write gate. `open` (default, amplifier-app-cli parity): no governance pre-flight for writes outside the project and no write-shaped shell gating — the mounted filesystem tool stays the sole write enforcement (graceful tool error, never an approval). `guarded`: outside writes are blocked pre-flight and write-shaped shell escapes are classified outside-project. Denied and protected paths are enforced in both | `open` | global or project |
 | `pricing.live` | Live Helicone pricing: fresh `~/.amplifier/pricing_cache.json` (24 h TTL) applies at startup, else a background fetch swaps rates in for **new turns only**; `false` keeps the built-in offline table | `true` | global |
@@ -71,8 +72,8 @@ as `mcp_<server>_<tool>`. `/mcp add|remove` edits this file (takes effect next l
 
 **Native modes** are discovered from `<project>/.amplifier/modes/` → `~/.amplifier/modes/`
 → the app's packaged `data/modes/` (plan/brainstorm/careful) → composed bundles' `modes/`.
-The base bundle mounts `hooks-mode` + `hooks-approval` + `tool-mode` matching the reference
-`anchors` default. Those native hooks are idle without an active native mode; the app's
+`hooks-mode` + `hooks-approval` + `tool-mode` arrive via the composed anchors bundle (same
+modules, same configs). Those native hooks are idle without an active native mode; the app's
 own posture/outside-project governance hook remains active and shares their approval
 provider.
 
