@@ -64,7 +64,6 @@ from ..model.blocks import (
     PlanBlock,
     Recap,
     Segment,
-    TodoBlock,
     SessionBanner,
     SteerEcho,
     StyleToken,
@@ -202,9 +201,7 @@ def _render_session_banner(block: SessionBanner, width: int) -> tuple[Line, ...]
                 ),
             )
         return ((Segment(text=block.focus_note, style_token="dim"),),)
-    lines: list[Line] = [
-        (Segment(text=block.headline, style_token="bright", bold=True),)
-    ]
+    lines: list[Line] = [(Segment(text=block.headline, style_token="bright", bold=True),)]
     if block.detail:
         lines.append((Segment(text=block.detail, style_token="dim"),))
     return tuple(lines)
@@ -318,58 +315,6 @@ def _render_plan(block: PlanBlock, width: int) -> tuple[Line, ...]:
     return tuple(lines)
 
 
-TODO_BAR_WIDTH = 24
-"""Progress-bar cells in the todo block (``█`` done / ``░`` remaining)."""
-
-
-def _render_todo(block: TodoBlock, width: int) -> tuple[Line, ...]:
-    """Flat, newtui-native todo checklist (see :class:`TodoBlock`):
-    ``· Todo · N/M`` header, one glyph row per item, and a progress bar —
-    the native replacement for the stripped ``hooks-todo-display`` panel."""
-    total = len(block.items)
-    done = sum(1 for item in block.items if item.status == "completed")
-    lines: list[Line] = [
-        (
-            Segment(text="· ", style_token="orange"),
-            Segment(text="Todo", style_token="fg"),
-            Segment(text=f" · {done}/{total}", style_token="dim"),
-        )
-    ]
-    for item in block.items:
-        if item.status == "completed":
-            lines.append(
-                (
-                    Segment(text="  ✔ ", style_token="green"),
-                    Segment(text=item.content, style_token="dim"),
-                )
-            )
-        elif item.status == "in_progress":
-            lines.append(
-                (
-                    Segment(text="  ▶ ", style_token="orange"),
-                    Segment(text=item.content, style_token="bright", bold=True),
-                )
-            )
-        else:
-            lines.append(
-                (
-                    Segment(text="  □ ", style_token="dimmer"),
-                    Segment(text=item.content, style_token="dim"),
-                )
-            )
-    if total:
-        filled = round(done / total * TODO_BAR_WIDTH)
-        lines.append(
-            (
-                Segment(text="  ", style_token="dim"),
-                Segment(text="█" * filled, style_token="green"),
-                Segment(text="░" * (TODO_BAR_WIDTH - filled), style_token="dimmer"),
-                Segment(text=f" {done}/{total}", style_token="dim"),
-            )
-        )
-    return tuple(lines)
-
-
 def _render_blocked(block: Blocked, width: int) -> tuple[Line, ...]:
     line: list[Segment] = [
         Segment(text="  ⊘ blocked · ", style_token="red"),
@@ -389,8 +334,7 @@ def _shimmer_segments(label: str, frame: int) -> tuple[Segment, ...]:
     changes, so copy/paste and snapshots remain stable.
     """
     band: dict[int, tuple[StyleToken, bool]] = {
-        index: (token, bold)
-        for index, token, bold in shimmer_band(len(label), frame)
+        index: (token, bold) for index, token, bold in shimmer_band(len(label), frame)
     }
     base_style: tuple[StyleToken, bool] = ("dim", False)
     segments: list[Segment] = []
@@ -398,9 +342,7 @@ def _shimmer_segments(label: str, frame: int) -> tuple[Segment, ...]:
         token, bold = band.get(index, base_style)
         if segments and segments[-1].style_token == token and segments[-1].bold == bold:
             previous = segments[-1]
-            segments[-1] = previous.model_copy(
-                update={"text": previous.text + character}
-            )
+            segments[-1] = previous.model_copy(update={"text": previous.text + character})
         else:
             segments.append(Segment(text=character, style_token=token, bold=bold))
     return tuple(segments)
@@ -619,10 +561,7 @@ def _render_evidence(block: EvidenceBlock, width: int) -> tuple[Line, ...]:
             Segment(text="· ", style_token="teal"),
             Segment(text="Evidence", style_token="teal", bold=True),
             Segment(
-                text=(
-                    f"  {block.selected + 1}/{total}"
-                    " · ←/→ select · enter expand · esc close"
-                ),
+                text=(f"  {block.selected + 1}/{total} · ←/→ select · enter expand · esc close"),
                 style_token="dimmer",
             ),
         )
@@ -811,7 +750,6 @@ _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "tool_line": _render_tool_line,
     "live_command": _render_live_command,
     "plan": _render_plan,
-    "todo": _render_todo,
     "blocked": _render_blocked,
     "working_status": _render_working_status,
     "recap": _render_recap,
@@ -964,12 +902,8 @@ class BlockWidget(Static):
     def on_mount(self) -> None:
         self.repaint_block()
         if self._block.kind == "working_status":
-            self._spin_timer = self.set_interval(
-                SPINNER_INTERVAL_SECONDS, self._advance_spinner
-            )
-            self._motion_timer = self.set_interval(
-                MOTION_INTERVAL_SECONDS, self._advance_motion
-            )
+            self._spin_timer = self.set_interval(SPINNER_INTERVAL_SECONDS, self._advance_spinner)
+            self._motion_timer = self.set_interval(MOTION_INTERVAL_SECONDS, self._advance_motion)
 
     def on_unmount(self) -> None:
         if self._spin_timer is not None:
@@ -992,9 +926,7 @@ class BlockWidget(Static):
     def update_block(self, block: TranscriptBlock) -> None:
         """Replace this widget's block in place (same stable id)."""
         if block.id != self._block.id:
-            raise ValueError(
-                f"block id mismatch: widget has {self._block.id!r}, got {block.id!r}"
-            )
+            raise ValueError(f"block id mismatch: widget has {self._block.id!r}, got {block.id!r}")
         self._block = block
         if isinstance(block, PlanBlock):
             self.set_class(block.read_only, "read-only")
@@ -1120,8 +1052,7 @@ class NeedsYouBlockWidget(NeedsYouList):
         """Replace this widget's block in place (same stable id)."""
         if block.id != self._needs_you_block.id:
             raise ValueError(
-                f"block id mismatch: widget has {self._needs_you_block.id!r},"
-                f" got {block.id!r}"
+                f"block id mismatch: widget has {self._needs_you_block.id!r}, got {block.id!r}"
             )
         if not isinstance(block, NeedsYouBlock):  # pragma: no cover - defensive
             raise TypeError(f"needs_you widget got block kind {block.kind!r}")
@@ -1246,9 +1177,7 @@ class HistoryArchive(Static):
             if isinstance(block, NeedsYouBlock) and 0 <= item_index < len(block.items):
                 entry = block.items[item_index]
                 default_line_action = (
-                    f"archive_decision({block.id!r}, {item_index}, 0)"
-                    if entry.choices
-                    else None
+                    f"archive_decision({block.id!r}, {item_index}, 0)" if entry.choices else None
                 )
             parts: list[str] = []
             for segment in line:
@@ -1304,9 +1233,7 @@ class HistoryArchive(Static):
             self._active_evidence_id = block.id
             self.focus()
 
-    def action_archive_decision(
-        self, block_id: str, item_index: int, choice_index: int
-    ) -> None:
+    def action_archive_decision(self, block_id: str, item_index: int, choice_index: int) -> None:
         block = self._owner.get_block(block_id)
         if not isinstance(block, NeedsYouBlock):
             return
@@ -1426,9 +1353,7 @@ class TranscriptView(VerticalScroll):
         # state. Read that live state first; archived blocks come directly
         # from the canonical store.
         return tuple(
-            self._widgets[block_id].block
-            if block_id in self._widgets
-            else self._blocks[block_id]
+            self._widgets[block_id].block if block_id in self._widgets else self._blocks[block_id]
             for block_id in self._order
         )
 
@@ -1541,9 +1466,7 @@ class TranscriptView(VerticalScroll):
             archive_count = max(0, len(self._order) - HISTORY_WIDGET_LIMIT)
             archive_ids = self._order[:archive_count]
             newly_archived = [
-                self._widgets[block_id]
-                for block_id in archive_ids
-                if block_id in self._widgets
+                self._widgets[block_id] for block_id in archive_ids if block_id in self._widgets
             ]
             if not newly_archived:
                 return
@@ -1590,9 +1513,7 @@ class TranscriptView(VerticalScroll):
 
     # -- tail-follow anchor --------------------------------------------------
 
-    def set_reactive(
-        self, reactive: Reactive[ReactiveType], value: ReactiveType
-    ) -> None:
+    def set_reactive(self, reactive: Reactive[ReactiveType], value: ReactiveType) -> None:
         """Clamp unvalidated scroll writes so short content stays top-aligned.
 
         While the standing tail anchor is engaged, Textual's compositor
@@ -1604,9 +1525,7 @@ class TranscriptView(VerticalScroll):
         ``scrollTop = scrollHeight`` the browser clamps) keeps short
         content at the top, so floor these writes at 0 here.
         """
-        if reactive.name in ("scroll_y", "scroll_target_y") and isinstance(
-            value, (int, float)
-        ):
+        if reactive.name in ("scroll_y", "scroll_target_y") and isinstance(value, (int, float)):
             value = cast("ReactiveType", max(value, 0))
         super().set_reactive(reactive, value)
 
@@ -1631,9 +1550,7 @@ class TranscriptView(VerticalScroll):
     def focused_lane(self) -> str | None:
         return self._focused_lane
 
-    async def focus_lane(
-        self, lane_id: str, blocks: Sequence[TranscriptBlock]
-    ) -> None:
+    async def focus_lane(self, lane_id: str, blocks: Sequence[TranscriptBlock]) -> None:
         """Swap the transcript to a subagent's own block list."""
         if self._focused_lane is None:
             self._main_stash = list(self.blocks)
@@ -1713,9 +1630,7 @@ class TranscriptView(VerticalScroll):
         self._reflow_hold = True
         if self._reflow_timer is not None:
             self._reflow_timer.stop()
-        self._reflow_timer = self.set_timer(
-            REFLOW_DEBOUNCE_SECONDS, self._debounce_fired
-        )
+        self._reflow_timer = self.set_timer(REFLOW_DEBOUNCE_SECONDS, self._debounce_fired)
 
     def _debounce_fired(self) -> None:
         self._reflow_timer = None
