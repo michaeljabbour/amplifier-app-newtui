@@ -30,6 +30,7 @@ from .events import (
     ApprovalDenied,
     ContentBlockEnd,
     ContextInjected,
+    Notification,
     PromptComplete,
     PromptSubmit,
     ProviderResponseUsage,
@@ -166,12 +167,33 @@ def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str],
     return tuple(pairs)
 
 
-def _strip_printing_hooks(mount_plan: dict[str, Any]) -> None:
-    hooks = mount_plan.get("hooks")
+def _apply_hook_suppression(
+    mount_plan: dict[str, Any],
+    notify: Callable[[Any], None],
+    suppressed: frozenset[str] | None = None,
+) -> list[str]:
+    """Strip suppressed hooks from the mount plan; notify what was removed.
+
+    Replaces the old silent ``_strip_printing_hooks``: stripping hooks
+    behind the user's back (even for good reasons \u2014 corrupted-screen
+    printers, double-logging) is a surprise waiting to happen. One
+    ``Notification`` names every removed module id so it never is.
+    """
+    suppress_set = _SUPPRESSED_HOOKS_DEFAULT if suppressed is None else suppressed
+    hooks = mount_plan.get("hooks", [])
+    kept: list[Any] = []
+    removed: list[str] = []
     if isinstance(hooks, list):
-        mount_plan["hooks"] = [
-            h for h in hooks if not (isinstance(h, dict) and h.get("module") in _PRINTING_HOOKS)
-        ]
+        for entry in hooks:
+            if isinstance(entry, dict) and entry.get("module") in suppress_set:
+                removed.append(str(entry.get("module")))
+            else:
+                kept.append(entry)
+    mount_plan["hooks"] = kept
+    removed_sorted = sorted(removed)
+    if removed_sorted:
+        notify(Notification(message=f"suppressed hooks: {', '.join(removed_sorted)}"))
+    return removed_sorted
 
 
 class _BrokerApprovalProvider:
@@ -323,7 +345,9 @@ class RealRuntime:
         resolved = await resolve_config(
             self._bundle, project_dir=self._project_dir, progress=self._progress
         )
-        _strip_printing_hooks(resolved.mount_plan)
+        _apply_hook_suppression(
+            resolved.mount_plan, self.bridge.emit, suppressed_hooks_setting(resolved.settings)
+        )
         self._resolved = resolved
         self.compaction = compaction_config(resolved.mount_plan)
         # Live pricing (BACKLOG item 1, behind settings ``pricing.live``,

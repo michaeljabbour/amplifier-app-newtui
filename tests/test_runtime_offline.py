@@ -561,24 +561,55 @@ async def test_session_directory_capability_is_live_and_restored(offline_env) ->
         await resumed.cleanup()
 
 
-def test_strip_printing_hooks_removes_line_mode_printers() -> None:
+def test_apply_hook_suppression_strips_and_notifies() -> None:
     """App overlays can drag in stdout printers (hooks-streaming-ui et al);
-    raw ANSI under the full-screen TUI corrupts the screen (found live)."""
-    from amplifier_app_newtui.kernel.runtime import _strip_printing_hooks
+    raw ANSI under the full-screen TUI corrupts the screen (found live).
+    Stripping is no longer silent - exactly one Notification lists what
+    was removed so it's never a silent surprise."""
+    from amplifier_app_newtui.kernel.events import Notification
+    from amplifier_app_newtui.kernel.runtime import _apply_hook_suppression
 
     plan = {
         "hooks": [
             {"module": "hooks-streaming-ui"},
             {"module": "hooks-approval"},
-            {"module": "hooks-todo-display"},
-            {"module": "hooks-insight-blocks"},
-            {"module": "hooks-inline-blocks"},
+            {"module": "hooks-logging"},
             {"module": "hooks-mode"},
         ]
     }
-    _strip_printing_hooks(plan)
-    assert [h["module"] for h in plan["hooks"]] == ["hooks-approval", "hooks-mode"]
-    _strip_printing_hooks({})  # tolerates missing/odd shapes
+    emitted: list[Notification] = []
+    removed = _apply_hook_suppression(plan, emitted.append)
+
+    assert removed == ["hooks-logging", "hooks-streaming-ui"]
+    assert plan["hooks"] == [{"module": "hooks-approval"}, {"module": "hooks-mode"}]
+    assert len(emitted) == 1
+    assert isinstance(emitted[0], Notification)
+    assert "hooks-logging" in emitted[0].message
+    assert "hooks-streaming-ui" in emitted[0].message
+
+
+def test_apply_hook_suppression_with_user_suppress_setting() -> None:
+    """A caller-supplied ``suppressed`` set (e.g. from ``hooks.suppress``)
+    overrides the implicit default, so user-added hooks can be stripped too."""
+    from amplifier_app_newtui.kernel.runtime import (
+        _SUPPRESSED_HOOKS_DEFAULT,
+        _apply_hook_suppression,
+    )
+
+    plan = {
+        "hooks": [
+            {"module": "hooks-streaming-ui"},
+            {"module": "hooks-custom"},
+            {"module": "hooks-mode"},
+        ]
+    }
+    suppressed = _SUPPRESSED_HOOKS_DEFAULT | frozenset({"hooks-logging", "hooks-custom"})
+    emitted: list[object] = []
+    removed = _apply_hook_suppression(plan, emitted.append, suppressed)
+
+    assert "hooks-custom" in removed
+    assert "hooks-streaming-ui" in removed
+    assert plan["hooks"] == [{"module": "hooks-mode"}]
 
 
 def test_suppressed_hooks_setting_defaults_and_union() -> None:
