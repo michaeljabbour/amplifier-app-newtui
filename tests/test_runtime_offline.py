@@ -642,6 +642,33 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
     assert _SUPPRESSED_HOOKS_DEFAULT <= resolved
 
 
+def test_resume_notices_bundle_name_mismatch() -> None:
+    """Resuming a session stored under a different bundle than the one
+    currently resolved must not silently reattach it - one Notification
+    names both the stored and current bundle."""
+    from amplifier_app_newtui.kernel.events import Notification
+    from amplifier_app_newtui.kernel.runtime import _resume_bundle_notice
+
+    emitted: list[Notification] = []
+    _resume_bundle_notice({"bundle": "offline"}, "newtui", emitted.append)
+
+    assert len(emitted) == 1
+    notif = emitted[0]
+    assert "offline" in notif.message
+    assert "newtui" in notif.message
+
+
+def test_resume_notice_silent_on_same_bundle() -> None:
+    """No notice when the stored bundle matches the current one - the
+    common case must stay quiet."""
+    from amplifier_app_newtui.kernel.runtime import _resume_bundle_notice
+
+    emitted: list[object] = []
+    _resume_bundle_notice({"bundle": "newtui"}, "newtui", emitted.append)
+
+    assert len(emitted) == 0
+
+
 def test_restored_history_extracts_prose_and_skips_tool_traffic() -> None:
     from amplifier_app_newtui.kernel.runtime import restored_history
 

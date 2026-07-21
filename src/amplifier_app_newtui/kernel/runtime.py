@@ -196,6 +196,30 @@ def _apply_hook_suppression(
     return removed_sorted
 
 
+def _resume_bundle_notice(
+    metadata: dict[str, Any],
+    current_bundle: str,
+    notify: Callable[[Any], None],
+) -> None:
+    """Notice when a resumed session's stored bundle differs from the one
+    currently resolved.
+
+    Resuming under a different bundle than the session was created with can
+    silently change which modules/tools/hooks govern the turn - one
+    ``Notification`` surfaces the mismatch instead of reattaching quietly.
+    """
+    stored_bundle = metadata.get("bundle")
+    if stored_bundle and stored_bundle != current_bundle:
+        notify(
+            Notification(
+                message=(
+                    f"resuming session from '{stored_bundle}' bundle "
+                    f"under '{current_bundle}' bundle"
+                )
+            )
+        )
+
+
 class _BrokerApprovalProvider:
     """Kernel ``ApprovalProvider`` protocol over the app's ApprovalBroker.
 
@@ -363,7 +387,8 @@ class RealRuntime:
         transcript: list[dict[str, Any]] | None = None
         if self._resume_id:
             session_id = store.find_session(self._resume_id)
-            transcript, _metadata = store.load(session_id)
+            transcript, metadata = store.load(session_id)
+            _resume_bundle_notice(metadata, resolved.bundle_name, self.bridge.emit)
             # Same turn semantics as foundation's fork slicing: every
             # user-role message in the restored history is one turn.
             self.turn_base = sum(1 for m in transcript if m.get("role") == "user")
