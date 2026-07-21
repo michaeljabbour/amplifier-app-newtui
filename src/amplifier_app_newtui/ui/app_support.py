@@ -34,6 +34,7 @@ from ..model.blocks import (
 from ..model.queues import NeedsYouItem
 from . import keymap
 from .footer import FooterState
+from .plan_panel import plan_counts
 from .transcript import TranscriptView
 
 if TYPE_CHECKING:
@@ -595,8 +596,17 @@ def sync_plan_surfaces(app: NewTuiApp) -> None:
     app.refresh_status()  # footer carries the fallback count (Task 5)
 
 
+def plan_footer_counts(app: NewTuiApp) -> tuple[int, int]:
+    """``(done, total)`` for the footer — (0, 0) unless the panel is hidden
+    while todos exist (the count never shows twice; design D2)."""
+    if not app.plan_items or app.plan_panel.display:
+        return (0, 0)
+    return plan_counts(app.plan_items)
+
+
 def footer_state(app: NewTuiApp) -> FooterState:
     """One frozen footer snapshot from the app's current interaction state."""
+    done, total = plan_footer_counts(app)
     return FooterState(
         mode_id=app.mode_id,  # type: ignore[arg-type]
         bundle=app.adapter.bundle_name,
@@ -608,6 +618,8 @@ def footer_state(app: NewTuiApp) -> FooterState:
         waiting=app.adapter.needs_you.pending_count,
         context=app.footer_context(),
         kitty_protocol=app.kitty_protocol,
+        plan_done=done,
+        plan_total=total,
     )
 
 
@@ -631,6 +643,7 @@ __all__ = [
     "mount_approval",
     "needs_you_block",
     "permissions_block",
+    "plan_footer_counts",
     "sync_plan_surfaces",
     "sync_steer_echoes",
     "trim_after_checkpoint",

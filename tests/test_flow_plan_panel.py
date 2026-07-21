@@ -7,6 +7,7 @@ import pytest
 
 from amplifier_app_newtui.kernel.demo import BUILD_PROMPT
 from amplifier_app_newtui.ui.app import NewTuiApp
+from amplifier_app_newtui.ui.footer import footer_left_text
 
 from .test_flow_helpers import SIZE, GatedDemoAdapter, blocks_of, seed_done, wait_for
 
@@ -32,6 +33,8 @@ async def test_plan_panel_lights_up_mid_turn_and_collapses_when_done() -> None:
         # all steps complete → collapsed to the header, still visible
         assert app.plan_panel.display
         assert app.plan_panel.plan_lines == ("Plan 3/3",)
+        # D2: panel visible → the footer never shows the count twice
+        assert "Plan" not in footer_left_text(app.footer_bar.state)
         # D3: the transcript never gets a live todo block
         assert blocks_of(app, "todo") == []
 
@@ -45,6 +48,8 @@ async def test_plan_panel_hides_below_90_cols() -> None:
         app.submit_prompt(BUILD_PROMPT)
         assert await wait_for(pilot, lambda: bool(app.plan_items))
         assert not app.plan_panel.display  # ladder: count-only below 90 cols
+        assert "Plan 0/3" in footer_left_text(app.footer_bar.state)
         adapter.release()
         assert await wait_for(pilot, lambda: not app.turn_active)
         assert not app.plan_panel.display
+        assert "Plan 3/3" in footer_left_text(app.footer_bar.state)

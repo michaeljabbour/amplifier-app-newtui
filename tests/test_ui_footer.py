@@ -65,6 +65,13 @@ def test_left_text_full_state_estimated_exact() -> None:
     )
 
 
+def test_plan_count_segment_appears_only_when_total_positive() -> None:
+    """Design D2 ladder step 3: 'Plan N/M' rides the footer left segment."""
+    state = FULL_STATE.model_copy(update={"plan_done": 2, "plan_total": 4})
+    assert footer_left_text(state).endswith(" · Plan 2/4")
+    assert "Plan" not in footer_left_text(FULL_STATE)  # default total=0 → absent
+
+
 def test_waiting_text_singular_plural_empty() -> None:
     assert footer_waiting_text(FooterState(waiting=1)) == "1 decision waiting · ctrl-y"
     assert footer_waiting_text(FooterState(waiting=3)) == "3 decisions waiting · ctrl-y"
@@ -136,6 +143,18 @@ async def test_footer_renders_left_and_right_segments() -> None:
         assert _plain(app.query_one("#footer-right", Static)) == footer_right_text(
             FULL_STATE
         )
+
+
+@pytest.mark.asyncio
+async def test_footer_paints_plan_count_in_left_segment() -> None:
+    """The _repaint plan branch: 'Plan N/M' lands in the painted widget."""
+    app = FooterApp()
+    async with app.run_test() as pilot:
+        bar = app.query_one("#footer", FooterBar)
+        state = FULL_STATE.model_copy(update={"plan_done": 2, "plan_total": 4})
+        bar.update_state(state)
+        await pilot.pause()
+        assert "Plan 2/4" in _plain(app.query_one("#footer-left", Static))
 
 
 @pytest.mark.asyncio

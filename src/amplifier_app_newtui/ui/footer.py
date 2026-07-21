@@ -63,6 +63,10 @@ class FooterState(BaseModel):
     """Queued next-turn messages → orange ``· qN`` marker."""
     waiting: int = Field(default=0, ge=0)
     """Deferred needs-you decisions → orange ``N decisions waiting · ctrl-y``."""
+    plan_done: int = Field(default=0, ge=0)
+    plan_total: int = Field(default=0, ge=0)
+    """Plan fallback count — non-zero only while the plan panel is hidden
+    (narrow terminal); the footer then carries ``Plan N/M`` (design D2)."""
     context: Context = "idle"
     """Which hint set the right segment shows."""
     kitty_protocol: bool = True
@@ -86,6 +90,8 @@ def footer_left_text(state: FooterState) -> str:
     parts.append(cost_part)
     if state.queued:
         parts.append(f"q{state.queued}")
+    if state.plan_total:
+        parts.append(f"Plan {state.plan_done}/{state.plan_total}")
     return SEPARATOR.join(parts)
 
 
@@ -246,6 +252,9 @@ class FooterBar(Horizontal):
             markup += f" [$green]{GLYPH_YIELD}[/]"
         if state.queued:
             markup += f"[$orange]{SEPARATOR}q{state.queued}[/]"
+        if state.plan_total:
+            markup += f"[$dimmer]{SEPARATOR}[/][$dim]$plan_part[/]"
+            substitutions["plan_part"] = f"Plan {state.plan_done}/{state.plan_total}"
         self._left.update(Content.from_markup(markup, **substitutions))
 
         badge_text = footer_waiting_text(state)
