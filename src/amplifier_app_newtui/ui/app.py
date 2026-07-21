@@ -34,7 +34,7 @@ from typing import Any
 
 from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 
 from ..commands.builtin import build_registry
 from ..commands.context import ContextUsage
@@ -45,6 +45,7 @@ from ..model.blocks import (
     BlockIdAllocator,
     EvidenceBlock,
     Segment,
+    TodoItem,
     TranscriptBlock,
     UserLine,
 )
@@ -68,6 +69,7 @@ from .live_tail import LiveTail
 from .needs_you import NeedsYouList
 from .notices import NoticeSlot
 from .palette import PaletteStrip
+from .plan_panel import PlanPanel
 from .queued_strip import QueuedStrip
 from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
@@ -86,6 +88,7 @@ from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_the
 from .transcript import (
     BlockWidget,
     CloseEvidence,
+    DelegateSummaryToggled,
     ExpandEvidenceClaim,
     LaneFocusChanged,
     OpenRewind,
@@ -131,6 +134,12 @@ class NewTuiApp(App[None]):
     }
     #live-tail { padding: 0 1; }
     #composer-slot { height: auto; }
+    /* Bottom strip (design 2026-07-21 §1): lanes flexible left, plan
+       fixed right. Both children default display:none, height:auto —
+       an empty strip occupies zero rows. */
+    #bottom-strip { width: 100%; height: auto; }
+    #bottom-strip > #lanes-panel { width: 1fr; }
+    #bottom-strip > #plan-panel { width: 37; }  /* = plan_panel.PLAN_PANEL_WIDTH */
     """
 
     BINDINGS = app_support.global_bindings()
@@ -175,12 +184,14 @@ class NewTuiApp(App[None]):
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
         self._lanes_fanout_open = False  # active-lane edge for the auto-open
+        self.plan_items: tuple[TodoItem, ...] = ()  # latest root todo list
         self.title_bar = TitleBar(id="title-bar")
         self.transcript = TranscriptView(id="transcript")
         self.live_tail = LiveTail(id="live-tail")
         self.notice_slot = NoticeSlot(id="notice-slot")
         self.palette = PaletteStrip(self._commands.specs, id="palette-strip")
         self.lanes_panel = LanesPanel(id="lanes-panel")
+        self.plan_panel = PlanPanel(id="plan-panel")
         self.rewind = RewindStrip(id="rewind-strip")
         self.queued_strip = QueuedStrip(id="queued-strip")
         self.file_mentions = FileMentionStrip(id="file-mentions")
@@ -194,7 +205,9 @@ class NewTuiApp(App[None]):
             yield self.live_tail
             yield self.notice_slot
         yield self.palette
-        yield self.lanes_panel
+        with Horizontal(id="bottom-strip"):
+            yield self.lanes_panel
+            yield self.plan_panel
         yield self.rewind
         yield self.queued_strip
         yield self.file_mentions
@@ -617,7 +630,11 @@ class NewTuiApp(App[None]):
         self.refresh_status()
 
     def lanes_changed(self) -> None:
-        self.lanes_panel.update_lanes(self.lanes.lanes)
+        tailed = self.lanes.tail_lane
+        self.lanes_panel.update_lanes(
+            self.lanes.lanes,
+            tailed_session_id=None if tailed is None else tailed.session_id,
+        )
         active = self.lanes.active_count > 0
         if active and not self._lanes_fanout_open and not self.lanes_panel.display:
             # Mockup runAgentsTurn: the panel opens automatically at fan-out.
@@ -629,6 +646,12 @@ class NewTuiApp(App[None]):
             self._refresh_footer()
         self._lanes_fanout_open = active
         self._refresh_title()
+
+    def plan_changed(self, items: tuple[TodoItem, ...]) -> None:
+        app_support.apply_plan_change(self, items)
+
+    def on_resize(self, event: events.Resize) -> None:
+        app_support.sync_plan_surfaces(self)  # responsive ladder (D2)
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
         del prompt, options  # presentation runs via present_approval
@@ -658,6 +681,15 @@ class NewTuiApp(App[None]):
 
     def on_live_tail_consolidated(self, message: LiveTail.Consolidated) -> None:
         message.stop()  # durable record path owns the transcript append
+
+    def lane_tail_updated(self, text: str) -> None:
+        # Throttle + focus policy live in the reducer (design doc D4);
+        # this just paints. LiveTail itself refuses while a root stream
+        # is open, so preemption is belt-and-braces.
+        self.live_tail.show_lane_tail(text)
+
+    def lane_tail_cleared(self) -> None:
+        self.live_tail.clear_lane_tail()
 
     # -- approvals -------------------------------------------------------------------
 
@@ -937,6 +969,12 @@ class NewTuiApp(App[None]):
     def on_lane_focus_changed(self, message: LaneFocusChanged) -> None:
         app_support.handle_lane_focus_change(self, message.lane_id)
 
+    def on_delegate_summary_toggled(self, message: DelegateSummaryToggled) -> None:
+        """Drill-down v1 (ambient-progress D5): an expanded summary opens the
+        lanes panel — the full lane transcript stays one Enter away there."""
+        if message.expanded:
+            self.lanes_panel.show_panel(focus=False)
+
     def on_rewind_strip_fork_requested(self, message: RewindStrip.ForkRequested) -> None:
         message.stop()
         # The strip hid itself on fork; hand the keyboard back NOW — the
@@ -1089,6 +1127,16 @@ class NewTuiApp(App[None]):
             if self.approval_bar is not None:
                 self.approval_bar.focus()  # approval owns the keyboard (spec §7)
         self._refresh_footer()
+
+    def action_cycle_tail(self) -> None:
+        """ctrl+o: pin the live tail to the next running lane (spec §8)."""
+        record = self.lanes.cycle_tail_focus()
+        if record is None:
+            self.show_notice("no running lanes to tail")
+            return
+        self.lanes_changed()  # repaints the ▸ marker with the new pin
+        self.reducer.repaint_lane_tail()  # tail switches with the pin, not on next delta
+        self.show_notice(f"tail · {record.lane.name}")
 
     def action_show_ledger(self) -> None:
         spec = self._commands.get("/ledger")

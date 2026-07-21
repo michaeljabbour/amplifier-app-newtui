@@ -63,6 +63,10 @@ class FooterState(BaseModel):
     """Queued next-turn messages → orange ``· qN`` marker."""
     waiting: int = Field(default=0, ge=0)
     """Deferred needs-you decisions → orange ``N decisions waiting · ctrl-y``."""
+    plan_done: int = Field(default=0, ge=0)
+    plan_total: int = Field(default=0, ge=0)
+    """Plan fallback count — non-zero only while the plan panel is hidden
+    (narrow terminal); the footer then carries ``Plan N/M`` (design D2)."""
     context: Context = "idle"
     """Which hint set the right segment shows."""
     kitty_protocol: bool = True
@@ -72,13 +76,17 @@ class FooterState(BaseModel):
 # -- pure text builders (exact strings; tests assert on these) ---------------
 
 
-def footer_left_text(state: FooterState) -> str:
-    """The full left segment as plain text."""
+def _left_parts(
+    state: FooterState, *, trust: bool = True, bundle: bool = True, session: bool = True
+) -> list[str]:
+    """The left-segment parts, with decorative ones optionally dropped."""
     mode = get_mode(state.mode_id)
-    parts = [f"mode {mode.id}", mode.trust_str]
-    if state.bundle:
+    parts = [f"mode {mode.id}"]
+    if trust:
+        parts.append(mode.trust_str)
+    if bundle and state.bundle:
         parts.append(state.bundle)
-    if state.session_short:
+    if session and state.session_short:
         parts.append(state.session_short)
     cost_part = f"{'~' if state.cost_estimated else ''}${state.cost:.2f}"
     if state.shipped:
@@ -86,7 +94,44 @@ def footer_left_text(state: FooterState) -> str:
     parts.append(cost_part)
     if state.queued:
         parts.append(f"q{state.queued}")
-    return SEPARATOR.join(parts)
+    if state.plan_total:
+        parts.append(f"Plan {state.plan_done}/{state.plan_total}")
+    return parts
+
+
+def footer_left_text(state: FooterState) -> str:
+    """The full left segment as plain text."""
+    return SEPARATOR.join(_left_parts(state))
+
+
+_FIT_LADDER: tuple[dict[str, bool], ...] = (
+    {"trust": False},
+    {"trust": False, "session": False},
+    {"trust": False, "session": False, "bundle": False},
+)
+"""Decorations in drop order: trust posture (the mode chip keeps the id),
+then session id, then bundle. Mode, cost, queue and ``Plan n/m`` never drop
+— design D2's footer fallback only works if the plan count survives."""
+
+
+def _fit_drops(state: FooterState, width: int) -> dict[str, bool]:
+    """The mildest ladder step whose left text fits *width* cells."""
+    if width <= 0 or cell_len(footer_left_text(state)) <= width:
+        return {}
+    for drops in _FIT_LADDER:
+        if cell_len(SEPARATOR.join(_left_parts(state, **drops))) <= width:
+            return drops
+    return dict(_FIT_LADDER[-1])
+
+
+def footer_left_text_fit(state: FooterState, width: int) -> str:
+    """The left segment, decorations dropped until it fits *width* cells.
+
+    Found live in forge at 80 cols: the full segment overflowed and the
+    terminal clipped ``Plan n/m`` — the one part the narrow-width ladder
+    exists to show. ``width <= 0`` (pre-layout) returns the full string.
+    """
+    return SEPARATOR.join(_left_parts(state, **_fit_drops(state, width)))
 
 
 def footer_waiting_text(state: FooterState) -> str:
@@ -194,7 +239,7 @@ class FooterBar(Horizontal):
         self._repaint()
 
     def on_resize(self, event: events.Resize) -> None:
-        self._update_wrap()
+        self._repaint()  # width changed: decorations may (re)appear or drop
 
     @property
     def state(self) -> FooterState:
@@ -214,7 +259,7 @@ class FooterBar(Horizontal):
         if width <= 0:
             return
         state = self._state
-        group_needed = cell_len(footer_left_text(state))
+        group_needed = cell_len(footer_left_text_fit(state, width))
         badge_text = footer_waiting_text(state)
         if badge_text:
             # dimmer "·" separator (padding 0 1) + badge (padding-right 1)
@@ -230,10 +275,13 @@ class FooterBar(Horizontal):
         # Left: "mode <id>" in mode color, segments dim with dimmer "·"
         # separators (mockup: each inline "·" is its own --dimmer span),
         # ▲ green, · qN orange.
-        rest_parts: list[str] = [mode.trust_str]
-        if state.bundle:
+        drops = _fit_drops(state, self.container_size.width)
+        rest_parts: list[str] = []
+        if drops.get("trust", True):
+            rest_parts.append(mode.trust_str)
+        if drops.get("bundle", True) and state.bundle:
             rest_parts.append(state.bundle)
-        if state.session_short:
+        if drops.get("session", True) and state.session_short:
             rest_parts.append(state.session_short)
         rest_parts.append(f"{'~' if state.cost_estimated else ''}${state.cost:.2f}")
         markup = f"[${mode.color_token}]$mode_part[/]"
@@ -246,6 +294,9 @@ class FooterBar(Horizontal):
             markup += f" [$green]{GLYPH_YIELD}[/]"
         if state.queued:
             markup += f"[$orange]{SEPARATOR}q{state.queued}[/]"
+        if state.plan_total:
+            markup += f"[$dimmer]{SEPARATOR}[/][$dim]$plan_part[/]"
+            substitutions["plan_part"] = f"Plan {state.plan_done}/{state.plan_total}"
         self._left.update(Content.from_markup(markup, **substitutions))
 
         badge_text = footer_waiting_text(state)
@@ -261,6 +312,7 @@ __all__ = [
     "FooterBar",
     "FooterState",
     "footer_left_text",
+    "footer_left_text_fit",
     "footer_right_text",
     "footer_waiting_text",
 ]

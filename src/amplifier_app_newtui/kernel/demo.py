@@ -270,6 +270,17 @@ AGENTS_ANSWER = (
 )
 AGENTS_END_NOTICE = "agents 3 done · click a lane to inspect its transcript"
 
+AGENTS_PLAN_STEPS: tuple[str, str, str, str] = (
+    "scan provider docs",
+    "migrate session store",
+    "run store tests",
+    "synthesize findings",
+)
+"""Scripted plan for the agents turn — feeds the plan panel (Phase 1) and the
+delegate summary's ``Plan 4/4`` fold (Phase 2)."""
+
+_AGENTS_STEP_BY_LANE: dict[str, int] = {"researcher": 0, "coder": 1, "tester": 2}
+
 
 def build_answer(denied: bool) -> str:
     """Mockup final-answer assembly for the build turn."""
@@ -309,10 +320,6 @@ class DemoLane(_FrozenModel):
     """State recap line at the bottom of the focus transcript."""
     result: str
     """Completion result summary (``tests ✔`` / ``3 findings`` / ``2 files``)."""
-    tree_spawn: str
-    """Live-tree label while running: ``<name> · <activity> · $<cost>``."""
-    tree_done: str
-    """Live-tree label when complete: ``<name> · done · <result> · <t> · $<cost>``."""
     done_at_ms: int
     """Virtual ms into the agents turn when this lane completes."""
     log: tuple[DemoLogRow, ...]
@@ -332,8 +339,6 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         brief="Scan the provider docs and list every capability the runtime does not exercise.",
         state_recap="running · 41s · $0.09",
         result="3 findings",
-        tree_spawn="researcher · scanning provider docs · $0.09",
-        tree_done="researcher · done · 3 findings · 4s · $0.11",
         done_at_ms=4400,
         log=(
             DemoLogRow(
@@ -357,8 +362,6 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         brief="Move session history behind the durable SessionStore interface.",
         state_recap="running · 2m 04s · $0.31",
         result="2 files",
-        tree_spawn="coder · migrating store · $0.31",
-        tree_done="coder · done · 2 files · 6s · $0.34",
         done_at_ms=6000,
         log=(
             DemoLogRow(
@@ -382,8 +385,6 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         brief="Run the store test suite and report failures with evidence.",
         state_recap="completed · 55s · $0.07 · tests ✔",
         result="tests ✔",
-        tree_spawn="tester · uv run pytest tests/ -q · $0.07",
-        tree_done="tester · done · tests ✔ · 2s · $0.07",
         done_at_ms=2600,
         log=(
             DemoLogRow(kind="command", text="uv run pytest tests/store/ -q"),
@@ -773,6 +774,16 @@ class DemoRuntime:
             "ts": self.clock,
         }
 
+    def _child_env(self, sub_session_id: str) -> dict[str, Any]:
+        """Envelope for a CHILD-session event (lane live tail, spec §8)."""
+        self._seq += 1
+        return {
+            "event_id": f"demo-{self._seq}",
+            "session_id": sub_session_id,
+            "parent_id": DEMO_SESSION_ID,
+            "ts": self.clock,
+        }
+
     async def _emit(self, event: UIEvent) -> None:
         await self.queue.put(event)
 
@@ -814,6 +825,32 @@ class DemoRuntime:
                 block={"type": "text", "text": text, "demo_role": role},
             )
         )
+
+    async def _lane_stream(self, lane: DemoLane) -> None:
+        """One child-session Channel-A text burst — feeds the lane live tail.
+
+        Channel A only: the child's durable record stays in its own
+        transcript (lane focus), never the parent's (design doc D4).
+        """
+        common = {
+            "request_id": f"demo-req-{lane.name}",
+            "block_index": 0,
+            "block_type": "text",
+        }
+        await self._emit(
+            StreamBlockStart(**self._child_env(lane.sub_session_id), **common, name="lane")
+        )
+        rows = [row for row in lane.log if row.kind in ("narration", "answer")]
+        for sequence, row in enumerate(rows):
+            await self._emit(
+                StreamBlockDelta(
+                    **self._child_env(lane.sub_session_id),
+                    **common,
+                    sequence=sequence,
+                    text=row.text + "\n",
+                )
+            )
+        await self._emit(StreamBlockEnd(**self._child_env(lane.sub_session_id), **common))
 
     async def _tool_pre(
         self, tool_name: str, tool_input: dict[str, Any], *, group: str | None = None
@@ -874,6 +911,30 @@ class DemoRuntime:
                 "read_only": read_only,
                 "steps": [
                     {"step": step, "status": status}
+                    for step, status in zip(steps, statuses, strict=True)
+                ],
+            },
+            {"ok": True},
+        )
+
+    _TODO_STATUS_BY_PLAN = {
+        "pending": "pending",
+        "active": "in_progress",
+        "done": "completed",
+    }
+
+    async def _todo(self, steps: Sequence[str], statuses: Sequence[str]) -> None:
+        """Mirror the plan as a ``todo`` tool call (ambient plan panel beat)."""
+        await self._tool(
+            "todo",
+            {
+                "operation": "update",
+                "todos": [
+                    {
+                        "content": step,
+                        "status": self._TODO_STATUS_BY_PLAN[status],
+                        "activeForm": step,
+                    }
                     for step, status in zip(steps, statuses, strict=True)
                 ],
             },
@@ -1018,6 +1079,7 @@ class DemoRuntime:
         spec = await self._begin_turn("auto" if auto else "build")
         statuses = ["pending"] * len(STORE_STEPS)
         await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
+        await self._todo(STORE_STEPS, statuses)
         denied = False
         for i, (step, narration, command) in enumerate(
             zip(STORE_STEPS, STORE_NARRATIONS, STORE_COMMANDS, strict=True)
@@ -1027,6 +1089,7 @@ class DemoRuntime:
             await self._apply_steer()
             statuses[i] = "active"
             await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
+            await self._todo(STORE_STEPS, statuses)
             await self._text(narration, "narration")
             await self._wait(1300)
             if self._interrupted:
@@ -1088,6 +1151,7 @@ class DemoRuntime:
                         denied = True
                         statuses[i] = "done"
                         await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
+                        await self._todo(STORE_STEPS, statuses)
                         continue
                     await self._emit(
                         ApprovalGranted(
@@ -1106,6 +1170,7 @@ class DemoRuntime:
                 )
             statuses[i] = "done"
             await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
+            await self._todo(STORE_STEPS, statuses)
             await self._wait(400)
         self._ticks = None
         if self._interrupted:
@@ -1198,6 +1263,10 @@ class DemoRuntime:
         """``runAgentsTurn()``: researcher/coder/tester fan-out."""
         spec = await self._begin_turn("agents")
         await self._text(AGENTS_NARRATION, "narration")
+        # Scripted todo beats (ambient-progress Phase 2): three lane steps
+        # start together; "synthesize findings" completes with the last lane.
+        statuses = ["active", "active", "active", "pending"]
+        await self._todo(AGENTS_PLAN_STEPS, statuses)
         for lane in DEMO_LANES:
             await self._emit(
                 AgentSpawned(
@@ -1207,6 +1276,8 @@ class DemoRuntime:
                     parent_session_id=DEMO_SESSION_ID,
                 )
             )
+        for lane in DEMO_LANES:
+            await self._lane_stream(lane)
         elapsed = 0
         for lane in sorted(DEMO_LANES, key=lambda lane: lane.done_at_ms):
             await self._wait(lane.done_at_ms - elapsed)
@@ -1223,6 +1294,10 @@ class DemoRuntime:
                     result=lane.result,
                 )
             )
+            statuses[_AGENTS_STEP_BY_LANE[lane.name]] = "done"
+            if all(status == "done" for status in statuses[:3]):
+                statuses[3] = "done"
+            await self._todo(AGENTS_PLAN_STEPS, statuses)
         self._ticks = None
         await self._text(AGENTS_ANSWER, "answer")
         await self._end_turn(spec, response=AGENTS_ANSWER, notice=spec.end_notice)
@@ -1234,6 +1309,7 @@ __all__ = [
     "AGENTS_END_NOTICE",
     "AGENTS_MODE_NOTICE",
     "AGENTS_NARRATION",
+    "AGENTS_PLAN_STEPS",
     "AGENTS_PROMPT",
     "AUTO_ANSWER",
     "AUTO_BLOCK_CONTINUATION",

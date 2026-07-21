@@ -12,6 +12,7 @@ from typing import Any
 
 from amplifier_app_newtui.kernel.demo import (
     AGENTS_END_NOTICE,
+    AGENTS_PLAN_STEPS,
     APPROVAL_OPTIONS,
     AUTO_BLOCK_REASON,
     AUTO_DEFER_NOTICE,
@@ -38,6 +39,7 @@ from amplifier_app_newtui.kernel.demo import (
 
 TEXT = ["stream_block_start", "stream_block_delta", "stream_block_end", "content_block_end"]
 PLAN = ["tool_pre", "tool_post"]
+TODO = ["tool_pre", "tool_post"]
 U = ["provider_response_usage"]
 
 
@@ -103,14 +105,14 @@ def test_seed_sequence() -> None:
 
 _BUILD_KINDS = (
     ["prompt_submit", "execution_start"]
-    + PLAN  # plan seeded: all pending
+    + PLAN + TODO  # plan seeded: all pending
     # step 0
-    + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
+    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
     # step 1 — chat-mode pytest approval
-    + PLAN + TEXT + U + ["approval_required", "approval_granted"]
-    + ["tool_pre"] + U + ["tool_post"] + PLAN + U
+    + PLAN + TODO + TEXT + U + ["approval_required", "approval_granted"]
+    + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
     # step 2
-    + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
+    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
     + TEXT  # answer
     + TEXT  # recap
     + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
@@ -152,6 +154,23 @@ def test_build_turn_plan_progression() -> None:
     assert all(p.tool_input["title"] == "Refactor session store" for p in plans)
     assert plans[0].tool_input["read_only"] is False
     assert [s["step"] for s in plans[0].tool_input["steps"]] == list(STORE_STEPS)
+
+
+def test_build_turn_todo_progression_mirrors_the_plan() -> None:
+    _, events = play("run_build_turn")
+    todos = [e for e in events if e.kind == "tool_pre" and e.tool_name == "todo"]
+    statuses = [tuple(t["status"] for t in e.tool_input["todos"]) for e in todos]
+    assert statuses == [
+        ("pending", "pending", "pending"),
+        ("in_progress", "pending", "pending"),
+        ("completed", "pending", "pending"),
+        ("completed", "in_progress", "pending"),
+        ("completed", "completed", "pending"),
+        ("completed", "completed", "in_progress"),
+        ("completed", "completed", "completed"),
+    ]
+    assert all(e.tool_input["operation"] == "update" for e in todos)
+    assert [t["content"] for t in todos[0].tool_input["todos"]] == list(STORE_STEPS)
 
 
 def test_build_turn_approval_contract() -> None:
@@ -199,10 +218,10 @@ def test_build_turn_deny_path() -> None:
     runtime, events = play("run_build_turn", approver=deny)
     expected = (
         ["prompt_submit", "execution_start"]
-        + PLAN
-        + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
-        + PLAN + TEXT + U + ["approval_required", "approval_denied"] + PLAN
-        + PLAN + TEXT + U + ["tool_pre"] + U + U + ["tool_post"] + PLAN
+        + PLAN + TODO
+        + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+        + PLAN + TODO + TEXT + U + ["approval_required", "approval_denied"] + PLAN + TODO
+        + PLAN + TODO + TEXT + U + ["tool_pre"] + U + U + ["tool_post"] + PLAN + TODO
         + TEXT + TEXT
         + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
     )
@@ -227,14 +246,14 @@ def test_build_turn_deny_path() -> None:
 
 _AUTO_KINDS = (
     ["notification", "prompt_submit", "execution_start"]
-    + PLAN
-    + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
-    + PLAN + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + U
-    + PLAN + TEXT + U
+    + PLAN + TODO
+    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+    + PLAN + TODO + TEXT + U
     + ["tool_pre"] + U + ["tool_post", "approval_denied"] + U
     + TEXT  # defer narration
     + ["notification"]  # decision deferred to needs-you
-    + PLAN
+    + PLAN + TODO
     + TEXT + TEXT
     + ["orchestrator_complete", "execution_end", "prompt_complete"]  # no end notice
 )
@@ -332,18 +351,38 @@ def test_brainstorm_turn_sequence() -> None:
 # --------------------------------------------------------------------------
 
 
+def _child_stream(deltas: int) -> list[str]:
+    """One child-session Channel-A burst (lane live tail, spec §8): a full
+    stream envelope but NO durable ``content_block_end`` — child prose never
+    lands in the parent transcript (design doc D4)."""
+    return ["stream_block_start"] + ["stream_block_delta"] * deltas + ["stream_block_end"]
+
+
 def test_agents_turn_sequence() -> None:
     runtime, events = play("run_agents_turn")
     assert kinds(events) == (
         ["notification", "prompt_submit", "execution_start"]
         + TEXT
+        + TODO
         + ["agent_spawned"] * 3
-        + U + U + ["agent_completed"]  # tester at 2.6s
-        + U + U + ["agent_completed"]  # researcher at 4.4s
-        + U + U + ["agent_completed"]  # coder at 6.0s
+        + _child_stream(2)  # researcher: 2 narration rows
+        + _child_stream(2)  # coder: 2 narration rows
+        + _child_stream(1)  # tester: 1 answer row
+        + U + U + ["agent_completed"] + TODO  # tester at 2.6s
+        + U + U + ["agent_completed"] + TODO  # researcher at 4.4s
+        + U + U + ["agent_completed"] + TODO  # coder at 6.0s
         + TEXT
         + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
     )
+    # Child bursts travel on the lanes' own sessions, parented to the root.
+    child_events = [e for e in events if e.session_id != DEMO_SESSION_ID]
+    assert {e.session_id for e in child_events} == {lane.sub_session_id for lane in DEMO_LANES}
+    assert all(e.parent_id == DEMO_SESSION_ID for e in child_events)
+    assert {e.kind for e in child_events} == {
+        "stream_block_start",
+        "stream_block_delta",
+        "stream_block_end",
+    }
     assert runtime.clock == 6.0
     spawned = [e for e in events if e.kind == "agent_spawned"]
     assert [s.agent for s in spawned] == ["researcher", "coder", "tester"]
@@ -358,6 +397,14 @@ def test_agents_turn_sequence() -> None:
     assert all(c.success for c in completed)
     assert usage_tokens(events) == [900] * 6
     assert events[-1].message == AGENTS_END_NOTICE
+    # The scripted plan progresses to all-completed: the ambient plan panel
+    # (Phase 1) and the delegate summary's ``Plan 4/4`` fold (Phase 2) both
+    # feed off these todo beats.
+    todo_pres = [e for e in events if e.kind == "tool_pre" and e.tool_name == "todo"]
+    assert len(todo_pres) == 4
+    assert [t["content"] for t in todo_pres[0].tool_input["todos"]] == list(AGENTS_PLAN_STEPS)
+    final = todo_pres[-1].tool_input["todos"]
+    assert all(t["status"] == "completed" for t in final)
 
 
 # --------------------------------------------------------------------------
@@ -393,7 +440,15 @@ def test_run_all_lifecycle_and_determinism() -> None:
     # Total virtual time = 9.3 + 9.7 + 3.6 + 3.0 + 6.0 (seed is instant).
     assert runtime.clock == 31.6
     assert round(sum(sleeps), 6) == 31.6  # paced entirely through the injected sleep
-    assert all(e.session_id == DEMO_SESSION_ID for e in events)
+    # Only the agents turn's child stream bursts leave the root session —
+    # each parented to it (lane live tail, spec §8).
+    lane_ids = {lane.sub_session_id for lane in DEMO_LANES}
+    for event in events:
+        if event.session_id == DEMO_SESSION_ID:
+            continue
+        assert event.session_id in lane_ids
+        assert event.parent_id == DEMO_SESSION_ID
+        assert event.kind in ("stream_block_start", "stream_block_delta", "stream_block_end")
 
 
 def test_two_runs_emit_identical_streams() -> None:

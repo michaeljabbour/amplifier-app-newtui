@@ -22,13 +22,6 @@
 [$orange]  ■ [/][bold $bright]Migrate history to durable store[/]
 [$dimmer]  □ [/][$dim]Verify and push[/]
 
-=== todo ===
-[$orange]· [/][$fg]Todo[/][$dim] · 1/3[/]
-[$green]  ✔ [/][$dim]Audit persistence paths[/]
-[$orange]  ▶ [/][bold $bright]Migrate history to durable store[/]
-[$dimmer]  □ [/][$dim]Verify and push[/]
-[$dim]  [/][$green]████████[/][$dimmer]░░░░░░░░░░░░░░░░[/][$dim] 1/3[/]
-
 === blocked ===
 [$red]  ⊘ blocked · [/][$red]git push --force origin main[/][$dim] · outside user authorization[/][$dim] · finding safer path[/]
 
@@ -83,3 +76,13 @@
 
 === brainstorm_idea ===
 [$fg]  1 Ambient tab color: orange while running, red when a decision waits[/]
+
+=== delegate_summary ===
+[$bright]● [/][$fg]Used 3 delegates[/][$dim] · Plan 3/3 · 1m 42s[/][$dimmer] ▸[/]
+
+=== delegate_summary (expanded) ===
+[$bright]● [/][$fg]Used 3 delegates[/][$dim] · Plan 3/3 · 1m 42s[/][$dimmer] ▾[/]
+[$dimmer]    ├─ [/][$green]✔ [/][$dim]researcher  [/][$dim]4s · "3 findings"[/]
+[$dimmer]    ├─ [/][$green]✔ [/][$dim]coder       [/][$dim]6s · "2 files"[/]
+[$dimmer]    └─ [/][$green]✔ [/][$dim]tester      [/][$dim]2s · "tests ✔"[/]
+[$dim]    Plan  [/][$green]✔ [/][$dim]Audit persistence paths …[/]

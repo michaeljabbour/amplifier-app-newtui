@@ -100,8 +100,6 @@ def lane_seed_for(name: str) -> LaneSeed | None:
         cost=cost,
         tokens=tokens,
         state=_GLYPH_STATE.get(lane.glyph, "running"),
-        tree_spawn=lane.tree_spawn,
-        tree_done=lane.tree_done,
     )
 
 

@@ -116,6 +116,7 @@ KEYMAP: tuple[Binding, ...] = (
     _b("cycle_permission", ("ctrl+p",), "ctrl-p", NO_APPROVAL),
     # Panels / pickers.
     _b("toggle_lanes", ("ctrl+t",), "ctrl-t", NO_APPROVAL),
+    _b("cycle_tail", ("ctrl+o",), "ctrl-o", NO_APPROVAL),
     _b("show_ledger", ("ctrl+l",), "ctrl-l", NO_APPROVAL),
     _b("show_needs_you", ("ctrl+y",), "ctrl-y", NO_APPROVAL),
     _b("open_rewind", ("ctrl+r",), "ctrl-r", NO_APPROVAL),

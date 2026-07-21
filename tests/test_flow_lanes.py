@@ -18,7 +18,6 @@ from amplifier_app_newtui.kernel.demo import (
     AGENTS_PROMPT,
     BUILD_PROMPT,
     DEMO_LANE_BY_NAME,
-    DEMO_LANES,
     DEMO_SESSION_ID,
 )
 from amplifier_app_newtui.ui.app import NewTuiApp
@@ -31,14 +30,25 @@ from .test_flow_helpers import (
     SIZE,
     GatedDemoAdapter,
     blocks_of,
+    line_texts,
     rules,
     seed_done,
     wait_for,
 )
 
-_LANE_LINE = re.compile(
-    r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$"
-)
+_LANE_LINE = re.compile(r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$")
+
+# The mid-turn panel snapshot at the demo's park point: the child stream
+# bursts (kernel/demo.py `_lane_stream`) have already run, so both live lanes
+# show the reducer's stream activity ("reviewing response", state running) and
+# the DESIGN-SPEC §8 ``▸`` tail marker sits on the most-recently-streaming
+# running lane — coder (tester streamed last but is seeded done, so it never
+# takes the tail). Name column re-padded to fit the marker.
+TAILED_PANEL_LINES = [
+    "  ◐ researcher · reviewing response · 41s    · ↓ 100.1k tokens · $0.09",
+    "  ◐ coder ▸    · reviewing response · 2m 04s · ↓ 48.3k tokens  · $0.31",
+    "  ✔ tester     · done · tests ✔     · 55s    · ↓ 3.2k tokens   · $0.07",
+]
 
 
 async def _run_agents_turn(pilot, app: NewTuiApp) -> None:
@@ -55,16 +65,28 @@ async def test_ctrl_t_toggles_lanes_panel_with_tree_in_transcript() -> None:
         assert len(app.lanes.lanes) == 3
         assert app.notice_slot.current == AGENTS_END_NOTICE
 
-        # The multi-agent turn rendered a live tree that completed to ✔
-        # lines — └─ corner glyph on the last-spawned lane, ├─ above it.
-        answers = ["".join(s.text for s in b.spans) for b in blocks_of(app, "answer")]
-        for lane, branch in zip(DEMO_LANES, ("├─ ", "├─ ", "└─ "), strict=True):
-            assert any(branch in text and lane.tree_done in text for text in answers)
+        # The multi-agent turn rendered ONE durable, collapsed delegate
+        # summary block (ambient-progress D5) — no per-agent tree lines.
+        summaries = [b for b in app.transcript.blocks if b.kind == "delegate_summary"]
+        assert len(summaries) == 1
+        assert [e.agent for e in summaries[0].entries] == [
+            "researcher",
+            "coder",
+            "tester",
+        ]
+        assert all(e.state == "done" for e in summaries[0].entries)
+        assert summaries[0].entries[2].snippet == "tests ✔"
+        # The scripted todo beats fold into the durable block: the final
+        # all-completed beat lands after the last completion and the
+        # header must end on Plan 4/4 (ambient-progress D3 plan-fold).
+        plan_final = summaries[0].plan_final
+        assert plan_final is not None
+        assert [item.status for item in plan_final] == ["completed"] * 4
 
         # The panel auto-opened at fan-out (mockup ``lanesOpen = true``):
         # exact header + one aligned line per agent.
         assert app.lanes_panel.display
-        assert LANES_HEADER == "Agent lanes · ↑↓ select · enter focus · esc close"
+        assert LANES_HEADER == "Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close"
         lines = app.lanes_panel.lane_lines
         assert len(lines) == 3
         for line in lines:
@@ -129,22 +151,22 @@ async def test_typing_passes_through_focused_lanes_panel_to_composer() -> None:
 
 @pytest.mark.asyncio
 async def test_lanes_panel_tri_state_matches_mockup_mid_turn() -> None:
-    """DESIGN-SPEC §8: ◐ teal running, ■ fg working, ✔ dim done (mockup LANES)."""
+    """DESIGN-SPEC §8: ◐ teal running/working, ✔ dim done — live lanes carry
+    the reducer's stream activity once the child bursts land (Phase 3)."""
     adapter = GatedDemoAdapter()
     app = NewTuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(AGENTS_PROMPT)
-        # The turn parks after spawning all three lanes: the panel shows
-        # the mockup's tri-state snapshot verbatim.
+        # The turn parks after spawning all three lanes and streaming the
+        # child bursts: the panel shows both live lanes on the stream
+        # activity plus the ▸ tail marker on the tailed lane.
         assert await wait_for(pilot, lambda: len(app.lanes.lanes) == 3)
-        assert list(app.lanes_panel.lane_lines) == [
-            lane.panel_line for lane in DEMO_LANES
-        ]
+        assert list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES
         states = [(r.lane.state, r.lane.glyph, r.lane.color_token) for r in app.lanes_panel.records]
         assert states == [
             ("running", "◐", "teal"),
-            ("working", "■", "fg"),
+            ("running", "◐", "teal"),
             ("done", "✔", "dim"),
         ]
         adapter.release()
@@ -172,15 +194,40 @@ async def test_replayed_agents_turn_reopens_done_lanes() -> None:
         app.submit_prompt(AGENTS_PROMPT)
         assert await wait_for(
             pilot,
-            lambda: [r.lane.state for r in app.lanes.lanes]
-            == ["running", "working", "done"],
+            lambda: [r.lane.state for r in app.lanes.lanes] == ["running", "running", "done"],
         )
-        assert list(app.lanes_panel.lane_lines) == [
-            lane.panel_line for lane in DEMO_LANES
-        ]
+        assert list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES
         adapter.release()
         assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
         assert all(r.lane.state == "done" for r in app.lanes.lanes)
+
+
+@pytest.mark.asyncio
+async def test_lane_tail_streams_mid_fanout_then_clears() -> None:
+    """Design doc D4: focused-lane deltas fill LiveTail while the root is
+    idle; ctrl+o moves the ▸ pin; the tail is ephemeral at turn end."""
+    adapter = GatedDemoAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.submit_prompt(AGENTS_PROMPT)
+        # Child bursts land before the script's first _wait parks the turn.
+        assert await wait_for(pilot, lambda: app.live_tail.lane_mode)
+        marked = [i for i, line in enumerate(app.lanes_panel.lane_lines) if "▸" in line]
+        assert len(marked) == 1  # exactly one tailed lane
+
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        moved = [i for i, line in enumerate(app.lanes_panel.lane_lines) if "▸" in line]
+        assert len(moved) == 1 and moved != marked  # the pin cycled
+
+        adapter.release()
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        assert not app.live_tail.lane_mode  # root answer preempted, then turn ended
+        # Ephemeral: child prose never became a transcript block.
+        assert not any(
+            "undocumented streaming flags" in text for text in line_texts(app)
+        )
 
 
 @pytest.mark.asyncio
@@ -199,9 +246,7 @@ async def test_focus_lane_child_transcript_banner_and_esc_back() -> None:
         await pilot.press("down")
         await pilot.press("enter")
         lane = DEMO_LANE_BY_NAME["coder"]
-        assert await wait_for(
-            pilot, lambda: app.transcript.focused_lane == lane.sub_session_id
-        )
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane == lane.sub_session_id)
         # The panel stays open while a lane is focused (mockup focusLane
         # never touches lanesOpen); the focused lane's row is highlighted.
         assert app.lanes_panel.display

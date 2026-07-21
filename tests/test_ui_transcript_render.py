@@ -36,8 +36,6 @@ from amplifier_app_newtui.model.blocks import (
     Recap,
     Segment,
     SessionBanner,
-    TodoBlock,
-    TodoItem,
     SteerEcho,
     ToolLine,
     TranscriptBlock,
@@ -73,9 +71,7 @@ def _blocks() -> dict[str, TranscriptBlock]:
             headline="Amplifier 0.1.0 · core 1.6.0",
             detail="Bundle: dev | Provider: anthropic | claude-fable-5 · session a1b2c3",
         ),
-        "user": UserLine(
-            id="b2", text="Please verify the persistence boundary", mode="build"
-        ),
+        "user": UserLine(id="b2", text="Please verify the persistence boundary", mode="build"),
         "narration": Narration(id="b3", text="Checking the durable session store"),
         "tool_collapsed": ToolLine(
             id="b4",
@@ -112,9 +108,7 @@ def _blocks() -> dict[str, TranscriptBlock]:
             continuation="continuing without push",
         ),
         "working": WorkingStatus(id="b11", telemetry=LIVE_TEL, agent_count=3),
-        "recap": Recap(
-            id="b12", goal="durable chat history", next="resume migration"
-        ),
+        "recap": Recap(id="b12", goal="durable chat history", next="resume migration"),
         "answer": Answer(
             id="b13",
             spans=(
@@ -124,9 +118,7 @@ def _blocks() -> dict[str, TranscriptBlock]:
                 Segment(text="done", style_token="bright", bold=True),
                 Segment(text=".\nSecond line.", style_token="fg"),
             ),
-            evidence_refs=(
-                EvidenceLink(claim_quote="it is done", tool_ref="pytest run"),
-            ),
+            evidence_refs=(EvidenceLink(claim_quote="it is done", tool_ref="pytest run"),),
         ),
         "steer": SteerEcho(id="b14", text="focus on the tests"),
         "rule_shipped": TurnRule(
@@ -135,15 +127,11 @@ def _blocks() -> dict[str, TranscriptBlock]:
             label=f"{TEL.label()} · 3 files · +142/−38 · tests ✔",
             shipped=True,
         ),
-        "rule_answer": TurnRule(
-            id="b16", checkpoint_id="t2", label=f"{TEL.label()} · answer"
-        ),
+        "rule_answer": TurnRule(id="b16", checkpoint_id="t2", label=f"{TEL.label()} · answer"),
         "evidence": EvidenceBlock(
             id="b17",
             links=(
-                EvidenceLink(
-                    claim_quote="all tests pass", tool_ref="pytest run · 34 passed"
-                ),
+                EvidenceLink(claim_quote="all tests pass", tool_ref="pytest run · 34 passed"),
                 EvidenceLink(claim_quote="3 files changed", tool_ref="git diff --stat"),
             ),
         ),
@@ -195,8 +183,7 @@ def _blocks() -> dict[str, TranscriptBlock]:
                 ImproveProposal(
                     title="trust slot:",
                     rationale=(
-                        "3 denials on push-to-fork all overridden"
-                        " · add fork remote to boundary"
+                        "3 denials on push-to-fork all overridden · add fork remote to boundary"
                     ),
                 ),
             ),
@@ -356,8 +343,7 @@ def test_plan_read_only_suffix() -> None:
 def test_blocked_exact() -> None:
     line = render_block(_blocks()["blocked"], 80)[0]
     assert line_plain(line) == (
-        "  ⊘ blocked · git push --force origin main"
-        " · denied by user · continuing without push"
+        "  ⊘ blocked · git push --force origin main · denied by user · continuing without push"
     )
     assert line[0].style_token == "red"
     assert line[-1].style_token == "dim"
@@ -367,9 +353,7 @@ def test_working_status_exact_and_spinner_frames() -> None:
     # Fan-out turn (mockup runAgentsTurn): 'Coordinating N agents · Ns ·
     # ↓ X.Xk tok · esc to interrupt' — integer secs, always one-decimal k.
     line = render_block(_blocks()["working"], 80)[0]
-    assert line_plain(line) == (
-        "✳ Coordinating 3 agents · 8s · ↓ 3.2k tok · esc to interrupt"
-    )
+    assert line_plain(line) == ("✳ Coordinating 3 agents · 8s · ↓ 3.2k tok · esc to interrupt")
     assert line[0].style_token == "orange"
     assert line[-1].style_token == "dimmer"
     for frame, glyph in enumerate(("✳", "✦", "✧", "✦", "✳")):
@@ -401,12 +385,9 @@ def test_working_status_single_agent_exact() -> None:
     block = _blocks()["working"].model_copy(update={"agent_count": 1})
     line = render_block(block, 80)[0]
     assert line_plain(line) == (
-        "✳ working · 8s · ↓ 3.2k tok · 1 agent"
-        " · esc to interrupt · type to steer"
+        "✳ working · 8s · ↓ 3.2k tok · 1 agent · esc to interrupt · type to steer"
     )
-    assert render_block(
-        block.model_copy(update={"agent_count": 0}), 80
-    ) == render_block(block, 80)
+    assert render_block(block.model_copy(update={"agent_count": 0}), 80) == render_block(block, 80)
 
 
 def test_recap_exact_italic_dim() -> None:
@@ -449,9 +430,7 @@ def test_turn_rule_label_dim_when_shipped_dimmer_otherwise() -> None:
 
 def test_evidence_exact() -> None:
     lines = render_block(_blocks()["evidence"], 80)
-    assert line_plain(lines[0]) == (
-        "· Evidence  1/2 · ←/→ select · enter expand · esc close"
-    )
+    assert line_plain(lines[0]) == ("· Evidence  1/2 · ←/→ select · enter expand · esc close")
     # Header counter + hints are ONE dimmer run (mockup showEvidence).
     assert lines[0][-1].style_token == "dimmer"
     assert line_plain(lines[1]) == '  ¹ "all tests pass" → pytest run · 34 passed'
@@ -465,9 +444,7 @@ def test_ledger_exact() -> None:
     assert line_plain(lines[0]) == "· Session ledger  a1b2c3 · dev-bundle"
     # Header after the blue '· ' is one plain fg run; stats line is dim.
     assert lines[0][1].style_token == "fg" and not lines[0][1].bold
-    assert line_plain(lines[1]) == (
-        "  3 turns · $1.24 · 2 shipped · 1 answer-only · cache hit 91%"
-    )
+    assert line_plain(lines[1]) == ("  3 turns · $1.24 · 2 shipped · 1 answer-only · cache hit 91%")
     assert lines[1][0].style_token == "dim"
 
 
@@ -539,8 +516,7 @@ def test_improve_exact() -> None:
     assert lines[1][1] == Segment(text="uv run pytest", style_token="green")
     # Trust-slot row: one dim run, the action named exactly once.
     assert line_plain(lines[2]) == (
-        "  2 trust slot: 3 denials on push-to-fork all overridden"
-        " · add fork remote to boundary"
+        "  2 trust slot: 3 denials on push-to-fork all overridden · add fork remote to boundary"
     )
     assert all(seg.style_token == "dim" for seg in lines[2])
 
@@ -569,9 +545,7 @@ def test_session_banner_focus_note_replaces_headline() -> None:
     assert len(lines) == 1
     assert line_plain(lines[0]).startswith("focused: test-writer · subagent of")
     # 'focused: <name> ' bright bold, the remainder dim (mockup focusLane).
-    assert lines[0][0] == Segment(
-        text="focused: test-writer ", style_token="bright", bold=True
-    )
+    assert lines[0][0] == Segment(text="focused: test-writer ", style_token="bright", bold=True)
     assert lines[0][1].style_token == "dim"
 
 
@@ -582,9 +556,7 @@ def test_segment_style_token_variables() -> None:
     assert segment_style(Segment(text="x")) == "$fg"
     assert segment_style(Segment(text="x", style_token="teal", bold=True)) == "bold $teal"
     assert (
-        segment_style(
-            Segment(text="x", style_token="green", bg_token="bg-tab", italic=True)
-        )
+        segment_style(Segment(text="x", style_token="green", bg_token="bg-tab", italic=True))
         == "italic $green on $bg-tab"
     )
 
@@ -616,8 +588,7 @@ def test_to_rich_text_resolves_tokens_from_mapping_only() -> None:
     # Without a mapping, no colors at all.
     uncolored = to_rich_text(line)
     assert all(
-        isinstance(span.style, Style) and span.style.color is None
-        for span in uncolored.spans
+        isinstance(span.style, Style) and span.style.color is None for span in uncolored.spans
     )
 
 
@@ -671,11 +642,12 @@ class TestAnswerMarkdown:
         spans = answer_spans("- see [docs](https://example.com/d)")
         assert spans[0].text == "• " and spans[0].style_token == "dim"
         assert any(s.text == "docs" and s.style_token == "teal" for s in spans)
-        assert any(s.text == " (https://example.com/d)" and s.style_token == "dimmer" for s in spans)
+        assert any(
+            s.text == " (https://example.com/d)" and s.style_token == "dimmer" for s in spans
+        )
         # bare brackets that are not links stay verbatim
         plain = answer_spans("[tool.uv.sources] stays")
         assert "".join(s.text for s in plain) == "[tool.uv.sources] stays"
-
 
     def test_wide_table_falls_back_to_definition_list(self) -> None:
         """Padded grids shred when cells exceed the terminal width (user
@@ -731,40 +703,15 @@ class TestAnswerMarkdown:
     def test_heading_is_preceded_by_a_blank_line(self) -> None:
         from amplifier_app_newtui.ui.live_tail import answer_spans
 
-        text = "".join(
-            s.text for s in answer_spans("Intro paragraph.\n## Section\nBody text.")
-        )
+        text = "".join(s.text for s in answer_spans("Intro paragraph.\n## Section\nBody text."))
         lines = text.split("\n")
         idx = lines.index("Section")
         assert lines[idx - 1] == ""  # blank line separates the heading
 
 
-# -- todo block (amplifier todo tool → native checklist) --------------------
-
-
-def test_todo_block_renders_header_glyphs_and_progress_bar() -> None:
-    from amplifier_app_newtui.ui.transcript import TODO_BAR_WIDTH
-
-    block = TodoBlock(
-        id="td1",
-        items=(
-            TodoItem(content="Survey repo", status="completed"),
-            TodoItem(content="Vendor deployment", status="completed"),
-            TodoItem(content="Security sweep", status="completed"),
-            TodoItem(content="Publishing repo", status="in_progress"),
-        ),
-    )
-    lines = [line_plain(line) for line in render_block(block, 80)]
-    assert lines[0] == "· Todo · 3/4"
-    assert lines[1] == "  ✔ Survey repo"
-    assert lines[4] == "  ▶ Publishing repo"
-    bar = lines[5]
-    assert bar.endswith(" 3/4")
-    filled = round(3 / 4 * TODO_BAR_WIDTH)
-    assert "█" * filled in bar and "░" * (TODO_BAR_WIDTH - filled) in bar
-
-
-def test_todo_tool_becomes_a_todo_block_updated_in_place_not_digested() -> None:
+def test_todo_tool_reroutes_to_plan_changed_never_the_transcript() -> None:
+    """Design 2026-07-21 D1/D3: the todo tool feeds the plan panel via
+    host.plan_changed(); no TodoBlock, no tool_line, no digest entry."""
     import sys
 
     from amplifier_app_newtui.kernel import events as ev
@@ -808,10 +755,21 @@ def test_todo_tool_becomes_a_todo_block_updated_in_place_not_digested() -> None:
         )
 
     todo_call("t1", ["in_progress", "pending"])
-    todo_call("t2", ["completed", "in_progress"])  # same turn → updates in place
+    todo_call("t2", ["completed", "in_progress"])
+    # a 'list' op carries no todos — must not fire plan_changed
+    reducer.handle(
+        ev.ToolPre(
+            session_id="s",
+            tool_call_id="t3",
+            tool_name="todo",
+            tool_input={"operation": "list"},
+            ts=2.0,
+        )
+    )
 
-    todos = [b for b in host.blocks if b.kind == "todo"]
-    assert len(todos) == 1  # one block, replaced in place
-    assert [i.status for i in todos[0].items] == ["completed", "in_progress"]
-    # never folded into the activity digest
+    assert len(host.plan_changes) == 2  # one push per create/update call
+    assert [i.status for i in host.plan_changes[-1]] == ["completed", "in_progress"]
+    assert [i.content for i in host.plan_changes[-1]] == ["step 0", "step 1"]
+    # never in the transcript, never in the activity digest
+    assert not [b for b in host.blocks if b.kind == "todo"]
     assert not [b for b in host.blocks if b.kind == "tool_line"]

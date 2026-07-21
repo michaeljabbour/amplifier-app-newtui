@@ -47,6 +47,8 @@ from amplifier_app_newtui.model.blocks import (
     Blocked,
     BrainstormIdea,
     ContextBlock,
+    DelegateEntry,
+    DelegateSummaryBlock,
     DoctorBlock,
     DoctorFinding,
     EvidenceBlock,
@@ -60,12 +62,11 @@ from amplifier_app_newtui.model.blocks import (
     NeedsYouEntry,
     PlanBlock,
     PlanItem,
-    TodoBlock,
-    TodoItem,
     Recap,
     SessionBanner,
     SteerEcho,
     ToolLine,
+    TodoItem,
     TranscriptBlock,
     TurnRule,
     UserLine,
@@ -89,8 +90,7 @@ _SEED = DEMO_TURN_BY_KEY["seed"]
 _ANSWER_SOURCE = SEED_ANSWER
 
 _EVIDENCE_LINKS: tuple[EvidenceLink, ...] = tuple(
-    EvidenceLink(claim_quote=claim.quote, tool_ref=claim.source)
-    for claim in DEMO_EVIDENCE
+    EvidenceLink(claim_quote=claim.quote, tool_ref=claim.source) for claim in DEMO_EVIDENCE
 )
 
 
@@ -115,14 +115,6 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
                 PlanItem(text=STORE_STEPS[0], state="done"),
                 PlanItem(text=STORE_STEPS[1], state="active"),
                 PlanItem(text=STORE_STEPS[2], state="pending"),
-            ),
-        ),
-        TodoBlock(
-            id="g6b",
-            items=(
-                TodoItem(content=STORE_STEPS[0], status="completed"),
-                TodoItem(content=STORE_STEPS[1], status="in_progress"),
-                TodoItem(content=STORE_STEPS[2], status="pending"),
             ),
         ),
         Blocked(
@@ -205,14 +197,35 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
                 ImproveProposal(
                     title="trust slot:",
                     rationale=(
-                        "3 denials on push-to-fork all overridden"
-                        " · add fork remote to boundary"
+                        "3 denials on push-to-fork all overridden · add fork remote to boundary"
                     ),
                 ),
             ),
         ),
         BrainstormIdea(id="g19", text=BRAINSTORM_IDEAS[0][2:], number=1),
+        DelegateSummaryBlock(
+            id="g20",
+            entries=(
+                DelegateEntry(
+                    agent="researcher", state="done", elapsed_s=4.4, snippet="3 findings"
+                ),
+                DelegateEntry(agent="coder", state="done", elapsed_s=6.0, snippet="2 files"),
+                DelegateEntry(agent="tester", state="done", elapsed_s=2.6, snippet="tests ✔"),
+            ),
+            plan_final=(
+                TodoItem(content=STORE_STEPS[0], status="completed"),
+                TodoItem(content=STORE_STEPS[1], status="completed"),
+                TodoItem(content=STORE_STEPS[2], status="completed"),
+            ),
+            duration_s=102.0,
+        ),
     )
+
+
+def variant_blocks() -> tuple[tuple[str, TranscriptBlock], ...]:
+    """State variants of expandable kinds — same golden rigor, labeled headers."""
+    collapsed = next(b for b in canonical_blocks() if b.kind == "delegate_summary")
+    return (("delegate_summary (expanded)", collapsed.model_copy(update={"expanded": True})),)
 
 
 def golden_text(width: int) -> str:
@@ -220,6 +233,10 @@ def golden_text(width: int) -> str:
     parts: list[str] = [f"# transcript renderer golden · width={width}", ""]
     for block in canonical_blocks():
         parts.append(f"=== {block.kind} ===")
+        parts.append(render_block_markup(block, width))
+        parts.append("")
+    for label, block in variant_blocks():
+        parts.append(f"=== {label} ===")
         parts.append(render_block_markup(block, width))
         parts.append("")
     return "\n".join(parts)

@@ -28,11 +28,13 @@ from ..model.blocks import (
     Segment,
     SessionBanner,
     SteerEcho,
+    TodoItem,
     UserLine,
 )
 from ..model.queues import NeedsYouItem
 from . import keymap
 from .footer import FooterState
+from .plan_panel import plan_counts, plan_panel_width
 from .transcript import TranscriptView
 
 if TYPE_CHECKING:
@@ -50,6 +52,7 @@ _GLOBAL_ACTIONS = frozenset(
     {
         "cycle_mode",
         "cycle_permission",
+        "cycle_tail",
         "toggle_lanes",
         "show_ledger",
         "show_needs_you",
@@ -568,8 +571,46 @@ def handle_esc(app: NewTuiApp, *, now: float | None = None) -> None:
         app.action_open_rewind()
 
 
+PLAN_PANEL_MIN_WIDTH = 90
+"""Below this terminal width the plan panel yields; a ``Plan N/M`` count
+falls back to the footer (design D2 responsive ladder)."""
+
+
+def apply_plan_change(app: NewTuiApp, items: tuple[TodoItem, ...]) -> None:
+    """Reducer pushed a new root todo list — repaint the ambient surfaces."""
+    app.plan_items = tuple(items)
+    sync_plan_surfaces(app)
+
+
+def sync_plan_surfaces(app: NewTuiApp) -> None:
+    """One decision point for the plan's responsive ladder (D2).
+
+    Wide (≥ 90 cols) with todos → the bottom-strip panel; otherwise the
+    panel hides and the footer carries the count (Task 5). Called on
+    every plan change and on terminal resize.
+    """
+    app.plan_panel.update_plan(app.plan_items)
+    if app.plan_items and app.size.width >= PLAN_PANEL_MIN_WIDTH:
+        # Content-fitted width (37 floor, one-third cap) — real plans carry
+        # longer items than the mockup and wrapped at the fixed width.
+        app.plan_panel.styles.width = plan_panel_width(app.plan_items, app.size.width)
+        app.plan_panel.show_panel()
+    else:
+        app.plan_panel.hide_panel()
+    app.refresh_status()  # footer carries the fallback count (Task 5)
+
+
+def plan_footer_counts(app: NewTuiApp) -> tuple[int, int]:
+    """``(done, total)`` for the footer — (0, 0) unless the panel is hidden
+    while todos exist (the count never shows twice; design D2)."""
+    if not app.plan_items or app.plan_panel.display:
+        return (0, 0)
+    return plan_counts(app.plan_items)
+
+
 def footer_state(app: NewTuiApp) -> FooterState:
     """One frozen footer snapshot from the app's current interaction state."""
+    done, total = plan_footer_counts(app)
     return FooterState(
         mode_id=app.mode_id,  # type: ignore[arg-type]
         bundle=app.adapter.bundle_name,
@@ -581,16 +622,20 @@ def footer_state(app: NewTuiApp) -> FooterState:
         waiting=app.adapter.needs_you.pending_count,
         context=app.footer_context(),
         kitty_protocol=app.kitty_protocol,
+        plan_done=done,
+        plan_total=total,
     )
 
 
 __all__ = [
     "APPROVAL_NOTICE",
     "EscSequence",
+    "PLAN_PANEL_MIN_WIDTH",
     "QUEUED_NOTICE",
     "STEER_NOTICE",
     "announce_ready",
     "apply_decision",
+    "apply_plan_change",
     "confirm_fork",
     "echo_steer",
     "finish_turn_queues",
@@ -602,6 +647,8 @@ __all__ = [
     "mount_approval",
     "needs_you_block",
     "permissions_block",
+    "plan_footer_counts",
+    "sync_plan_surfaces",
     "sync_steer_echoes",
     "trim_after_checkpoint",
 ]

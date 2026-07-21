@@ -49,6 +49,9 @@ GLYPH_YIELD = "▲"
 GLYPH_QUEUED = "▹"
 GLYPH_REWIND_LEFT = "‹"
 GLYPH_REWIND_RIGHT = "›"
+GLYPH_ERROR = "✖"
+GLYPH_CHEVRON_COLLAPSED = "▸"
+GLYPH_CHEVRON_EXPANDED = "▾"
 
 # Theme-token names a Segment may reference (DESIGN-SPEC §1 table rows).
 StyleToken = Literal[
@@ -209,22 +212,50 @@ TodoStatus = Literal["pending", "in_progress", "completed"]
 
 
 class TodoItem(_FrozenModel):
-    """One row of the ``todo`` tool's list: ``□`` pending / ``▶`` in-progress
-    / ``✔`` completed."""
+    """One row of the ``todo`` tool's list, rendered by the ambient plan
+    panel (``ui/plan_panel.py``): ``○`` pending / ``▶`` in-progress /
+    ``✔`` completed."""
 
     content: str
     status: TodoStatus = "pending"
 
 
-class TodoBlock(_FrozenModel):
-    """The ``todo`` tool's live checklist (amplifier tool-todo), rendered
-    natively because the printing ``hooks-todo-display`` is stripped under
-    the full-screen TUI. Flat, newtui-native: ``· Todo · N/M`` header, one
-    glyph row per item, and a ``█``/``░`` progress bar."""
+DelegateState = Literal["running", "done", "error", "cancelled"]
+
+
+class DelegateEntry(_FrozenModel):
+    """One agent row inside a :class:`DelegateSummaryBlock`.
+
+    ``state`` maps to a glyph: ``✔`` done / ``✖`` error / ``⊘`` cancelled /
+    ``◐`` running. ``snippet`` is the agent's short result summary
+    (``AgentCompleted.result``), truncated by the renderer to fit the width.
+    """
+
+    agent: str
+    state: DelegateState = "running"
+    elapsed_s: float = 0.0
+    snippet: str = ""
+
+
+class DelegateSummaryBlock(_FrozenModel):
+    """One durable, expandable summary per delegate fan-out (ambient-progress D5).
+
+    Replaces the per-agent tree-line Answer rows. Lives in the transcript as
+    a single line while running (``● N delegates running…``) and collapses at
+    fan-out end to ``● Used N delegates · Plan X/Y · MmSSs ▸``. ``expanded``
+    is UI-toggled (click/Enter) — the reducer always writes it False; see the
+    ToolLine-digest precedent for why a mid-flight replace may collapse it.
+    ``plan_final`` folds the turn's final todo state into the durable block
+    (design D3); ``None`` means "no plan this turn" and the header omits the
+    ``Plan X/Y`` segment.
+    """
 
     id: str
-    kind: Literal["todo"] = "todo"
-    items: tuple[TodoItem, ...] = ()
+    kind: Literal["delegate_summary"] = "delegate_summary"
+    entries: tuple[DelegateEntry, ...] = ()
+    plan_final: tuple[TodoItem, ...] | None = None
+    duration_s: float = 0.0
+    expanded: bool = False
 
 
 class Blocked(_FrozenModel):
@@ -474,7 +505,6 @@ TranscriptBlock = Annotated[
     | ToolLine
     | LiveCommand
     | PlanBlock
-    | TodoBlock
     | Blocked
     | WorkingStatus
     | Recap
@@ -487,7 +517,8 @@ TranscriptBlock = Annotated[
     | NeedsYouBlock
     | DoctorBlock
     | ImproveBlock
-    | BrainstormIdea,
+    | BrainstormIdea
+    | DelegateSummaryBlock,
     Field(discriminator="kind"),
 ]
 """Discriminated union of every transcript block (discriminates on ``kind``)."""
@@ -500,11 +531,17 @@ __all__ = [
     "BlockIdAllocator",
     "BrainstormIdea",
     "ContextBlock",
+    "DelegateEntry",
+    "DelegateState",
+    "DelegateSummaryBlock",
     "DoctorBlock",
     "DoctorFinding",
     "EvidenceBlock",
     "GLYPH_BLOCKED",
     "GLYPH_BULLET",
+    "GLYPH_CHEVRON_COLLAPSED",
+    "GLYPH_CHEVRON_EXPANDED",
+    "GLYPH_ERROR",
     "GLYPH_LANE_RUNNING",
     "GLYPH_PLAN_ACTIVE",
     "GLYPH_PLAN_DONE",
@@ -528,7 +565,6 @@ __all__ = [
     "NeedsYouEntry",
     "PlanBlock",
     "PlanItem",
-    "TodoBlock",
     "TodoItem",
     "PlanItemState",
     "Recap",

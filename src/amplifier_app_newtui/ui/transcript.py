@@ -21,6 +21,8 @@ Widget communication is Textual messages only (no callbacks into the app):
   stamped on the block at emit time (DESIGN-SPEC §3/§9).
 - :class:`ToolLineToggled` — a collapsed tool line was expanded/collapsed
   in place (click or enter).
+- :class:`DelegateSummaryToggled` — a delegate fan-out summary was
+  expanded/collapsed in place (click or enter).
 - :class:`LaneFocusChanged` — the view swapped to a subagent's block list
   or back (DESIGN-SPEC §8).
 
@@ -48,11 +50,18 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from ..model.blocks import (
+    GLYPH_BLOCKED,
+    GLYPH_CHEVRON_COLLAPSED,
+    GLYPH_CHEVRON_EXPANDED,
+    GLYPH_ERROR,
+    GLYPH_LANE_RUNNING,
+    GLYPH_PLAN_DONE,
     GLYPH_SPINNER_FRAMES,
     Answer,
     Blocked,
     BrainstormIdea,
     ContextBlock,
+    DelegateSummaryBlock,
     DoctorBlock,
     EvidenceBlock,
     ImproveBlock,
@@ -64,7 +73,6 @@ from ..model.blocks import (
     PlanBlock,
     Recap,
     Segment,
-    TodoBlock,
     SessionBanner,
     SteerEcho,
     StyleToken,
@@ -141,6 +149,15 @@ class ToolLineToggled(Message):
         self.expanded = expanded
 
 
+class DelegateSummaryToggled(Message):
+    """A delegate summary was expanded/collapsed in place (click or enter)."""
+
+    def __init__(self, block_id: str, expanded: bool) -> None:
+        super().__init__()
+        self.block_id = block_id
+        self.expanded = expanded
+
+
 class ExpandEvidenceClaim(Message):
     """Enter on a focused evidence block (spec §10 ``enter expand``) —
     deep-link the selected claim to the tool call that grounds it."""
@@ -202,9 +219,7 @@ def _render_session_banner(block: SessionBanner, width: int) -> tuple[Line, ...]
                 ),
             )
         return ((Segment(text=block.focus_note, style_token="dim"),),)
-    lines: list[Line] = [
-        (Segment(text=block.headline, style_token="bright", bold=True),)
-    ]
+    lines: list[Line] = [(Segment(text=block.headline, style_token="bright", bold=True),)]
     if block.detail:
         lines.append((Segment(text=block.detail, style_token="dim"),))
     return tuple(lines)
@@ -318,58 +333,6 @@ def _render_plan(block: PlanBlock, width: int) -> tuple[Line, ...]:
     return tuple(lines)
 
 
-TODO_BAR_WIDTH = 24
-"""Progress-bar cells in the todo block (``█`` done / ``░`` remaining)."""
-
-
-def _render_todo(block: TodoBlock, width: int) -> tuple[Line, ...]:
-    """Flat, newtui-native todo checklist (see :class:`TodoBlock`):
-    ``· Todo · N/M`` header, one glyph row per item, and a progress bar —
-    the native replacement for the stripped ``hooks-todo-display`` panel."""
-    total = len(block.items)
-    done = sum(1 for item in block.items if item.status == "completed")
-    lines: list[Line] = [
-        (
-            Segment(text="· ", style_token="orange"),
-            Segment(text="Todo", style_token="fg"),
-            Segment(text=f" · {done}/{total}", style_token="dim"),
-        )
-    ]
-    for item in block.items:
-        if item.status == "completed":
-            lines.append(
-                (
-                    Segment(text="  ✔ ", style_token="green"),
-                    Segment(text=item.content, style_token="dim"),
-                )
-            )
-        elif item.status == "in_progress":
-            lines.append(
-                (
-                    Segment(text="  ▶ ", style_token="orange"),
-                    Segment(text=item.content, style_token="bright", bold=True),
-                )
-            )
-        else:
-            lines.append(
-                (
-                    Segment(text="  □ ", style_token="dimmer"),
-                    Segment(text=item.content, style_token="dim"),
-                )
-            )
-    if total:
-        filled = round(done / total * TODO_BAR_WIDTH)
-        lines.append(
-            (
-                Segment(text="  ", style_token="dim"),
-                Segment(text="█" * filled, style_token="green"),
-                Segment(text="░" * (TODO_BAR_WIDTH - filled), style_token="dimmer"),
-                Segment(text=f" {done}/{total}", style_token="dim"),
-            )
-        )
-    return tuple(lines)
-
-
 def _render_blocked(block: Blocked, width: int) -> tuple[Line, ...]:
     line: list[Segment] = [
         Segment(text="  ⊘ blocked · ", style_token="red"),
@@ -389,8 +352,7 @@ def _shimmer_segments(label: str, frame: int) -> tuple[Segment, ...]:
     changes, so copy/paste and snapshots remain stable.
     """
     band: dict[int, tuple[StyleToken, bool]] = {
-        index: (token, bold)
-        for index, token, bold in shimmer_band(len(label), frame)
+        index: (token, bold) for index, token, bold in shimmer_band(len(label), frame)
     }
     base_style: tuple[StyleToken, bool] = ("dim", False)
     segments: list[Segment] = []
@@ -398,9 +360,7 @@ def _shimmer_segments(label: str, frame: int) -> tuple[Segment, ...]:
         token, bold = band.get(index, base_style)
         if segments and segments[-1].style_token == token and segments[-1].bold == bold:
             previous = segments[-1]
-            segments[-1] = previous.model_copy(
-                update={"text": previous.text + character}
-            )
+            segments[-1] = previous.model_copy(update={"text": previous.text + character})
         else:
             segments.append(Segment(text=character, style_token=token, bold=bold))
     return tuple(segments)
@@ -619,10 +579,7 @@ def _render_evidence(block: EvidenceBlock, width: int) -> tuple[Line, ...]:
             Segment(text="· ", style_token="teal"),
             Segment(text="Evidence", style_token="teal", bold=True),
             Segment(
-                text=(
-                    f"  {block.selected + 1}/{total}"
-                    " · ←/→ select · enter expand · esc close"
-                ),
+                text=(f"  {block.selected + 1}/{total} · ←/→ select · enter expand · esc close"),
                 style_token="dimmer",
             ),
         )
@@ -804,6 +761,113 @@ def _render_brainstorm_idea(block: BrainstormIdea, width: int) -> tuple[Line, ..
     return ((Segment(text=f"{prefix}{block.text}", style_token="fg"),),)
 
 
+def _format_span(seconds: float) -> str:
+    """``42s`` under a minute, ``1m 42s`` above (lane-panel zero-pad style)."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}m {secs:02d}s"
+
+
+def _clip(text: str, budget: int) -> str:
+    """Cell-width truncation with a trailing ellipsis; '' when it can't fit."""
+    if budget <= 1:
+        return ""
+    if cell_len(text) <= budget:
+        return text
+    out = ""
+    for ch in text:
+        if cell_len(out + ch) > budget - 1:
+            break
+        out += ch
+    return out + "…"
+
+
+_DELEGATE_GLYPHS: dict[str, tuple[str, StyleToken]] = {
+    "running": (GLYPH_LANE_RUNNING, "dimmer"),
+    "done": (GLYPH_PLAN_DONE, "green"),
+    "error": (GLYPH_ERROR, "red"),
+    "cancelled": (GLYPH_BLOCKED, "red"),
+}
+
+# Reuse the plan-panel checklist glyphs (ui/plan_panel.py:_GLYPHS) — goldens pin both.
+_DELEGATE_PLAN_GLYPHS: dict[str, tuple[str, StyleToken]] = {
+    "completed": ("✔", "green"),
+    "in_progress": ("▶", "orange"),
+    "pending": ("○", "dim"),
+}
+
+
+def _render_delegate_summary(block: DelegateSummaryBlock, width: int) -> tuple[Line, ...]:
+    """Ambient-progress D5: one-line summary, expandable to the agent tree."""
+    running = sum(1 for entry in block.entries if entry.state == "running")
+    head: list[Segment] = [Segment(text="● ", style_token="bright")]
+    if running:
+        noun = "delegate" if running == 1 else "delegates"
+        head.append(Segment(text=f"{running} {noun} running…", style_token="dim"))
+    else:
+        total = len(block.entries)
+        noun = "delegate" if total == 1 else "delegates"
+        head.append(Segment(text=f"Used {total} {noun}", style_token="fg"))
+        detail = ""
+        if block.plan_final:
+            done = sum(1 for item in block.plan_final if item.status == "completed")
+            detail += f" · Plan {done}/{len(block.plan_final)}"
+        detail += f" · {_format_span(block.duration_s)}"
+        head.append(Segment(text=detail, style_token="dim"))
+        chevron = GLYPH_CHEVRON_EXPANDED if block.expanded else GLYPH_CHEVRON_COLLAPSED
+        head.append(Segment(text=f" {chevron}", style_token="dimmer"))
+    lines: list[Line] = [tuple(head)]
+    if not block.expanded:
+        return tuple(lines)
+    name_width = max((cell_len(e.agent) for e in block.entries), default=0)
+    for index, entry in enumerate(block.entries):
+        branch = "└─" if index == len(block.entries) - 1 else "├─"
+        glyph, token = _DELEGATE_GLYPHS[entry.state]
+        row: list[Segment] = [
+            Segment(text=f"    {branch} ", style_token="dimmer"),
+            Segment(text=f"{glyph} ", style_token=token),
+            Segment(text=f"{entry.agent.ljust(name_width)}  ", style_token="dim"),
+        ]
+        if entry.state == "running":
+            row.append(Segment(text="running", style_token="dimmer"))
+        else:
+            tail = _format_span(entry.elapsed_s)
+            if entry.snippet:
+                used = sum(cell_len(s.text) for s in row) + cell_len(tail)
+                snippet = _clip(entry.snippet, width - used - 5)
+                if snippet:
+                    tail += f' · "{snippet}"'
+            row.append(Segment(text=tail, style_token="dim"))
+        lines.append(tuple(row))
+    if block.plan_final:
+        # One line, clipped to width — real plans carry long items that
+        # would otherwise soft-wrap mid-word into an unaligned blob.
+        plan_row: list[Segment] = [Segment(text="    Plan  ", style_token="dim")]
+        used = 10
+        shown = 0
+        for item in block.plan_final:
+            glyph, token = _DELEGATE_PLAN_GLYPHS[item.status]
+            content = _clip(item.content, width - used - 4)  # glyph + trail
+            if not content:
+                break
+            plan_row.append(Segment(text=f"{glyph} ", style_token=token))
+            trail = "  " if content == item.content else ""
+            plan_row.append(Segment(text=f"{content}{trail}", style_token="dim"))
+            used += 2 + cell_len(content) + len(trail)
+            shown += 1
+            if not trail:
+                break
+        if shown < len(block.plan_final) and plan_row[-1].text.endswith("  "):
+            # Items were dropped whole: spend the reserved trail on a
+            # visible "there's more" marker (same width, no overflow).
+            last = plan_row[-1]
+            plan_row[-1] = Segment(text=f"{last.text[:-2]} …", style_token=last.style_token)
+        lines.append(tuple(plan_row))
+    return tuple(lines)
+
+
 _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "session_banner": _render_session_banner,
     "user_line": _render_user_line,
@@ -811,7 +875,6 @@ _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "tool_line": _render_tool_line,
     "live_command": _render_live_command,
     "plan": _render_plan,
-    "todo": _render_todo,
     "blocked": _render_blocked,
     "working_status": _render_working_status,
     "recap": _render_recap,
@@ -825,6 +888,7 @@ _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "doctor": _render_doctor,
     "improve": _render_improve,
     "brainstorm_idea": _render_brainstorm_idea,
+    "delegate_summary": _render_delegate_summary,
 }
 
 
@@ -887,7 +951,6 @@ class BlockWidget(Static):
        (narration, answer, evidence, working status) stay flush — the
        repo's px→cell mapping rounds sub-10px margins to 0. */
     BlockWidget.kind-plan,
-    BlockWidget.kind-todo,
     BlockWidget.kind-ledger,
     BlockWidget.kind-context,
     BlockWidget.kind-doctor,
@@ -948,7 +1011,7 @@ class BlockWidget(Static):
             self.add_class("read-only")
         if isinstance(block, Answer) and block.compact:
             self.add_class("compact")
-        if block.kind in ("tool_line", "evidence"):
+        if block.kind in ("tool_line", "evidence", "delegate_summary"):
             # Evidence blocks take keyboard focus so the header's
             # advertised keys work (keymap "evidence" context, spec §10).
             self.can_focus = True
@@ -964,12 +1027,8 @@ class BlockWidget(Static):
     def on_mount(self) -> None:
         self.repaint_block()
         if self._block.kind == "working_status":
-            self._spin_timer = self.set_interval(
-                SPINNER_INTERVAL_SECONDS, self._advance_spinner
-            )
-            self._motion_timer = self.set_interval(
-                MOTION_INTERVAL_SECONDS, self._advance_motion
-            )
+            self._spin_timer = self.set_interval(SPINNER_INTERVAL_SECONDS, self._advance_spinner)
+            self._motion_timer = self.set_interval(MOTION_INTERVAL_SECONDS, self._advance_motion)
 
     def on_unmount(self) -> None:
         if self._spin_timer is not None:
@@ -992,9 +1051,7 @@ class BlockWidget(Static):
     def update_block(self, block: TranscriptBlock) -> None:
         """Replace this widget's block in place (same stable id)."""
         if block.id != self._block.id:
-            raise ValueError(
-                f"block id mismatch: widget has {self._block.id!r}, got {block.id!r}"
-            )
+            raise ValueError(f"block id mismatch: widget has {self._block.id!r}, got {block.id!r}")
         self._block = block
         if isinstance(block, PlanBlock):
             self.set_class(block.read_only, "read-only")
@@ -1084,6 +1141,11 @@ class BlockWidget(Static):
             self._block = toggled
             self.repaint_block()
             self.post_message(ToolLineToggled(toggled.id, toggled.expanded))
+        elif block.kind == "delegate_summary" and block.entries:
+            toggled = block.model_copy(update={"expanded": not block.expanded})
+            self._block = toggled
+            self.repaint_block()
+            self.post_message(DelegateSummaryToggled(toggled.id, toggled.expanded))
         elif block.kind == "answer" and block.clickable:
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
         elif block.kind == "turn_rule":
@@ -1120,8 +1182,7 @@ class NeedsYouBlockWidget(NeedsYouList):
         """Replace this widget's block in place (same stable id)."""
         if block.id != self._needs_you_block.id:
             raise ValueError(
-                f"block id mismatch: widget has {self._needs_you_block.id!r},"
-                f" got {block.id!r}"
+                f"block id mismatch: widget has {self._needs_you_block.id!r}, got {block.id!r}"
             )
         if not isinstance(block, NeedsYouBlock):  # pragma: no cover - defensive
             raise TypeError(f"needs_you widget got block kind {block.kind!r}")
@@ -1153,7 +1214,6 @@ def _block_margin_top(block: TranscriptBlock) -> int:
     if block.kind in {
         "user_line",
         "turn_rule",
-        "todo",
         "ledger",
         "context",
         "doctor",
@@ -1224,6 +1284,8 @@ class HistoryArchive(Static):
     def _block_action(block: TranscriptBlock) -> str | None:
         if block.kind == "tool_line" and block.body:
             return f"archive_activate({block.id!r})"
+        if block.kind == "delegate_summary" and block.entries:
+            return f"archive_activate({block.id!r})"
         if block.kind == "answer" and block.clickable:
             return f"archive_activate({block.id!r})"
         if block.kind in ("turn_rule", "evidence"):
@@ -1246,9 +1308,7 @@ class HistoryArchive(Static):
             if isinstance(block, NeedsYouBlock) and 0 <= item_index < len(block.items):
                 entry = block.items[item_index]
                 default_line_action = (
-                    f"archive_decision({block.id!r}, {item_index}, 0)"
-                    if entry.choices
-                    else None
+                    f"archive_decision({block.id!r}, {item_index}, 0)" if entry.choices else None
                 )
             parts: list[str] = []
             for segment in line:
@@ -1296,6 +1356,12 @@ class HistoryArchive(Static):
             toggled = block.model_copy(update={"expanded": not block.expanded})
             self._owner.replace(toggled)
             self.post_message(ToolLineToggled(toggled.id, toggled.expanded))
+        elif block.kind == "delegate_summary" and block.entries:
+            toggled = block.model_copy(update={"expanded": not block.expanded})
+            # An explicit user toggle: bypass the reducer-replace expansion
+            # merge, or collapsing would be undone by _preserve_expansion.
+            self._owner.replace(toggled, preserve_expansion=False)
+            self.post_message(DelegateSummaryToggled(toggled.id, toggled.expanded))
         elif block.kind == "answer" and block.clickable:
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
         elif block.kind == "turn_rule":
@@ -1304,9 +1370,7 @@ class HistoryArchive(Static):
             self._active_evidence_id = block.id
             self.focus()
 
-    def action_archive_decision(
-        self, block_id: str, item_index: int, choice_index: int
-    ) -> None:
+    def action_archive_decision(self, block_id: str, item_index: int, choice_index: int) -> None:
         block = self._owner.get_block(block_id)
         if not isinstance(block, NeedsYouBlock):
             return
@@ -1426,9 +1490,7 @@ class TranscriptView(VerticalScroll):
         # state. Read that live state first; archived blocks come directly
         # from the canonical store.
         return tuple(
-            self._widgets[block_id].block
-            if block_id in self._widgets
-            else self._blocks[block_id]
+            self._widgets[block_id].block if block_id in self._widgets else self._blocks[block_id]
             for block_id in self._order
         )
 
@@ -1466,12 +1528,43 @@ class TranscriptView(VerticalScroll):
         self._schedule_compaction()
         return widget
 
-    def replace(self, block: TranscriptBlock) -> None:
+    def _preserve_expansion(self, block: TranscriptBlock) -> TranscriptBlock:
+        """Carry a user's UI-local expansion across a reducer replace.
+
+        The reducer always re-renders a delegate summary collapsed
+        (expansion is UI-local by design); without this merge, a
+        mid-flight update — or a post-turn straggler ``AgentCompleted``,
+        which replaces the block after the turn ended — collapses a
+        summary the user has opened (review finding H1).
+        """
+        if block.kind != "delegate_summary" or block.expanded:
+            return block
+        current: TranscriptBlock | None = None
+        widget = self._widgets.get(block.id)
+        if isinstance(widget, BlockWidget):
+            current = widget.block
+        elif self._focused_lane is not None and self._main_stash is not None:
+            current = next((s for s in self._main_stash if s.id == block.id), None)
+        else:
+            current = self._blocks.get(block.id)
+        if isinstance(current, DelegateSummaryBlock) and current.expanded:
+            return block.model_copy(update={"expanded": True})
+        return block
+
+    def replace(
+        self, block: TranscriptBlock, *, preserve_expansion: bool = True
+    ) -> None:
         """Swap a block's content in place, keyed by its stable id.
+
+        ``preserve_expansion=False`` is for explicit user toggles (the
+        archive activate path) — data replaces from the reducer keep the
+        default and never collapse an opened summary.
 
         While a lane is focused the replace addresses the stashed parent
         list — the focused child transcript is a read-only snapshot.
         """
+        if preserve_expansion:
+            block = self._preserve_expansion(block)
         if self._focused_lane is not None and self._main_stash is not None:
             for index, stashed in enumerate(self._main_stash):
                 if stashed.id == block.id:
@@ -1541,9 +1634,7 @@ class TranscriptView(VerticalScroll):
             archive_count = max(0, len(self._order) - HISTORY_WIDGET_LIMIT)
             archive_ids = self._order[:archive_count]
             newly_archived = [
-                self._widgets[block_id]
-                for block_id in archive_ids
-                if block_id in self._widgets
+                self._widgets[block_id] for block_id in archive_ids if block_id in self._widgets
             ]
             if not newly_archived:
                 return
@@ -1588,11 +1679,18 @@ class TranscriptView(VerticalScroll):
         if isinstance(widget, BlockWidget) and isinstance(widget.block, ToolLine):
             self._blocks[message.block_id] = widget.block
 
+    def on_delegate_summary_toggled(self, message: DelegateSummaryToggled) -> None:
+        """Keep canonical history aligned with a tail widget's local toggle."""
+
+        widget = self._widgets.get(message.block_id)
+        if isinstance(widget, BlockWidget) and isinstance(
+            widget.block, DelegateSummaryBlock
+        ):
+            self._blocks[message.block_id] = widget.block
+
     # -- tail-follow anchor --------------------------------------------------
 
-    def set_reactive(
-        self, reactive: Reactive[ReactiveType], value: ReactiveType
-    ) -> None:
+    def set_reactive(self, reactive: Reactive[ReactiveType], value: ReactiveType) -> None:
         """Clamp unvalidated scroll writes so short content stays top-aligned.
 
         While the standing tail anchor is engaged, Textual's compositor
@@ -1604,9 +1702,7 @@ class TranscriptView(VerticalScroll):
         ``scrollTop = scrollHeight`` the browser clamps) keeps short
         content at the top, so floor these writes at 0 here.
         """
-        if reactive.name in ("scroll_y", "scroll_target_y") and isinstance(
-            value, (int, float)
-        ):
+        if reactive.name in ("scroll_y", "scroll_target_y") and isinstance(value, (int, float)):
             value = cast("ReactiveType", max(value, 0))
         super().set_reactive(reactive, value)
 
@@ -1631,9 +1727,7 @@ class TranscriptView(VerticalScroll):
     def focused_lane(self) -> str | None:
         return self._focused_lane
 
-    async def focus_lane(
-        self, lane_id: str, blocks: Sequence[TranscriptBlock]
-    ) -> None:
+    async def focus_lane(self, lane_id: str, blocks: Sequence[TranscriptBlock]) -> None:
         """Swap the transcript to a subagent's own block list."""
         if self._focused_lane is None:
             self._main_stash = list(self.blocks)
@@ -1713,9 +1807,7 @@ class TranscriptView(VerticalScroll):
         self._reflow_hold = True
         if self._reflow_timer is not None:
             self._reflow_timer.stop()
-        self._reflow_timer = self.set_timer(
-            REFLOW_DEBOUNCE_SECONDS, self._debounce_fired
-        )
+        self._reflow_timer = self.set_timer(REFLOW_DEBOUNCE_SECONDS, self._debounce_fired)
 
     def _debounce_fired(self) -> None:
         self._reflow_timer = None
@@ -1762,6 +1854,7 @@ __all__ = [
     "TOOL_EXPAND_HINT",
     "BlockWidget",
     "CloseEvidence",
+    "DelegateSummaryToggled",
     "ExpandEvidenceClaim",
     "HistoryArchive",
     "LaneFocusChanged",

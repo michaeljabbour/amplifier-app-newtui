@@ -246,11 +246,10 @@ def test_child_events_stream_compact_activity_into_lane_and_tree() -> None:
     assert lane is not None
     assert lane.lane.state == "working"
     assert lane.lane.activity == "reading README.md"
-    tree = next(block for block in host.blocks if block.kind == "answer")
-    assert tree.compact
-    assert "foundation:explorer · reading README.md" == "".join(
-        segment.text for segment in tree.spans
-    ).strip().removeprefix("├─ ").removeprefix("└─ ").removeprefix("● ")
+    # The in-transcript agent-tree activity ticker is retired
+    # (ambient-progress D5) — live child activity now lives only on the
+    # lane (asserted above); the LanesPanel is the activity surface.
+    assert not [block for block in host.blocks if block.kind == "answer"]
 
     reducer.handle(
         ev.ToolPre(
@@ -316,9 +315,7 @@ def test_child_events_stream_compact_activity_into_lane_and_tree() -> None:
     assert "foundation:explorer · apply patch · src/one.py, src/two.py" in changes.body
 
     reducer.handle(
-        ev.StreamBlockStart(
-            session_id="child", block_type="text", request_id="r1", ts=4.0
-        )
+        ev.StreamBlockStart(session_id="child", block_type="text", request_id="r1", ts=4.0)
     )
     lane = reducer.lanes.get("child")
     assert lane is not None

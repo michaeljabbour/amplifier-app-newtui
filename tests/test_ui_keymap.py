@@ -11,6 +11,7 @@ from amplifier_app_newtui.ui.keymap import (
     ESC_CHAIN,
     FOOTER_HINTS,
     KEYMAP,
+    NO_APPROVAL,
     Binding,
     bindings_for,
     hint_label,
@@ -135,3 +136,9 @@ def test_approval_context_suppresses_global_chords() -> None:
     assert {"approval_prev", "approval_next", "approval_confirm", "approval_deny"} <= (
         approval_actions
     )
+
+
+def test_cycle_tail_is_bound_to_ctrl_o_everywhere_but_approval() -> None:
+    binding = next(b for b in KEYMAP if b.action == "cycle_tail")
+    assert binding.keys == ("ctrl+o",)
+    assert binding.contexts == NO_APPROVAL

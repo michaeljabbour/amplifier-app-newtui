@@ -19,6 +19,8 @@ from amplifier_app_newtui.model.blocks import (
     BlockIdAllocator,
     BrainstormIdea,
     ContextBlock,
+    DelegateEntry,
+    DelegateSummaryBlock,
     DoctorBlock,
     DoctorFinding,
     EvidenceBlock,
@@ -36,6 +38,7 @@ from amplifier_app_newtui.model.blocks import (
     SessionBanner,
     SteerEcho,
     ToolLine,
+    TodoItem,
     TranscriptBlock,
     TurnRule,
     UserLine,
@@ -114,9 +117,25 @@ def test_every_block_kind_has_stable_id_and_roundtrips() -> None:
                 ),
             ),
         ),
-        DoctorBlock(id="b17", healthy=("provider ok",), findings=(DoctorFinding(number=1, text="no git remote"),)),
+        DoctorBlock(
+            id="b17",
+            healthy=("provider ok",),
+            findings=(DoctorFinding(number=1, text="no git remote"),),
+        ),
         ImproveBlock(id="b18"),
         BrainstormIdea(id="b19", text="event-sourced transcript", number=1),
+        DelegateSummaryBlock(
+            id="b20",
+            entries=(
+                DelegateEntry(
+                    agent="researcher", state="done", elapsed_s=4.4, snippet="3 findings"
+                ),
+                DelegateEntry(agent="coder", state="running"),
+            ),
+            plan_final=(TodoItem(content="scan provider docs", status="completed"),),
+            duration_s=102.0,
+            expanded=True,
+        ),
     ]
     seen_kinds = set()
     for block in blocks:
@@ -126,7 +145,7 @@ def test_every_block_kind_has_stable_id_and_roundtrips() -> None:
         dumped = block.model_dump_json()
         restored = _ADAPTER.validate_json(dumped)
         assert restored == block, f"{block.kind} did not round-trip"
-    assert len(seen_kinds) == 19
+    assert len(seen_kinds) == 20
 
 
 def test_blocks_are_frozen() -> None:
@@ -136,9 +155,7 @@ def test_blocks_are_frozen() -> None:
 
 
 def test_kind_discriminates_union() -> None:
-    restored = _ADAPTER.validate_python(
-        {"id": "b9", "kind": "recap", "goal": "g", "next": "n"}
-    )
+    restored = _ADAPTER.validate_python({"id": "b9", "kind": "recap", "goal": "g", "next": "n"})
     assert isinstance(restored, Recap)
 
 

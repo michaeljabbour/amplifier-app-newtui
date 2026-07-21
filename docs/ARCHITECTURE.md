@@ -126,7 +126,7 @@ src/amplifier_app_newtui/
 │   ├── file_mentions.py   bounded workspace-file discovery and ranking
 │   └── trackers/          task_status, stream_status, runtime_status
 ├── model/             pure domain state (no Textual, no amplifier-core)
-│   ├── blocks.py          TranscriptBlock discriminated union (20 kinds) + id allocator
+│   ├── blocks.py          TranscriptBlock discriminated union (19 kinds) + id allocator
 │   ├── lanes.py           LaneRegistry / LaneRecord / LaneState
 │   ├── queues.py          SteeringQueue + NeedsYouQueue (bounded)
 │   ├── modes.py           five interaction modes (chat/plan/brainstorm/build/auto)
@@ -353,7 +353,7 @@ values).
 commands"*), `PlanBlock`, `Blocked`, `WorkingStatus` (spinner pulse + live activity tree),
 `Recap`, `Answer` (with `evidence_refs`), `SteerEcho`, `TurnRule` (carries `checkpoint_id` —
 clickable → rewind), `EvidenceBlock`, `NeedsYouBlock`, `LedgerBlock`, `ContextBlock`,
-`DoctorBlock`, `ImproveBlock`, `BrainstormIdea`, `LiveCommand`, `TodoBlock`. Every block has a monotonic
+`DoctorBlock`, `ImproveBlock`, `BrainstormIdea`, `LiveCommand`. Every block has a monotonic
 string id (`BlockIdAllocator`) used for in-place mutation, click routing, and rewind
 trimming.
 

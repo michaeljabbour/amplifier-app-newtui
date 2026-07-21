@@ -36,6 +36,9 @@ from .segments import segment_markup
 THROTTLE_SECONDS = 1 / 30
 """Minimum interval between tail repaints (30Hz — inside the 30–60Hz budget)."""
 
+LANE_TAIL_LINES = 3
+"""Max painted lines of a focused lane's live tail (design doc D4)."""
+
 ASYNC_RENDER_THRESHOLD = 100_000
 """Long streams parse off-thread so markdown can never stall the UI loop."""
 
@@ -318,6 +321,20 @@ def streaming_spans(source: str) -> tuple[Segment, ...]:
     return tuple(spans)
 
 
+def lane_tail_markup(text: str) -> str:
+    """Markup for a focused lane's tail: the last :data:`LANE_TAIL_LINES`
+    non-blank lines, ``┆``-guttered, dim (DESIGN-SPEC §8). Pure function —
+    unit-testable without a widget; content is escaped, never interpreted.
+    """
+    from textual.markup import escape
+
+    lines = [line for line in text.split("\n") if line.strip()][-LANE_TAIL_LINES:]
+    if not lines:
+        return ""
+    body = "\n".join(f"┆ {escape(line)}" for line in lines)
+    return f"[$dim]{body}[/]"
+
+
 class LiveTail(Static):
     """Streaming tail widget: accumulate deltas, throttle paints, consolidate.
 
@@ -355,6 +372,8 @@ class LiveTail(Static):
         self._render_generation = 0
         self._render_pending: tuple[int, str, str] | None = None
         self._async_render_active = False
+        self._lane_mode = False
+        self._root_open = False
 
     @property
     def source(self) -> str:
@@ -377,6 +396,8 @@ class LiveTail(Static):
 
     def open_stream(self, block_type: str = "text") -> None:
         """Reset for a new streaming block (``llm:stream_block_start``)."""
+        self._lane_mode = False  # root always preempts the lane tail (D4)
+        self._root_open = True
         self._cancel_timer()
         self._reset_source()
         self._invalidate_async_render()
@@ -409,12 +430,39 @@ class LiveTail(Static):
         source = self.source.rstrip("\n")
         answer = Answer(id=block_id, spans=answer_spans(source))
         self._cancel_timer()
+        self._root_open = False
         self._reset_source()
         self._invalidate_async_render()
         self._last_paint = 0.0
         self.update("")
         self.post_message(self.Consolidated(answer))
         return answer
+
+    @property
+    def lane_mode(self) -> bool:
+        """True while the tail shows a focused lane's stream, not the root's."""
+        return self._lane_mode
+
+    def show_lane_tail(self, text: str) -> None:
+        """Paint the focused lane's accumulated tail (dim, ``┆``-guttered).
+
+        The root always preempts: refused while a root stream is open. The
+        reducer owns accumulation and the ~0.05s throttle
+        (``LANE_TAIL_NOTIFY_SECONDS``); this widget just paints the last
+        :data:`LANE_TAIL_LINES` lines. Lane content is ephemeral — it is
+        never consolidated into a transcript block.
+        """
+        if self._root_open:
+            return
+        self._lane_mode = True
+        self.update(lane_tail_markup(text))
+
+    def clear_lane_tail(self) -> None:
+        """Drop the lane tail (root preemption / lane done / turn end)."""
+        if not self._lane_mode:
+            return
+        self._lane_mode = False
+        self.update("")
 
     def attach_evidence(
         self, answer: Answer, links: tuple[EvidenceLink, ...]
@@ -496,9 +544,11 @@ class LiveTail(Static):
 
 __all__ = [
     "ASYNC_RENDER_THRESHOLD",
+    "LANE_TAIL_LINES",
     "THROTTLE_SECONDS",
     "LiveTail",
     "answer_spans",
+    "lane_tail_markup",
     "streaming_spans",
     "visible_length",
 ]
