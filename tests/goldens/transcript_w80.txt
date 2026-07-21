@@ -81,4 +81,4 @@
 [$dimmer]    ├─ [/][$green]✔ [/][$dim]researcher  [/][$dim]4s · "3 findings"[/]
 [$dimmer]    ├─ [/][$green]✔ [/][$dim]coder       [/][$dim]6s · "2 files"[/]
 [$dimmer]    └─ [/][$green]✔ [/][$dim]tester      [/][$dim]2s · "tests ✔"[/]
-[$dim]    Plan  [/][$green]✔ [/][$dim]Audit persistence paths  [/][$green]✔ [/][$dim]Migrate history to durable store  [/][$green]✔ [/][$dim]Verify and push  [/]
+[$dim]    Plan  [/][$green]✔ [/][$dim]Audit persistence paths  [/][$green]✔ [/][$dim]Migrate history to durable store  [/][$green]✔ [/][$dim]Ve…[/]

@@ -103,3 +103,24 @@ def test_snippet_truncated_to_width() -> None:
     row = _plain(block, width=40)[1]
     assert len(row) <= 40
     assert row.endswith('…"')
+
+
+def test_expanded_plan_row_clips_to_width() -> None:
+    """Review finding: the plan fold was one uncapped line — real plans
+    with long items wrapped mid-word into an unaligned blob."""
+    block = DelegateSummaryBlock(
+        id="b1", entries=DONE_ENTRIES, plan_final=PLAN, duration_s=102.0, expanded=True
+    )
+    plan_line = _plain(block, width=40)[-1]
+    assert len(plan_line) <= 40
+    assert plan_line.startswith("    Plan  ")
+    assert plan_line.rstrip().endswith("…")  # clipped, visibly
+
+
+def test_expanded_plan_row_marks_whole_dropped_items() -> None:
+    block = DelegateSummaryBlock(
+        id="b1", entries=DONE_ENTRIES, plan_final=PLAN, duration_s=102.0, expanded=True
+    )
+    plan_line = _plain(block, width=35)[-1]
+    assert len(plan_line) <= 35
+    assert plan_line.endswith(" …")  # later items dropped whole, marked

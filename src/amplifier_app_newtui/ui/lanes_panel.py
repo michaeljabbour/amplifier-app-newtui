@@ -56,8 +56,22 @@ def lane_elapsed(seconds: float) -> str:
     return f"{total // 60}m {total % 60:02d}s"
 
 
+_MIN_ACTIVITY_WIDTH = 8
+"""Floor for the elided activity column — below this, readability is gone
+and the tokens column is dropped whole instead."""
+
+
+def _elide(text: str, budget: int) -> str:
+    if len(text) <= budget:
+        return text
+    return text[: max(budget - 1, 1)] + "…"
+
+
 def format_lane_lines(
-    lanes: Sequence[LaneState], tailed_index: int | None = None
+    lanes: Sequence[LaneState],
+    tailed_index: int | None = None,
+    *,
+    width: int | None = None,
 ) -> tuple[str, ...]:
     """Aligned lane lines per Claude Code's live agent panel:
     ``  <glyph> <name> · <activity> · <elapsed> · ↓ Nk tokens · $<cost>``.
@@ -66,6 +80,11 @@ def format_lane_lines(
     entry so every ``·`` separator column lines up (mockup alignment).
     ``tailed_index`` appends the DESIGN-SPEC §8 ``▸`` tail marker to that
     lane's name (inside the padded name column, so alignment holds).
+
+    ``width`` is the row budget: rows are height-1 Statics, so overflow is
+    CROPPED, and what fell off was the right-side telemetry — the panel's
+    whole point. The elastic activity column is elided first; the tokens
+    column is dropped whole next. Name, elapsed and cost always survive.
     """
     if not lanes:
         return ()
@@ -73,17 +92,36 @@ def format_lane_lines(
         f"{lane.name} ▸" if index == tailed_index else lane.name
         for index, lane in enumerate(lanes)
     ]
+    activities = [lane.activity for lane in lanes]
     elapsed = [lane_elapsed(lane.elapsed) for lane in lanes]
     tokens = [f"↓ {_format_tokens(lane.tokens)} tokens" for lane in lanes]
+    costs = [f"${lane.cost:.2f}" for lane in lanes]
     name_w = max(len(name) for name in names)
-    act_w = max(len(lane.activity) for lane in lanes)
     el_w = max(len(text) for text in elapsed)
     tok_w = max(len(text) for text in tokens)
-    return tuple(
-        f"  {lane.glyph} {names[i]:<{name_w}} · {lane.activity:<{act_w}}"
-        f" · {elapsed[i]:<{el_w}} · {tokens[i]:<{tok_w}} · ${lane.cost:.2f}"
-        for i, lane in enumerate(lanes)
-    )
+    cost_w = max(len(text) for text in costs)
+
+    def compose(acts: list[str], act_w: int, *, show_tokens: bool) -> tuple[str, ...]:
+        lines = []
+        for i, lane in enumerate(lanes):
+            line = f"  {lane.glyph} {names[i]:<{name_w}} · {acts[i]:<{act_w}} · {elapsed[i]:<{el_w}}"
+            if show_tokens:
+                line += f" · {tokens[i]:<{tok_w}}"
+            line += f" · {costs[i]}"
+            lines.append(line)
+        return tuple(lines)
+
+    act_w = max(len(activity) for activity in activities)
+    fixed = 4 + name_w + 3 + 3 + el_w + 3 + cost_w  # everything but activity/tokens
+    if width is None or width - fixed - 3 - tok_w >= act_w:
+        return compose(activities, act_w, show_tokens=True)
+    budget = width - fixed - 3 - tok_w
+    if budget >= _MIN_ACTIVITY_WIDTH:
+        acts = [_elide(activity, budget) for activity in activities]
+        return compose(acts, max(len(a) for a in acts), show_tokens=True)
+    budget = max(width - fixed, _MIN_ACTIVITY_WIDTH)
+    acts = [_elide(activity, budget) for activity in activities]
+    return compose(acts, max(len(a) for a in acts), show_tokens=False)
 
 
 class _LanesHeader(Static):
@@ -249,8 +287,12 @@ class LanesPanel(Vertical):
             ),
             None,
         )
+        width = self.container_size.width
         return format_lane_lines(
-            tuple(record.lane for record in self._records), tailed_index
+            tuple(record.lane for record in self._records),
+            tailed_index,
+            # Pre-layout (width 0) → no budget; rows refit on_resize.
+            width=width if width > 0 else None,
         )
 
     @property
@@ -348,6 +390,11 @@ class LanesPanel(Vertical):
             self._apply_selection()
             return
         self._rebuild()
+
+    def on_resize(self, event: events.Resize) -> None:
+        # Rows carry a width budget (format_lane_lines) — refit on resize.
+        if self._records:
+            self._refresh_or_rebuild_rows()
 
     def _rebuild(self) -> None:
         # remove_children is asynchronous: await it before remounting so

@@ -842,11 +842,28 @@ def _render_delegate_summary(block: DelegateSummaryBlock, width: int) -> tuple[L
             row.append(Segment(text=tail, style_token="dim"))
         lines.append(tuple(row))
     if block.plan_final:
+        # One line, clipped to width — real plans carry long items that
+        # would otherwise soft-wrap mid-word into an unaligned blob.
         plan_row: list[Segment] = [Segment(text="    Plan  ", style_token="dim")]
+        used = 10
+        shown = 0
         for item in block.plan_final:
             glyph, token = _DELEGATE_PLAN_GLYPHS[item.status]
+            content = _clip(item.content, width - used - 4)  # glyph + trail
+            if not content:
+                break
             plan_row.append(Segment(text=f"{glyph} ", style_token=token))
-            plan_row.append(Segment(text=f"{item.content}  ", style_token="dim"))
+            trail = "  " if content == item.content else ""
+            plan_row.append(Segment(text=f"{content}{trail}", style_token="dim"))
+            used += 2 + cell_len(content) + len(trail)
+            shown += 1
+            if not trail:
+                break
+        if shown < len(block.plan_final) and plan_row[-1].text.endswith("  "):
+            # Items were dropped whole: spend the reserved trail on a
+            # visible "there's more" marker (same width, no overflow).
+            last = plan_row[-1]
+            plan_row[-1] = Segment(text=f"{last.text[:-2]} …", style_token=last.style_token)
         lines.append(tuple(plan_row))
     return tuple(lines)
 

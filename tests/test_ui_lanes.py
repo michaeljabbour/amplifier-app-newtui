@@ -240,3 +240,52 @@ def test_format_lane_lines_marks_the_tailed_lane_and_keeps_alignment() -> None:
     assert lines[0].index(" · ") == lines[1].index(" · ")
     # No marker → identical to today's output shape.
     assert "▸" not in "".join(format_lane_lines(lanes))
+
+
+# -- width budget (review finding: rows clipped their telemetry) ---------------
+
+
+def _wide_lanes() -> tuple[LaneState, ...]:
+    return (
+        LaneState.for_state(
+            name="foundation:zen-architect",
+            state="running",
+            activity="Exploring the codebase for relevant files",
+            elapsed=348,
+            tokens=128_000,
+            cost=Decimal("12.34"),
+        ),
+        LaneState.for_state(
+            name="foundation:git-ops",
+            state="running",
+            activity="running",
+            elapsed=19,
+            tokens=0,
+            cost=Decimal("0"),
+        ),
+    )
+
+
+def test_format_lane_lines_elides_activity_to_fit_width() -> None:
+    """The row is height-1: anything past the width is CROPPED, and the
+    dropped part was the telemetry (elapsed/tokens/cost) — the panel's
+    whole point. The activity column is the elastic one."""
+    lines = format_lane_lines(_wide_lanes(), width=80)
+    assert all(len(line) <= 80 for line in lines)
+    assert "…" in lines[0]  # activity elided
+    assert "5m 48s" in lines[0] and "↓ 128.0k tokens" in lines[0] and "$12.34" in lines[0]
+    assert lines[0].index(" · ") == lines[1].index(" · ")  # alignment holds
+
+
+def test_format_lane_lines_drops_tokens_before_the_essentials() -> None:
+    lines = format_lane_lines(_wide_lanes(), width=58)
+    assert all(len(line) <= 58 for line in lines)
+    assert "tokens" not in lines[0]  # tokens column dropped whole
+    assert "foundation:zen-architect" in lines[0]
+    assert "5m 48s" in lines[0] and "$12.34" in lines[0]  # essentials kept
+
+
+def test_format_lane_lines_without_width_is_unchanged() -> None:
+    wide = format_lane_lines(_wide_lanes())
+    assert "Exploring the codebase for relevant files" in wide[0]
+    assert wide == format_lane_lines(_wide_lanes(), width=None)
