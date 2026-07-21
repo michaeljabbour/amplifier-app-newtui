@@ -21,6 +21,8 @@ Widget communication is Textual messages only (no callbacks into the app):
   stamped on the block at emit time (DESIGN-SPEC §3/§9).
 - :class:`ToolLineToggled` — a collapsed tool line was expanded/collapsed
   in place (click or enter).
+- :class:`DelegateSummaryToggled` — a delegate fan-out summary was
+  expanded/collapsed in place (click or enter).
 - :class:`LaneFocusChanged` — the view swapped to a subagent's block list
   or back (DESIGN-SPEC §8).
 
@@ -140,6 +142,15 @@ class OpenRewind(Message):
 
 class ToolLineToggled(Message):
     """A tool line's body was expanded/collapsed in place."""
+
+    def __init__(self, block_id: str, expanded: bool) -> None:
+        super().__init__()
+        self.block_id = block_id
+        self.expanded = expanded
+
+
+class DelegateSummaryToggled(Message):
+    """A delegate summary was expanded/collapsed in place (click or enter)."""
 
     def __init__(self, block_id: str, expanded: bool) -> None:
         super().__init__()
@@ -984,7 +995,7 @@ class BlockWidget(Static):
             self.add_class("read-only")
         if isinstance(block, Answer) and block.compact:
             self.add_class("compact")
-        if block.kind in ("tool_line", "evidence"):
+        if block.kind in ("tool_line", "evidence", "delegate_summary"):
             # Evidence blocks take keyboard focus so the header's
             # advertised keys work (keymap "evidence" context, spec §10).
             self.can_focus = True
@@ -1114,6 +1125,11 @@ class BlockWidget(Static):
             self._block = toggled
             self.repaint_block()
             self.post_message(ToolLineToggled(toggled.id, toggled.expanded))
+        elif block.kind == "delegate_summary" and block.entries:
+            toggled = block.model_copy(update={"expanded": not block.expanded})
+            self._block = toggled
+            self.repaint_block()
+            self.post_message(DelegateSummaryToggled(toggled.id, toggled.expanded))
         elif block.kind == "answer" and block.clickable:
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
         elif block.kind == "turn_rule":
@@ -1253,6 +1269,8 @@ class HistoryArchive(Static):
     def _block_action(block: TranscriptBlock) -> str | None:
         if block.kind == "tool_line" and block.body:
             return f"archive_activate({block.id!r})"
+        if block.kind == "delegate_summary" and block.entries:
+            return f"archive_activate({block.id!r})"
         if block.kind == "answer" and block.clickable:
             return f"archive_activate({block.id!r})"
         if block.kind in ("turn_rule", "evidence"):
@@ -1323,6 +1341,10 @@ class HistoryArchive(Static):
             toggled = block.model_copy(update={"expanded": not block.expanded})
             self._owner.replace(toggled)
             self.post_message(ToolLineToggled(toggled.id, toggled.expanded))
+        elif block.kind == "delegate_summary" and block.entries:
+            toggled = block.model_copy(update={"expanded": not block.expanded})
+            self._owner.replace(toggled)
+            self.post_message(DelegateSummaryToggled(toggled.id, toggled.expanded))
         elif block.kind == "answer" and block.clickable:
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
         elif block.kind == "turn_rule":
@@ -1609,6 +1631,15 @@ class TranscriptView(VerticalScroll):
         if isinstance(widget, BlockWidget) and isinstance(widget.block, ToolLine):
             self._blocks[message.block_id] = widget.block
 
+    def on_delegate_summary_toggled(self, message: DelegateSummaryToggled) -> None:
+        """Keep canonical history aligned with a tail widget's local toggle."""
+
+        widget = self._widgets.get(message.block_id)
+        if isinstance(widget, BlockWidget) and isinstance(
+            widget.block, DelegateSummaryBlock
+        ):
+            self._blocks[message.block_id] = widget.block
+
     # -- tail-follow anchor --------------------------------------------------
 
     def set_reactive(self, reactive: Reactive[ReactiveType], value: ReactiveType) -> None:
@@ -1775,6 +1806,7 @@ __all__ = [
     "TOOL_EXPAND_HINT",
     "BlockWidget",
     "CloseEvidence",
+    "DelegateSummaryToggled",
     "ExpandEvidenceClaim",
     "HistoryArchive",
     "LaneFocusChanged",
