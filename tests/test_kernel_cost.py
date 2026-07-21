@@ -27,7 +27,7 @@ from amplifier_app_newtui.kernel.cost import (
     start_live_pricing,
     sum_prior_cost,
 )
-from amplifier_app_newtui.kernel.events import ProviderResponseUsage, normalize
+from amplifier_app_newtui.kernel.events import ContentBlockEnd, ProviderResponseUsage, normalize
 from amplifier_app_newtui.kernel.persistence import SessionStore
 
 # --------------------------------------------------------------------------
@@ -174,6 +174,57 @@ def test_sum_prior_cost_replays_usage_events(tmp_path: Path) -> None:
     events_path = _events_file_with_usage(tmp_path)
     total = sum_prior_cost(events_path)
     assert total == Decimal("0.036")  # 2 × $0.018
+
+
+def test_sum_prior_cost_repairs_legacy_per_block_usage_duplication(tmp_path: Path) -> None:
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    usage = ProviderResponseUsage(
+        session_id="s1",
+        input_tokens=1000,
+        output_tokens=1000,
+        model="claude-sonnet-4",
+        cost_usd=Decimal("0.42"),
+    )
+    raw_usage = {
+        "input_tokens": 1000,
+        "output_tokens": 1000,
+        "model": "claude-sonnet-4",
+        "cost_usd": "0.42",
+    }
+    for index, block_type in enumerate(("thinking", "text", "tool_use")):
+        store.append_event("s1", usage)
+        store.append_event(
+            "s1",
+            ContentBlockEnd(
+                session_id="s1",
+                block_type=block_type,
+                block_index=index,
+                total_blocks=3,
+                block={"type": block_type},
+                usage=raw_usage,
+            ),
+        )
+
+    assert sum_prior_cost(store.events_path("s1")) == Decimal("0.42")
+
+
+def test_sum_prior_cost_reads_final_block_usage_without_synthetic_record(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    store.append_event(
+        "s1",
+        ContentBlockEnd(
+            session_id="s1",
+            block_type="text",
+            block_index=0,
+            total_blocks=1,
+            block={"type": "text", "text": "done"},
+            usage={"cost_usd": "0.55"},
+        ),
+    )
+
+    assert sum_prior_cost(store.events_path("s1")) == Decimal("0.55")
 
 
 def test_sum_prior_cost_missing_or_empty(tmp_path: Path) -> None:

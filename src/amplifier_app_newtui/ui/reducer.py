@@ -239,6 +239,7 @@ class ReducerHost(Protocol):
 @dataclass
 class _Turn:
     turn_id: int
+    session_id: str
     prompt: str
     start_ts: float
     mode: str
@@ -270,6 +271,16 @@ class _Turn:
     burst_detail: list[str] = field(default_factory=list)
     activity_ring: list[ActivityBranch] = field(default_factory=list)
     """Bounded newest-last live tree beneath the pulse (single-agent)."""
+    narration_candidates: list[tuple[str, str]] = field(default_factory=list)
+    """Production durable text as ``(text, block_id)`` candidates.
+
+    Streaming orchestrators emit intermediate prose and the final response
+    through the same ``content_block:end`` contract.  Keep those blocks as
+    narration until ``PromptComplete.response`` identifies the one final
+    answer for the turn.
+    """
+    rendered_answers: set[str] = field(default_factory=set)
+    """Normalized answer texts already rendered for exact-once close-out."""
 
 
 class TranscriptReducer:
@@ -348,6 +359,8 @@ class TranscriptReducer:
 
     def handle(self, event: ev.UIEvent) -> None:  # noqa: C901 - one dispatch table
         """Apply one normalized event; unknown kinds are ignored."""
+        if self._is_foreign_turn_event(event):
+            return
         if self._turn is not None and event.ts:
             self._turn.last_ts = event.ts
         match event:
@@ -401,6 +414,39 @@ class TranscriptReducer:
             case _:
                 pass
 
+    def _is_foreign_turn_event(self, event: ev.UIEvent) -> bool:
+        """Keep child execution traffic out of the root transcript.
+
+        The runtime deliberately attaches the queue bridge to child sessions
+        so their usage can feed lane telemetry.  Their streams, prose, tools,
+        and orchestrator close-outs must not mutate the root turn, though.
+        Empty session ids remain accepted for compatibility with synthetic
+        events and older tests.
+        """
+        turn = self._turn
+        if (
+            turn is None
+            or not turn.session_id
+            or not event.session_id
+            or event.session_id == turn.session_id
+        ):
+            return False
+        return isinstance(
+            event,
+            (
+                ev.StreamBlockStart,
+                ev.StreamBlockDelta,
+                ev.StreamBlockEnd,
+                ev.StreamAborted,
+                ev.ContentBlockStart,
+                ev.ContentBlockEnd,
+                ev.ToolPre,
+                ev.ToolPost,
+                ev.ToolError,
+                ev.OrchestratorComplete,
+            ),
+        )
+
     # -- turn lifecycle -------------------------------------------------------
 
     def _start_turn(self, event: ev.PromptSubmit) -> None:
@@ -416,6 +462,7 @@ class TranscriptReducer:
         last_turn_id = checkpoints[-1].turn_id if checkpoints else self.turn_base
         turn = _Turn(
             turn_id=last_turn_id + 1,
+            session_id=event.session_id,
             prompt=event.prompt,
             start_ts=event.ts,
             last_ts=event.ts,
@@ -462,6 +509,11 @@ class TranscriptReducer:
         turn = self._turn
         if turn is None:
             return
+        # Re-resolve at close: mid-turn events (e.g. a denied approval)
+        # may have changed the adapter's close-out spec for this prompt.
+        spec = self._spec_lookup(turn.prompt) or turn.spec
+        if spec is None:
+            self._finalize_response(event.response)
         if turn.working_id is not None:
             self._host.remove_block(turn.working_id)
         # Tool calls that never got a post/error (a policy-denied tool
@@ -471,9 +523,6 @@ class TranscriptReducer:
         turn.calls.clear()
         self._flush_burst()
         usage = self._cost.end_turn()
-        # Re-resolve at close: mid-turn events (e.g. a denied approval)
-        # may have changed the adapter's close-out spec for this prompt.
-        spec = self._spec_lookup(turn.prompt) or turn.spec
         if spec is not None:
             telemetry = TurnTelemetry(
                 secs=spec.duration_ms / 1000,
@@ -607,7 +656,18 @@ class TranscriptReducer:
         # The model spoke: freeze the preceding tool burst into its digest
         # above this text, and start a fresh burst below it (spec §3).
         self._flush_burst()
-        role = str(event.block.get("demo_role") or "answer")
+        explicit_role = event.block.get("demo_role")
+        if explicit_role is None:
+            # Real-runtime text is provisional.  The orchestrator can speak
+            # before tools and again at the end; PromptComplete.response is
+            # the authoritative final-answer identity.
+            block = Narration(id=self._ids.next_id(), text=text)
+            self._append_content(block)
+            if self._turn is not None:
+                self._turn.narration_candidates.append((text.strip(), block.id))
+            return
+
+        role = str(explicit_role)
         if role == "narration":
             self._append_content(Narration(id=self._ids.next_id(), text=text))
         elif role == "idea":
@@ -621,9 +681,43 @@ class TranscriptReducer:
             self._append_recap(text)
         else:
             links: tuple[EvidenceLink, ...] = tuple(self._evidence(text))
-            self._append_content(
-                Answer(id=self._ids.next_id(), spans=answer_spans(text), evidence_refs=links)
+            answer = Answer(
+                id=self._ids.next_id(), spans=answer_spans(text), evidence_refs=links
             )
+            self._append_content(answer)
+            if self._turn is not None:
+                self._turn.rendered_answers.add(text.strip())
+
+    def _finalize_response(self, response: str) -> None:
+        """Promote or append the real turn's one authoritative answer."""
+        turn = self._turn
+        text = response.strip()
+        if turn is None or not text or text in turn.rendered_answers:
+            return
+
+        self._flush_burst()
+        links: tuple[EvidenceLink, ...] = tuple(self._evidence(text))
+        for candidate_text, block_id in reversed(turn.narration_candidates):
+            if candidate_text != text:
+                continue
+            self._host.replace_block(
+                Answer(
+                    id=block_id,
+                    spans=answer_spans(response),
+                    evidence_refs=links,
+                )
+            )
+            turn.rendered_answers.add(text)
+            return
+
+        self._append_content(
+            Answer(
+                id=self._ids.next_id(),
+                spans=answer_spans(response),
+                evidence_refs=links,
+            )
+        )
+        turn.rendered_answers.add(text)
 
     def _append_recap(self, text: str) -> None:
         match = _RECAP_RE.match(text)

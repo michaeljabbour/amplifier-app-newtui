@@ -4,9 +4,10 @@ The demo script ships hand-authored claims; a real session derives them
 from the same normalized UIEvent stream that events.jsonl records
 (ADR-0007: the event log "powers … evidence links"). The collector taps
 the queue bridge, keeps the running turn's completed top-level tool
-calls, and when a durable final-answer text lands it pairs the answer's
-leading sentences (verbatim excerpts) with the turn's tool calls in
-order — rendering as the mockup's ``¹ "quote" → <tool call>`` block.
+calls, and when ``PromptComplete`` identifies the production final answer
+it pairs the answer's leading sentences (verbatim excerpts) with the turn's
+tool calls in order — rendering as the mockup's
+``¹ "quote" → <tool call>`` block.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..model.evidence import EvidenceLink
-from .events import ContentBlockEnd, PromptSubmit, ToolPost, UIEvent
+from .events import ContentBlockEnd, PromptComplete, PromptSubmit, ToolPost, UIEvent
 from .persistence import is_top_level_session
 
 MAX_CLAIMS = 4
@@ -88,8 +89,9 @@ class EvidenceCollector:
 
     ``observe`` sees every normalized UIEvent at emit time — strictly
     before the reducer consumes it from the queue — so by the time the
-    reducer builds an Answer block and asks ``links_for(text)``, the
-    links for that exact answer text are already derived.
+    reducer finalizes an Answer block and asks ``links_for(text)``, the links
+    for that exact final response are already derived. Explicit demo answers
+    retain their immediate content-block binding.
     """
 
     def __init__(self) -> None:
@@ -114,10 +116,14 @@ class EvidenceCollector:
             if event.block_type != "text":
                 return
             text = str(event.block.get("text", ""))
-            role = str(event.block.get("demo_role") or "answer")
+            role = event.block.get("demo_role")
             if not text or role != "answer":
-                return  # narration / ideas / recaps are not evidence targets
+                return  # production text is provisional; demo non-answers are not targets
             self._by_answer[text] = derive_links(text, tuple(self._calls))
+        elif isinstance(event, PromptComplete):
+            text = event.response.strip()
+            if text:
+                self._by_answer[text] = derive_links(text, tuple(self._calls))
 
     def links_for(self, answer_text: str) -> tuple[EvidenceLink, ...]:
         """Evidence links derived for the answer with this exact text."""

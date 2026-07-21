@@ -144,6 +144,16 @@ def test_content_block_end_carries_block_and_usage() -> None:
     assert event.usage == {"output_tokens": 42}
 
 
+def test_content_block_end_derives_type_from_inner_block() -> None:
+    for block_type in ("thinking", "tool_call"):
+        event = normalize(
+            "content_block:end",
+            {**SID, "block": {"type": block_type}, "block_index": 0, "total_blocks": 1},
+        )
+        assert isinstance(event, ContentBlockEnd)
+        assert event.block_type == block_type
+
+
 def test_orchestrator_complete_status_validation() -> None:
     event = normalize(
         "orchestrator:complete",
@@ -291,6 +301,41 @@ def test_missing_payload_never_crashes() -> None:
         assert event is not None, name
 
 
+def test_delegate_agent_lifecycle_aliases() -> None:
+    from amplifier_app_newtui.kernel.queue_bridge import QueueBridge
+
+    assert "delegate:agent_spawned" in QueueBridge.EVENTS
+    assert "delegate:agent_completed" in QueueBridge.EVENTS
+
+    spawned = normalize(
+        "delegate:agent_spawned",
+        {
+            **SID,
+            "agent": "reviewer",
+            "sub_session_id": "sess-1-reviewer",
+            "parent_session_id": "sess-1",
+        },
+    )
+    assert isinstance(spawned, AgentSpawned)
+    assert spawned.agent == "reviewer"
+    assert spawned.sub_session_id == "sess-1-reviewer"
+
+    completed = normalize(
+        "delegate:agent_completed",
+        {
+            **SID,
+            "agent": "reviewer",
+            "sub_session_id": "sess-1-reviewer",
+            "parent_session_id": "sess-1",
+            "success": True,
+            "result": "review complete",
+        },
+    )
+    assert isinstance(completed, AgentCompleted)
+    assert completed.success
+    assert completed.result == "review complete"
+
+
 def test_event_ids_are_unique() -> None:
     a = normalize("execution:start", {**SID})
     b = normalize("execution:start", {**SID})
@@ -380,3 +425,39 @@ class TestUsageFromContentBlockEnd:
             return kinds
 
         assert asyncio.run(run()) == ["provider_response_usage", "content_block_end"]
+
+    def test_bridge_emits_usage_once_for_multi_block_response(self) -> None:
+        import asyncio
+
+        from amplifier_app_newtui.kernel.queue_bridge import QueueBridge
+
+        async def run() -> list[str]:
+            queue: asyncio.Queue = asyncio.Queue()
+            bridge = QueueBridge(queue)
+            for index, block in enumerate(
+                (
+                    {"type": "thinking", "thinking": "considering"},
+                    {"type": "text", "text": "Working on it."},
+                    {"type": "tool_call", "name": "bash"},
+                )
+            ):
+                await bridge.handle_event(
+                    "content_block:end",
+                    {
+                        "block_index": index,
+                        "total_blocks": 3,
+                        "block": block,
+                        "usage": {"input_tokens": 2, "output_tokens": 4},
+                    },
+                )
+            kinds = []
+            while not queue.empty():
+                kinds.append(queue.get_nowait().kind)
+            return kinds
+
+        assert asyncio.run(run()) == [
+            "content_block_end",
+            "content_block_end",
+            "provider_response_usage",
+            "content_block_end",
+        ]

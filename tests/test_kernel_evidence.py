@@ -13,6 +13,7 @@ import asyncio
 
 from amplifier_app_newtui.kernel.events import (
     ContentBlockEnd,
+    PromptComplete,
     PromptSubmit,
     ToolPost,
 )
@@ -106,7 +107,11 @@ def test_collector_derives_links_for_answer() -> None:
     collector.observe(PromptSubmit(session_id=SID, prompt="check the tests"))
     collector.observe(_tool_post())
     answer = "All 41 tests pass with no flakes."
-    collector.observe(_answer(answer))
+    # Production content blocks are provisional narration.  The synthesized
+    # prompt close-out identifies the authoritative final answer.
+    collector.observe(_answer("I am checking the tests now."))
+    assert collector.links_for("I am checking the tests now.") == ()
+    collector.observe(PromptComplete(session_id=SID, response=answer))
     links = collector.links_for(answer)
     assert len(links) == 1
     assert links[0].claim_quote == "All 41 tests pass with no flakes"
@@ -121,7 +126,7 @@ def test_collector_resets_calls_each_turn() -> None:
     collector.observe(_tool_post())
     collector.observe(PromptSubmit(session_id=SID, prompt="two"))
     answer = "Nothing ran this turn."
-    collector.observe(_answer(answer))
+    collector.observe(PromptComplete(session_id=SID, response=answer))
     assert collector.links_for(answer) == ()
 
 
@@ -133,7 +138,7 @@ def test_collector_skips_non_grounding_events() -> None:
     collector.observe(_tool_post(name="update_plan", call_id="c2", command=""))
     collector.observe(_tool_post(call_id="c3", session_id="sess-1-ab_researcher"))
     answer = "Nothing was actually executed."
-    collector.observe(_answer(answer))
+    collector.observe(PromptComplete(session_id=SID, response=answer))
     assert collector.links_for(answer) == ()
 
 
@@ -148,6 +153,15 @@ def test_collector_ignores_narration_and_non_text() -> None:
         ContentBlockEnd(session_id=SID, block_type="thinking", block={"text": "hmm"})
     )
     assert collector.links_for("hmm") == ()
+
+
+def test_collector_preserves_explicit_demo_answer_binding() -> None:
+    collector = EvidenceCollector()
+    collector.observe(PromptSubmit(session_id=SID, prompt="demo"))
+    collector.observe(_tool_post())
+    answer = "The scripted answer is final."
+    collector.observe(_answer(answer, demo_role="answer"))
+    assert len(collector.links_for(answer)) == 1
 
 
 def test_bridge_tap_sees_events_before_queue() -> None:
