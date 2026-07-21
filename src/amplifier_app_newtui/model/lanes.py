@@ -14,6 +14,7 @@ dim done.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import Literal
 
@@ -28,6 +29,29 @@ _STATE_GLYPHS: dict[LaneStateName, tuple[str, StyleToken]] = {
     "working": ("■", "fg"),
     "done": ("✔", "dim"),
 }
+
+_REDACTED_SESSION_RE = re.compile(r"^\[REDACTED:[^\]]+\](?P<suffix>.+)$")
+
+
+def _redacted_suffix(session_id: str) -> str | None:
+    match = _REDACTED_SESSION_RE.match(session_id)
+    if match is None:
+        return None
+    suffix = match.group("suffix")
+    # Foundation sub-session suffixes are long random identifiers. Avoid
+    # fuzzy-routing short redacted fragments that could match two lanes.
+    return suffix if len(suffix) >= 12 else None
+
+
+def _compatible_session_ids(left: str, right: str) -> bool:
+    """Match a redacted spawn id to the real child ``session:start`` id."""
+    left_suffix = _redacted_suffix(left)
+    right_suffix = _redacted_suffix(right)
+    if left_suffix is not None:
+        return right.endswith(left_suffix)
+    if right_suffix is not None:
+        return left.endswith(right_suffix)
+    return False
 
 
 class LaneState(BaseModel):
@@ -102,6 +126,8 @@ class LaneRegistry:
     def __init__(self) -> None:
         self._records: dict[str, LaneRecord] = {}
         self._order: list[str] = []
+        self._aliases: dict[str, str] = {}
+        self._pending_sessions: dict[str, str | None] = {}
 
     @property
     def lanes(self) -> tuple[LaneRecord, ...]:
@@ -118,7 +144,8 @@ class LaneRegistry:
         return len(self.active)
 
     def get(self, session_id: str) -> LaneRecord | None:
-        return self._records.get(session_id)
+        key = self._resolve_id(session_id)
+        return self._records.get(key) if key is not None else None
 
     def children_of(self, parent_id: str) -> tuple[LaneRecord, ...]:
         return tuple(r for r in self.lanes if r.parent_id == parent_id)
@@ -143,7 +170,8 @@ class LaneRegistry:
         reset to a fresh spawned state so the panel shows the live
         tri-state glyphs instead of a stale ``✔ done``.
         """
-        existing = self._records.get(session_id)
+        existing_key = self._resolve_id(session_id)
+        existing = self._records.get(existing_key) if existing_key is not None else None
         if existing is not None:
             if reopen and existing.lane.state == "done" and state != "done":
                 fresh = existing.model_copy(
@@ -168,7 +196,36 @@ class LaneRegistry:
         self._records[session_id] = record
         self._order.append(session_id)
         self._patch_child_depths(session_id)
+        for actual_id, actual_parent in tuple(self._pending_sessions.items()):
+            if _compatible_session_ids(session_id, actual_id) and (
+                actual_parent is None or actual_parent == parent_id
+            ):
+                rebound = self.bind_session(actual_id, parent_id=actual_parent)
+                if rebound is not None:
+                    return rebound
         return record
+
+    def bind_session(self, session_id: str, *, parent_id: str | None) -> LaneRecord | None:
+        """Bind a real child session id to its possibly-redacted spawn lane.
+
+        Foundation governance can redact the leading portion of
+        ``task:agent_spawned.sub_session_id`` while the child's later
+        ``session:start`` and usage events carry the usable id. Re-keying
+        here restores exact telemetry routing and makes lane focus open the
+        real child transcript. The redacted id remains an alias so the
+        corresponding ``task:agent_completed`` still closes the lane.
+        """
+        key = self._resolve_id(session_id, parent_id=parent_id)
+        if key is None:
+            self._pending_sessions[session_id] = parent_id
+            return None
+        self._pending_sessions.pop(session_id, None)
+        if key == session_id:
+            return self._records[key]
+        if _redacted_suffix(key) is None or _redacted_suffix(session_id) is not None:
+            self._aliases[session_id] = key
+            return self._records[key]
+        return self._rekey(key, session_id, parent_id=parent_id)
 
     def update(
         self,
@@ -182,7 +239,8 @@ class LaneRegistry:
     ) -> LaneRecord | None:
         """Patch a lane's live fields; returns None for unknown lanes
         (events for sessions we never saw spawn are dropped, not fatal)."""
-        record = self._records.get(session_id)
+        key = self._resolve_id(session_id)
+        record = self._records.get(key) if key is not None else None
         if record is None:
             return None
         lane = record.lane
@@ -196,7 +254,8 @@ class LaneRegistry:
             cost=lane.cost if cost is None else cost,
         )
         patched = record.model_copy(update={"lane": updated})
-        self._records[session_id] = patched
+        assert key is not None
+        self._records[key] = patched
         return patched
 
     def advance(self, now: float) -> bool:
@@ -234,6 +293,42 @@ class LaneRegistry:
                     update={"depth": expected}
                 )
                 self._patch_child_depths(child.session_id)
+
+    def _resolve_id(self, session_id: str, *, parent_id: str | None = None) -> str | None:
+        if session_id in self._records:
+            return session_id
+        alias = self._aliases.get(session_id)
+        if alias in self._records:
+            return alias
+        matches = [
+            key
+            for key, record in self._records.items()
+            if _compatible_session_ids(key, session_id)
+            and (parent_id is None or record.parent_id == parent_id)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _rekey(
+        self, old_id: str, new_id: str, *, parent_id: str | None
+    ) -> LaneRecord:
+        record = self._records.pop(old_id)
+        rebound = record.model_copy(
+            update={
+                "session_id": new_id,
+                "parent_id": parent_id if parent_id is not None else record.parent_id,
+            }
+        )
+        self._records[new_id] = rebound
+        self._order[self._order.index(old_id)] = new_id
+        self._aliases[old_id] = new_id
+        for alias, target in tuple(self._aliases.items()):
+            if target == old_id:
+                self._aliases[alias] = new_id
+        for child_id, child in tuple(self._records.items()):
+            if child.parent_id == old_id:
+                self._records[child_id] = child.model_copy(update={"parent_id": new_id})
+        self._patch_child_depths(new_id)
+        return rebound
 
 
 __all__ = ["LaneRecord", "LaneRegistry", "LaneState", "LaneStateName"]

@@ -9,6 +9,7 @@ from textual.app import App, ComposeResult
 
 from amplifier_app_newtui.model.lanes import LaneRecord, LaneState
 from amplifier_app_newtui.ui.lanes_panel import (
+    LANE_MOTION_INTERVAL_SECONDS,
     LANES_HEADER,
     LanesPanel,
     format_lane_lines,
@@ -120,6 +121,29 @@ async def test_panel_lists_aligned_lanes_and_selects_first() -> None:
         rows = list(panel.query(_LaneRow))
         assert [r.line for r in rows] == list(panel.lane_lines)
         assert rows[0].has_class("-selected")
+
+
+@pytest.mark.asyncio
+async def test_active_lane_labels_shimmer_and_stop_when_all_done() -> None:
+    app = LanesHost()
+    async with app.run_test() as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes(RECORDS[:1])
+        panel.show_panel()
+        await pilot.pause()
+        assert panel._motion_timer is not None
+        start = panel._motion_frame
+        await pilot.pause(LANE_MOTION_INTERVAL_SECONDS + 0.08)
+        assert panel._motion_frame > start
+
+        from amplifier_app_newtui.ui.lanes_panel import _LaneRow  # test-only
+
+        row = panel.query_one(_LaneRow)
+        assert any(span.style.bold for span in row.render().spans)
+
+        panel.update_lanes((RECORDS[2],))
+        await pilot.pause()
+        assert panel._motion_timer is None
 
 
 @pytest.mark.asyncio

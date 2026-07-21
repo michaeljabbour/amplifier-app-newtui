@@ -105,7 +105,7 @@ def answer_text(block: Answer) -> str:
     return "".join(segment.text for segment in block.spans)
 
 
-def test_production_text_stays_narration_until_final_response_promotes_it() -> None:
+def test_production_text_stays_styled_and_final_response_promotes_exactly_once() -> None:
     evidence = (EvidenceLink(claim_quote="Done", tool_ref="$ pytest"),)
     host = FakeHost()
     reducer = TranscriptReducer(
@@ -133,21 +133,55 @@ def test_production_text_stays_narration_until_final_response_promotes_it() -> N
         )
     )
 
-    narrations = [block for block in host.blocks if isinstance(block, Narration)]
-    assert [block.text for block in narrations] == ["Checking the files.", "Done."]
-    promoted_id = narrations[-1].id
-    assert not any(isinstance(block, Answer) for block in host.blocks)
+    candidates = [block for block in host.blocks if isinstance(block, Answer)]
+    assert [answer_text(block) for block in candidates] == ["Checking the files.", "Done."]
+    assert all(not block.clickable for block in candidates)
+    promoted_id = candidates[-1].id
 
     reducer.handle(ev.PromptComplete(session_id="root", response="Done.", ts=4.0))
 
     answers = [block for block in host.blocks if isinstance(block, Answer)]
-    assert len(answers) == 1
-    assert answers[0].id == promoted_id
-    assert answer_text(answers[0]) == "Done."
-    assert answers[0].evidence_refs == evidence
-    assert [block.text for block in host.blocks if isinstance(block, Narration)] == [
-        "Checking the files."
-    ]
+    assert len(answers) == 2
+    final = next(block for block in answers if block.id == promoted_id)
+    assert answer_text(final) == "Done."
+    assert final.evidence_refs == evidence
+    assert final.clickable
+    # The earlier intermediate prose remains once; the final is replaced in place.
+    assert [answer_text(block) for block in answers].count("Done.") == 1
+
+
+def test_stream_then_durable_close_never_replays_raw_final_markdown() -> None:
+    """Real ordering: stream ends, durable text lands, PromptComplete promotes it."""
+    reducer, host = make_reducer()
+    response = "## Result\n\n**Done.**"
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="do it", ts=1.0))
+    reducer.handle(ev.StreamBlockStart(session_id="root", block_type="text", ts=2.0))
+    reducer.handle(
+        ev.StreamBlockDelta(
+            session_id="root", block_type="text", text=response, ts=2.1
+        )
+    )
+    reducer.handle(ev.StreamBlockEnd(session_id="root", block_type="text", ts=2.2))
+    reducer.handle(
+        ev.ContentBlockEnd(
+            session_id="root",
+            block_type="text",
+            block={"type": "text", "text": response},
+            ts=2.3,
+        )
+    )
+
+    provisional = [block for block in host.blocks if isinstance(block, Answer)]
+    assert len(provisional) == 1
+    assert not provisional[0].clickable
+    assert not any(isinstance(block, Narration) for block in host.blocks)
+
+    reducer.handle(ev.PromptComplete(session_id="root", response=response, ts=2.5))
+    final = [block for block in host.blocks if isinstance(block, Answer)]
+    assert len(final) == 1
+    assert final[0].id == provisional[0].id
+    assert final[0].clickable
+    assert "".join(segment.text for segment in final[0].spans).count("Done.") == 1
 
 
 def test_prompt_complete_appends_one_fallback_answer_without_durable_text() -> None:

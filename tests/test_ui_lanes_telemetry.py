@@ -113,6 +113,89 @@ def test_usage_without_cost_usd_falls_back_to_estimate() -> None:
     assert lane.lane.cost >= Decimal("0")  # cost best-effort (0 when unpriceable)
 
 
+def test_child_session_start_reconciles_redacted_spawn_id_for_live_usage() -> None:
+    """Foundation may redact the spawn id but expose the real id on session:start."""
+    reducer, _host = make_reducer("auto")
+    root = "root-session"
+    redacted = "[REDACTED:PII]-a7b97feb6f684d29_foundation-explorer"
+    actual = "0000000000000000-a7b97feb6f684d29_foundation-explorer"
+    reducer.handle(ev.PromptSubmit(session_id=root, prompt="fan out", ts=1.0))
+    reducer.handle(
+        ev.AgentSpawned(
+            session_id=root,
+            parent_session_id=root,
+            sub_session_id=redacted,
+            agent="foundation:explorer",
+            ts=2.0,
+        )
+    )
+    reducer.handle(ev.SessionStart(session_id=actual, parent_id=root, ts=2.1))
+    reducer.handle(
+        ev.ProviderResponseUsage(
+            session_id=actual,
+            output_tokens=9904,
+            cost_usd=Decimal("1.9752735"),
+            ts=3.0,
+        )
+    )
+
+    lane = reducer.lanes.get(actual)
+    assert lane is not None
+    assert lane.session_id == actual  # lane focus now has a usable session id
+    assert lane.lane.tokens == 9904
+    assert lane.lane.cost == Decimal("1.9752735")
+    assert reducer.lanes.get(redacted) == lane  # completion's redacted id remains an alias
+
+    reducer.handle(
+        ev.AgentCompleted(
+            session_id=root,
+            parent_session_id=root,
+            sub_session_id=redacted,
+            agent="foundation:explorer",
+            success=True,
+            ts=4.0,
+        )
+    )
+    assert reducer.lanes.get(actual).lane.state == "done"
+
+
+def test_redacted_lane_reconciliation_tolerates_session_start_race() -> None:
+    reducer, _host = make_reducer("auto")
+    root = "root-session"
+    redacted = "[REDACTED:PII]-abcdef1234567890_foundation-explorer"
+    actual = "0000000000000000-abcdef1234567890_foundation-explorer"
+    reducer.handle(ev.PromptSubmit(session_id=root, prompt="fan out", ts=1.0))
+    reducer.handle(ev.SessionStart(session_id=actual, parent_id=root, ts=1.5))
+    reducer.handle(
+        ev.AgentSpawned(
+            session_id=root,
+            parent_session_id=root,
+            sub_session_id=redacted,
+            agent="foundation:explorer",
+            ts=2.0,
+        )
+    )
+    lane = reducer.lanes.get(actual)
+    assert lane is not None and lane.session_id == actual
+
+
+def test_live_session_cost_moves_before_turn_close() -> None:
+    reducer, _host = make_reducer("auto")
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="go", ts=1.0))
+    reducer.handle(
+        ev.ProviderResponseUsage(
+            session_id="root",
+            output_tokens=500,
+            cost_usd=Decimal("0.75"),
+            ts=2.0,
+        )
+    )
+
+    assert reducer.session_cost == Decimal("0")  # checkpoint total commits at close
+    assert reducer.live_session_cost == Decimal("0.75")
+    assert reducer.live_cost_estimated is False
+
+
 # -- reducer.tick advances lanes ------------------------------------------
 
 

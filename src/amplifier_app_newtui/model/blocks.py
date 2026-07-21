@@ -273,6 +273,8 @@ class WorkingStatus(_FrozenModel):
     interrupt_hint: str = "esc to interrupt"
     steer_hint: str = "type to steer"
     spinner_frame: int = 0
+    motion_frame: int = 0
+    """Fast, presentation-only phase for the subtle label shimmer."""
 
 
 class Recap(_FrozenModel):
