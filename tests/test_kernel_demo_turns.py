@@ -351,6 +351,13 @@ def test_brainstorm_turn_sequence() -> None:
 # --------------------------------------------------------------------------
 
 
+def _child_stream(deltas: int) -> list[str]:
+    """One child-session Channel-A burst (lane live tail, spec §8): a full
+    stream envelope but NO durable ``content_block_end`` — child prose never
+    lands in the parent transcript (design doc D4)."""
+    return ["stream_block_start"] + ["stream_block_delta"] * deltas + ["stream_block_end"]
+
+
 def test_agents_turn_sequence() -> None:
     runtime, events = play("run_agents_turn")
     assert kinds(events) == (
@@ -358,12 +365,24 @@ def test_agents_turn_sequence() -> None:
         + TEXT
         + TODO
         + ["agent_spawned"] * 3
+        + _child_stream(2)  # researcher: 2 narration rows
+        + _child_stream(2)  # coder: 2 narration rows
+        + _child_stream(1)  # tester: 1 answer row
         + U + U + ["agent_completed"] + TODO  # tester at 2.6s
         + U + U + ["agent_completed"] + TODO  # researcher at 4.4s
         + U + U + ["agent_completed"] + TODO  # coder at 6.0s
         + TEXT
         + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
     )
+    # Child bursts travel on the lanes' own sessions, parented to the root.
+    child_events = [e for e in events if e.session_id != DEMO_SESSION_ID]
+    assert {e.session_id for e in child_events} == {lane.sub_session_id for lane in DEMO_LANES}
+    assert all(e.parent_id == DEMO_SESSION_ID for e in child_events)
+    assert {e.kind for e in child_events} == {
+        "stream_block_start",
+        "stream_block_delta",
+        "stream_block_end",
+    }
     assert runtime.clock == 6.0
     spawned = [e for e in events if e.kind == "agent_spawned"]
     assert [s.agent for s in spawned] == ["researcher", "coder", "tester"]
@@ -421,7 +440,15 @@ def test_run_all_lifecycle_and_determinism() -> None:
     # Total virtual time = 9.3 + 9.7 + 3.6 + 3.0 + 6.0 (seed is instant).
     assert runtime.clock == 31.6
     assert round(sum(sleeps), 6) == 31.6  # paced entirely through the injected sleep
-    assert all(e.session_id == DEMO_SESSION_ID for e in events)
+    # Only the agents turn's child stream bursts leave the root session —
+    # each parented to it (lane live tail, spec §8).
+    lane_ids = {lane.sub_session_id for lane in DEMO_LANES}
+    for event in events:
+        if event.session_id == DEMO_SESSION_ID:
+            continue
+        assert event.session_id in lane_ids
+        assert event.parent_id == DEMO_SESSION_ID
+        assert event.kind in ("stream_block_start", "stream_block_delta", "stream_block_end")
 
 
 def test_two_runs_emit_identical_streams() -> None:

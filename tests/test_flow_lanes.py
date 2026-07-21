@@ -37,13 +37,16 @@ from .test_flow_helpers import (
 
 _LANE_LINE = re.compile(r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$")
 
-# The mockup tri-state snapshot (DEMO_LANES panel_line) with the DESIGN-SPEC
-# §8 live-tail ``▸`` marker on the default tailed lane — researcher, the
-# first running lane — and the name column re-padded to fit it.
+# The mid-turn panel snapshot at the demo's park point: the child stream
+# bursts (kernel/demo.py `_lane_stream`) have already run, so both live lanes
+# show the reducer's stream activity ("reviewing response", state running) and
+# the DESIGN-SPEC §8 ``▸`` tail marker sits on the most-recently-streaming
+# running lane — coder (tester streamed last but is seeded done, so it never
+# takes the tail). Name column re-padded to fit the marker.
 TAILED_PANEL_LINES = [
-    "  ◐ researcher ▸ · scanning provider docs · 41s    · ↓ 100.1k tokens · $0.09",
-    "  ■ coder        · migrating store        · 2m 04s · ↓ 48.3k tokens  · $0.31",
-    "  ✔ tester       · done · tests ✔         · 55s    · ↓ 3.2k tokens   · $0.07",
+    "  ◐ researcher · reviewing response · 41s    · ↓ 100.1k tokens · $0.09",
+    "  ◐ coder ▸    · reviewing response · 2m 04s · ↓ 48.3k tokens  · $0.31",
+    "  ✔ tester     · done · tests ✔     · 55s    · ↓ 3.2k tokens   · $0.07",
 ]
 
 
@@ -147,21 +150,22 @@ async def test_typing_passes_through_focused_lanes_panel_to_composer() -> None:
 
 @pytest.mark.asyncio
 async def test_lanes_panel_tri_state_matches_mockup_mid_turn() -> None:
-    """DESIGN-SPEC §8: ◐ teal running, ■ fg working, ✔ dim done (mockup LANES)."""
+    """DESIGN-SPEC §8: ◐ teal running/working, ✔ dim done — live lanes carry
+    the reducer's stream activity once the child bursts land (Phase 3)."""
     adapter = GatedDemoAdapter()
     app = NewTuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(AGENTS_PROMPT)
-        # The turn parks after spawning all three lanes: the panel shows
-        # the mockup's tri-state snapshot verbatim (plus the ▸ tail marker
-        # on the default tailed lane).
+        # The turn parks after spawning all three lanes and streaming the
+        # child bursts: the panel shows both live lanes on the stream
+        # activity plus the ▸ tail marker on the tailed lane.
         assert await wait_for(pilot, lambda: len(app.lanes.lanes) == 3)
         assert list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES
         states = [(r.lane.state, r.lane.glyph, r.lane.color_token) for r in app.lanes_panel.records]
         assert states == [
             ("running", "◐", "teal"),
-            ("working", "■", "fg"),
+            ("running", "◐", "teal"),
             ("done", "✔", "dim"),
         ]
         adapter.release()
@@ -189,7 +193,7 @@ async def test_replayed_agents_turn_reopens_done_lanes() -> None:
         app.submit_prompt(AGENTS_PROMPT)
         assert await wait_for(
             pilot,
-            lambda: [r.lane.state for r in app.lanes.lanes] == ["running", "working", "done"],
+            lambda: [r.lane.state for r in app.lanes.lanes] == ["running", "running", "done"],
         )
         assert list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES
         adapter.release()

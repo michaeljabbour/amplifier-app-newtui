@@ -784,6 +784,16 @@ class DemoRuntime:
             "ts": self.clock,
         }
 
+    def _child_env(self, sub_session_id: str) -> dict[str, Any]:
+        """Envelope for a CHILD-session event (lane live tail, spec §8)."""
+        self._seq += 1
+        return {
+            "event_id": f"demo-{self._seq}",
+            "session_id": sub_session_id,
+            "parent_id": DEMO_SESSION_ID,
+            "ts": self.clock,
+        }
+
     async def _emit(self, event: UIEvent) -> None:
         await self.queue.put(event)
 
@@ -825,6 +835,32 @@ class DemoRuntime:
                 block={"type": "text", "text": text, "demo_role": role},
             )
         )
+
+    async def _lane_stream(self, lane: DemoLane) -> None:
+        """One child-session Channel-A text burst — feeds the lane live tail.
+
+        Channel A only: the child's durable record stays in its own
+        transcript (lane focus), never the parent's (design doc D4).
+        """
+        common = {
+            "request_id": f"demo-req-{lane.name}",
+            "block_index": 0,
+            "block_type": "text",
+        }
+        await self._emit(
+            StreamBlockStart(**self._child_env(lane.sub_session_id), **common, name="lane")
+        )
+        rows = [row for row in lane.log if row.kind in ("narration", "answer")]
+        for sequence, row in enumerate(rows):
+            await self._emit(
+                StreamBlockDelta(
+                    **self._child_env(lane.sub_session_id),
+                    **common,
+                    sequence=sequence,
+                    text=row.text + "\n",
+                )
+            )
+        await self._emit(StreamBlockEnd(**self._child_env(lane.sub_session_id), **common))
 
     async def _tool_pre(
         self, tool_name: str, tool_input: dict[str, Any], *, group: str | None = None
@@ -1250,6 +1286,8 @@ class DemoRuntime:
                     parent_session_id=DEMO_SESSION_ID,
                 )
             )
+        for lane in DEMO_LANES:
+            await self._lane_stream(lane)
         elapsed = 0
         for lane in sorted(DEMO_LANES, key=lambda lane: lane.done_at_ms):
             await self._wait(lane.done_at_ms - elapsed)
