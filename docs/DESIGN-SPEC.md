@@ -41,7 +41,9 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 3. **Notice slot**: transient right-aligned dim text floating at transcript bottom edge (auto-dismiss ~4s), e.g. `mode plan · read-only`, `steer queued · shift+enter queues a full next-turn message`.
 4. **Overlay strips** (each a bordered strip above composer, shown when active):
    - Command palette (max-height scrollable list)
-   - Agent lanes panel
+   - Bottom strip: agent lanes panel (left) | plan panel (right — the turn's todo
+     checklist, `Plan n/m` header; under 90 cols the panel hides and the FooterBar
+     carries the `Plan n/m` count)
    - Rewind picker strip
    - Queued-message strip
    - Approval bar (replaces composer while open)
@@ -70,6 +72,12 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 - [ ] **Steer echo**: `  ↳ ` teal + `steer queued: "<text>" ` teal + `· applies at next step boundary` dimmer; steer application logged as narration `Applying steer: <text>`.
 - [ ] **Turn rule**: full-width 1px rule (rule token) + right-aligned label `<Ns> · <X.Xk> tok, <N>% cached · $<cost> · <outcome>`; label dim when shipped, dimmer when answer-only/interrupted. Outcomes seen in mockup: `answer`, `3 files · +142/−38 · tests ✔`, `· interrupted`, `· plan ready`.
 - [ ] Turn rules are clickable → open rewind picker at that checkpoint.
+- [ ] **Delegate summary** (fan-out turns, at turn end): one durable line
+  `● Used N delegates · Plan n/m · <duration> ▸`; click/enter expands (`▾`) to per-agent
+  rows (`✔`/`✖`/`⊘` `<agent> <elapsed> · "<result snippet>"`) plus a final plan line.
+  Every past summary in scrollback stays expandable; reconstructed from `events.jsonl`
+  on resume. The live todo checklist no longer appends to the transcript — while a turn
+  runs it lives in the plan panel (§2) and folds into this summary at close.
 
 ## 4. Modes & trust
 
@@ -119,8 +127,16 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 
 ## 8. Agent lanes & subagent focus
 
-- [ ] ctrl-t (or `/tasks`) toggles lanes panel: header `Agent lanes · ↑↓ select · enter focus · esc close` + one aligned line per subagent: `  <glyph> <name> · <activity> · <elapsed> · $<cost>` (glyph/color per state: ◐ teal running, ■ fg working, ✔ dim done).
-- [ ] Multi-agent turn renders a compact live tree in transcript: `  ├─ ● <name> · <activity>` dim, updating the activity in place from child tool/stream events and completing to `  ├─ ✔ … · done` with no paragraph gap between rows. Successful native file writes aggregate into one expandable, diff-styled `Changed N files` row.
+- [ ] ctrl-t (or `/tasks`) toggles lanes panel: header `Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close` + one aligned line per subagent: `  <glyph> <name> · <activity> · <elapsed> · $<cost>` (glyph/color per state: ◐ teal running, ■ fg working, ✔ dim done).
+- [ ] Multi-agent turn: per-agent progress lives in the lanes panel and the delegate
+  summary (§3), not per-agent transcript tree lines. Successful native file writes still
+  aggregate into one expandable, diff-styled `Changed N files` row.
+- [ ] **Lane live tail**: while lanes run and the root stream is idle, the LiveTail
+  region shows the focused lane's stream — up to 3 dim `┆`-guttered lines, repainted at
+  most every 0.05s. Focus defaults to the most-recently-streaming running lane; ctrl-o
+  cycles the pin among running lanes; the tailed lane carries a `▸` after its name in
+  the panel. The root stream always preempts instantly. Tail content is ephemeral —
+  never a transcript block; durable child prose lives in the lane's own transcript.
 - [ ] Selecting a lane focuses that subagent: transcript swaps to the child's own transcript with banner `focused: <name> · subagent of <parent-session> · own context window · results report back to parent · esc back`, its delegated brief as user-line `[delegated]`, its log, its state recap. Esc returns to parent (`back to parent session`).
 - [ ] Title while coordinating: `… — ✳ coordinating N agents — …`.
 
@@ -142,6 +158,9 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 - [ ] Live token/second counting while running; per-turn cost computed from provider usage.
 - [ ] Interrupt (esc while running): stops at step boundary, prints italic recap `Interrupted. Goal: <goal>. Context saved; resume or restate direction.`, rule labeled `· interrupted`.
 - [ ] Turn end notice: `agents N done` (or `turn interrupted · context saved`).
+- [ ] Fan-out close-out: the running chrome (lane tail, live plan panel state) collapses
+  into the durable delegate summary (§3) at turn end; the tail clears; summary
+  expansion still works after `resume` (rebuilt from `events.jsonl`).
 - [ ] Session banner on start: line 1 bright bold `Amplifier <version> · core <core-version>`; line 2 dim `Bundle: <bundle> | Provider: <provider> | <model> · session <id6>`.
 
 ## 12. Non-visual requirements
