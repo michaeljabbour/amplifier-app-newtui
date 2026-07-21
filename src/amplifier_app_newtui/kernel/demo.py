@@ -270,6 +270,17 @@ AGENTS_ANSWER = (
 )
 AGENTS_END_NOTICE = "agents 3 done · click a lane to inspect its transcript"
 
+AGENTS_PLAN_STEPS: tuple[str, str, str, str] = (
+    "scan provider docs",
+    "migrate session store",
+    "run store tests",
+    "synthesize findings",
+)
+"""Scripted plan for the agents turn — feeds the plan panel (Phase 1) and the
+delegate summary's ``Plan 4/4`` fold (Phase 2)."""
+
+_AGENTS_STEP_BY_LANE: dict[str, int] = {"researcher": 0, "coder": 1, "tester": 2}
+
 
 def build_answer(denied: bool) -> str:
     """Mockup final-answer assembly for the build turn."""
@@ -1226,6 +1237,10 @@ class DemoRuntime:
         """``runAgentsTurn()``: researcher/coder/tester fan-out."""
         spec = await self._begin_turn("agents")
         await self._text(AGENTS_NARRATION, "narration")
+        # Scripted todo beats (ambient-progress Phase 2): three lane steps
+        # start together; "synthesize findings" completes with the last lane.
+        statuses = ["active", "active", "active", "pending"]
+        await self._todo(AGENTS_PLAN_STEPS, statuses)
         for lane in DEMO_LANES:
             await self._emit(
                 AgentSpawned(
@@ -1251,6 +1266,10 @@ class DemoRuntime:
                     result=lane.result,
                 )
             )
+            statuses[_AGENTS_STEP_BY_LANE[lane.name]] = "done"
+            if all(status == "done" for status in statuses[:3]):
+                statuses[3] = "done"
+            await self._todo(AGENTS_PLAN_STEPS, statuses)
         self._ticks = None
         await self._text(AGENTS_ANSWER, "answer")
         await self._end_turn(spec, response=AGENTS_ANSWER, notice=spec.end_notice)
@@ -1262,6 +1281,7 @@ __all__ = [
     "AGENTS_END_NOTICE",
     "AGENTS_MODE_NOTICE",
     "AGENTS_NARRATION",
+    "AGENTS_PLAN_STEPS",
     "AGENTS_PROMPT",
     "AUTO_ANSWER",
     "AUTO_BLOCK_CONTINUATION",

@@ -12,6 +12,7 @@ from typing import Any
 
 from amplifier_app_newtui.kernel.demo import (
     AGENTS_END_NOTICE,
+    AGENTS_PLAN_STEPS,
     APPROVAL_OPTIONS,
     AUTO_BLOCK_REASON,
     AUTO_DEFER_NOTICE,
@@ -355,10 +356,11 @@ def test_agents_turn_sequence() -> None:
     assert kinds(events) == (
         ["notification", "prompt_submit", "execution_start"]
         + TEXT
+        + TODO
         + ["agent_spawned"] * 3
-        + U + U + ["agent_completed"]  # tester at 2.6s
-        + U + U + ["agent_completed"]  # researcher at 4.4s
-        + U + U + ["agent_completed"]  # coder at 6.0s
+        + U + U + ["agent_completed"] + TODO  # tester at 2.6s
+        + U + U + ["agent_completed"] + TODO  # researcher at 4.4s
+        + U + U + ["agent_completed"] + TODO  # coder at 6.0s
         + TEXT
         + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
     )
@@ -376,6 +378,14 @@ def test_agents_turn_sequence() -> None:
     assert all(c.success for c in completed)
     assert usage_tokens(events) == [900] * 6
     assert events[-1].message == AGENTS_END_NOTICE
+    # The scripted plan progresses to all-completed: the ambient plan panel
+    # (Phase 1) and the delegate summary's ``Plan 4/4`` fold (Phase 2) both
+    # feed off these todo beats.
+    todo_pres = [e for e in events if e.kind == "tool_pre" and e.tool_name == "todo"]
+    assert len(todo_pres) == 4
+    assert [t["content"] for t in todo_pres[0].tool_input["todos"]] == list(AGENTS_PLAN_STEPS)
+    final = todo_pres[-1].tool_input["todos"]
+    assert all(t["status"] == "completed" for t in final)
 
 
 # --------------------------------------------------------------------------
