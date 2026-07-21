@@ -245,6 +245,7 @@ sandbox around arbitrary interpreter code.
 | shift+tab | cycle mode | any time |
 | ctrl+p | show trust posture | any time |
 | ctrl+t | agent lanes panel | any time |
+| ctrl+o | cycle which running agent the live tail follows | agents fanned out |
 | ctrl+l | outcome ledger | any time |
 | ctrl+y | needs-you queue | any time |
 | ctrl+r | rewind picker | any time |
@@ -282,6 +283,14 @@ Child tool and stream events update that row and its compact transcript-tree row
 (`reading README.md`, `editing reducer.py`, `writing response`) without accumulating status
 lines. Successful native file edits roll into one `Changed N files · click to expand` row;
 click it (or focus it and press **enter**) for bounded, theme-aware red/green details.
+
+While agents run and the root model is quiet, the area under the transcript shows a live
+**tail** of one agent's stream — up to three dim `┆`-prefixed lines, so you can always see
+the work happening. It follows whichever running agent spoke most recently; press
+**ctrl+o** to pin it to a different one (the `▸` after a lane's name marks who you're
+tailing — also shown in the panel header hint). The moment the root model speaks, the tail
+switches back to it. Tail text is a live preview only: the agent's full prose lives in its
+own transcript (focus the lane to read it), and nothing from the tail lands in yours.
 
 Select a lane with ↑↓ and press **enter** to *focus* it: the transcript switches to that
 subagent's own work. **esc** steps back out — first unfocusing the lane, then closing the
