@@ -25,9 +25,7 @@ class FakeHooks:
         self.unregistered: list[str] = []
         self.handlers: dict[str, list[Any]] = {}
 
-    def register(
-        self, event: str, handler: Any, *, priority: int = 0, name: str = ""
-    ) -> Any:
+    def register(self, event: str, handler: Any, *, priority: int = 0, name: str = "") -> Any:
         self.registered.append((event, priority, name))
         self.handlers.setdefault(event, []).append(handler)
         return lambda: self.unregistered.append(name)
@@ -71,9 +69,7 @@ def test_stream_tracker_accumulates_and_consolidates() -> None:
 
 def test_stream_tracker_ignores_child_sessions() -> None:
     tracker = StreamStatusTracker(ROOT)
-    tracker.consume(
-        "llm:stream_block_delta", delta("delta", "child text") | {"session_id": "kid"}
-    )
+    tracker.consume("llm:stream_block_delta", delta("delta", "child text") | {"session_id": "kid"})
     assert tracker.preview is None
 
 
@@ -191,9 +187,7 @@ def test_runtime_tracker_cost_fn_and_seed() -> None:
 
 def test_runtime_tracker_provider_notices() -> None:
     tracker = RuntimeStatusTracker(ROOT)
-    tracker.consume(
-        "provider:throttle", {"session_id": ROOT, "message": "rate limited"}
-    )
+    tracker.consume("provider:throttle", {"session_id": ROOT, "message": "rate limited"})
     notice = tracker.snapshot().last_notice
     assert notice is not None
     assert notice.notice == "throttle"
@@ -297,9 +291,7 @@ def test_task_tracker_depth_race_child_before_parent() -> None:
 
 def test_task_tracker_session_start_races_agent_spawned() -> None:
     tracker = TaskStatusTracker(ROOT)
-    tracker.consume(
-        "session:start", {"session_id": "kid-1_worker", "parent_id": ROOT}
-    )
+    tracker.consume("session:start", {"session_id": "kid-1_worker", "parent_id": ROOT})
     assert tracker.active_count == 1
     # Later duplicate registration is idempotent.
     tracker.consume(
@@ -328,6 +320,81 @@ def test_task_tracker_ignores_root_session_events() -> None:
     tracker.consume("session:start", {"session_id": ROOT, "parent_id": None})
     tracker.consume("task:agent_spawned", {"session_id": ROOT, "sub_session_id": ROOT})
     assert tracker.active_count == 0
+
+
+def test_task_tracker_subscribes_to_delegate_lifecycle() -> None:
+    """anchors' tool-delegate emits delegate:* — the lanes panel and the
+    working-line agent count go blind without these subscriptions."""
+    for name in (
+        "delegate:agent_spawned",
+        "delegate:agent_completed",
+        "delegate:agent_resumed",
+        "delegate:agent_cancelled",
+        "delegate:error",
+    ):
+        assert name in TaskStatusTracker.EVENTS, name
+
+
+def test_task_tracker_delegate_spawn_and_complete() -> None:
+    tracker = TaskStatusTracker(ROOT)
+    tracker.consume(
+        "delegate:agent_spawned",
+        {
+            "session_id": ROOT,
+            "agent": "worker",
+            "sub_session_id": "kid-1_worker",
+            "parent_session_id": ROOT,
+        },
+    )
+    assert tracker.active_count == 1
+    tracker.consume(
+        "delegate:agent_completed",
+        {
+            "session_id": ROOT,
+            "sub_session_id": "kid-1_worker",
+            "parent_session_id": ROOT,
+            "success": True,
+        },
+    )
+    assert tracker.active_count == 0
+
+
+def test_task_tracker_delegate_resume_reopens_lane() -> None:
+    tracker = TaskStatusTracker(ROOT)
+    tracker.consume(
+        "delegate:agent_resumed",
+        {"session_id": "kid-1_worker", "parent_session_id": ROOT},
+    )
+    assert tracker.active_count == 1
+    lane = tracker.lane("kid-1_worker")
+    assert lane is not None
+    assert lane.lane.name == "worker"  # recovered from the session-id suffix
+
+
+def test_task_tracker_delegate_cancelled_shows_cancelled() -> None:
+    tracker = TaskStatusTracker(ROOT)
+    tracker.consume(
+        "delegate:agent_spawned",
+        {
+            "session_id": ROOT,
+            "agent": "worker",
+            "sub_session_id": "kid-1_worker",
+            "parent_session_id": ROOT,
+        },
+    )
+    tracker.consume(
+        "delegate:agent_cancelled",
+        {
+            "session_id": ROOT,
+            "agent": "worker",
+            "sub_session_id": "kid-1_worker",
+            "parent_session_id": ROOT,
+        },
+    )
+    lane = tracker.lane("kid-1_worker")
+    assert lane is not None
+    assert lane.lane.state == "done"
+    assert "cancelled" in lane.lane.activity
 
 
 # =============================================================================
