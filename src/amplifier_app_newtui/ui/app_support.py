@@ -28,6 +28,7 @@ from ..model.blocks import (
     Segment,
     SessionBanner,
     SteerEcho,
+    TodoItem,
     UserLine,
 )
 from ..model.queues import NeedsYouItem
@@ -568,6 +569,32 @@ def handle_esc(app: NewTuiApp, *, now: float | None = None) -> None:
         app.action_open_rewind()
 
 
+PLAN_PANEL_MIN_WIDTH = 90
+"""Below this terminal width the plan panel yields; a ``Plan N/M`` count
+falls back to the footer (design D2 responsive ladder)."""
+
+
+def apply_plan_change(app: NewTuiApp, items: tuple[TodoItem, ...]) -> None:
+    """Reducer pushed a new root todo list — repaint the ambient surfaces."""
+    app.plan_items = tuple(items)
+    sync_plan_surfaces(app)
+
+
+def sync_plan_surfaces(app: NewTuiApp) -> None:
+    """One decision point for the plan's responsive ladder (D2).
+
+    Wide (≥ 90 cols) with todos → the bottom-strip panel; otherwise the
+    panel hides and the footer carries the count (Task 5). Called on
+    every plan change and on terminal resize.
+    """
+    app.plan_panel.update_plan(app.plan_items)
+    if app.plan_items and app.size.width >= PLAN_PANEL_MIN_WIDTH:
+        app.plan_panel.show_panel()
+    else:
+        app.plan_panel.hide_panel()
+    app.refresh_status()  # footer carries the fallback count (Task 5)
+
+
 def footer_state(app: NewTuiApp) -> FooterState:
     """One frozen footer snapshot from the app's current interaction state."""
     return FooterState(
@@ -587,10 +614,12 @@ def footer_state(app: NewTuiApp) -> FooterState:
 __all__ = [
     "APPROVAL_NOTICE",
     "EscSequence",
+    "PLAN_PANEL_MIN_WIDTH",
     "QUEUED_NOTICE",
     "STEER_NOTICE",
     "announce_ready",
     "apply_decision",
+    "apply_plan_change",
     "confirm_fork",
     "echo_steer",
     "finish_turn_queues",
@@ -602,6 +631,7 @@ __all__ = [
     "mount_approval",
     "needs_you_block",
     "permissions_block",
+    "sync_plan_surfaces",
     "sync_steer_echoes",
     "trim_after_checkpoint",
 ]

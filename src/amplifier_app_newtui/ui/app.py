@@ -34,7 +34,7 @@ from typing import Any
 
 from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 
 from ..commands.builtin import build_registry
 from ..commands.context import ContextUsage
@@ -69,6 +69,7 @@ from .live_tail import LiveTail
 from .needs_you import NeedsYouList
 from .notices import NoticeSlot
 from .palette import PaletteStrip
+from .plan_panel import PlanPanel
 from .queued_strip import QueuedStrip
 from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
@@ -132,6 +133,12 @@ class NewTuiApp(App[None]):
     }
     #live-tail { padding: 0 1; }
     #composer-slot { height: auto; }
+    /* Bottom strip (design 2026-07-21 §1): lanes flexible left, plan
+       fixed right. Both children default display:none, height:auto —
+       an empty strip occupies zero rows. */
+    #bottom-strip { width: 100%; height: auto; }
+    #bottom-strip > #lanes-panel { width: 1fr; }
+    #bottom-strip > #plan-panel { width: 37; }  /* = plan_panel.PLAN_PANEL_WIDTH */
     """
 
     BINDINGS = app_support.global_bindings()
@@ -183,6 +190,7 @@ class NewTuiApp(App[None]):
         self.notice_slot = NoticeSlot(id="notice-slot")
         self.palette = PaletteStrip(self._commands.specs, id="palette-strip")
         self.lanes_panel = LanesPanel(id="lanes-panel")
+        self.plan_panel = PlanPanel(id="plan-panel")
         self.rewind = RewindStrip(id="rewind-strip")
         self.queued_strip = QueuedStrip(id="queued-strip")
         self.file_mentions = FileMentionStrip(id="file-mentions")
@@ -196,7 +204,9 @@ class NewTuiApp(App[None]):
             yield self.live_tail
             yield self.notice_slot
         yield self.palette
-        yield self.lanes_panel
+        with Horizontal(id="bottom-strip"):
+            yield self.lanes_panel
+            yield self.plan_panel
         yield self.rewind
         yield self.queued_strip
         yield self.file_mentions
@@ -633,7 +643,10 @@ class NewTuiApp(App[None]):
         self._refresh_title()
 
     def plan_changed(self, items: tuple[TodoItem, ...]) -> None:
-        self.plan_items = items  # panel wiring lands with the bottom strip
+        app_support.apply_plan_change(self, items)
+
+    def on_resize(self, event: events.Resize) -> None:
+        app_support.sync_plan_surfaces(self)  # responsive ladder (D2)
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
         del prompt, options  # presentation runs via present_approval
