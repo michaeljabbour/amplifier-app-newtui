@@ -30,6 +30,7 @@ from .test_flow_helpers import (
     SIZE,
     GatedDemoAdapter,
     blocks_of,
+    line_texts,
     rules,
     seed_done,
     wait_for,
@@ -199,6 +200,34 @@ async def test_replayed_agents_turn_reopens_done_lanes() -> None:
         adapter.release()
         assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
         assert all(r.lane.state == "done" for r in app.lanes.lanes)
+
+
+@pytest.mark.asyncio
+async def test_lane_tail_streams_mid_fanout_then_clears() -> None:
+    """Design doc D4: focused-lane deltas fill LiveTail while the root is
+    idle; ctrl+o moves the ▸ pin; the tail is ephemeral at turn end."""
+    adapter = GatedDemoAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.submit_prompt(AGENTS_PROMPT)
+        # Child bursts land before the script's first _wait parks the turn.
+        assert await wait_for(pilot, lambda: app.live_tail.lane_mode)
+        marked = [i for i, line in enumerate(app.lanes_panel.lane_lines) if "▸" in line]
+        assert len(marked) == 1  # exactly one tailed lane
+
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        moved = [i for i, line in enumerate(app.lanes_panel.lane_lines) if "▸" in line]
+        assert len(moved) == 1 and moved != marked  # the pin cycled
+
+        adapter.release()
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        assert not app.live_tail.lane_mode  # root answer preempted, then turn ended
+        # Ephemeral: child prose never became a transcript block.
+        assert not any(
+            "undocumented streaming flags" in text for text in line_texts(app)
+        )
 
 
 @pytest.mark.asyncio
