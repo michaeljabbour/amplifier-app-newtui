@@ -8,22 +8,17 @@ Measured on Apple Silicon (2026-07-16, textual 8.2, Python 3.12; CI will
 be slower — assertions carry generous margins):
 
 ===========================  =========================================
-pure ``render_block_markup``  2.8 µs/block · full 5k pass = 14 ms
-``LiveTail.feed`` call        ~13 µs (paints throttled to ≤30 Hz)
-layout frame @ 100 blocks     ~2 ms
-layout frame @ 1000 blocks    median ~3 ms  · mean ~7 ms
-layout frame @ 2000 blocks    median ~7 ms  · mean ~13 ms
-layout frame @ 5000 blocks    median ~33 ms · mean ~63 ms  ← BUDGET MISS
+pure ``render_block_markup``  ~4 µs/block · full 5k pass ~20 ms
+``LiveTail.feed`` call        ~20 µs (paints throttled to ≤30 Hz)
+layout frame @ 1000 blocks    median ~3 ms
+layout frame @ 5000 blocks    median ~3 ms via hybrid archive
 ===========================  =========================================
 
-Verdict: the pure renderer and the live-tail throttle are far inside
-budget; the miss at 5k is Textual's compositor arranging every mounted
-``BlockWidget`` each frame (O(n) ``_arrange_root``/``add_widget``). That
-is exactly the ADR's escalation trigger — hybrid Line-API history
-(widgets for the last ~1000 blocks, consolidated static content beyond)
-is required to hold budget at 5k. See ``NOTES-goldens-perf.md``. The 5k
-frame test below is ``xfail`` (non-strict): it starts XPASSing the day
-the hybrid lands.
+Verdict: the hybrid history keeps the newest ~1000 blocks as independent
+widgets and paints the finalized prefix through one selectable,
+action-aware archive. It holds the 5k frame budget without truncating
+history or changing the current composer, scrolling, copying, or block
+interaction contracts.
 """
 
 from __future__ import annotations
@@ -208,17 +203,8 @@ async def test_append_frame_budget_with_1k_history() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "ADR-0007 escalation trigger: widget-per-block misses the <16ms frame "
-        "budget at 5k mounted blocks (median ~33ms measured — Textual compositor "
-        "arranges every child per frame). Hybrid Line-API history required; "
-        "see NOTES-goldens-perf.md. Non-strict: XPASSes when the hybrid lands."
-    ),
-    strict=False,
-)
 async def test_append_frame_budget_with_5k_history() -> None:
-    """THE spike: 5k synthetic blocks + streaming appends vs frame budget."""
+    """Hybrid history: 5k blocks + streaming appends stay within budget."""
     frames = await _measure_frames(SPIKE_BLOCKS, samples=8)
     _mean, median = _report("layout frame @ 5k history", frames)
     assert median < FRAME_BUDGET_SECONDS, (

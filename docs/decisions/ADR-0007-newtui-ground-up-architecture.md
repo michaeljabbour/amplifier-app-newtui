@@ -55,9 +55,10 @@ Grounding: `docs/RESEARCH-BRIEF.md` (synthesis of 10 deep-readers).
    future; on `approval_timeout` it resolves to default (deny), lands in DenialLog AND
    stays in NeedsYouQueue as retro-answerable — answering later injects a next-turn
    user instruction (the mockup's "Applying decision" flow).
-6. **Transcript virtualization**: v1 = widget-per-block (amplifier-tui precedent),
-   lazy-mounted; perf spike test with 5k synthetic blocks in CI. Escalate to hybrid
-   Line-API history only if the spike fails budget (<16ms/frame during streaming).
+6. **Transcript virtualization**: the widget-per-block v1 failed the 5k synthetic-block
+   budget (<16ms/frame during streaming), so the planned hybrid landed: a selectable,
+   action-aware archive for finalized older history plus independent widgets for the newest
+   ~1000 blocks. The conversation remains untruncated while compositor work stays bounded.
 7. **Subagent spawn**: in-process only for v1. `kernel/spawner.py` re-attaches shared
    trackers to child coordinators, registers child cancellation, inherits
    approval/display. Lanes keyed by `session_id`/`parent_id`. Recursion depth enforced

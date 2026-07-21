@@ -294,7 +294,7 @@ this file; as built it has grown to roughly double that — helper logic lives i
 NewTuiApp
 ├── TitleBar #title-bar             spinner · "<state> — <bundle> — <session>"
 ├── Container #transcript-region    (1fr; layered)
-│   ├── TranscriptView #transcript  durable history: VerticalScroll of BlockWidgets
+│   ├── TranscriptView #transcript  durable history: selectable archive + widget tail
 │   ├── LiveTail #live-tail         the ONE mutable streaming region (~30 Hz throttle)
 │   └── NoticeSlot #notice-slot     floating transient notices (own layer)
 ├── PaletteStrip / LanesPanel / RewindStrip / QueuedStrip     overlay strips,
@@ -331,6 +331,13 @@ unidirectional loop: events flow down through the reducer; intents flow up as me
 an immutable `Answer` block at `stream_block_end`. Completed streaming lines already use
 the final answer renderer while only the trailing partial line stays mutable; pipe tables
 remain held until their widths are stable, and half-open fences retain code styling.
+
+**Infinite-history layout.** The newest ~1000 transcript blocks remain independent widgets.
+When history grows beyond that tail, finalized older blocks consolidate into one
+`HistoryArchive`. The archive keeps all text selectable and retains tool expansion,
+evidence, rewind, and deferred-decision actions, while bounding the number of children the
+Textual compositor arranges each frame. The 5k-block layout test therefore remains below
+the 16ms streaming frame budget without truncating the conversation.
 
 **Pure rendering.** Each block kind has a `_render_*` function; `render_block(block, width)`
 returns lines of segments referencing theme variables (via `ui/segments.py`) — which makes
@@ -572,7 +579,7 @@ The suite (~60+ files under `tests/`) is **fully offline** — no credentials, n
 | Flows (approval, interrupt, lanes, rewind, steer/queue, …) | end-to-end scripted turns via `DemoRuntime` |
 | Real lifecycle | `test_runtime_offline.py`: a genuine foundation lifecycle with fake provider/context/tool/orchestrator modules mounted from temp dirs via `file://` bundle sources — asserts both event channels, the real approval path, steering injection, and persistence output |
 | Renderer | golden width-matrix (40/80/97/120) plain-text files in `tests/goldens/` (regen via `tests/goldens/regen.py`) |
-| Performance | `test_perf_spike.py` tracks ADR-0007's 5k-block budgets: the pure-renderer and live-tail-throttle budgets are enforced; the full-frame 5k layout test is currently `xfail` (a documented budget miss — see the file's docstring) |
+| Performance | `test_perf_spike.py` enforces ADR-0007's pure-renderer, live-tail-throttle, and hybrid-history 5k frame budgets |
 
 CI (`.github/workflows/ci.yml`): `uv sync --frozen` → `ruff check .` → `pyright src/` →
 `pytest -q`.

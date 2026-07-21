@@ -27,6 +27,7 @@ outside the chain:
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from typing import Any
@@ -153,6 +154,8 @@ class NewTuiApp(App[None]):
         self._boot_block_id: str | None = None  # boot-progress transcript line
         self._auto_native_mode: str | None = None  # posture-bridged native mode
         self._os_clipboard_copied = False  # last copy reached an OS clipboard tool
+        self._clipboard_write_seq = 0  # latest native write wins
+        self._clipboard_write_lock = asyncio.Lock()
         self._selection_timer: Any = None  # copy-on-select debounce
         self._last_selection_copied = ""  # suppress duplicate auto-copies
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
@@ -820,7 +823,29 @@ class NewTuiApp(App[None]):
         "can't copy still"). One choke point — ctrl+c and any /copy-style
         command all route through here."""
         super().copy_to_clipboard(text)
-        self._os_clipboard_copied = app_support.os_clipboard_copy(text)
+        self._clipboard_write_seq += 1
+        sequence = self._clipboard_write_seq
+        self._os_clipboard_copied = app_support.os_clipboard_available()
+        if self._os_clipboard_copied:
+            self.run_worker(
+                self._copy_to_os_clipboard(text, sequence),
+                exclusive=False,
+            )
+
+    async def _copy_to_os_clipboard(self, text: str, sequence: int) -> None:
+        """Run the potentially blocking native writer outside the UI loop.
+
+        Writes are serialized so an older slow ``pbcopy`` can never finish
+        after a newer selection and overwrite it. Pending stale writes are
+        skipped before they reach the OS tool.
+        """
+
+        async with self._clipboard_write_lock:
+            if sequence != self._clipboard_write_seq:
+                return
+            copied = await asyncio.to_thread(app_support.os_clipboard_copy, text)
+            if sequence == self._clipboard_write_seq:
+                self._os_clipboard_copied = copied
 
     def action_copy_selection(self) -> None:
         """ctrl+c: copy the composer's own selection, else the transcript
@@ -966,7 +991,7 @@ class NewTuiApp(App[None]):
                 if block.kind == "tool_line" and link.tool_call_id in block.tool_call_ids:
                     if block.body and not block.expanded:
                         self.transcript.replace(block.model_copy(update={"expanded": True}))
-                    self.query_one(f"#block-{block.id}").scroll_visible(animate=False)
+                    self.transcript.scroll_block_visible(block.id)
                     return
         # No correlated tool line in the transcript: surface the grounding
         # reference itself instead of silently doing nothing.

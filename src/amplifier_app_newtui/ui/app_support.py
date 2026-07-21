@@ -454,6 +454,24 @@ def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
     app.refresh_status()
 
 
+def _os_clipboard_commands() -> tuple[tuple[str, ...], ...]:
+    """Platform clipboard commands in preference order."""
+
+    import sys
+
+    if sys.platform == "darwin":
+        return (("pbcopy",),)
+    return (("wl-copy",), ("xclip", "-selection", "clipboard"), ("xsel", "-ib"))
+
+
+def os_clipboard_available() -> bool:
+    """Whether a native clipboard writer is available without running it."""
+
+    import shutil
+
+    return any(shutil.which(command[0]) is not None for command in _os_clipboard_commands())
+
+
 def os_clipboard_copy(text: str) -> bool:
     """Write *text* to the OS clipboard via the platform tool, if any.
 
@@ -464,14 +482,7 @@ def os_clipboard_copy(text: str) -> bool:
     """
     import shutil
     import subprocess
-    import sys
-
-    candidates: tuple[tuple[str, ...], ...]
-    if sys.platform == "darwin":
-        candidates = (("pbcopy",),)
-    else:
-        candidates = (("wl-copy",), ("xclip", "-selection", "clipboard"), ("xsel", "-ib"))
-    for command in candidates:
+    for command in _os_clipboard_commands():
         if shutil.which(command[0]) is None:
             continue
         try:

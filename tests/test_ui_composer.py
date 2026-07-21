@@ -319,6 +319,32 @@ async def test_paste_event_collapses_long_block_and_submits_full_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_immediate_identical_paste_replay_is_suppressed() -> None:
+    """A terminal replay may emit two identical bracketed-paste events.
+
+    The second event must not duplicate the prompt, while an intentional
+    repeat after the narrow replay window remains possible.
+    """
+    from textual import events
+
+    from amplifier_app_newtui.ui.composer import PASTE_DUPLICATE_WINDOW_SECONDS
+
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", Composer)
+        payload = "investigate the ~/dev/amplifier-runpodsetup setup"
+        composer._input.post_message(events.Paste(payload))
+        composer._input.post_message(events.Paste(payload))
+        await pilot.pause()
+        assert composer.text == payload
+
+        await pilot.pause(PASTE_DUPLICATE_WINDOW_SECONDS + 0.05)
+        composer._input.post_message(events.Paste(payload))
+        await pilot.pause()
+        assert composer.text == payload * 2
+
+
+@pytest.mark.asyncio
 async def test_slash_prefix_posts_live_palette_filters() -> None:
     app = ComposerApp()
     async with app.run_test() as pilot:
@@ -490,3 +516,34 @@ async def test_settled_drag_selection_copies_automatically() -> None:
         assert app.notice_slot.current.startswith("copied on select · ")
         # No duplicate copy for the same settled selection.
         assert len(copied) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_clipboard_write_does_not_block_the_ui(monkeypatch) -> None:
+    """A slow platform clipboard process runs off the Textual event loop."""
+    import threading
+    import time
+
+    from amplifier_app_newtui.ui import app_support
+    from amplifier_app_newtui.ui.app import NewTuiApp
+    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+
+    finished = threading.Event()
+
+    def slow_copy(_text: str) -> bool:
+        time.sleep(0.2)
+        finished.set()
+        return True
+
+    monkeypatch.setattr(app_support, "os_clipboard_available", lambda: True)
+    monkeypatch.setattr(app_support, "os_clipboard_copy", slow_copy)
+    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        started = time.perf_counter()
+        app.copy_to_clipboard("non-blocking")
+        elapsed = time.perf_counter() - started
+        assert elapsed < 0.05
+        assert not finished.is_set()
+        await pilot.pause(0.3)
+        assert finished.is_set()
