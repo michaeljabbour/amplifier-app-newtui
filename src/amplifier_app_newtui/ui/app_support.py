@@ -236,7 +236,7 @@ def announce_boot_failure(app: NewTuiApp, error: Exception) -> None:
     the app alive lets the supervisor read the reason, copy it, and quit
     cleanly rather than staring at a stack trace in the scrollback.
     """
-    app.clear_boot_progress()
+    app.clear_boot_progress(immediate=True)  # error text, not a melting wordmark
     detail = str(error).strip() or error.__class__.__name__
     app.append_block(
         Answer(

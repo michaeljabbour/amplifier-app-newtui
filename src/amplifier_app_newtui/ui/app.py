@@ -81,6 +81,7 @@ from .session_ops_view import (
     skills_spans,
     status_spans,
 )
+from .splash import BootSplash
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
     BlockWidget,
@@ -104,7 +105,18 @@ class NewTuiApp(App[None]):
        transcript and blanks only its own box. `align` applies per layer;
        the base layer (transcript 1fr + live tail) always fills the
        region exactly, so only the auto-width notice moves. */
-    #transcript-region { height: 1fr; layers: base notice; align: right bottom; }
+    #transcript-region { height: 1fr; layers: base splash notice; align: right bottom; }
+    /* Boot splash: full-region overlay between base and notice — opaque so
+       the wordmark sits on a clean field, gone entirely once dismissed.
+       Styled here (not widget DEFAULT_CSS) for the same token-registration
+       reason as the scrollbar rules above. */
+    #boot-splash {
+        layer: splash;
+        width: 100%;
+        height: 100%;
+        background: $bg-term;
+        content-align: center middle;
+    }
     #transcript { height: 1fr; padding: 0 1; }
     /* Scrollbar colors from the §1 tokens only (never Textual-derived);
        set here (not widget DEFAULT_CSS) so the token variables are
@@ -151,7 +163,7 @@ class NewTuiApp(App[None]):
         self.turn_active = False
         self.fork_pending = False  # a confirmed fork is in flight (interrupt-then-fork)
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
-        self._boot_block_id: str | None = None  # boot-progress transcript line
+        self._splash: BootSplash | None = None  # boot splash overlay (wordmark)
         self._auto_native_mode: str | None = None  # posture-bridged native mode
         self._os_clipboard_copied = False  # last copy reached an OS clipboard tool
         self._clipboard_write_seq = 0  # latest native write wins
@@ -285,7 +297,7 @@ class NewTuiApp(App[None]):
         app_support.finish_turn_queues(self)
 
     def submit_prompt(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
-        if self._boot_block_id is not None:
+        if self._splash is not None:
             # Mid-boot submits used to vanish silently (the runtime isn't
             # up yet) — keep the supervisor's words instead of eating them.
             self.composer.insert_text(text)
@@ -353,7 +365,7 @@ class NewTuiApp(App[None]):
         self.run_worker(self._show_native_modes(), exclusive=False)
 
     async def _show_native_modes(self) -> None:
-        if self._boot_block_id is not None:
+        if self._splash is not None:
             self.show_notice("session still starting · /modes once the banner lands")
             return
         catalog = await self.adapter.list_native_modes()
@@ -398,7 +410,7 @@ class NewTuiApp(App[None]):
 
     def _ops_starting(self) -> bool:
         """True (and notices) when the session banner has not landed yet."""
-        if self._boot_block_id is not None:
+        if self._splash is not None:
             self.show_notice("session still starting · try again once the banner lands")
             return True
         return False
@@ -650,33 +662,40 @@ class NewTuiApp(App[None]):
     # -- approvals -------------------------------------------------------------------
 
     def boot_progress(self, action: str, detail: str) -> None:
-        """Live boot feedback: one self-updating dim line in the transcript.
+        """Live boot feedback: the AMPLIFIER splash with the phase beneath.
 
         Module prepare can run for minutes on a cold cache; the
-        supervisor sees each phase ('preparing · newtui', foundation's
-        per-module install messages, 'creating · session') instead of a
-        blank screen. Removed by ``announce_ready``.
+        supervisor sees the wordmark plus each phase ('preparing ·
+        newtui', foundation's per-module install messages, 'creating ·
+        session') instead of a blank screen. Dissolved by
+        ``announce_ready`` via :meth:`clear_boot_progress`.
         """
         action = action.replace("_", " ")  # foundation emits snake_case phases
-        spans = (
-            Segment(text="✳ ", style_token="orange"),
-            Segment(text=f"{action} · {detail}" if detail else action, style_token="dim"),
-        )
-        block = Answer(
-            id=self._boot_block_id or self.allocator.next_id(),
-            spans=spans,
-            clickable=False,
-        )
-        if self._boot_block_id is None:
-            self._boot_block_id = block.id
-            self.append_block(block)
-        else:
-            self.replace_block(block)
+        if self._splash is None:
+            self._splash = BootSplash(id="boot-splash")
+            # This runs as a raw call_soon_threadsafe callback — no Textual
+            # context (active_app unset). Mounting here would create the
+            # widget's pump and timer tasks in that empty context, and the
+            # splash timer would die on its first tick (Timer._tick reads
+            # active_app with no fallback). call_later hops into the app's
+            # message pump, same as present_approval.
+            self.call_later(self._mount_splash, self._splash)
+        self._splash.set_status(f"{action} · {detail}" if detail else action)
 
-    def clear_boot_progress(self) -> None:
-        if self._boot_block_id is not None:
-            self.remove_block(self._boot_block_id)
-            self._boot_block_id = None
+    async def _mount_splash(self, splash: BootSplash) -> None:
+        await self.query_one("#transcript-region").mount(splash)
+
+    def clear_boot_progress(self, *, immediate: bool = False) -> None:
+        """Dismiss the splash — dissolving normally, instantly on failure.
+
+        The dismissal hops through call_later so it queues FIFO behind a
+        still-pending ``_mount_splash`` (ready can land while the mount
+        callback is queued) and runs with proper Textual context.
+        """
+        if self._splash is not None:
+            splash = self._splash
+            self._splash = None
+            self.call_later(splash.dismiss_splash, immediate=immediate)
 
     def present_approval(self, ticket_id: str, prompt: str, options: tuple[str, ...]) -> None:
         """Show the inline approval bar for one ticket (spec §7)."""
