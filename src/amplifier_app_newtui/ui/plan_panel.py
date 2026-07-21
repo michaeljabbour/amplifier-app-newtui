@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 from textual.widgets import Static
@@ -45,6 +46,22 @@ _PREFIX_TOKENS: dict[TodoStatus, StyleToken] = {
 def plan_counts(items: Sequence[TodoItem]) -> tuple[int, int]:
     """``(done, total)`` for the header and the footer fallback."""
     return (sum(1 for item in items if item.status == "completed"), len(items))
+
+
+def plan_panel_width(items: Sequence[TodoItem], strip_width: int) -> int:
+    """Bottom-strip panel width: the mockup's 37 minimum, grown to the
+    widest rendered row, capped at a third of the strip.
+
+    Found live in a 198-col real fan-out: fixed 37 wraps real plan items
+    while the lanes half sits mostly empty. The cap keeps lanes dominant;
+    the floor keeps the demo/goldens geometry unchanged.
+    """
+    chrome = 4  # PlanPanel CSS `padding: 0 2` — content width is panel − 4
+    needed = chrome + max(
+        (cell_len(line_plain(line)) for line in format_plan_lines(items)),
+        default=0,
+    )
+    return max(PLAN_PANEL_WIDTH, min(needed, strip_width // 3))
 
 
 def format_plan_lines(
@@ -143,4 +160,5 @@ __all__ = [
     "PlanPanel",
     "format_plan_lines",
     "plan_counts",
+    "plan_panel_width",
 ]

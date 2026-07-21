@@ -70,3 +70,37 @@ def test_overflow_with_no_active_item_shows_first_rows() -> None:
     assert lines[1] == "  ○ step 0"
     assert lines[-1] == "  ⋮ +1 more"
     assert len(lines) == 1 + PLAN_MAX_ROWS + 1  # header + rows + marker
+
+
+# -- responsive width (found live: 198-col real fan-out, wrapping plan items) --
+
+
+def test_plan_panel_width_grows_to_fit_long_items_capped_at_a_third() -> None:
+    """At 198 cols the fixed 37-col panel wrapped real plan items while the
+    lanes half sat mostly empty — the panel should fit its content, capped
+    at a third of the strip so the lanes stay dominant."""
+    from amplifier_app_newtui.ui.plan_panel import plan_panel_width
+
+    long_items = (
+        TodoItem(content="Fan out parallel agents to survey repo state", status="in_progress"),
+        TodoItem(content="Synthesize findings into recommended next steps", status="pending"),
+    )
+    width = plan_panel_width(long_items, 198)
+    # widest row (4-char glyph prefix + content) + 4 cells panel padding
+    assert width == 4 + len(long_items[1].content) + 4
+    assert width <= 198 // 3
+    # Very long content still respects the one-third cap.
+    huge = (TodoItem(content="x" * 200, status="pending"),)
+    assert plan_panel_width(huge, 198) == 198 // 3
+
+
+def test_plan_panel_width_never_shrinks_below_the_mockup_37() -> None:
+    from amplifier_app_newtui.ui.plan_panel import PLAN_PANEL_WIDTH, plan_panel_width
+
+    short_items = (
+        TodoItem(content="scan provider docs", status="completed"),
+        TodoItem(content="run store tests", status="pending"),
+    )
+    # Demo-length content at the snapshot width: unchanged 37 (goldens hold).
+    assert plan_panel_width(short_items, 120) == PLAN_PANEL_WIDTH
+    assert plan_panel_width((), 198) == PLAN_PANEL_WIDTH

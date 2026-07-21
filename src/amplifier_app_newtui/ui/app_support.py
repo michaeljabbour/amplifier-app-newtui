@@ -34,7 +34,7 @@ from ..model.blocks import (
 from ..model.queues import NeedsYouItem
 from . import keymap
 from .footer import FooterState
-from .plan_panel import plan_counts
+from .plan_panel import plan_counts, plan_panel_width
 from .transcript import TranscriptView
 
 if TYPE_CHECKING:
@@ -591,6 +591,9 @@ def sync_plan_surfaces(app: NewTuiApp) -> None:
     """
     app.plan_panel.update_plan(app.plan_items)
     if app.plan_items and app.size.width >= PLAN_PANEL_MIN_WIDTH:
+        # Content-fitted width (37 floor, one-third cap) — real plans carry
+        # longer items than the mockup and wrapped at the fixed width.
+        app.plan_panel.styles.width = plan_panel_width(app.plan_items, app.size.width)
         app.plan_panel.show_panel()
     else:
         app.plan_panel.hide_panel()
