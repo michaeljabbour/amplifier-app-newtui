@@ -1135,6 +1135,7 @@ class NewTuiApp(App[None]):
             self.show_notice("no running lanes to tail")
             return
         self.lanes_changed()  # repaints the ▸ marker with the new pin
+        self.reducer.repaint_lane_tail()  # tail switches with the pin, not on next delta
         self.show_notice(f"tail · {record.lane.name}")
 
     def action_show_ledger(self) -> None:

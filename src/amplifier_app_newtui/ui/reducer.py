@@ -686,6 +686,27 @@ class TranscriptReducer:
             self._lane_tail_shown = None
             self._host.lane_tail_cleared()
 
+    def repaint_lane_tail(self) -> None:
+        """Paint the focused lane's buffered tail right now (ctrl+o).
+
+        Cycling the pin must not wait for the new lane's next delta —
+        otherwise the tail keeps showing the previous lane's text. Skips
+        the throttle (a keypress, not a delta storm); clears instead when
+        the pinned lane has nothing buffered yet.
+        """
+        if self._root_streaming:
+            return
+        focused = self.lanes.tail_lane
+        buffered = "" if focused is None else self._lane_tails.get(focused.session_id, "")
+        if focused is None or not buffered:
+            if self._lane_tail_shown is not None:
+                self._lane_tail_shown = None
+                self._host.lane_tail_cleared()
+            return
+        self._lane_tail_last = self._tail_clock()
+        self._lane_tail_shown = focused.session_id
+        self._host.lane_tail_updated(buffered)
+
     def _record_change(
         self, turn: _Turn, actor: str, tool: str, tool_input: dict[str, Any]
     ) -> None:
@@ -1363,9 +1384,12 @@ class TranscriptReducer:
             # sub-session ids (completions for unknown lanes are dropped, so
             # no spawn/complete race reaches this path) — reset it live.
             reopen=True,
-            # Stamp the spawn wall-time so advance() can tick the lane's
-            # per-agent elapsed live between sparse usage events.
-            now=event.ts or time.time(),
+            # Stamp the spawn time so advance() can tick the lane's
+            # per-agent elapsed live between sparse usage events. The
+            # envelope always stamps ts (default_factory) — no fallback:
+            # the demo's virtual clock legitimately starts at 0.0, and an
+            # `or time.time()` here mixes clock domains (0s durations).
+            now=event.ts,
         )
         if seed.elapsed or seed.cost or seed.tokens:
             self.lanes.update(
@@ -1374,7 +1398,7 @@ class TranscriptReducer:
                 cost=seed.cost,
                 tokens=seed.tokens,
             )
-        now = event.ts or time.time()
+        now = event.ts
         if not self._delegate_rows:
             self._fanout_start_ts = now
         if event.sub_session_id not in self._delegate_rows:
@@ -1395,7 +1419,7 @@ class TranscriptReducer:
         self.lanes.complete(event.sub_session_id, result=result)
         row = self._delegate_rows.get(event.sub_session_id)
         if row is not None:
-            end_ts = event.ts or time.time()
+            end_ts = event.ts  # same clock domain as spawned_ts — no fallback
             row.state = "done" if event.success else "error"
             row.elapsed_s = max(0.0, end_ts - row.spawned_ts)
             row.snippet = result

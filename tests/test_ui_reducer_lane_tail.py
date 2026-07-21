@@ -210,3 +210,28 @@ def test_turn_end_discards_all_tail_state_and_leaves_no_block_behind() -> None:
         for block in host.blocks
         for span in getattr(block, "spans", ())
     )
+
+
+def test_repaint_lane_tail_paints_the_newly_pinned_buffer() -> None:
+    """ctrl+o repaints immediately — without this the tail keeps showing
+    the previous lane's text until the pinned lane's next delta (found
+    live in forge: demo bursts are one-shot, so it never updated)."""
+    reducer, host, clock = make()
+    spawn(reducer, CHILD_A, "researcher")
+    spawn(reducer, CHILD_B, "coder")
+    delta(reducer, CHILD_A, "aaa")
+    clock.now += LANE_TAIL_NOTIFY_SECONDS
+    delta(reducer, CHILD_B, "bbb")  # focus follows B, painted
+    reducer.lanes.cycle_tail_focus()  # pin cycles B → A
+    reducer.repaint_lane_tail()
+    assert host.tail_updates[-1] == "aaa"
+
+
+def test_repaint_lane_tail_clears_when_pinned_lane_has_no_buffer() -> None:
+    reducer, host, clock = make()
+    spawn(reducer, CHILD_A, "researcher")
+    spawn(reducer, CHILD_B, "coder")
+    delta(reducer, CHILD_A, "aaa")
+    reducer.lanes.cycle_tail_focus()  # A (current) → B, which never streamed
+    reducer.repaint_lane_tail()
+    assert host.tail_cleared == 1

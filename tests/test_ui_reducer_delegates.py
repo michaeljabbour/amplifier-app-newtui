@@ -288,3 +288,20 @@ def test_real_turn_heartbeat_advances_lane_clocks() -> None:
     reducer.tick(103.0)
     lane = reducer.lanes.active[0].lane
     assert lane.elapsed == 3.0
+
+
+def test_fanout_at_virtual_clock_zero_keeps_duration_and_elapsed() -> None:
+    """The demo's virtual clock legitimately starts at ts=0.0; a falsy-ts
+    fallback to wall time mixes clock domains and clamps the fan-out
+    duration to 0 (found live in forge: ``· 0s ▸`` after ``seed → agents``,
+    where the waitless seed turn leaves the clock at zero)."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "researcher", "s1", 0.0)
+    _spawn(reducer, "coder", "s2", 0.0)
+    _complete(reducer, "researcher", "s1", 2.6, result="3 findings")
+    _complete(reducer, "coder", "s2", 6.0, result="2 files")
+    block = _summaries(host)[0]
+    assert block.duration_s == 6.0
+    assert block.entries[0].elapsed_s == 2.6
+    assert block.entries[1].elapsed_s == 6.0
