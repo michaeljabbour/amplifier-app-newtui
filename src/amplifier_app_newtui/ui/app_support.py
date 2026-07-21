@@ -563,8 +563,8 @@ def footer_state(app: NewTuiApp) -> FooterState:
         mode_id=app.mode_id,  # type: ignore[arg-type]
         bundle=app.adapter.bundle_name,
         session_short=app.adapter.session_short,
-        cost=max(Decimal("0"), app.reducer.session_cost),
-        cost_estimated=app.reducer.unpriced_usage > 0,
+        cost=max(Decimal("0"), app.reducer.live_session_cost),
+        cost_estimated=app.reducer.live_cost_estimated,
         shipped=app.ledger.last_shipped,
         queued=len(app.adapter.steering.pending_next_turn),
         waiting=app.adapter.needs_you.pending_count,

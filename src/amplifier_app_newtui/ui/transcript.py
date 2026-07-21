@@ -85,6 +85,9 @@ SPINNER_INTERVAL_SECONDS = 1.0
 1000ms telemetry tick (design-v3-cohesive.html runTurn, ``secs % 4``) —
 the faster 260ms spinTimer is the §2 TITLE-bar spinner only."""
 
+MOTION_INTERVAL_SECONDS = 0.14
+"""Active-only chasing highlight cadence for working/coordinating labels."""
+
 TOOL_EXPAND_HINT = " · click to expand"
 """Exact collapsed-tool-line hint (DESIGN-SPEC §3)."""
 
@@ -346,19 +349,38 @@ def _render_blocked(block: Blocked, width: int) -> tuple[Line, ...]:
     return (tuple(line),)
 
 
+def _shimmer_segments(label: str, frame: int) -> tuple[Segment, ...]:
+    """A restrained one-cell highlight that chases across *label*.
+
+    The quiet gap keeps this from reading like a marquee; plain text never
+    changes, so copy/paste and snapshots remain stable.
+    """
+    phase = frame % (len(label) + 4)
+    if phase >= len(label):
+        return (Segment(text=label, style_token="dim"),)
+    segments: list[Segment] = []
+    if phase:
+        segments.append(Segment(text=label[:phase], style_token="dim"))
+    segments.append(
+        Segment(text=label[phase], style_token="bright", bold=True)
+    )
+    if phase + 1 < len(label):
+        segments.append(Segment(text=label[phase + 1 :], style_token="dim"))
+    return tuple(segments)
+
+
 def _render_working_status(block: WorkingStatus, width: int) -> tuple[Line, ...]:
     frame = GLYPH_SPINNER_FRAMES[block.spinner_frame % len(GLYPH_SPINNER_FRAMES)]
     inner = block.telemetry.suffix()[1:-1]  # "(8s · ↓ 3.2k tok)" -> "8s · ↓ 3.2k tok"
     if block.agent_count > 1:
         # Fan-out turn (mockup runAgentsTurn): 'Coordinating N agents · …'
         # dim + 'esc to interrupt' dimmer — no 'working ·', no steer hint.
+        label = f"Coordinating {block.agent_count} agents"
         return (
             (
                 Segment(text=f"{frame} ", style_token="orange"),
-                Segment(
-                    text=f"Coordinating {block.agent_count} agents · {inner} · ",
-                    style_token="dim",
-                ),
+                *_shimmer_segments(label, block.motion_frame),
+                Segment(text=f" · {inner} · ", style_token="dim"),
                 Segment(text=block.interrupt_hint, style_token="dimmer"),
             ),
         )
@@ -366,11 +388,12 @@ def _render_working_status(block: WorkingStatus, width: int) -> tuple[Line, ...]
     # (spec §3). Before any tool runs, fall back to the inline note
     # (``thinking``) so the supervisor still sees the turn breathing.
     pulse: list[Segment] = [Segment(text=f"{frame} ", style_token="orange")]
+    pulse.extend(_shimmer_segments("working", block.motion_frame))
     if block.activity_lines:
-        pulse.append(Segment(text=f"working · {inner} · ", style_token="dim"))
+        pulse.append(Segment(text=f" · {inner} · ", style_token="dim"))
     else:
         note = block.activity or "1 agent"
-        pulse.append(Segment(text=f"working · {inner} · {note} · ", style_token="dim"))
+        pulse.append(Segment(text=f" · {inner} · {note} · ", style_token="dim"))
     pulse.append(
         Segment(
             text=f"{block.interrupt_hint} · {block.steer_hint}",
@@ -871,6 +894,8 @@ class BlockWidget(Static):
         self._reflow_router = reflow_router
         self._spinner_offset = 0
         self._spin_timer: Timer | None = None
+        self._motion_offset = 0
+        self._motion_timer: Timer | None = None
         # Wall-clock anchor for the working line's seconds (spec §3
         # "Updates every second" / §11 live counting — mockup 1000ms tick):
         # event-driven replaces reset it; between events (silent tool
@@ -900,15 +925,26 @@ class BlockWidget(Static):
             self._spin_timer = self.set_interval(
                 SPINNER_INTERVAL_SECONDS, self._advance_spinner
             )
+            self._motion_timer = self.set_interval(
+                MOTION_INTERVAL_SECONDS, self._advance_motion
+            )
 
     def on_unmount(self) -> None:
         if self._spin_timer is not None:
             self._spin_timer.stop()
             self._spin_timer = None
+        if self._motion_timer is not None:
+            self._motion_timer.stop()
+            self._motion_timer = None
 
     def _advance_spinner(self) -> None:
         """Pulse ✳/✦/✧ (and tick wall-clock secs) between event replaces."""
         self._spinner_offset += 1
+        self.repaint_block()
+
+    def _advance_motion(self) -> None:
+        """Move the active label highlight without mutating transcript text."""
+        self._motion_offset += 1
         self.repaint_block()
 
     def update_block(self, block: TranscriptBlock) -> None:
@@ -934,6 +970,8 @@ class BlockWidget(Static):
             update: dict[str, object] = {}
             if self._spinner_offset:
                 update["spinner_frame"] = block.spinner_frame + self._spinner_offset
+            if self._motion_offset:
+                update["motion_frame"] = block.motion_frame + self._motion_offset
             if self._telemetry_anchor is not None:
                 # Whole wall-clock seconds since the last event-driven
                 # replace — the working line keeps counting while the
@@ -1334,6 +1372,7 @@ class TranscriptView(VerticalScroll):
 __all__ = [
     "FALLBACK_WIDTH",
     "REFLOW_DEBOUNCE_SECONDS",
+    "MOTION_INTERVAL_SECONDS",
     "SPINNER_INTERVAL_SECONDS",
     "TOOL_EXPAND_HINT",
     "BlockWidget",

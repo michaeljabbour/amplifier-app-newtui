@@ -271,13 +271,13 @@ class _Turn:
     burst_detail: list[str] = field(default_factory=list)
     activity_ring: list[ActivityBranch] = field(default_factory=list)
     """Bounded newest-last live tree beneath the pulse (single-agent)."""
-    narration_candidates: list[tuple[str, str]] = field(default_factory=list)
+    response_candidates: list[tuple[str, str]] = field(default_factory=list)
     """Production durable text as ``(text, block_id)`` candidates.
 
     Streaming orchestrators emit intermediate prose and the final response
     through the same ``content_block:end`` contract.  Keep those blocks as
-    narration until ``PromptComplete.response`` identifies the one final
-    answer for the turn.
+    as styled, non-clickable candidates until ``PromptComplete.response``
+    identifies the one final answer for the turn.
     """
     rendered_answers: set[str] = field(default_factory=set)
     """Normalized answer texts already rendered for exact-once close-out."""
@@ -335,6 +335,20 @@ class TranscriptReducer:
     def running(self) -> bool:
         return self._turn is not None
 
+    @property
+    def live_session_cost(self) -> Decimal:
+        """Committed session spend plus usage received in the active turn."""
+        if self._turn is not None and self._turn.spec is not None:
+            return self.session_cost
+        return self.session_cost + self._cost.turn.cost
+
+    @property
+    def live_cost_estimated(self) -> bool:
+        """Whether the live total is only a floor because usage is unpriced."""
+        if self._turn is not None and self._turn.spec is not None:
+            return self.unpriced_usage > 0
+        return self.unpriced_usage > 0 or self._cost.turn.unpriced > 0
+
     def title_state(self) -> str:
         """The title bar's ``<state>`` fragment (DESIGN-SPEC §2)."""
         turn = self._turn
@@ -364,6 +378,9 @@ class TranscriptReducer:
         if self._turn is not None and event.ts:
             self._turn.last_ts = event.ts
         match event:
+            case ev.SessionStart() if event.parent_id:
+                if self.lanes.bind_session(event.session_id, parent_id=event.parent_id):
+                    self._host.lanes_changed()
             case ev.PromptSubmit():
                 self._start_turn(event)
             case ev.StreamBlockStart():
@@ -661,10 +678,15 @@ class TranscriptReducer:
             # Real-runtime text is provisional.  The orchestrator can speak
             # before tools and again at the end; PromptComplete.response is
             # the authoritative final-answer identity.
-            block = Narration(id=self._ids.next_id(), text=text)
+            # Commit the same formatted shape the streaming tail just showed.
+            # It remains non-clickable/provisional until PromptComplete adds
+            # evidence and authoritatively identifies the final response.
+            block = Answer(
+                id=self._ids.next_id(), spans=answer_spans(text), clickable=False
+            )
             self._append_content(block)
             if self._turn is not None:
-                self._turn.narration_candidates.append((text.strip(), block.id))
+                self._turn.response_candidates.append((text.strip(), block.id))
             return
 
         role = str(explicit_role)
@@ -697,7 +719,7 @@ class TranscriptReducer:
 
         self._flush_burst()
         links: tuple[EvidenceLink, ...] = tuple(self._evidence(text))
-        for candidate_text, block_id in reversed(turn.narration_candidates):
+        for candidate_text, block_id in reversed(turn.response_candidates):
             if candidate_text != text:
                 continue
             self._host.replace_block(
@@ -710,7 +732,11 @@ class TranscriptReducer:
             turn.rendered_answers.add(text)
             return
 
-        self._append_content(
+        # This fallback runs only during close-out. Appending through
+        # _append_content would move/re-mount the working pulse immediately
+        # before _finish_turn removes it, creating an avoidable Textual race
+        # for non-streaming providers whose answer exists only here.
+        self._host.append_block(
             Answer(
                 id=self._ids.next_id(),
                 spans=answer_spans(response),

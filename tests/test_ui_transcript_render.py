@@ -348,6 +348,15 @@ def test_working_status_exact_and_spinner_frames() -> None:
         assert render_block(block, 80)[0][0].text == f"{glyph} "
 
 
+def test_working_label_has_a_chasing_highlight_without_changing_text() -> None:
+    first = render_block(_blocks()["working"].model_copy(update={"motion_frame": 0}), 80)[0]
+    second = render_block(_blocks()["working"].model_copy(update={"motion_frame": 1}), 80)[0]
+    assert line_plain(first) == line_plain(second)
+    first_bright = [segment.text for segment in first if segment.style_token == "bright"]
+    second_bright = [segment.text for segment in second if segment.style_token == "bright"]
+    assert first_bright and second_bright and first_bright != second_bright
+
+
 def test_working_status_single_agent_exact() -> None:
     # Single-agent turns always show '· 1 agent ·' (mockup runTurn line).
     block = _blocks()["working"].model_copy(update={"agent_count": 1})

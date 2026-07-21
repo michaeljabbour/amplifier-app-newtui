@@ -27,6 +27,7 @@ from textual import events
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
+from textual.timer import Timer
 from textual.widgets import Static
 
 from ..model.lanes import LaneRecord, LaneState
@@ -36,6 +37,9 @@ LANES_HEADER_TITLE = "Agent lanes"
 LANES_HEADER_HINT = "· ↑↓ select · enter focus · esc close"
 LANES_HEADER = f"{LANES_HEADER_TITLE} {LANES_HEADER_HINT}"
 """Exact header line per DESIGN-SPEC §8."""
+
+LANE_MOTION_INTERVAL_SECONDS = 0.14
+"""Active-only chasing highlight cadence for agent names."""
 
 
 def lane_elapsed(seconds: float) -> str:
@@ -105,17 +109,33 @@ class _LaneRow(Static):
     }
     """
 
-    def __init__(self, record: LaneRecord, line: str, index: int) -> None:
+    def __init__(
+        self, record: LaneRecord, line: str, index: int, *, motion_frame: int = 0
+    ) -> None:
         super().__init__(id=f"lane-row-{index}")
         self.record = record
         self.line = line
         self.index = index
+        self.motion_frame = motion_frame
 
     def render(self) -> Text:
         tokens = self.app.theme_variables
-        return Text(
+        text = Text(
             self.line, style=Style(color=tokens.get(self.record.lane.color_token))
         )
+        lane = self.record.lane
+        if lane.state != "done" and lane.name:
+            phase = self.motion_frame % (len(lane.name) + 4)
+            if phase < len(lane.name):
+                start = self.line.find(lane.name) + phase
+                text.stylize(
+                    Style(color=tokens.get("bright"), bold=True), start, start + 1
+                )
+        return text
+
+    def set_motion_frame(self, frame: int) -> None:
+        self.motion_frame = frame
+        self.refresh(layout=False)
 
     def on_click(self) -> None:
         self.post_message(
@@ -183,6 +203,11 @@ class LanesPanel(Vertical):
         super().__init__(id=id)
         self._records: tuple[LaneRecord, ...] = ()
         self._selected = 0
+        self._motion_frame = 0
+        self._motion_timer: Timer | None = None
+
+    def on_unmount(self) -> None:
+        self._stop_motion()
 
     # -- public API ----------------------------------------------------
 
@@ -205,14 +230,18 @@ class LanesPanel(Vertical):
         """Replace the lane listing (registration order, per LaneRegistry)."""
         self._records = tuple(records)
         self._selected = min(self._selected, max(0, len(self._records) - 1))
+        self._sync_motion()
         self._rebuild()
 
-    def show_panel(self) -> None:
+    def show_panel(self, *, focus: bool = True) -> None:
         self.display = True
-        self.focus()
+        self._sync_motion()
+        if focus:
+            self.focus()
 
     def hide_panel(self) -> None:
         self.display = False
+        self._stop_motion()
 
     def set_focused(self, name: str | None) -> None:
         """Snap the highlight to the currently focused lane (or leave as-is)."""
@@ -274,7 +303,9 @@ class LanesPanel(Vertical):
         lines = self.lane_lines
         rows: list[Static] = [_LanesHeader()]
         rows.extend(
-            _LaneRow(record, lines[index], index)
+            _LaneRow(
+                record, lines[index], index, motion_frame=self._motion_frame
+            )
             for index, record in enumerate(self._records)
         )
         await self.mount(*rows)
@@ -284,8 +315,30 @@ class LanesPanel(Vertical):
         for row in self.query(_LaneRow):
             row.set_class(row.index == self._selected, "-selected")
 
+    def _sync_motion(self) -> None:
+        active = bool(self.display) and any(
+            record.lane.state != "done" for record in self._records
+        )
+        if active and self.is_mounted and self._motion_timer is None:
+            self._motion_timer = self.set_interval(
+                LANE_MOTION_INTERVAL_SECONDS, self._advance_motion
+            )
+        elif not active:
+            self._stop_motion()
+
+    def _stop_motion(self) -> None:
+        if self._motion_timer is not None:
+            self._motion_timer.stop()
+            self._motion_timer = None
+
+    def _advance_motion(self) -> None:
+        self._motion_frame += 1
+        for row in self.query(_LaneRow):
+            row.set_motion_frame(self._motion_frame)
+
 
 __all__ = [
+    "LANE_MOTION_INTERVAL_SECONDS",
     "LANES_HEADER",
     "LANES_HEADER_HINT",
     "LANES_HEADER_TITLE",

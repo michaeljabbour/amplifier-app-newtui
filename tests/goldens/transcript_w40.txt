@@ -33,7 +33,7 @@
 [$red]  ⊘ blocked · [/][$red]git push --force origin main[/][$dim] · outside user authorization[/][$dim] · finding safer path[/]
 
 === working_status ===
-[$orange]✳ [/][$dim]working · 8s · ↓ 3.2k tok · 1 agent · [/][$dimmer]esc to interrupt · type to steer[/]
+[$orange]✳ [/][bold $bright]w[/][$dim]orking[/][$dim] · 8s · ↓ 3.2k tok · 1 agent · [/][$dimmer]esc to interrupt · type to steer[/]
 
 === recap ===
 [$dimmer]✳ [/][italic $dim]Goal: durable session store. Next: open PR against main.[/]

@@ -268,6 +268,11 @@ class NewTuiApp(App[None]):
                 # auto-run (and trimmed away) against the pre-fork context.
                 self.drain_turn_queues()
             self._refresh_title()
+            if event.kind == "provider_response_usage":
+                # Provider usage is sparse (one record per response), so
+                # repaint the footer immediately without tying it to the
+                # high-frequency streaming-delta path.
+                self._refresh_footer()
 
     def drain_turn_queues(self) -> None:
         """Run the deferred turn-end queue duties once (idempotent)."""
@@ -605,7 +610,7 @@ class NewTuiApp(App[None]):
             # panel then STAYS visible showing the completed lanes (DESIGN-SPEC
             # §8 tri-state ends on ✔ done); it retracts on ctrl-t / esc, not
             # the instant every agent finishes.
-            self.lanes_panel.display = True
+            self.lanes_panel.show_panel(focus=False)
             self._refresh_footer()
         self._lanes_fanout_open = active
         self._refresh_title()

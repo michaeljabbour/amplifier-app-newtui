@@ -17,9 +17,15 @@ from amplifier_app_newtui.kernel.demo import (
     DEMO_TURN_BY_KEY,
     SEED_PROMPT,
 )
+from amplifier_app_newtui.kernel.events import (
+    PromptComplete,
+    PromptSubmit,
+    ProviderResponseUsage,
+)
 from amplifier_app_newtui.ui import app_support
 from amplifier_app_newtui.ui.app import NewTuiApp
 from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_newtui.ui.runtime_adapter import RuntimeAdapter
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, theme_id
 
 from .test_flow_helpers import set_mode
@@ -196,3 +202,32 @@ async def test_resume_cost_baseline_set_in_adapter_start_reaches_reducer() -> No
         assert app.reducer.session_cost == DEMO_SESSION_COST_START  # $0.57
         assert app.ledger.checkpoints[0].cost_at == DEMO_SESSION_COST_START
         assert app_support.footer_state(app).cost == DEMO_SESSION_COST_START
+
+
+@pytest.mark.asyncio
+async def test_provider_usage_repaints_footer_before_prompt_complete() -> None:
+    adapter = RuntimeAdapter()
+    adapter.bundle_name = "newtui"
+    adapter.session_short = "live01"
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=(110, 40)) as pilot:
+        await adapter.queue.put(
+            PromptSubmit(session_id="root", prompt="measure live spend", ts=1.0)
+        )
+        await adapter.queue.put(
+            ProviderResponseUsage(
+                session_id="root",
+                output_tokens=1200,
+                cost_usd=Decimal("0.42"),
+                ts=2.0,
+            )
+        )
+        assert await _wait_for(
+            pilot,
+            lambda: app.turn_active and app.footer_bar.state.cost == Decimal("0.42"),
+        )
+        assert app.reducer.session_cost == Decimal("0")
+        await adapter.queue.put(
+            PromptComplete(session_id="root", response="done", ts=3.0)
+        )
+        assert await _wait_for(pilot, lambda: not app.turn_active)
