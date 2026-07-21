@@ -677,6 +677,15 @@ class NewTuiApp(App[None]):
     def on_live_tail_consolidated(self, message: LiveTail.Consolidated) -> None:
         message.stop()  # durable record path owns the transcript append
 
+    def lane_tail_updated(self, text: str) -> None:
+        # Throttle + focus policy live in the reducer (design doc D4);
+        # this just paints. LiveTail itself refuses while a root stream
+        # is open, so preemption is belt-and-braces.
+        self.live_tail.show_lane_tail(text)
+
+    def lane_tail_cleared(self) -> None:
+        self.live_tail.clear_lane_tail()
+
     # -- approvals -------------------------------------------------------------------
 
     def boot_progress(self, action: str, detail: str) -> None:
