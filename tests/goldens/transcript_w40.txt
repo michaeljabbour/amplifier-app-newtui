@@ -76,3 +76,13 @@
 
 === brainstorm_idea ===
 [$fg]  1 Ambient tab color: orange while running, red when a decision waits[/]
+
+=== delegate_summary ===
+[$bright]● [/][$fg]Used 3 delegates[/][$dim] · Plan 3/3 · 1m 42s[/][$dimmer] ▸[/]
+
+=== delegate_summary (expanded) ===
+[$bright]● [/][$fg]Used 3 delegates[/][$dim] · Plan 3/3 · 1m 42s[/][$dimmer] ▾[/]
+[$dimmer]    ├─ [/][$green]✔ [/][$dim]researcher  [/][$dim]4s · "3 findings"[/]
+[$dimmer]    ├─ [/][$green]✔ [/][$dim]coder       [/][$dim]6s · "2 files"[/]
+[$dimmer]    └─ [/][$green]✔ [/][$dim]tester      [/][$dim]2s · "tests ✔"[/]
+[$dim]    Plan  [/][$green]✔ [/][$dim]Audit persistence paths  [/][$green]✔ [/][$dim]Migrate history to durable store  [/][$green]✔ [/][$dim]Verify and push  [/]

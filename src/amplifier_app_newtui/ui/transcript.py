@@ -48,11 +48,18 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from ..model.blocks import (
+    GLYPH_BLOCKED,
+    GLYPH_CHEVRON_COLLAPSED,
+    GLYPH_CHEVRON_EXPANDED,
+    GLYPH_ERROR,
+    GLYPH_LANE_RUNNING,
+    GLYPH_PLAN_DONE,
     GLYPH_SPINNER_FRAMES,
     Answer,
     Blocked,
     BrainstormIdea,
     ContextBlock,
+    DelegateSummaryBlock,
     DoctorBlock,
     EvidenceBlock,
     ImproveBlock,
@@ -743,6 +750,96 @@ def _render_brainstorm_idea(block: BrainstormIdea, width: int) -> tuple[Line, ..
     return ((Segment(text=f"{prefix}{block.text}", style_token="fg"),),)
 
 
+def _format_span(seconds: float) -> str:
+    """``42s`` under a minute, ``1m 42s`` above (lane-panel zero-pad style)."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}m {secs:02d}s"
+
+
+def _clip(text: str, budget: int) -> str:
+    """Cell-width truncation with a trailing ellipsis; '' when it can't fit."""
+    if budget <= 1:
+        return ""
+    if cell_len(text) <= budget:
+        return text
+    out = ""
+    for ch in text:
+        if cell_len(out + ch) > budget - 1:
+            break
+        out += ch
+    return out + "…"
+
+
+_DELEGATE_GLYPHS: dict[str, tuple[str, StyleToken]] = {
+    "running": (GLYPH_LANE_RUNNING, "dimmer"),
+    "done": (GLYPH_PLAN_DONE, "green"),
+    "error": (GLYPH_ERROR, "red"),
+    "cancelled": (GLYPH_BLOCKED, "red"),
+}
+
+# Reuse the plan-panel checklist glyphs (ui/plan_panel.py:_GLYPHS) — goldens pin both.
+_DELEGATE_PLAN_GLYPHS: dict[str, tuple[str, StyleToken]] = {
+    "completed": ("✔", "green"),
+    "in_progress": ("▶", "orange"),
+    "pending": ("○", "dim"),
+}
+
+
+def _render_delegate_summary(block: DelegateSummaryBlock, width: int) -> tuple[Line, ...]:
+    """Ambient-progress D5: one-line summary, expandable to the agent tree."""
+    running = sum(1 for entry in block.entries if entry.state == "running")
+    head: list[Segment] = [Segment(text="● ", style_token="bright")]
+    if running:
+        noun = "delegate" if running == 1 else "delegates"
+        head.append(Segment(text=f"{running} {noun} running…", style_token="dim"))
+    else:
+        total = len(block.entries)
+        noun = "delegate" if total == 1 else "delegates"
+        head.append(Segment(text=f"Used {total} {noun}", style_token="fg"))
+        detail = ""
+        if block.plan_final:
+            done = sum(1 for item in block.plan_final if item.status == "completed")
+            detail += f" · Plan {done}/{len(block.plan_final)}"
+        detail += f" · {_format_span(block.duration_s)}"
+        head.append(Segment(text=detail, style_token="dim"))
+        chevron = GLYPH_CHEVRON_EXPANDED if block.expanded else GLYPH_CHEVRON_COLLAPSED
+        head.append(Segment(text=f" {chevron}", style_token="dimmer"))
+    lines: list[Line] = [tuple(head)]
+    if not block.expanded:
+        return tuple(lines)
+    name_width = max((cell_len(e.agent) for e in block.entries), default=0)
+    for index, entry in enumerate(block.entries):
+        branch = "└─" if index == len(block.entries) - 1 else "├─"
+        glyph, token = _DELEGATE_GLYPHS[entry.state]
+        row: list[Segment] = [
+            Segment(text=f"    {branch} ", style_token="dimmer"),
+            Segment(text=f"{glyph} ", style_token=token),
+            Segment(text=f"{entry.agent.ljust(name_width)}  ", style_token="dim"),
+        ]
+        if entry.state == "running":
+            row.append(Segment(text="running", style_token="dimmer"))
+        else:
+            tail = _format_span(entry.elapsed_s)
+            if entry.snippet:
+                used = sum(cell_len(s.text) for s in row) + cell_len(tail)
+                snippet = _clip(entry.snippet, width - used - 5)
+                if snippet:
+                    tail += f' · "{snippet}"'
+            row.append(Segment(text=tail, style_token="dim"))
+        lines.append(tuple(row))
+    if block.plan_final:
+        plan_row: list[Segment] = [Segment(text="    Plan  ", style_token="dim")]
+        for item in block.plan_final:
+            glyph, token = _DELEGATE_PLAN_GLYPHS[item.status]
+            plan_row.append(Segment(text=f"{glyph} ", style_token=token))
+            plan_row.append(Segment(text=f"{item.content}  ", style_token="dim"))
+        lines.append(tuple(plan_row))
+    return tuple(lines)
+
+
 _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "session_banner": _render_session_banner,
     "user_line": _render_user_line,
@@ -763,6 +860,7 @@ _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "doctor": _render_doctor,
     "improve": _render_improve,
     "brainstorm_idea": _render_brainstorm_idea,
+    "delegate_summary": _render_delegate_summary,
 }
 
 
