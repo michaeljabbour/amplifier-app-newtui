@@ -76,7 +76,7 @@ async def test_ctrl_t_toggles_lanes_panel_with_tree_in_transcript() -> None:
         # The panel auto-opened at fan-out (mockup ``lanesOpen = true``):
         # exact header + one aligned line per agent.
         assert app.lanes_panel.display
-        assert LANES_HEADER == "Agent lanes · ↑↓ select · enter focus · esc close"
+        assert LANES_HEADER == "Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close"
         lines = app.lanes_panel.lane_lines
         assert len(lines) == 3
         for line in lines:

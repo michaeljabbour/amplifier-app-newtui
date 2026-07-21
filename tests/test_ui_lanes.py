@@ -71,7 +71,7 @@ class LanesHost(App[None]):
 
 
 def test_header_exact_string() -> None:
-    assert LANES_HEADER == "Agent lanes · ↑↓ select · enter focus · esc close"
+    assert LANES_HEADER == "Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close"
 
 
 def test_lane_elapsed_format() -> None:

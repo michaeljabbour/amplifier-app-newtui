@@ -2,7 +2,7 @@
 
 A bordered strip docked ABOVE the composer, toggled by ctrl-t / ``/tasks``:
 
-- Header: ``Agent lanes · ↑↓ select · enter focus · esc close``
+- Header: ``Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close``
   (``Agent lanes`` bright bold, the hint dimmer).
 - One aligned line per subagent (Claude Code's live agent panel):
   ``  <glyph> <name> · <activity> · <elapsed> · ↓ Nk tokens · $<cost>`` —
@@ -35,7 +35,7 @@ from ..model.turn import _format_tokens
 from .motion import SHIMMER_INTERVAL_SECONDS, shimmer_band
 
 LANES_HEADER_TITLE = "Agent lanes"
-LANES_HEADER_HINT = "· ↑↓ select · enter focus · esc close"
+LANES_HEADER_HINT = "· ↑↓ select · enter focus · ctrl-o tail · esc close"
 LANES_HEADER = f"{LANES_HEADER_TITLE} {LANES_HEADER_HINT}"
 """Exact header line per DESIGN-SPEC §8."""
 

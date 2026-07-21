@@ -1121,6 +1121,15 @@ class NewTuiApp(App[None]):
                 self.approval_bar.focus()  # approval owns the keyboard (spec §7)
         self._refresh_footer()
 
+    def action_cycle_tail(self) -> None:
+        """ctrl+o: pin the live tail to the next running lane (spec §8)."""
+        record = self.lanes.cycle_tail_focus()
+        if record is None:
+            self.show_notice("no running lanes to tail")
+            return
+        self.lanes_changed()  # repaints the ▸ marker with the new pin
+        self.show_notice(f"tail · {record.lane.name}")
+
     def action_show_ledger(self) -> None:
         spec = self._commands.get("/ledger")
         if spec is not None:
