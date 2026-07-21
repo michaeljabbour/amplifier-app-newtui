@@ -152,14 +152,9 @@ def test_lane_panel_lines_verbatim() -> None:
     ]
 
 
-def test_lane_tree_labels_and_completion_times() -> None:
-    by_name = DEMO_LANE_BY_NAME
-    assert by_name["researcher"].tree_spawn == "researcher · scanning provider docs · $0.09"
-    assert by_name["coder"].tree_spawn == "coder · migrating store · $0.31"
-    assert by_name["tester"].tree_spawn == "tester · uv run pytest tests/ -q · $0.07"
-    assert by_name["tester"].tree_done == "tester · done · tests ✔ · 2s · $0.07"
-    assert by_name["researcher"].tree_done == "researcher · done · 3 findings · 4s · $0.11"
-    assert by_name["coder"].tree_done == "coder · done · 2 files · 6s · $0.34"
+def test_lane_completion_times() -> None:
+    # tree_spawn/tree_done retired with the transcript tree lines — the
+    # delegate summary + lanes panel carry this data now.
     assert [(lane.name, lane.done_at_ms) for lane in DEMO_LANES] == [
         ("researcher", 4_400), ("coder", 6_000), ("tester", 2_600),
     ]

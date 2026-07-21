@@ -150,3 +150,41 @@ async def test_expanding_summary_opens_lanes_panel() -> None:
         widget._activate()
         await pilot.pause()
         assert app.lanes_panel.display is True  # collapse does NOT close it
+
+
+@pytest.mark.asyncio
+async def test_replace_preserves_a_live_expansion() -> None:
+    """A reducer re-render always arrives collapsed (expansion is UI-local).
+    A post-turn straggler AgentCompleted — or the todo-fold — must not
+    collapse a summary the user has opened (review finding H1)."""
+    app = Harness()
+    async with app.run_test() as pilot:
+        view = _view(app)
+        widget = _mounted(view, SUMMARY)
+        widget._activate()  # user expands
+        await pilot.pause()
+        updated = SUMMARY.model_copy(
+            update={
+                "entries": SUMMARY.entries
+                + (DelegateEntry(agent="coder", state="done", elapsed_s=9.0, snippet="2 files"),),
+                "duration_s": 9.0,
+            }
+        )
+        assert updated.expanded is False  # what the reducer sends
+        view.replace(updated)
+        await pilot.pause()
+        assert widget.block.expanded is True  # expansion carried across
+        assert len(widget.block.entries) == 3  # new data still applied
+        stored = view.get_block("ds1")
+        assert stored is not None and stored.expanded is True
+
+
+@pytest.mark.asyncio
+async def test_replace_keeps_a_collapsed_summary_collapsed() -> None:
+    app = Harness()
+    async with app.run_test() as pilot:
+        view = _view(app)
+        widget = _mounted(view, SUMMARY)
+        view.replace(SUMMARY.model_copy(update={"duration_s": 7.0}))
+        await pilot.pause()
+        assert widget.block.expanded is False

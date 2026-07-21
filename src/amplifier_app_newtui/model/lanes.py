@@ -121,6 +121,13 @@ class LaneRegistry:
     telemetry from any child-stamped event; ``complete`` closes it on
     ``task:agent_completed``. Unknown-parent registration is tolerated and
     depth is retro-patched when the parent lane appears.
+
+    Concurrency invariant: every writer — the reducer (event consumer,
+    heartbeat ``advance``) and the app (``cycle_tail_focus``) — runs on the
+    single UI event loop; the runtime thread never touches this registry
+    (events are marshalled via the adapter's call_soon_threadsafe queue).
+    Methods are synchronous with no awaits, so mutations are atomic under
+    cooperative scheduling. Do not call from other threads.
     """
 
     def __init__(self) -> None:

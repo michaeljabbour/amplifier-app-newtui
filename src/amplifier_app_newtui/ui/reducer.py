@@ -290,8 +290,6 @@ class LaneSeed:
     cost: Decimal = Decimal("0")
     tokens: int = 0
     state: LaneStateName = "running"
-    tree_spawn: str = ""
-    tree_done: str = ""
 
 
 @dataclass
@@ -490,7 +488,9 @@ class TranscriptReducer:
         if self._is_foreign_turn_event(event):
             self._track_child_activity(event)
             return
-        if self._turn is not None and event.ts:
+        if self._turn is not None:
+            # The envelope always stamps ts — no falsy-zero guard (the demo's
+            # virtual clock legitimately starts at 0.0).
             self._turn.last_ts = event.ts
         match event:
             case ev.SessionStart() if event.parent_id:
@@ -849,7 +849,7 @@ class TranscriptReducer:
             # synthesized PromptComplete (git snapshot delta — spec §3).
             self.unpriced_usage += usage.unpriced
             telemetry = TurnTelemetry(
-                secs=max(0.0, (event.ts or turn.last_ts) - turn.start_ts),
+                secs=max(0.0, event.ts - turn.start_ts),  # one clock domain, no fallback
                 tokens_down=turn.tokens,
                 cached_pct=usage.cached_pct,
                 cost=usage.cost,
@@ -1430,10 +1430,12 @@ class TranscriptReducer:
         self._host.lanes_changed()
 
     def _render_delegate_summary(self) -> None:
-        """Append-once / replace-in-place, exactly like the todo path
-        (turn.todo_id pattern). Always rendered expanded=False — expansion is
-        UI-local state; a mid-flight replace collapsing it matches the
-        ToolLine-digest precedent (_render_digest)."""
+        """Append-once / replace-in-place, keyed by ``_delegate_summary_id``.
+
+        Always rendered expanded=False — expansion is UI-local state; the
+        transcript's replace path preserves a live widget's expansion so
+        neither a mid-flight replace nor a post-turn straggler completion
+        collapses a summary the user has opened."""
         turn = self._turn
         if turn is not None and turn.todo_items:
             self._delegate_plan_final = turn.todo_items

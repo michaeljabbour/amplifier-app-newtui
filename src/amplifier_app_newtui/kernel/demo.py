@@ -320,10 +320,6 @@ class DemoLane(_FrozenModel):
     """State recap line at the bottom of the focus transcript."""
     result: str
     """Completion result summary (``tests ✔`` / ``3 findings`` / ``2 files``)."""
-    tree_spawn: str
-    """Live-tree label while running: ``<name> · <activity> · $<cost>``."""
-    tree_done: str
-    """Live-tree label when complete: ``<name> · done · <result> · <t> · $<cost>``."""
     done_at_ms: int
     """Virtual ms into the agents turn when this lane completes."""
     log: tuple[DemoLogRow, ...]
@@ -343,8 +339,6 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         brief="Scan the provider docs and list every capability the runtime does not exercise.",
         state_recap="running · 41s · $0.09",
         result="3 findings",
-        tree_spawn="researcher · scanning provider docs · $0.09",
-        tree_done="researcher · done · 3 findings · 4s · $0.11",
         done_at_ms=4400,
         log=(
             DemoLogRow(
@@ -368,8 +362,6 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         brief="Move session history behind the durable SessionStore interface.",
         state_recap="running · 2m 04s · $0.31",
         result="2 files",
-        tree_spawn="coder · migrating store · $0.31",
-        tree_done="coder · done · 2 files · 6s · $0.34",
         done_at_ms=6000,
         log=(
             DemoLogRow(
@@ -393,8 +385,6 @@ DEMO_LANES: tuple[DemoLane, DemoLane, DemoLane] = (
         brief="Run the store test suite and report failures with evidence.",
         state_recap="completed · 55s · $0.07 · tests ✔",
         result="tests ✔",
-        tree_spawn="tester · uv run pytest tests/ -q · $0.07",
-        tree_done="tester · done · tests ✔ · 2s · $0.07",
         done_at_ms=2600,
         log=(
             DemoLogRow(kind="command", text="uv run pytest tests/store/ -q"),

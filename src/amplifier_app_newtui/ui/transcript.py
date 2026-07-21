@@ -934,7 +934,6 @@ class BlockWidget(Static):
        (narration, answer, evidence, working status) stay flush — the
        repo's px→cell mapping rounds sub-10px margins to 0. */
     BlockWidget.kind-plan,
-    BlockWidget.kind-todo,
     BlockWidget.kind-ledger,
     BlockWidget.kind-context,
     BlockWidget.kind-doctor,
@@ -1198,7 +1197,6 @@ def _block_margin_top(block: TranscriptBlock) -> int:
     if block.kind in {
         "user_line",
         "turn_rule",
-        "todo",
         "ledger",
         "context",
         "doctor",
@@ -1343,7 +1341,9 @@ class HistoryArchive(Static):
             self.post_message(ToolLineToggled(toggled.id, toggled.expanded))
         elif block.kind == "delegate_summary" and block.entries:
             toggled = block.model_copy(update={"expanded": not block.expanded})
-            self._owner.replace(toggled)
+            # An explicit user toggle: bypass the reducer-replace expansion
+            # merge, or collapsing would be undone by _preserve_expansion.
+            self._owner.replace(toggled, preserve_expansion=False)
             self.post_message(DelegateSummaryToggled(toggled.id, toggled.expanded))
         elif block.kind == "answer" and block.clickable:
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
@@ -1511,12 +1511,43 @@ class TranscriptView(VerticalScroll):
         self._schedule_compaction()
         return widget
 
-    def replace(self, block: TranscriptBlock) -> None:
+    def _preserve_expansion(self, block: TranscriptBlock) -> TranscriptBlock:
+        """Carry a user's UI-local expansion across a reducer replace.
+
+        The reducer always re-renders a delegate summary collapsed
+        (expansion is UI-local by design); without this merge, a
+        mid-flight update — or a post-turn straggler ``AgentCompleted``,
+        which replaces the block after the turn ended — collapses a
+        summary the user has opened (review finding H1).
+        """
+        if block.kind != "delegate_summary" or block.expanded:
+            return block
+        current: TranscriptBlock | None = None
+        widget = self._widgets.get(block.id)
+        if isinstance(widget, BlockWidget):
+            current = widget.block
+        elif self._focused_lane is not None and self._main_stash is not None:
+            current = next((s for s in self._main_stash if s.id == block.id), None)
+        else:
+            current = self._blocks.get(block.id)
+        if isinstance(current, DelegateSummaryBlock) and current.expanded:
+            return block.model_copy(update={"expanded": True})
+        return block
+
+    def replace(
+        self, block: TranscriptBlock, *, preserve_expansion: bool = True
+    ) -> None:
         """Swap a block's content in place, keyed by its stable id.
+
+        ``preserve_expansion=False`` is for explicit user toggles (the
+        archive activate path) — data replaces from the reducer keep the
+        default and never collapse an opened summary.
 
         While a lane is focused the replace addresses the stashed parent
         list — the focused child transcript is a read-only snapshot.
         """
+        if preserve_expansion:
+            block = self._preserve_expansion(block)
         if self._focused_lane is not None and self._main_stash is not None:
             for index, stashed in enumerate(self._main_stash):
                 if stashed.id == block.id:
