@@ -298,9 +298,7 @@ def offline_workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
     project = root / "proj"
     bundles = project / ".amplifier" / "bundles"
     bundles.mkdir(parents=True)
-    (bundles / "offline.md").write_text(
-        _BUNDLE_TEMPLATE.format(modules=modules), encoding="utf-8"
-    )
+    (bundles / "offline.md").write_text(_BUNDLE_TEMPLATE.format(modules=modules), encoding="utf-8")
 
     home = root / "home"
     home.mkdir()
@@ -388,8 +386,7 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
         await answer
 
         assert response == (
-            "Hello from the fake provider. "
-            "[{'success': True, 'output': 'wrote hello.txt'}]"
+            "Hello from the fake provider. [{'success': True, 'output': 'wrote hello.txt'}]"
         )
 
         events = _drain_kinds(runtime)
@@ -482,8 +479,7 @@ async def test_offline_steer_injected_at_provider_request_boundary(offline_env) 
         narrations = [
             e.block.get("text")
             for e in events
-            if e.kind == "content_block_end"
-            and e.block.get("demo_role") == "narration"
+            if e.kind == "content_block_end" and e.block.get("demo_role") == "narration"
         ]
         assert narrations == ["Applying steer: prefer short answers"]
 
@@ -536,9 +532,7 @@ async def test_session_directory_capability_is_live_and_restored(offline_env) ->
     shared = offline_env["project"].parent / "shared"
     runtime = await _started_runtime(offline_env["project"], mode="auto")
     try:
-        ok, detail = await runtime.update_session_directory(
-            "allowed", "add", str(shared)
-        )
+        ok, detail = await runtime.update_session_directory("allowed", "add", str(shared))
         assert ok and "session scope" in detail
         assert runtime.directory_policy is not None
         assert runtime.directory_policy.check_write(shared / "ok.txt")[0]
@@ -585,6 +579,36 @@ def test_strip_printing_hooks_removes_line_mode_printers() -> None:
     _strip_printing_hooks(plan)
     assert [h["module"] for h in plan["hooks"]] == ["hooks-approval", "hooks-mode"]
     _strip_printing_hooks({})  # tolerates missing/odd shapes
+
+
+def test_suppressed_hooks_setting_defaults_and_union() -> None:
+    """Copies the ``write_boundary_setting`` resolver pattern: the built-in
+    default set is always present, and a user ``hooks.suppress`` list is
+    unioned in (junk shapes fall back to defaults, blanks are stripped)."""
+    from amplifier_app_newtui.kernel.runtime import (
+        _SUPPRESSED_HOOKS_DEFAULT,
+        suppressed_hooks_setting,
+    )
+
+    assert _SUPPRESSED_HOOKS_DEFAULT == frozenset(
+        {
+            "hooks-streaming-ui",
+            "hooks-todo-display",
+            "hooks-insight-blocks",
+            "hooks-inline-blocks",
+            "hooks-logging",
+        }
+    )
+    assert suppressed_hooks_setting({}) == _SUPPRESSED_HOOKS_DEFAULT
+    assert suppressed_hooks_setting({"hooks": "junk"}) == _SUPPRESSED_HOOKS_DEFAULT
+    assert (
+        suppressed_hooks_setting({"hooks": {"suppress": "not-a-list"}}) == _SUPPRESSED_HOOKS_DEFAULT
+    )
+
+    resolved = suppressed_hooks_setting({"hooks": {"suppress": ["hooks-custom", ""]}})
+    assert "hooks-custom" in resolved
+    assert "" not in resolved
+    assert _SUPPRESSED_HOOKS_DEFAULT <= resolved
 
 
 def test_restored_history_extracts_prose_and_skips_tool_traffic() -> None:

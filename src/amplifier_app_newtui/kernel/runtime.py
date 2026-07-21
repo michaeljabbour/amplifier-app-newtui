@@ -105,6 +105,33 @@ live: the whole turn rendered blank in real mode. Stripped for the
 headless ``run`` subcommand too, where the same printers double-echo.
 """
 
+_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging"})
+"""Built-in default set of hook module ids suppressed at mount time.
+
+The four line-mode printers write raw ANSI (cursor moves, line erases)
+that corrupts the full-screen TUI; ``hooks-logging`` (composed in
+transitively via an anchors ``include``) double-writes the app-owned
+``events.jsonl``. Settings-extensible via ``suppressed_hooks_setting``
+below — user ``hooks.suppress`` entries are unioned in, never replace
+this baseline.
+"""
+
+
+def suppressed_hooks_setting(settings: dict[str, Any]) -> frozenset[str]:
+    """Resolve the suppressed-hooks set from merged settings.
+
+    Copies the ``write_boundary_setting`` resolver pattern
+    (``kernel/directory_permissions.py``): the built-in default is always
+    present, and a well-shaped ``hooks.suppress`` list is unioned in.
+    Junk shapes (missing/non-dict ``hooks``, non-list ``suppress``) fall
+    back to the default set alone; blank entries are stripped.
+    """
+    hooks = settings.get("hooks")
+    raw = hooks.get("suppress") if isinstance(hooks, dict) else None
+    if not isinstance(raw, list):
+        return _SUPPRESSED_HOOKS_DEFAULT
+    return _SUPPRESSED_HOOKS_DEFAULT | {str(item).strip() for item in raw if str(item).strip()}
+
 
 def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
     """Simplified (role, text) pairs from a stored transcript for replay.
