@@ -623,3 +623,44 @@ tools over speculating. This surface renders a supported Markdown subset:
 - Expand only when the user asks or correctness requires the detail.
 """
     assert contract in text
+
+
+# -- bare-name resolution + graceful fallback (Samuel's feedback, 2026-07-21) --
+
+
+def test_packaged_anchors_pointer_resolves_and_matches_the_wrapper_pin() -> None:
+    """`bundle.active: anchors` (a valid app-cli default) must resolve in
+    newtui too — a packaged pointer at the same pinned foundation SHA."""
+    import re
+
+    paths = bundle_search_paths(Path("/nonexistent-proj"), Path("/nonexistent-home"))
+    uri = discover_bundle("anchors", paths)
+    assert uri is not None and uri.endswith("anchors.md")
+    newtui_uri = discover_bundle("newtui", paths)
+    assert newtui_uri is not None
+    pin = re.search(r"amplifier-foundation@([0-9a-f]{40})", Path(newtui_uri).read_text())
+    assert pin is not None
+    assert f"amplifier-foundation@{pin.group(1)}" in Path(uri).read_text()
+
+
+def test_settings_bundle_falls_back_to_default_with_notice(tmp_path: Path) -> None:
+    """A settings-configured bundle that can't resolve must degrade to the
+    packaged default with a loud notice — not kill the boot ('session
+    failed to start · Bundle 'x' not found')."""
+    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+
+    paths = bundle_search_paths(tmp_path, tmp_path / "home")
+    name, uri, notice = resolve_bundle_source(
+        None, {"bundle": {"active": "missing-bundle"}}, paths
+    )
+    assert name == DEFAULT_BUNDLE
+    assert uri.endswith("newtui.md")
+    assert notice is not None and "missing-bundle" in notice and DEFAULT_BUNDLE in notice
+
+
+def test_explicit_bundle_flag_still_fails_loud(tmp_path: Path) -> None:
+    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+
+    paths = bundle_search_paths(tmp_path, tmp_path / "home")
+    with pytest.raises(BundleNotFoundError):
+        resolve_bundle_source("missing-bundle", {}, paths)

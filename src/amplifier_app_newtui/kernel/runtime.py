@@ -383,6 +383,10 @@ class RealRuntime:
         _apply_hook_suppression(
             resolved.mount_plan, self.bridge.emit, suppressed_hooks_setting(resolved.settings)
         )
+        if resolved.fallback_notice:
+            # A settings-configured bundle failed discovery — the boot
+            # continued on the app default; tell the user loudly.
+            self.bridge.emit(Notification(message=resolved.fallback_notice))
         self._resolved = resolved
         self.compaction = compaction_config(resolved.mount_plan)
         # Live pricing (BACKLOG item 1, behind settings ``pricing.live``,

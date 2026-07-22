@@ -533,6 +533,38 @@ def discover_bundle(name: str, search_paths: tuple[Path, ...] | list[Path]) -> s
     return None
 
 
+def resolve_bundle_source(
+    bundle: str | None,
+    settings: dict[str, Any],
+    search_paths: tuple[Path, ...] | list[Path],
+) -> tuple[str, str, str | None]:
+    """Resolve which bundle to boot: explicit arg → settings → default.
+
+    An explicit *bundle* argument that can't resolve raises — the caller
+    asked for it by name. A settings-configured bundle that can't resolve
+    degrades to :data:`DEFAULT_BUNDLE` with a notice (third element) so a
+    settings file shared with another amplifier app never kills the boot
+    (field report: ``bundle.active: anchors`` → "session failed to start").
+    """
+    name = bundle or active_bundle_name(settings) or DEFAULT_BUNDLE
+    uri = discover_bundle(name, search_paths)
+    notice: str | None = None
+    if uri is None and bundle is None and name != DEFAULT_BUNDLE:
+        notice = (
+            f"bundle '{name}' not found — started '{DEFAULT_BUNDLE}' instead "
+            f"(amplifier-newtui bundle list shows options)"
+        )
+        name = DEFAULT_BUNDLE
+        uri = discover_bundle(name, search_paths)
+    if uri is None:
+        available = ", ".join(list_available_bundles(search_paths)) or "none"
+        raise BundleNotFoundError(
+            f"Bundle '{name}' not found in project, user, or packaged "
+            f"bundle paths. Available bundles: {available}"
+        )
+    return name, uri, notice
+
+
 def list_available_bundles(search_paths: tuple[Path, ...] | list[Path]) -> tuple[str, ...]:
     """Names discoverable across all search paths (for error messages)."""
     names: list[str] = []
@@ -579,6 +611,9 @@ class ResolvedConfig:
     mount_plan: dict[str, Any]
     overlays: tuple[str, ...] = field(default=())
     project_dir: Path = field(default_factory=Path.cwd)
+    fallback_notice: str | None = None
+    """Set when a settings-configured bundle failed discovery and the app
+    default was booted instead — the runtime surfaces it as a Notification."""
 
 
 async def resolve_config(
@@ -614,15 +649,8 @@ async def resolve_config(
     settings = load_merged_settings(SettingsPaths.default(project_dir, amplifier_home))
 
     # 2. Bundle discovery.
-    bundle_name = bundle or active_bundle_name(settings) or DEFAULT_BUNDLE
     search_paths = bundle_search_paths(project_dir, amplifier_home)
-    uri = discover_bundle(bundle_name, search_paths)
-    if uri is None:
-        available = ", ".join(list_available_bundles(search_paths)) or "none"
-        raise BundleNotFoundError(
-            f"Bundle '{bundle_name}' not found in project, user, or packaged "
-            f"bundle paths. Available bundles: {available}"
-        )
+    bundle_name, uri, fallback_notice = resolve_bundle_source(bundle, settings, search_paths)
 
     # 3. Foundation lifecycle: load → compose overlays → prepare() ONCE.
     from amplifier_foundation import load_bundle  # lazy: keep module import light
@@ -673,6 +701,7 @@ async def resolve_config(
         mount_plan=mount_plan,
         overlays=overlays,
         project_dir=project_dir,
+        fallback_notice=fallback_notice,
     )
 
 
@@ -715,5 +744,6 @@ __all__ = [
     "map_provider_ids_to_instance_ids",
     "overlay_uris",
     "packaged_bundles_dir",
+    "resolve_bundle_source",
     "resolve_config",
 ]
