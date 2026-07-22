@@ -643,6 +643,11 @@ class RealRuntime:
             on_blocked=self._governance_blocked,
         )
         initialized.unregister_handles.append(governance.register_hooks(hooks))
+        # Child lanes inherit the SAME governance instance so a gated posture
+        # (plan/careful) blocks the same actions in a lane as in the root
+        # (issue #38: children previously bypassed TUI posture gating). One
+        # live mode() source — no per-child teardown on a mode change.
+        spawner.set_governance_hook(governance)
         # hooks-approval owns bundle-mode ask/allow-always policy. The app's
         # broker is its presentation provider as well as governance's asker.
         self._register_approval_provider(initialized)

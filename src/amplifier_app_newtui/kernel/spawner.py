@@ -70,7 +70,13 @@ _RESULT_MAX_CHARS = 240
 
 
 class Tracker(Protocol):
-    """The shared hook-tracker surface the spawner re-attaches to children."""
+    """A hook surface the spawner re-attaches to child coordinators.
+
+    Both the telemetry trackers (lanes/cost stay lit on children) and the
+    app's trust ``GovernanceHook`` share this one shape: ``register_hooks``
+    installs handlers on a coordinator's hook bus and returns the unregister
+    callback the spawner runs on unwind.
+    """
 
     def register_hooks(self, hooks: Any, *, priority: int = ...) -> Callable[[], None]: ...
 
@@ -97,6 +103,7 @@ class SessionSpawner:
         trackers: Sequence[Tracker] = (),
         approval_system: Any | None = None,
         display_system: Any | None = None,
+        governance_hook: Tracker | None = None,
         max_depth: int = DEFAULT_MAX_DEPTH,
         id_generator: Callable[[str, str], str] = generate_sub_session_id,
     ) -> None:
@@ -106,6 +113,7 @@ class SessionSpawner:
         self._trackers = tuple(trackers)
         self._approval_system = approval_system
         self._display_system = display_system
+        self._governance_hook = governance_hook
         self._max_depth = max_depth
         self._id_generator = id_generator
         self._briefs: dict[str, str] = {}
@@ -124,6 +132,19 @@ class SessionSpawner:
         capability — MUST run after ``create_session`` and before
         ``execute`` (integration-guide timing contract)."""
         coordinator.register_capability(SPAWN_CAPABILITY, self.spawn)
+
+    def set_governance_hook(self, hook: Tracker | None) -> None:
+        """Attach the app's trust ``GovernanceHook`` so child lanes inherit
+        the TUI's posture gating (issue #38: children bypassed it — native
+        approval inheritance applied, but careful/plan never reached lanes).
+
+        The runtime builds the hook AFTER this spawner (it needs the root
+        session id), so the wire-up is post-construction. The same instance
+        is re-registered on every child coordinator's hook bus at spawn time
+        and torn down on unwind — one live ``mode()`` source, so a mode
+        change in the root gates in-flight lanes with no session teardown.
+        """
+        self._governance_hook = hook
 
     def brief_for(self, agent_name: str) -> str:
         """The latest recorded delegate brief for *agent_name* ("" unknown)."""
@@ -218,6 +239,14 @@ class SessionSpawner:
         unregisters: list[Callable[[], None]] = []
         hooks = child_coordinator.get("hooks")
         if hooks is not None:
+            # Governance first, high precedence: the child lane inherits the
+            # root's live trust posture so a gated mode (plan/careful) blocks
+            # the SAME actions in the lane as in the root (issue #38). Native
+            # approval inheritance already flowed; the TUI's own posture did
+            # not. Registered before the telemetry trackers so it settles a
+            # tool:pre before any display hook paints it.
+            if self._governance_hook is not None:
+                unregisters.append(self._governance_hook.register_hooks(hooks))
             for tracker in self._trackers:
                 unregisters.append(tracker.register_hooks(hooks))
         child_coordinator.register_capability(DEPTH_CAPABILITY, depth)
@@ -229,6 +258,11 @@ class SessionSpawner:
             child_coordinator,
             ("mention_resolver", "mention_deduplicator"),
         )
+        # Runtime skill overlays (issue #38): skills loaded into the root at
+        # runtime live under the parent coordinator's runtime_skill_overlay
+        # capability; copy the list onto the child so a delegated agent sees
+        # the same runtime-loaded skills (reference: session_spawn_inprocess).
+        _inherit_skill_overlays(parent_coordinator, child_coordinator)
         await _seed_child_context(child_coordinator, overlay, parent_messages)
 
         parent_cancellation = getattr(parent_coordinator, "cancellation", None)
@@ -447,6 +481,37 @@ def _inherit_capabilities(
             register(name, value)
         except Exception:
             logger.debug("capability inheritance failed: %s", name, exc_info=True)
+
+
+def _inherit_skill_overlays(parent_coordinator: Any, child_coordinator: Any) -> None:
+    """Copy the parent's runtime skill-overlay list onto the child.
+
+    Skills loaded into the root at runtime are recorded on the parent
+    coordinator under foundation's ``runtime_skill_overlay`` capability (a
+    ``list[str]`` of skill keys/paths). The child config is a static mount
+    plan, so without this a delegated agent never sees a skill the user
+    loaded mid-run. Copies the list by value (never shares the parent's
+    mutable list) and registers it before ``execute`` so tool-skills /
+    hooks-mode read it while the child runs. Best-effort — never raises.
+    Reference: amplifier-app-cli ``session_spawn_inprocess.py``.
+    """
+    from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
+
+    get_capability = getattr(parent_coordinator, "get_capability", None)
+    register = getattr(child_coordinator, "register_capability", None)
+    if not callable(get_capability) or not callable(register):
+        return
+    overlays: Any = None
+    try:
+        overlays = get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY)
+    except Exception:
+        overlays = None
+    if not overlays:
+        return
+    try:
+        register(RUNTIME_SKILL_OVERLAY_CAPABILITY, list(overlays))
+    except Exception:
+        logger.debug("skill overlay inheritance failed", exc_info=True)
 
 
 async def _seed_child_context(
