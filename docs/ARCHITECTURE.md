@@ -197,9 +197,12 @@ the *only* place demo and real diverge.
 2. **Suppress noisy hooks.** Any line-mode stdout hook (e.g. `hooks-streaming-ui`) would
    corrupt the Textual screen; `_apply_hook_suppression()` strips them (plus `hooks-logging`,
    which would double-write the app-owned `events.jsonl`, and `hooks-notify`, whose raw
-   OSC-777/BEL stdout escapes corrupt the full-screen TUI — a TUI-native re-emit is planned
-   via the hook-output adapter) from the mount plan at boot, emits a notice naming what was
-   removed, and honours the `hooks.suppress` settings key for user extensions.
+   OSC-777/BEL stdout escapes corrupt the full-screen TUI — the app rings Textual's
+   driver-safe bell instead via the `ui/app_support` attention-bell policy) from the mount
+   plan at boot, emits a notice naming what was removed, and honours the `hooks.suppress`
+   settings key for user extensions. `hooks-insight-blocks`/`hooks-inline-blocks` are *not*
+   suppressed: they inject instructions (no stdout), and the transcript renders their
+   blockquote callouts natively behind a `▌` gutter.
 3. **`create_initialized_session()`** (`kernel/session_factory.py`) — the canonical order:
    mint/accept a session id → stamp root metadata into the mount plan (fill-only, so child
    sessions inherit) → `create_session` (foundation mounts modules) → register
