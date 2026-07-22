@@ -97,6 +97,13 @@ IGNORED_EVENTS: frozenset[str] = frozenset(
         # pair is engine-internal detail.
         "context:pre_compact",
         "context:post_compact",
+        # Module-contributed informational events observed steady-state in
+        # real sessions (canary graduation, 2026-07-22): memory-hook
+        # bookkeeping and mention resolution carry no UI-worthy payload.
+        "memory:briefing_skipped",
+        "memory:drawer_filed",
+        "memory:interject_skipped",
+        "mentions:resolved",
     }
 )
 """Hook events the app deliberately leaves unbridged — exempt from the
