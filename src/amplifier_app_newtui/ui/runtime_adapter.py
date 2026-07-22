@@ -53,6 +53,8 @@ class RuntimeAdapter:
         self.denial_log = DenialLog()
         self.app: Any = None
         self.bundle_name: str = ""
+        self.model_name: str = ""
+        """Primary model id, possibly provider-qualified (``anthropic/x``)."""
         self.session_short: str = ""
         self.banner: tuple[str, str] = ("", "")
         self.session_cost_start: Decimal = Decimal("0")
@@ -267,6 +269,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         await started  # runtime.start() finished (or raised) on its thread
         runtime = self._runtime
         self.bundle_name = runtime.bundle_name
+        self.model_name = runtime.model_name
         self.session_short = runtime.session_short
         self.banner = runtime.banner
         self.session_cost_start = runtime.session_cost_start

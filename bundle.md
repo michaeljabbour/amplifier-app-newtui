@@ -8,10 +8,11 @@ bundle:
     default: streaming orchestrator, 300k context, standard tool roster with
     tool-delegate subagents, and six bundle-local agents) and overlays only
     what the TUI needs: a default provider so fresh installs boot, tool-mcp,
-    tool-team-pulse, and the terminal response contract. The TUI renders
-    everything itself; printing hooks composed in via anchors and the
-    double-writing hooks-logging are suppressed at boot by the app kernel
-    (built-in suppression list + the `hooks.suppress` setting).
+    tool-team-pulse, hooks-notify-push, and the terminal response contract.
+    The TUI renders everything itself; printing hooks composed in via
+    anchors, the double-writing hooks-logging, and the OSC/BEL-writing
+    hooks-notify are suppressed at boot by the app kernel (built-in
+    suppression list + the `hooks.suppress` setting).
 
 includes:
   # anchors, pinned to a specific amplifier-foundation commit.
@@ -57,6 +58,19 @@ tools:
       skills:
         - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
         - "~/.amplifier/skills"
+
+hooks:
+  # Unattended-session push notifications via ntfy.sh — a clean HTTP
+  # side-channel (aiohttp POST, no stdout, TUI-safe). No-op unless
+  # configured: without AMPLIFIER_NTFY_TOPIC in the environment, mount()
+  # disables itself with a log warning. listen_event is pinned to the raw
+  # orchestrator:complete event because the default (notify:turn-complete)
+  # is emitted by hooks-notify, which the app kernel suppresses at boot
+  # (raw OSC-777/BEL stdout corrupts the full-screen Textual TUI).
+  - module: hooks-notify-push
+    source: git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=modules/hooks-notify-push
+    config:
+      listen_event: "orchestrator:complete"
 ---
 
 # Amplifier NewTUI Bundle
@@ -70,8 +84,11 @@ tool roster (including `tool-delegate` subagents), hooks, and the six
 bundle-local agents all come from the composed `anchors` bundle above. This
 file overlays only the default provider, two TUI-specific tools, and the
 terminal response contract below (which composes alongside anchors'
-system.md). Printing hooks and `hooks-logging` composed in via anchors are
-stripped at boot by the app kernel's suppressed-hooks mechanism.
+system.md). Printing hooks, `hooks-logging`, and the OSC/BEL-writing
+`hooks-notify` composed in via anchors are stripped at boot by the app
+kernel's suppressed-hooks mechanism; the wrapper's own `hooks-notify-push`
+(ntfy HTTP push) survives it — a stdout-free side-channel that no-ops
+unless `AMPLIFIER_NTFY_TOPIC` is set.
 
 A packaged copy ships inside the wheel at
 `amplifier_app_newtui/data/bundles/newtui.md` (lowest-precedence search

@@ -61,6 +61,11 @@ async def test_mode_badge_click_cycles() -> None:
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         assert app.mode_id == "auto"  # boot posture (§4 amendment)
+        # The demo footer's identity segment wraps the hints onto a second
+        # row at 120 cols; wait for that reflow so the badge's coordinates
+        # are final before clicking (the click computes them up front).
+        await pilot.pause()
+        await pilot.pause()
         await pilot.click(ModeBadge)
         await pilot.pause()
         assert app.mode_id == "chat"  # auto wraps to chat in the cycle

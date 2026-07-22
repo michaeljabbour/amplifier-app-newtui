@@ -205,7 +205,7 @@ def resolve_capability(mode: str, capability: CapabilityClass) -> TrustDecision:
         return TrustDecision(
             decision="ask",
             capability=capability,
-            reason=f"{capability.value} has real downside · classifier-gated",
+            reason=f"{capability.value} has real downside · asks if risky",
             classifier_gated=True,
         )
     policy = _MODE_POLICY.get(mode, _MODE_POLICY["chat"])

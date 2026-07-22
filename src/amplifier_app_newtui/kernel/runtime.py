@@ -92,8 +92,6 @@ _PRINTING_HOOKS = frozenset(
     {
         "hooks-streaming-ui",  # green "Amplifier:" line-mode streaming printer
         "hooks-todo-display",  # todo-table stdout printer
-        "hooks-insight-blocks",  # insight-panel stdout printer
-        "hooks-inline-blocks",  # inline-panel stdout printer
     }
 )
 """Line-mode stdout printers (composed in by app-level bundle overlays).
@@ -104,17 +102,30 @@ them in transitively, and a hook writing raw ANSI (cursor moves, line
 erases) under the full-screen TUI corrupts the Textual screen — found
 live: the whole turn rendered blank in real mode. Stripped for the
 headless ``run`` subcommand too, where the same printers double-echo.
+
+``hooks-insight-blocks`` / ``hooks-inline-blocks`` used to be listed
+here as "panel stdout printers" — that was wrong. Reading the cached
+modules: both are pure ``inject_context`` instruction hooks
+(``session:start`` / ``prompt:submit``) that teach the model to emit
+★ insight / ✂ MJ callouts as Markdown blockquotes in its OWN prose;
+they write nothing to stdout. Suppressing them only severed the callout
+channel. They now mount normally, and the transcript renders their
+blockquote callouts behind a ``▌`` gutter (``ui/live_tail.answer_spans``).
 """
 
-_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging"})
+_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging", "hooks-notify"})
 """Built-in default set of hook module ids suppressed at mount time.
 
-The four line-mode printers write raw ANSI (cursor moves, line erases)
+The line-mode printers write raw ANSI (cursor moves, line erases)
 that corrupts the full-screen TUI; ``hooks-logging`` (composed in
 transitively via an anchors ``include``) double-writes the app-owned
-``events.jsonl``. Settings-extensible via ``suppressed_hooks_setting``
-below — user ``hooks.suppress`` entries are unioned in, never replace
-this baseline.
+``events.jsonl``; ``hooks-notify`` writes raw OSC-777/BEL escape
+sequences straight to stdout (or the TTY device), which corrupts the
+full-screen Textual TUI the same way the printers do — the app rings
+Textual's own driver-safe bell instead (``ui/app_support``
+attention-bell policy). Settings-extensible via
+``suppressed_hooks_setting`` below — user ``hooks.suppress`` entries
+are unioned in, never replace this baseline.
 """
 
 
@@ -372,6 +383,10 @@ class RealRuntime:
         _apply_hook_suppression(
             resolved.mount_plan, self.bridge.emit, suppressed_hooks_setting(resolved.settings)
         )
+        if resolved.fallback_notice:
+            # A settings-configured bundle failed discovery — the boot
+            # continued on the app default; tell the user loudly.
+            self.bridge.emit(Notification(message=resolved.fallback_notice))
         self._resolved = resolved
         self.compaction = compaction_config(resolved.mount_plan)
         # Live pricing (BACKLOG item 1, behind settings ``pricing.live``,

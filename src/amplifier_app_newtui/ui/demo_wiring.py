@@ -23,6 +23,7 @@ from ..kernel.demo import (
     DEMO_DEFERRED_DECISION,
     DEMO_EVIDENCE,
     DEMO_LANE_BY_NAME,
+    DEMO_MODEL,
     DEMO_SESSION_COST_START,
     DEMO_SESSION_ID,
     DEMO_SESSION_SHORT,
@@ -160,6 +161,7 @@ class DemoRuntimeAdapter(RuntimeAdapter):
     def __init__(self, *, instant: bool = False) -> None:
         super().__init__()
         self.bundle_name = DEMO_BUNDLE
+        self.model_name = DEMO_MODEL
         self.session_short = DEMO_SESSION_SHORT
         self.banner = DEMO_BANNER
         # Session cost accumulates per turn (mockup ``this.cost += turnCost``);

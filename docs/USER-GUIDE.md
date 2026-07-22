@@ -114,7 +114,7 @@ Cycle with **shift+tab**, or jump with `/mode <name>`, `/plan`, `/brainstorm`.
 | plan | **read-only** — non-read tools blocked | exploring and planning |
 | brainstorm | **no tools** — pure text | divergent thinking |
 | build | auto read/test; ask write/net/spend/exec/outside-project | hands-on work |
-| **auto** *(default)* | auto read/write/test; classifier-gated boundaries | Amplifier's natural wide scope |
+| **auto** *(default)* | auto read/write/test; asks if risky at boundaries | Amplifier's natural wide scope |
 
 The app's posture gate is an Amplifier `tool:pre` hook: it resolves the trust slots shown by
 `/permissions`, denies-and-continues when a capability is blocked, and sends asks through

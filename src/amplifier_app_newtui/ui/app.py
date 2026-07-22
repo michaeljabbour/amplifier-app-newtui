@@ -180,6 +180,7 @@ class NewTuiApp(App[None]):
         self._selection_timer: Any = None  # copy-on-select debounce
         self._last_selection_copied = ""  # suppress duplicate auto-copies
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
+        self._turn_started_at: float | None = None  # attention-bell elapsed basis
         self.esc_sequence = app_support.EscSequence()
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
@@ -190,6 +191,9 @@ class NewTuiApp(App[None]):
         self.live_tail = LiveTail(id="live-tail")
         self.notice_slot = NoticeSlot(id="notice-slot")
         self.palette = PaletteStrip(self._commands.specs, id="palette-strip")
+        # Open registry (story #2): any runtime registration — skills at
+        # boot, recipe/pipeline verbs later — re-feeds the palette rows.
+        self._commands.subscribe(self._sync_palette_commands)
         self.lanes_panel = LanesPanel(id="lanes-panel")
         self.plan_panel = PlanPanel(id="plan-panel")
         self.rewind = RewindStrip(id="rewind-strip")
@@ -275,6 +279,7 @@ class NewTuiApp(App[None]):
         try:
             await self.adapter.start(lambda: app_support.announce_ready(self))
             self.file_mentions.set_files(await self.adapter.workspace_files())
+            self._register_skill_commands(await self.adapter.list_skills())
         except Exception as error:  # boot failed — show why, don't crash out
             # (CancelledError/KeyboardInterrupt stay uncaught: a real
             # shutdown mid-boot must not read as "session failed to start".)
@@ -535,6 +540,21 @@ class NewTuiApp(App[None]):
             Answer(id=self.allocator.next_id(), spans=diff_spans(patch, staged=staged))
         )
 
+    def _sync_palette_commands(self) -> None:
+        """Registry subscriber: every successful register/unregister
+        re-feeds the palette rows — palette and help stay a live
+        reflection of the ONE registry (story #2)."""
+        self.palette.set_commands(self._commands.specs)
+
+    def _register_skill_commands(self, skills: tuple[Any, ...]) -> None:
+        """Discovered skills (+ ``shortcut:`` aliases) become
+        ``skill``-sourced registry contributions, so ``/cosam`` resolves
+        in dispatch before the unknown-command notice (story #1); the
+        palette follows via the registry subscription."""
+        from ..commands.skills import register_skill_commands
+
+        register_skill_commands(self._commands, skills)
+
     def show_skills(self) -> None:
         self.run_worker(self._show_skills(), exclusive=False)
 
@@ -604,6 +624,7 @@ class NewTuiApp(App[None]):
 
     def turn_started(self) -> None:
         self.turn_active = True
+        self._turn_started_at = time.monotonic()
         self.composer.running = True
         self.title_bar.running = True
         # 1s heartbeat: pulse the working line's spinner and (real turns)
@@ -627,6 +648,15 @@ class NewTuiApp(App[None]):
         # array — a checkpoint cut while the picker is open is
         # immediately navigable with › (spec §9).
         self.rewind.sync_checkpoints(self.ledger.checkpoints)
+        # Attention signal for the suppressed hooks-notify (raw OSC/BEL would
+        # corrupt Textual): ring the driver-safe bell after long turns only —
+        # policy + rationale in app_support.attention_bell_needed.
+        elapsed = (
+            0.0 if self._turn_started_at is None else time.monotonic() - self._turn_started_at
+        )
+        self._turn_started_at = None
+        if app_support.attention_bell_needed("turn_finished", elapsed):
+            self.bell()
         self.refresh_status()
 
     def lanes_changed(self) -> None:
@@ -664,6 +694,9 @@ class NewTuiApp(App[None]):
         self.adapter.needs_you.defer(
             question, reason, choices=choices, highlight=highlight, action=action
         )
+        # A deferred decision blocks on the human: always worth the bell.
+        if app_support.attention_bell_needed("decision_deferred"):
+            self.bell()
         self._refresh_footer()
 
     def stream_opened(self, block_type: str) -> None:
@@ -761,8 +794,14 @@ class NewTuiApp(App[None]):
                 self._commands.run(selected.name, self._ctx)
                 self._refresh_footer()
                 return
-            # Mockup onKeyDown Enter: with zero palette matches the slash
-            # text falls through and is sent as a normal user turn (§5/§6).
+            # Story #1 amendment to the mockup: zero matches no longer
+            # falls through as chat — an unrecognized /command costs a
+            # notice, never a silent provider turn. Skills + shortcuts
+            # registered at boot resolve above via parse_and_run.
+            name = text.split(maxsplit=1)[0]
+            self.show_notice(f"unknown command: {name} · / lists commands")
+            self._refresh_footer()
+            return
         self.submit_prompt(text, message.attachments)
 
     def on_composer_paste_image(self, message: Composer.PasteImage) -> None:

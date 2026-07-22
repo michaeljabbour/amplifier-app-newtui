@@ -1,7 +1,7 @@
 """Footer status bar (DESIGN-SPEC §2 item 6).
 
-Left segment: ``mode <mode>`` (mode color) ``· <trust> · <bundle> ·
-<session-short> · $<cost>`` — segment text dim, the inline ``·``
+Left segment: ``mode <mode>`` (mode color) ``· <trust> · bundle <bundle> ·
+<model> · <session-short> · $<cost>`` — segment text dim, the inline ``·``
 separators dimmer (mockup: each is its own ``--dimmer`` span) — plus
 the green ``▲`` yield glyph when the
 last turn shipped and an orange ``· q1`` when a next-turn message is
@@ -52,6 +52,11 @@ class FooterState(BaseModel):
 
     mode_id: ModeId = "chat"
     bundle: str = ""
+    """Bundle name — painted with a ``bundle `` label (story #4: the footer
+    speaks human; a bare ``newtui`` reads as noise)."""
+    model: str = ""
+    """Primary model id, already bare (``claude-fable-5``, no provider
+    prefix) — its own dim part between the bundle and the session."""
     session_short: str = ""
     cost: Decimal = Field(default=Decimal("0"), ge=0)
     cost_estimated: bool = False
@@ -77,7 +82,12 @@ class FooterState(BaseModel):
 
 
 def _left_parts(
-    state: FooterState, *, trust: bool = True, bundle: bool = True, session: bool = True
+    state: FooterState,
+    *,
+    trust: bool = True,
+    bundle: bool = True,
+    model: bool = True,
+    session: bool = True,
 ) -> list[str]:
     """The left-segment parts, with decorative ones optionally dropped."""
     mode = get_mode(state.mode_id)
@@ -85,7 +95,9 @@ def _left_parts(
     if trust:
         parts.append(mode.trust_str)
     if bundle and state.bundle:
-        parts.append(state.bundle)
+        parts.append(f"bundle {state.bundle}")
+    if model and state.model:
+        parts.append(state.model)
     if session and state.session_short:
         parts.append(state.session_short)
     cost_part = f"{'~' if state.cost_estimated else ''}${state.cost:.2f}"
@@ -108,10 +120,13 @@ _FIT_LADDER: tuple[dict[str, bool], ...] = (
     {"trust": False},
     {"trust": False, "session": False},
     {"trust": False, "session": False, "bundle": False},
+    {"trust": False, "session": False, "bundle": False, "model": False},
 )
 """Decorations in drop order: trust posture (the mode chip keeps the id),
-then session id, then bundle. Mode, cost, queue and ``Plan n/m`` never drop
-— design D2's footer fallback only works if the plan count survives."""
+then session id, then bundle, then the model — the model is the identity
+users actually ask about, so it outlives the other decorations (story #4).
+Mode, cost, queue and ``Plan n/m`` never drop — design D2's footer
+fallback only works if the plan count survives."""
 
 
 def _fit_drops(state: FooterState, width: int) -> dict[str, bool]:
@@ -280,7 +295,9 @@ class FooterBar(Horizontal):
         if drops.get("trust", True):
             rest_parts.append(mode.trust_str)
         if drops.get("bundle", True) and state.bundle:
-            rest_parts.append(state.bundle)
+            rest_parts.append(f"bundle {state.bundle}")
+        if drops.get("model", True) and state.model:
+            rest_parts.append(state.model)
         if drops.get("session", True) and state.session_short:
             rest_parts.append(state.session_short)
         rest_parts.append(f"{'~' if state.cost_estimated else ''}${state.cost:.2f}")

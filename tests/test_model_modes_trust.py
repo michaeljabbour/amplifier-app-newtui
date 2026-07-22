@@ -28,7 +28,7 @@ def test_mode_table_matches_spec_exactly() -> None:
         "plan": ("blue", "read-only"),
         "brainstorm": ("teal", "no tools"),
         "build": ("green", "auto read,test · ask write,net,spend"),
-        "auto": ("orange", "auto read,write · classifier-gated"),
+        "auto": ("orange", "auto read,write · asks if risky"),
     }
     assert set(MODE_PROFILES) == set(expected)
     for mode_id, (color, trust) in expected.items():

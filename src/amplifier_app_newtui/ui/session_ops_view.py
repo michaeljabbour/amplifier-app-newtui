@@ -126,9 +126,14 @@ def skills_spans(skills: tuple[SkillInfo, ...]) -> tuple[Segment, ...]:
             ),
         )
     spans = _header("Skills", f"{len(skills)} available · /skill <name> loads one")
-    width = max(len(s.name) for s in skills)
+
+    def label(s: SkillInfo) -> str:
+        # A shortcut alias reads as its slash trigger (story #1: /cosam).
+        return f"{s.name} (/{s.shortcut})" if s.shortcut else s.name
+
+    width = max(len(label(s)) for s in skills)
     for skill in skills:
-        spans.append(Segment(text=f"  {skill.name.ljust(width)}  ", style_token="teal"))
+        spans.append(Segment(text=f"  {label(skill).ljust(width)}  ", style_token="teal"))
         desc = " ".join(skill.description.split())[:90]
         spans.append(Segment(text=f"{desc}\n", style_token="dim"))
     return tuple(spans)

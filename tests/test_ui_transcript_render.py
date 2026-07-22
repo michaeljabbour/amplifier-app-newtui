@@ -532,6 +532,24 @@ def test_answer_splits_newlines_and_keeps_span_styles() -> None:
     assert emphasis.style_token == "bright" and emphasis.bold
 
 
+def test_answer_blockquote_wraps_under_the_gutter() -> None:
+    """A long callout blockquote wraps like body text: gutter on the first
+    line, continuations hang under the quoted text (2 cells), everything
+    within width — never a verbatim overflow line."""
+    from amplifier_app_newtui.ui.live_tail import answer_spans
+
+    source = "> ★ **Insight:** " + " ".join(["insight"] * 12)
+    block = Answer(id="a-quote", spans=answer_spans(source))
+    lines = render_block(block, 40)
+    plains = [line_plain(line) for line in lines]
+    assert len(plains) > 1
+    assert plains[0].startswith("▌ ★ Insight:")
+    assert lines[0][0] == Segment(text="▌ ", style_token="blue")
+    for continuation in plains[1:]:
+        assert continuation.startswith("  ") and not continuation.startswith("   ")
+    assert all(cell_len(plain) <= 40 for plain in plains)
+
+
 def test_session_banner_focus_note_replaces_headline() -> None:
     banner = SessionBanner(
         id="x",

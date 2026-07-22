@@ -29,7 +29,7 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Static
 
-from ..model.blocks import Answer, Segment
+from ..model.blocks import GLYPH_QUOTE_GUTTER, Answer, Segment
 from ..model.evidence import EvidenceLink
 from .segments import segment_markup
 
@@ -50,6 +50,12 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _NUMBERED_RE = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:\-|]+\|?\s*$")
+_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
+"""Markdown blockquote line. The insight/machete callouts that the
+hooks-inline-blocks module (occams-machete bundle) teaches the model to
+emit are blockquotes — ``> ★ **Insight:** …`` / ``> ✂ **MJ:** …`` —
+because the line-mode CLI's Rich renderer frames them with a colored
+``▌`` gutter. This parser is that frame's TUI-native equivalent."""
 _TABLE_GRID_MAX_WIDTH = 96
 """Padded-grid tables wider than this fall back to a definition list —
 wrapped cells destroy column alignment (user screenshot, /about run)."""
@@ -167,19 +173,23 @@ def answer_spans(source: str) -> tuple[Segment, ...]:
     also carries block structure the mockup never had, rendered here so
     it doesn't leak raw (user report): ``#`` headings → bright bold,
     pipe tables → aligned columns with a dim rule, fenced code → teal
-    indented block (fence lines dropped), ``- `` bullets → ``• ``.
+    indented block (fence lines dropped), ``- `` bullets → ``• ``, and
+    ``> `` blockquotes → a colored ``▌`` gutter (the TUI-native frame for
+    the insight/machete callouts, matching the line-mode CLI's Rich edge).
     """
     spans: list[Segment] = []
     lines = source.split("\n")
     index = 0
     in_code = False
     in_list = False  # inside a run of consecutive bullet/numbered items
+    in_quote = False  # inside a run of consecutive `> ` blockquote lines
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
         if stripped.startswith(("```", "~~~")):
             if not in_code:
                 in_list = False
+                in_quote = False
                 _ensure_blank(spans)  # fenced code opens its own paragraph
                 in_code = True
             else:
@@ -199,12 +209,14 @@ def answer_spans(source: str) -> tuple[Segment, ...]:
             and _TABLE_SEP_RE.match(lines[index + 1])
         ):
             in_list = False
+            in_quote = False
             _ensure_blank(spans)
             index = _emit_table(spans, lines, index)
             _ensure_blank(spans)
             continue
         if heading := _HEADING_RE.match(line):
             in_list = False
+            in_quote = False
             _ensure_blank(spans)  # the blank before is what sets a heading off
             spans.append(Segment(text=heading.group(2), style_token="bright", bold=True))
             spans.append(Segment(text="\n"))
@@ -215,6 +227,7 @@ def answer_spans(source: str) -> tuple[Segment, ...]:
             if not in_list:
                 _ensure_blank(spans)
                 in_list = True
+            in_quote = False
             marker = f"{numbered.group(1)}{numbered.group(2)}. "
             spans.append(Segment(text=marker, style_token="dim"))
             spans.extend(_inline(numbered.group(3)))
@@ -225,14 +238,30 @@ def answer_spans(source: str) -> tuple[Segment, ...]:
             if not in_list:
                 _ensure_blank(spans)
                 in_list = True
+            in_quote = False
             spans.append(Segment(text=f"{bullet.group(1)}• ", style_token="dim"))
             spans.extend(_inline(bullet.group(2)))
+            spans.append(Segment(text="\n"))
+            index += 1
+            continue
+        if quote := _QUOTE_RE.match(line):
+            # Insight/machete callouts and any other blockquote: a colored
+            # left gutter frames the quote, inline emphasis still applies.
+            in_list = False
+            if not in_quote:
+                _ensure_blank(spans)  # a quote run reads as its own paragraph
+                in_quote = True
+            spans.append(Segment(text=GLYPH_QUOTE_GUTTER, style_token="blue"))
+            spans.extend(_inline(quote.group(1)))
             spans.append(Segment(text="\n"))
             index += 1
             continue
         if in_list:
             _ensure_blank(spans)  # a plain line closes the list run
             in_list = False
+        if in_quote:
+            _ensure_blank(spans)  # a plain line closes the quote run
+            in_quote = False
         spans.extend(_inline(line))
         spans.append(Segment(text="\n"))
         index += 1
