@@ -6,10 +6,13 @@ from pathlib import Path
 
 from amplifier_app_newtui.kernel.bundle_admin import settings_paths
 from amplifier_app_newtui.kernel.directory_permissions import (
+    WRITE_BOUNDARY_DEGRADE_NOTICE,
     DirectoryEntry,
     DirectoryPolicy,
     PROTECTED_PROJECT_PATHS,
     configured_entries,
+    filesystem_write_enforcer_present,
+    resolve_write_boundary,
     update_configured_path,
     write_boundary_setting,
 )
@@ -67,6 +70,46 @@ def test_write_boundary_setting_resolution() -> None:
     assert write_boundary_setting({"permissions": {"write_boundary": "guarded"}}) == "guarded"
     assert write_boundary_setting({"permissions": {"write_boundary": "bogus"}}) == "open"
     assert write_boundary_setting({"permissions": "not-a-dict"}) == "open"
+
+
+def _plan(*modules: str) -> dict[str, object]:
+    return {"tools": [{"module": name, "config": {}} for name in modules]}
+
+
+def test_filesystem_write_enforcer_present_detects_the_tool() -> None:
+    assert filesystem_write_enforcer_present(_plan("tool-bash", "tool-filesystem"))
+    assert not filesystem_write_enforcer_present(_plan("tool-bash"))
+    assert not filesystem_write_enforcer_present({})
+    assert not filesystem_write_enforcer_present({"tools": None})
+    # Junk entries never crash and never count as an enforcer.
+    assert not filesystem_write_enforcer_present({"tools": ["tool-filesystem", 3, None]})
+
+
+def test_resolve_write_boundary_open_stays_open_when_backed_by_tool() -> None:
+    """Audit H2 common case: default open + a mounted filesystem enforcer is
+    app-cli parity, unchanged, and raises no boot notice."""
+    boundary, notice = resolve_write_boundary({}, _plan("tool-filesystem"))
+    assert boundary == "open"
+    assert notice is None
+
+
+def test_resolve_write_boundary_degrades_open_when_no_enforcer() -> None:
+    """Audit H2 gap closed: open with no filesystem write-enforcer degrades to
+    the app-level guarded gate and announces it, instead of silently trusting a
+    non-existent tool."""
+    boundary, notice = resolve_write_boundary({}, _plan("tool-bash"))
+    assert boundary == "guarded"
+    assert notice == WRITE_BOUNDARY_DEGRADE_NOTICE
+    # An empty/absent plan degrades identically.
+    assert resolve_write_boundary({"permissions": {}}, {}) == ("guarded", WRITE_BOUNDARY_DEGRADE_NOTICE)
+
+
+def test_resolve_write_boundary_explicit_guarded_is_honored_silently() -> None:
+    """An explicit guarded choice is honored with no notice, whether or not a
+    filesystem tool is present (the user picked the app-level gate)."""
+    settings = {"permissions": {"write_boundary": "guarded"}}
+    assert resolve_write_boundary(settings, _plan("tool-filesystem")) == ("guarded", None)
+    assert resolve_write_boundary(settings, _plan("tool-bash")) == ("guarded", None)
 
 
 def test_shell_path_signal_respects_allowed_and_parent_escape(tmp_path: Path) -> None:
