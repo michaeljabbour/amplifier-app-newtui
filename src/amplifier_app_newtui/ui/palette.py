@@ -56,11 +56,12 @@ class CommandSpec(Protocol):
     - ``name``: the slash trigger, e.g. ``/mode``.
     - ``desc``: one-line description (field name matches
       ``commands.registry.CommandSpec``).
-    - ``tag``: right-aligned dimmer origin tag (``built-in``/``skill``).
+    - ``tag``: right-aligned dimmer origin tag (``built-in``, ``skill``,
+      or a dynamic contribution's own label — open registry, story #2).
     - ``group``: spec §6 group header (one of :data:`PALETTE_GROUPS`).
 
-    Read-only properties so narrower registry types (``Literal`` tags and
-    groups) satisfy the protocol.
+    Read-only properties so narrower registry types (``Literal`` groups)
+    satisfy the protocol.
     """
 
     @property
