@@ -25,6 +25,7 @@ from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme
 FULL_STATE = FooterState(
     mode_id="build",
     bundle="dev-bundle",
+    model="claude-fable-5",
     session_short="a1b2c3",
     cost=Decimal("0.87"),
     shipped=True,
@@ -40,8 +41,19 @@ FULL_STATE = FooterState(
 def test_left_text_full_state_exact() -> None:
     assert footer_left_text(FULL_STATE) == (
         "mode build · auto read,test · ask write,net,spend"
-        " · dev-bundle · a1b2c3 · $0.87 ▲ · q1"
+        " · bundle dev-bundle · claude-fable-5 · a1b2c3 · $0.87 ▲ · q1"
     )
+
+
+def test_left_text_labels_bundle_and_carries_model() -> None:
+    """Story #4 (status bar speaks human): the bundle is labeled as a
+    bundle — never a bare name — and the primary model is its own part."""
+    left = footer_left_text(FULL_STATE)
+    assert " · bundle dev-bundle · " in left
+    assert " · claude-fable-5 · " in left
+    # Empty identity fields leave no orphaned label behind.
+    bare = FooterState()
+    assert "bundle" not in footer_left_text(bare)
 
 
 def test_left_text_minimal_state() -> None:
@@ -64,7 +76,7 @@ def test_left_text_full_state_estimated_exact() -> None:
     state = FULL_STATE.model_copy(update={"cost_estimated": True})
     assert footer_left_text(state) == (
         "mode build · auto read,test · ask write,net,spend"
-        " · dev-bundle · a1b2c3 · ~$0.87 ▲ · q1"
+        " · bundle dev-bundle · claude-fable-5 · a1b2c3 · ~$0.87 ▲ · q1"
     )
 
 
@@ -135,7 +147,7 @@ def _plain(widget: Static) -> str:
 
 @pytest.mark.asyncio
 async def test_footer_renders_left_and_right_segments() -> None:
-    # Wide enough for FULL_STATE's 86-cell left segment — narrow-width
+    # Wide enough for FULL_STATE's full left segment — narrow-width
     # degradation has its own tests below.
     app = FooterApp()
     async with app.run_test(size=(120, 24)) as pilot:
@@ -178,9 +190,9 @@ async def test_footer_left_separators_use_dimmer_token() -> None:
             for span in content.spans
             if span.style == "$dimmer"
         ]
-        # mode·trust, trust·bundle, bundle·session, session·cost = 4 separators
-        # (the orange "· q1" queue badge separator is NOT dimmer).
-        assert dimmer_runs == [" · "] * 4
+        # mode·trust, trust·bundle, bundle·model, model·session, session·cost
+        # = 5 separators (the orange "· q1" queue badge separator is NOT dimmer).
+        assert dimmer_runs == [" · "] * 5
 
 
 @pytest.mark.asyncio
@@ -293,6 +305,33 @@ def test_footer_left_text_fit_drops_decorations_before_the_plan_count() -> None:
     assert footer_left_text_fit(state, 200) == full
 
 
+def test_footer_left_text_fit_model_outlives_bundle_and_session() -> None:
+    """Story #4 ladder: trust → session → bundle → model. The model is the
+    identity users actually ask about, so it survives longer than the
+    bundle/session decorations but still drops before cost and the plan."""
+    state = FooterState(
+        mode_id="auto",
+        bundle="anchors",
+        model="claude-fable-5",
+        session_short="e07d",
+        cost=Decimal("0.70"),
+        shipped=True,
+        plan_done=3,
+        plan_total=3,
+    )
+    # 60 cells: trust, session AND bundle have dropped — the model is still up.
+    fitted = footer_left_text_fit(state, 60)
+    assert cell_len(fitted) <= 60
+    assert "claude-fable-5" in fitted
+    assert "bundle" not in fitted and "e07d" not in fitted
+    # 40 cells: the model finally drops; mode/cost/plan never do.
+    tight = footer_left_text_fit(state, 40)
+    assert cell_len(tight) <= 40
+    assert "claude-fable-5" not in tight
+    assert tight.startswith("mode auto")
+    assert "$0.70" in tight and "Plan 3/3" in tight
+
+
 @pytest.mark.asyncio
 async def test_footer_narrow_width_paints_plan_not_clipped() -> None:
     app = FooterApp()
@@ -301,6 +340,7 @@ async def test_footer_narrow_width_paints_plan_not_clipped() -> None:
         state = FooterState(
             mode_id="auto",
             bundle="anchors",
+            model="claude-fable-5",
             session_short="e07d",
             cost=Decimal("0.70"),
             shipped=True,
@@ -311,4 +351,5 @@ async def test_footer_narrow_width_paints_plan_not_clipped() -> None:
         await pilot.pause()
         painted = _plain(app.query_one("#footer-left", Static))
         assert "Plan 3/3" in painted
+        assert "claude-fable-5" in painted  # the model outlives the trust drop
         assert cell_len(painted) <= 80

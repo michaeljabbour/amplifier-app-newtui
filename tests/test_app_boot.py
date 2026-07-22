@@ -13,6 +13,7 @@ import pytest
 
 from amplifier_app_newtui.kernel.demo import (
     DEMO_BANNER,
+    DEMO_MODEL,
     DEMO_SESSION_COST_START,
     DEMO_TURN_BY_KEY,
     SEED_PROMPT,
@@ -202,6 +203,22 @@ async def test_resume_cost_baseline_set_in_adapter_start_reaches_reducer() -> No
         assert app.reducer.session_cost == DEMO_SESSION_COST_START  # $0.57
         assert app.ledger.checkpoints[0].cost_at == DEMO_SESSION_COST_START
         assert app_support.footer_state(app).cost == DEMO_SESSION_COST_START
+
+
+def test_demo_adapter_advertises_demo_model() -> None:
+    """Story #4: the demo session has a model identity for the footer too."""
+    assert DemoRuntimeAdapter().model_name == DEMO_MODEL
+
+
+@pytest.mark.asyncio
+async def test_footer_state_carries_bare_model_name() -> None:
+    """Story #4: the adapter's provider-qualified model id reaches the
+    footer as the bare model name (``anthropic/x`` → ``x``)."""
+    adapter = RuntimeAdapter()
+    adapter.model_name = "anthropic/claude-fable-5"
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=(110, 40)):
+        assert app_support.footer_state(app).model == "claude-fable-5"
 
 
 @pytest.mark.asyncio

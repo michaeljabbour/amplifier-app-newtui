@@ -614,6 +614,9 @@ def footer_state(app: NewTuiApp) -> FooterState:
     return FooterState(
         mode_id=app.mode_id,  # type: ignore[arg-type]
         bundle=app.adapter.bundle_name,
+        # The adapter may carry a provider-qualified id ("anthropic/x");
+        # the footer speaks human and shows the bare model name (story #4).
+        model=app.adapter.model_name.rpartition("/")[2],
         session_short=app.adapter.session_short,
         cost=max(Decimal("0"), app.reducer.live_session_cost),
         cost_estimated=app.reducer.live_cost_estimated,
