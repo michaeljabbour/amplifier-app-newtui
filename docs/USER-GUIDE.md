@@ -312,7 +312,7 @@ subagent's own work. **esc** steps back out — first unfocusing the lane, then 
 panel; with nothing left open, esc interrupts the whole agent tree.
 
 The transcript itself keeps one **delegate summary** line per fan-out: `● 2 delegates
-running…` while work is in flight, then `● Used 2 delegates · Plan 3/4 · 1m 12s ›` when
+running…` while work is in flight, then `● Used 2 delegates · Plan 3/4 · 1m 12s ▸` when
 it settles. Click it (or focus it and press **enter**) to expand the agent tree in
 place — each agent's outcome glyph, elapsed time, and a snippet of its final answer,
 plus the final plan on one line. Click again to collapse.
