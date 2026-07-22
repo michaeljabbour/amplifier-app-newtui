@@ -13,3 +13,9 @@ docs/notes/
 .coverage
 .coverage.*
 htmlcov/
+.DS_Store
+.env
+.env.*
+*.log
+.idea/
+.vscode/

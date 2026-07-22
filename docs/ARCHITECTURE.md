@@ -402,7 +402,9 @@ over the running app — tests substitute a plain fake. Dedicated modules (`doct
 `improve.py`, `permissions.py`, …) keep command logic pure; `builtin.py` is glue.
 
 Groups and built-ins: **During** `/mode /modes /plan /brainstorm /context /status /model
-/effort /compact /clear /tools /agents /skills /skill /mcp` · **Parallel** `/tasks` ·
+/effort /compact /clear /tools /agents /skills /skill /mcp` — plus every discovered skill,
+which `commands/skills.py` registers additively into the During group as its own command
+(and `shortcut:` alias) · **Parallel** `/tasks` ·
 **Ship** `/ledger /export /copy /diff /about` · **Between** `/rewind /quit` ·
 **Repair** `/permissions /allowed-dirs /denied-dirs /doctor /improve /theme`.
 
