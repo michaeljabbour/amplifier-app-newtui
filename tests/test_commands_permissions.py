@@ -26,7 +26,7 @@ def test_mode_defaults_match_spec_table() -> None:
     assert mode_default("plan", CapabilityClass.WRITE).decision == "deny"
     # brainstorm: no tools
     assert mode_default("brainstorm", CapabilityClass.READ).decision == "deny"
-    # auto: auto read,write · classifier-gated elsewhere
+    # auto: auto read,write · asks if risky elsewhere
     assert mode_default("auto", CapabilityClass.WRITE).decision == "allow"
     assert mode_default("auto", CapabilityClass.NET).classifier_gated
     assert mode_default("auto", CapabilityClass.OUTSIDE_PROJECT).classifier_gated

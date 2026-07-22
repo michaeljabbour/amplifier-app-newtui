@@ -215,7 +215,7 @@ DENY_BLOCKED_CMD = "uv run pytest"
 continuing without test run``."""
 
 AUTO_PROMPT = "refactor the session store and push it up"
-AUTO_MODE_NOTICE = "mode auto · auto read,write · classifier-gated"
+AUTO_MODE_NOTICE = "mode auto · auto read,write · asks if risky"
 FORCE_PUSH_COMMAND = "git push --force origin main"
 AUTO_BLOCK_REASON = "outside user authorization"
 AUTO_BLOCK_CONTINUATION = "finding safer path"

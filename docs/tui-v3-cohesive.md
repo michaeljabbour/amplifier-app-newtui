@@ -47,7 +47,7 @@ Five modes; each has one accent color used in exactly three places
 | plan        | blue    | `read-only`                                      |
 | brainstorm  | teal    | `no tools`                                       |
 | build       | green   | `auto read,test · ask write,net,spend`           |
-| auto        | orange  | `auto read,write · classifier-gated`             |
+| auto        | orange  | `auto read,write · asks if risky`                |
 
 - User lines stamp the mode into scrollback: `❯ [mode] text` — green bold `❯ `,
   mode-colored `[mode] `, bright text. `mt` 10px-equivalent blank spacing before.

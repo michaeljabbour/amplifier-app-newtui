@@ -9,7 +9,7 @@ chat     dim     ``ask all · auto read``
 plan     blue    ``read-only``
 brainstorm teal  ``no tools``
 build    green   ``auto read,test · ask write,net,spend``
-auto     orange  ``auto read,write · classifier-gated``
+auto     orange  ``auto read,write · asks if risky``
 ======== ======= ==========================================
 
 Mode tint appears in exactly three places: composer ``[mode]`` badge,
@@ -78,7 +78,7 @@ MODE_PROFILES: dict[ModeId, ModeProfile] = {
     "auto": ModeProfile(
         id="auto",
         color_token="orange",
-        trust_str="auto read,write · classifier-gated",
+        trust_str="auto read,write · asks if risky",
         accent="orange",
     ),
 }
@@ -90,7 +90,7 @@ MODE_CYCLE: tuple[ModeId, ...] = ("chat", "plan", "brainstorm", "build", "auto")
 DEFAULT_MODE: ModeId = "auto"
 """Boot posture. The mockup demo *starts* its scripted history in chat, but the
 app defaults to auto — amplifier's natural wide scope (user directive
-2026-07-16): auto read/write/test, classifier-gated for the rest."""
+2026-07-16): auto read/write/test, the rest asks if risky (classifier-gated)."""
 
 
 def get_mode(mode_id: str | None) -> ModeProfile:

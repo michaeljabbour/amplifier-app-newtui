@@ -466,7 +466,7 @@ def test_permissions_block_renders_slot_labels_not_bound_methods() -> None:
 
     surface = PermissionSurface(mode="auto")
     surface.add_exception("uv run pytest")
-    block = permissions_block(surface, "auto read,write · classifier-gated", BlockIdAllocator())
+    block = permissions_block(surface, "auto read,write · asks if risky", BlockIdAllocator())
     text = "".join(segment.text for segment in block.spans)
     assert "bound method" not in text
     assert "path policy · allowed roots + protected paths enforced" in text
