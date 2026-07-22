@@ -393,7 +393,7 @@ def test_event_ids_are_unique() -> None:
 
 
 def test_events_json_roundtrip() -> None:
-    """Normalized events survive events.jsonl round-trips."""
+    """Normalized events survive ui-events.jsonl round-trips."""
     event = normalize(
         "tool:post",
         {**SID, "tool_name": "bash", "tool_call_id": "c1", "result": {"output": "ok"}},

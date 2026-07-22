@@ -8,8 +8,9 @@ Port of ``estimate_cost()`` from amplifier-module-hooks-streaming-ui
   default; the Helicone live fetch is an explicit opt-in
   (:func:`fetch_live_pricing`) — unit tests and cold starts never touch
   the network.
-- **Resume re-seed** from the session's ``events.jsonl`` of normalized
-  UIEvents (the ``cost_history.py`` pattern): provider usage events are
+- **Resume re-seed** from the session's ``ui-events.jsonl`` of normalized
+  UIEvents (the ``cost_history.py`` pattern; legacy pre-rename
+  ``events.jsonl`` files are read too): provider usage events are
   replayed through the same pricing math, so a resumed session's footer
   cost continues from the prior total.
 
@@ -301,7 +302,7 @@ class CostTracker:
 
 
 # --------------------------------------------------------------------------
-# Resume re-seed from events.jsonl
+# Resume re-seed from ui-events.jsonl (legacy events.jsonl fallback)
 # --------------------------------------------------------------------------
 
 _USAGE_KIND = "provider_response_usage"
@@ -309,15 +310,18 @@ _CONTENT_BLOCK_KIND = "content_block_end"
 
 
 def sum_prior_cost(events_path: Path, pricing: PricingTable | None = None) -> Decimal | None:
-    """Sum provider responses in a session's ``events.jsonl`` exactly once.
+    """Sum provider responses in one UIEvent log file exactly once.
 
+    *events_path* is a ``ui-events.jsonl`` (or pre-rename ``events.jsonl``)
+    from :meth:`SessionStore.events_path` / ``events_read_paths``.
     Reads line-by-line (events files can be large) with a substring
-    pre-filter. Older NewTUI logs wrote the same usage record before every
-    block in one response; the following ``content_block_end`` identifies
-    whether that record belongs to the response's final block. Standalone
-    provider usage records retain their original behavior. Returns ``None``
-    when the file is missing/unreadable or holds no priceable usage. Never
-    raises.
+    pre-filter; foreign records (hooks-logging's colon-named hook events)
+    carry no ``kind`` and are skipped. Older NewTUI logs wrote the same
+    usage record before every block in one response; the following
+    ``content_block_end`` identifies whether that record belongs to the
+    response's final block. Standalone provider usage records retain their
+    original behavior. Returns ``None`` when the file is missing/unreadable
+    or holds no priceable usage. Never raises.
     """
     if not events_path.is_file():
         return None
@@ -389,17 +393,25 @@ def sum_prior_cost(events_path: Path, pricing: PricingTable | None = None) -> De
     return total
 
 
-def restore_session_cost(tracker: CostTracker, events_path: Path) -> Decimal | None:
-    """Seed *tracker* with the prior spend found in *events_path*.
+def restore_session_cost(tracker: CostTracker, *events_paths: Path) -> Decimal | None:
+    """Seed *tracker* with the prior spend found across *events_paths*.
 
+    A rename-straddling session splits its UIEvents between the legacy
+    ``events.jsonl`` and ``ui-events.jsonl``
+    (:meth:`SessionStore.events_read_paths`), so every file is summed.
     Returns the restored total, or ``None`` when there was nothing to
     restore. Never raises — resume must not break on a bad event log.
     """
-    prior = sum_prior_cost(events_path, tracker.pricing)
+    totals = [
+        total
+        for total in (sum_prior_cost(path, tracker.pricing) for path in events_paths)
+        if total is not None
+    ]
+    prior = sum(totals, Decimal("0")) if totals else None
     if prior is None or prior <= 0:
         return None
     tracker.seed(prior)
-    logger.info("Restored prior session cost $%s from %s", prior, events_path)
+    logger.info("Restored prior session cost $%s from %s", prior, list(map(str, events_paths)))
     return prior
 
 

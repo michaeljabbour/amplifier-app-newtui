@@ -19,7 +19,7 @@ Discriminated union
 ===================
 Each block declares a ``kind`` literal; :data:`TranscriptBlock` is the
 pydantic discriminated union over ``kind``, so blocks round-trip through
-JSON (events.jsonl replay) losslessly.
+JSON (ui-events.jsonl replay) losslessly.
 """
 
 from __future__ import annotations

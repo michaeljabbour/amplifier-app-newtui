@@ -1,21 +1,28 @@
-"""Session persistence: transcript.jsonl / metadata.json / events.jsonl.
+"""Session persistence: transcript.jsonl / metadata.json / ui-events.jsonl.
 
 Layout (foundation-compatible, shared with amplifier-app-cli):
 
     ~/.amplifier/projects/<project-slug>/sessions/<session-id>/
         transcript.jsonl   # user/assistant messages (system/developer skipped)
         metadata.json      # session metadata (secrets redacted)
-        events.jsonl       # append-only normalized UIEvent log (ADR-0007 §9)
+        ui-events.jsonl    # append-only normalized UIEvent log (ADR-0007 §9)
 
 Guarantees:
 
 - **Atomic write + backup** for transcript/metadata (a reader always
   sees old or new content, never a partial write; ``.backup`` recovery
   on corruption).
-- **events.jsonl is append-only** — one JSON object per line, each a
+- **ui-events.jsonl is append-only** — one JSON object per line, each a
   normalized :class:`~amplifier_app_newtui.kernel.events.UIEvent` dump
   plus its ``kind``. Powers cost re-seed on resume (kernel/cost.py),
-  evidence links, lane replay and contract tests.
+  evidence links, lane replay and contract tests. The name deliberately
+  differs from ``events.jsonl``: foundation's ``hooks-logging`` owns that
+  filename for canonical ISO-timestamped hook records
+  (``session_log_template``), and the app's float-``ts`` UIEvent schema
+  must never mix into it. Sessions written before the rename logged
+  UIEvents to ``events.jsonl``; readers fall back to it
+  (:meth:`SessionStore.events_path` / :meth:`SessionStore.events_read_paths`)
+  and skip foreign/unparseable lines.
 - **Debounced incremental save** on ``tool:post`` via
   :class:`IncrementalSaver` (crash recovery between tool calls, not
   just between turns).
@@ -37,7 +44,10 @@ logger = logging.getLogger(__name__)
 
 TRANSCRIPT_FILENAME = "transcript.jsonl"
 METADATA_FILENAME = "metadata.json"
-EVENTS_FILENAME = "events.jsonl"
+EVENTS_FILENAME = "ui-events.jsonl"
+LEGACY_EVENTS_FILENAME = "events.jsonl"
+"""Pre-rename UIEvent log name — now owned by foundation's hooks-logging
+for canonical hook records; read-only fallback, never written."""
 
 
 def _json_default(value: object) -> str:
@@ -132,7 +142,30 @@ class SessionStore:
         return self.base_dir / _validate_session_id(session_id)
 
     def events_path(self, session_id: str) -> Path:
-        return self.session_dir(session_id) / EVENTS_FILENAME
+        """The session's UIEvent log — single source of the filename.
+
+        Falls back to the legacy ``events.jsonl`` only when no
+        ``ui-events.jsonl`` exists (sessions written before the rename).
+        """
+        current = self.session_dir(session_id) / EVENTS_FILENAME
+        if not current.exists():
+            legacy = self.session_dir(session_id) / LEGACY_EVENTS_FILENAME
+            if legacy.is_file():
+                return legacy
+        return current
+
+    def events_read_paths(self, session_id: str) -> tuple[Path, ...]:
+        """Existing UIEvent-log files, oldest first.
+
+        A pre-rename session resumed under this build has UIEvents split
+        across the legacy ``events.jsonl`` and ``ui-events.jsonl``;
+        readers that must see the whole history (cost re-seed, replay)
+        consume both. Foreign hook records sharing the legacy filename
+        are skipped by kind-aware readers.
+        """
+        session_dir = self.session_dir(session_id)
+        candidates = (session_dir / LEGACY_EVENTS_FILENAME, session_dir / EVENTS_FILENAME)
+        return tuple(path for path in candidates if path.is_file())
 
     def exists(self, session_id: str) -> bool:
         try:
@@ -234,11 +267,13 @@ class SessionStore:
             }
         return {}
 
-    # -- events.jsonl (append-only normalized UIEvents) ---------------------
+    # -- ui-events.jsonl (append-only normalized UIEvents) ------------------
 
     def append_event(self, session_id: str, event: UIEvent | Mapping[str, Any]) -> None:
-        """Append one normalized UIEvent to the session's events.jsonl.
+        """Append one normalized UIEvent to the session's ui-events.jsonl.
 
+        Always the current filename — the legacy ``events.jsonl`` now
+        belongs to hooks-logging and must never receive app records.
         Never raises: event logging is best-effort and must not break a
         running turn.
         """
@@ -257,21 +292,24 @@ class SessionStore:
             logger.warning("Failed to append event for %s", session_id, exc_info=True)
 
     def read_events(self, session_id: str) -> Iterator[dict[str, Any]]:
-        """Iterate the raw event records in events.jsonl (skips bad lines)."""
-        path = self.events_path(session_id)
-        if not path.is_file():
-            return
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(record, dict):
-                    yield record
+        """Iterate UIEvent records, oldest first, across the log files.
+
+        Skips blank/unparseable lines and foreign records (anything
+        without a string ``kind`` — e.g. hooks-logging's ISO-timestamped
+        hook events sharing a legacy mixed file).
+        """
+        for path in self.events_read_paths(session_id):
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(record, dict) and isinstance(record.get("kind"), str):
+                        yield record
 
     # -- listing / lookup ----------------------------------------------------
 
@@ -394,6 +432,7 @@ class IncrementalSaver:
 
 __all__ = [
     "EVENTS_FILENAME",
+    "LEGACY_EVENTS_FILENAME",
     "METADATA_FILENAME",
     "TRANSCRIPT_FILENAME",
     "IncrementalSaver",

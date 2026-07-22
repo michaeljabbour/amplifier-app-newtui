@@ -3,7 +3,7 @@
 DESIGN-SPEC §10: clicking a final answer prints numbered teal claims
 ``¹ "quote" → <tool call that grounds it>``. ADR-0007 resolution 9: real
 sessions derive these from the normalized event stream (the same stream
-events.jsonl records) — the collector taps the queue bridge, tracks the
+ui-events.jsonl records) — the collector taps the queue bridge, tracks the
 turn's completed tool calls, and pairs them with verbatim answer excerpts.
 """
 

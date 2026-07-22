@@ -75,7 +75,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 - [ ] **Delegate summary** (fan-out turns, at turn end): one durable line
   `● Used N delegates · Plan n/m · <duration> ▸`; click/enter expands (`▾`) to per-agent
   rows (`✔`/`✖`/`⊘` `<agent> <elapsed> · "<result snippet>"`) plus a final plan line.
-  Every past summary in scrollback stays expandable; reconstructed from `events.jsonl`
+  Every past summary in scrollback stays expandable; reconstructed from `ui-events.jsonl`
   on resume. The live todo checklist no longer appends to the transcript — while a turn
   runs it lives in the plan panel (§2) and folds into this summary at close.
 
@@ -160,7 +160,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 - [ ] Turn end notice: `agents N done` (or `turn interrupted · context saved`).
 - [ ] Fan-out close-out: the running chrome (lane tail, live plan panel state) collapses
   into the durable delegate summary (§3) at turn end; the tail clears; summary
-  expansion still works after `resume` (rebuilt from `events.jsonl`).
+  expansion still works after `resume` (rebuilt from `ui-events.jsonl`).
 - [ ] Session banner on start: line 1 bright bold `Amplifier <version> · core <core-version>`; line 2 dim `Bundle: <bundle> | Provider: <provider> | <model> · session <id6>`.
 
 ## 12. Non-visual requirements

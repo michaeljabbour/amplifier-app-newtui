@@ -1,7 +1,7 @@
 """Evidence links for real sessions (DESIGN-SPEC §10, ADR-0007 resolution 9).
 
 The demo script ships hand-authored claims; a real session derives them
-from the same normalized UIEvent stream that events.jsonl records
+from the same normalized UIEvent stream that ui-events.jsonl records
 (ADR-0007: the event log "powers … evidence links"). The collector taps
 the queue bridge, keeps the running turn's completed top-level tool
 calls, and when ``PromptComplete`` identifies the production final answer
