@@ -42,7 +42,12 @@ from ..model.trust import (
     resolve,
     resolve_capability,
 )
-from .approval import STANDARD_OPTIONS, ApprovalBroker, ApprovalDetail
+from .approval import (
+    STANDARD_OPTIONS,
+    ApprovalBroker,
+    ApprovalDetail,
+    deferral_highlight,
+)
 from .directory_permissions import DirectoryPolicy
 from .safety import resolve_safety
 
@@ -311,11 +316,13 @@ class GovernanceHook:
         # Auto-mode trust boundary: deny-and-continue AND park a deferred
         # decision (DESIGN-SPEC §7 — footer "N decisions waiting · ctrl-y").
         if self._needs_you is not None:
+            question = f"Allow {action}?"
             try:
                 self._needs_you.defer(
-                    f"Allow {action}?",
+                    question,
                     reason,
                     choices=STANDARD_OPTIONS,
+                    highlight=deferral_highlight(question, target, action),
                     action=action,
                 )
             except ValueError:

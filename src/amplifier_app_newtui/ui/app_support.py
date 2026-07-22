@@ -488,7 +488,9 @@ def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
     except (KeyError, ValueError) as error:
         app.show_notice(str(error))
         return
-    narration = app.adapter.decision_narration(answer) or applying_decision_line(answer)
+    narration = app.adapter.decision_narration(
+        answer, item.action
+    ) or applying_decision_line(answer)
     # Mockup logs the applied decision as a narration line: bright "● "
     # marker + fg text (design-v3-cohesive.html:289).
     app.append_block(Narration(id=app.allocator.next_id(), text=narration))

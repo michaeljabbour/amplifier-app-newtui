@@ -17,7 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from ..model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
+from ..model.queues import NeedsYouItem, NeedsYouQueue, QueuedMessage, SteeringQueue
 from ..model.trust import CapabilityClass, DenialLog, TrustDecision
 from .approval import ApprovalBroker
 from .bundle_admin import read_scope, settings_paths
@@ -320,6 +320,11 @@ class RealRuntime:
         """Per-turn ``tests ✔`` evidence from tool results (bridge tap)."""
         self.steering = steering or SteeringQueue()
         self.needs_you = needs_you or NeedsYouQueue()
+        # Every kernel-side deferral (broker ctrl-y park, auto-classifier
+        # deny, escalation) becomes ONE decision Notification carrying the
+        # queue item's id — the UI resolves that item (bell, badge, turn
+        # deferred-marking) instead of re-deriving data from message text.
+        self.needs_you.add_defer_listener(self._decision_deferred)
         self.denial_log = denial_log or DenialLog()
         self.broker = ApprovalBroker(
             needs_you=self.needs_you,
@@ -540,6 +545,19 @@ class RealRuntime:
     @property
     def session_id(self) -> str:
         return self._initialized.session_id if self._initialized is not None else ""
+
+    def _decision_deferred(self, item: NeedsYouItem) -> None:
+        """Surface a needs-you deferral to the UI (demo-contract parity:
+        DemoRuntime emits the same ``level="decision"`` notification)."""
+        self.bridge.emit(
+            Notification(
+                session_id=self.session_id,
+                message=f"decision deferred to queue · {item.question}",
+                level="decision",
+                source="needs_you",
+                decision_id=item.decision_id,
+            )
+        )
 
     def _governance_blocked(self, action: str, reason: str) -> None:
         session_id = self._initialized.session_id if self._initialized else ""

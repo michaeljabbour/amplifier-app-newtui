@@ -267,6 +267,16 @@ def test_notification() -> None:
     event = normalize("user:notification", {**SID, "message": "saved", "level": "info"})
     assert isinstance(event, Notification)
     assert event.message == "saved"
+    assert event.decision_id == ""
+
+
+def test_notification_carries_decision_id() -> None:
+    event = normalize(
+        "user:notification",
+        {**SID, "message": "deferred", "level": "decision", "decision_id": "decision-3"},
+    )
+    assert isinstance(event, Notification)
+    assert event.decision_id == "decision-3"
 
 
 def test_context_compaction_stats_are_normalized() -> None:

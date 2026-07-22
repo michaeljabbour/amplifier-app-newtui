@@ -374,6 +374,11 @@ class Notification(_Envelope):
     message: str = ""
     level: str = "info"
     source: str = ""
+    decision_id: str = ""
+    """NeedsYouQueue id when ``level == "decision"``: the deferral already
+    parked its item kernel-side; the app resolves that item instead of
+    re-deriving one from the message text. Empty for scripted/legacy
+    notices — the adapter then supplies the decision data."""
 
 
 class ContextInjected(_Envelope):
@@ -783,6 +788,7 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 message=_str(payload, "message", "text"),
                 level=_str(payload, "level", default="info"),
                 source=_str(payload, "source"),
+                decision_id=_str(payload, "decision_id"),
             )
         case _:
             return None
