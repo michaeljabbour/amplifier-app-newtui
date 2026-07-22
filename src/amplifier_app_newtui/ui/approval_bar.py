@@ -5,10 +5,13 @@ Replaces the composer while an approval is pending: ``Approval required
 ``› `` and shown bright on ``bg-tab``; Deny is red while unselected.
 
 Keyboard (the bar owns the keyboard while open — keymap ``approval``
-context): left/up and right/down/tab cycle, Enter confirms, Esc = Deny.
+context): left/up and right/down/tab cycle, Enter confirms, Esc = Deny,
+ctrl-y parks the ticket into the needs-you queue WITHOUT resolving it
+(deny-and-continue, ADR-0007 resolution 5 — answerable later).
 Clicking an option confirms it directly. Resolution is emitted as
-:class:`ApprovalBar.Resolved(ticket_id, choice)` — the app routes it
-back to the kernel approval broker.
+:class:`ApprovalBar.Resolved(ticket_id, choice)`; a park is emitted as
+:class:`ApprovalBar.Deferred(ticket_id)` — the app routes each back to
+the kernel approval broker.
 """
 
 from __future__ import annotations
@@ -31,6 +34,11 @@ DENY_OPTION = "Deny"
 _PREV_KEYS = frozenset({"left", "up"})
 # Mockup keydown: ``e.key === "Tab"`` cycles with or without shift.
 _NEXT_KEYS = frozenset({"right", "down", "tab", "shift+tab"})
+# ctrl-y parks the live ticket into the needs-you queue (ADR-0007
+# approvals: "ctrl-y defers head to NeedsYouQueue"). The global ctrl-y
+# (show_needs_you) is suppressed while the bar owns the keyboard, so the
+# same chord means "defer THIS ticket" here.
+_PARK_KEYS = frozenset({"ctrl+y"})
 
 
 class ApprovalOption(Static):
@@ -105,6 +113,19 @@ class ApprovalBar(Horizontal):
         def __init__(self, ticket_id: str, choice: str) -> None:
             self.ticket_id = ticket_id
             self.choice = choice
+            super().__init__()
+
+    class Deferred(Message):
+        """The user parked the ticket into the needs-you queue (ctrl-y).
+
+        Unlike :class:`Resolved`, this does NOT answer the ticket: the
+        app routes it to the kernel broker's ``defer`` so the future keeps
+        its default (deny-and-continue) while the decision stays retro-
+        answerable in the needs-you queue (ADR-0007 resolution 5).
+        """
+
+        def __init__(self, ticket_id: str) -> None:
+            self.ticket_id = ticket_id
             super().__init__()
 
     class OptionClicked(Message):
@@ -193,6 +214,10 @@ class ApprovalBar(Horizontal):
             event.stop()
             event.prevent_default()
             self._resolve(self.options[self.selected])
+        elif event.key in _PARK_KEYS:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Deferred(self.ticket_id))
         elif event.key == "escape":
             event.stop()
             event.prevent_default()

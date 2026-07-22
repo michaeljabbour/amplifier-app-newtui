@@ -143,6 +143,13 @@ KEYMAP: tuple[Binding, ...] = (
     _b("approval_prev", ("left", "up"), "arrows", _APPROVAL),
     _b("approval_next", ("right", "down", "tab", "shift+tab"), "arrows", _APPROVAL),
     _b("approval_confirm", ("enter",), "enter", _APPROVAL),
+    # ctrl-y parks the live ticket into the needs-you queue without
+    # answering it (ADR-0007 approvals: "ctrl-y defers head to
+    # NeedsYouQueue"; the bar owns the keyboard, so the global ctrl-y
+    # show_needs_you is suppressed while it is open). Handled by
+    # ApprovalBar.on_key — documented here so the table stays the single
+    # source of every approval-context chord (footer hint stays spec-exact).
+    _b("approval_defer", ("ctrl+y",), "ctrl-y defer", _APPROVAL),
     # Esc chain — one binding per context; the app resolves priority via
     # ESC_CHAIN, never ad-hoc if/else ladders (spec §5).
     _b("lane_unfocus", ("escape",), "esc", _LANE_FOCUS),

@@ -345,6 +345,31 @@ class RuntimeAdapter:
             self._config_state, scope=scope, project_dir=self._config_project_dir
         )
 
+    def defer_approval(
+        self, ticket_id: str, prompt: str, options: tuple[str, ...]
+    ) -> None:
+        """Park a live approval ticket into the needs-you queue WITHOUT
+        answering it (ctrl-y on the approval bar).
+
+        The base/demo runtime has no kernel broker, so the deferred
+        decision is parked here directly: the pending approval future is
+        left untouched (deny-and-continue) and the item stays retro-
+        answerable via ctrl-y (ADR-0007 resolution 5). The real adapter
+        overrides this to route through the broker, which owns the
+        ticket's structured detail. ``ticket_id`` names the ticket for
+        that override; the base park keys off the visible prompt.
+        """
+        del ticket_id
+        question = prompt.strip()
+        if not question:
+            return
+        self.needs_you.defer(
+            question,
+            "deferred approval",
+            choices=options,
+            action=question,
+        )
+
     # -- optional data hooks (demo fidelity / real telemetry) ---------------
 
     def turn_spec(self, prompt: str) -> TurnSpecLike | None:
@@ -616,6 +641,26 @@ class RealRuntimeAdapter(RuntimeAdapter):
                 pass  # ticket already timed out / resolved
 
         self._runtime_loop.call_soon_threadsafe(_answer)
+
+    def defer_approval(
+        self, ticket_id: str, prompt: str, options: tuple[str, ...]
+    ) -> None:
+        """ctrl-y park through the kernel broker (its ``defer`` owns the
+        ticket's structured detail, parks the shared needs-you item, and
+        fires the decision Notification the UI already handles). The
+        ticket keeps its future — timing out to deny while the needs-you
+        item stays retro-answerable (ADR-0007 resolution 5)."""
+        del prompt, options  # broker.defer reads the ticket's own detail
+        if self._runtime is None or self._runtime_loop is None:
+            return
+
+        def _defer() -> None:
+            try:
+                self._runtime.broker.defer(ticket_id)
+            except (KeyError, ValueError, RuntimeError):
+                pass  # ticket already resolved / deferred / no queue
+
+        self._runtime_loop.call_soon_threadsafe(_defer)
 
     def shutdown(self) -> None:
         """Stop the runtime thread and WAIT for its cleanup (bounded).

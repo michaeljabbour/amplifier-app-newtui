@@ -101,6 +101,55 @@ async def test_approval_bar_replaces_composer_arrows_and_confirm() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ctrl_y_parks_live_ticket_into_needs_you_answerable_later() -> None:
+    """Issue #41: ctrl-y on the live approval bar parks the ticket into
+    the needs-you queue WITHOUT resolving it (deny-and-continue), hands
+    the composer back, and the parked decision is answerable later."""
+    adapter = DemoRuntimeAdapter(instant=True)
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await _reach_pytest_approval(pilot, app)
+        assert adapter.needs_you.pending_count == 0
+
+        # ctrl-y parks the head ticket rather than answering it. The bar
+        # owns the keyboard, so the global show_needs_you chord is
+        # suppressed and the key reaches the bar's park handler.
+        await pilot.press("ctrl+y")
+        assert await wait_for(pilot, lambda: app.approval_bar is None)
+
+        # Parked, not resolved: the composer is back, one decision is
+        # waiting, and the underlying approval future is still pending
+        # (no choice was sent to the runtime).
+        assert app.composer.display is True
+        assert adapter.needs_you.pending_count == 1
+        assert app.footer_bar.state.waiting == 1
+        assert footer_waiting_text(app.footer_bar.state) == "1 decision waiting · ctrl-y"
+        item = adapter.needs_you.pending[0]
+        assert item.question == PYTEST_APPROVAL_PROMPT
+        # The live options travel through as the answerable chips.
+        assert item.choices == APPROVAL_OPTIONS
+        # The turn never shipped a close-out: the deny path did not run
+        # and no second turn rule was cut (the ticket future is still
+        # open, deny-and-continue timing out later).
+        assert not any(b.cmd == DENY_BLOCKED_CMD for b in blocks_of(app, "blocked"))
+
+        # Answerable later: ctrl-y now opens the needs-you listing (the
+        # bar is gone, so the global chord is live again); acting on the
+        # decision answers it and clears the badge.
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        needs_you = blocks_of(app, "needs_you")[-1]
+        entry = needs_you.items[0]
+        assert entry.decision_id == item.decision_id
+        await pilot.click(f"#needs-you-row-{entry.decision_id}")
+        await pilot.pause()
+        assert adapter.needs_you.pending_count == 0
+        assert app.footer_bar.state.waiting == 0
+        applied = adapter.needs_you.items[0]
+        assert applied.status == "answered"
+
+
+@pytest.mark.asyncio
 async def test_approval_keeps_keyboard_when_lanes_toggle_while_open() -> None:
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:

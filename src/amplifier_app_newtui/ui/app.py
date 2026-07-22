@@ -661,6 +661,31 @@ class NewTuiApp(App[None]):
         self.adapter.answer_approval(message.ticket_id, message.choice)
         self._refresh_footer()
 
+    def on_approval_bar_deferred(self, message: ApprovalBar.Deferred) -> None:
+        """ctrl-y on the approval bar: park the live ticket into the
+        needs-you queue WITHOUT answering it (deny-and-continue), then
+        hand the composer back. The decision stays retro-answerable via
+        ctrl-y — answering it later becomes a next-turn instruction
+        (ADR-0007 resolution 5). No journal ask is recorded: the ticket
+        was deferred, not decided.
+        """
+        message.stop()
+        bar = self.approval_bar
+        if bar is None:
+            return
+        prompt, options = bar.prompt, bar.options
+        bar.remove()
+        self.approval_bar = None
+        self.composer.display = True
+        self.composer.focus_input()
+        # Real runtime routes through the broker (which parks the shared
+        # needs-you item and fires the decision Notification the app
+        # already handles); the demo runtime parks directly in the base
+        # adapter. Either way the footer badge reflects the deferral.
+        self.adapter.defer_approval(message.ticket_id, prompt, options)
+        self.show_notice("decision deferred to queue · answer later with ctrl-y")
+        self._refresh_footer()
+
     # -- composer semantics -----------------------------------------------------------
 
     def on_composer_submit(self, message: Composer.Submit) -> None:
@@ -1043,6 +1068,12 @@ class NewTuiApp(App[None]):
             # without shift) cycles the approval selection and returns —
             # cycleMode is unreachable, and the trust posture must not
             # change under a pending approval (spec §7).
+            return False
+        if self.approval_bar is not None and action == "show_needs_you":
+            # The bar owns the keyboard (spec §7): ctrl-y parks THIS
+            # ticket (ApprovalBar.Deferred) instead of opening the
+            # needs-you listing. Disable the global chord so the key
+            # reaches the bar (same seam as arrows above).
             return False
         return True
 
