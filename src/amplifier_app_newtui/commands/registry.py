@@ -20,6 +20,7 @@ Palette semantics (DESIGN-SPEC §6):
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Literal, Protocol, runtime_checkable
@@ -42,8 +43,28 @@ GROUP_ORDER: tuple[CommandGroup, ...] = (
 )
 """Group header display order when the palette filter is exactly ``/``."""
 
-CommandTag = Literal["built-in", "skill"]
-"""Right-aligned dimmer tag on each palette row (DESIGN-SPEC §6)."""
+CommandTag = str
+"""Right-aligned dimmer tag on each palette row (DESIGN-SPEC §6).
+
+Open by design (story #2): built-ins use ``built-in``; dynamic
+contributions conventionally show their source name (``skill``, and
+later ``recipe`` / ``pipeline``) — new capabilities must be able to
+register verbs without a registry change, so this is not a Literal.
+"""
+
+CommandSource = str
+"""Origin label of a registration — who contributed the command.
+
+Well-known values today: ``builtin`` (seeded at construction) and
+``skill`` (discovered skills + shortcuts). Future mounted capabilities
+(``recipe``, ``pipeline``, …) pick their own label; the registry needs
+no change to accept them.
+"""
+
+BUILTIN_SOURCE: CommandSource = "builtin"
+"""The seed source: collides loudly, wins collisions, never unregisters."""
+
+_log = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -239,7 +260,8 @@ class CommandSpec(BaseModel):
     - ``name``: the slash trigger including the leading ``/``.
     - ``desc``: palette row description — EXACT mockup strings for the
       built-in set (DESIGN-SPEC §6).
-    - ``tag``: ``built-in`` or ``skill`` (right-aligned dimmer tag).
+    - ``tag``: right-aligned dimmer tag — ``built-in``, ``skill``, or a
+      future contribution's own label (open string, story #2).
     - ``key_action``: optional keymap action id this command duplicates
       (e.g. ``/tasks`` ↔ ``toggle_lanes``) so keybinds and palette stay a
       single source.
@@ -268,6 +290,13 @@ class CommandSpec(BaseModel):
             raise ValueError("command description is required")
         return value
 
+    @field_validator("tag")
+    @classmethod
+    def _tag_required(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("command tag is required")
+        return value
+
 
 class CommandRegistry:
     """Ordered registry of :class:`CommandSpec` — the palette's row source.
@@ -275,11 +304,22 @@ class CommandRegistry:
     Registration order is display order within the full list (the mockup
     table is already in phase order); :meth:`grouped_rows` regroups by
     :data:`GROUP_ORDER` for the headers-visible state.
+
+    Open registry (story #2): built-ins seed at construction; any mounted
+    capability may :meth:`register` verbs at runtime under its own
+    ``source`` label (``skill`` today; ``recipe`` / ``pipeline`` later)
+    and :meth:`unregister` them when it unmounts. Collision policy:
+    built-ins win (a duplicate *built-in* is a programming error and
+    raises); a dynamic registration whose name is taken is skipped with a
+    log line, first registration wins. :meth:`subscribe` observers hear
+    every successful change so the palette/help stay a live reflection.
     """
 
     def __init__(self, specs: tuple[CommandSpec, ...] = ()) -> None:
         self._specs: list[CommandSpec] = []
         self._by_name: dict[str, CommandSpec] = {}
+        self._sources: dict[str, CommandSource] = {}
+        self._listeners: list[Callable[[], None]] = []
         for spec in specs:
             self.register(spec)
 
@@ -291,12 +331,66 @@ class CommandRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(spec.name for spec in self._specs)
 
-    def register(self, spec: CommandSpec) -> None:
-        """Add a command; duplicate names fail loudly."""
+    def register(self, spec: CommandSpec, *, source: CommandSource = BUILTIN_SOURCE) -> bool:
+        """Add a command under *source*; returns whether it was added.
+
+        Duplicate built-ins fail loudly (a bug in the seed table); a
+        dynamic contribution whose name is already taken is skipped with
+        a log line — the existing command, built-in or earlier dynamic
+        registration, always wins.
+        """
         if spec.name in self._by_name:
-            raise ValueError(f"command already registered: {spec.name}")
+            if source == BUILTIN_SOURCE:
+                raise ValueError(f"command already registered: {spec.name}")
+            _log.warning(
+                "command %s from %r skipped: already registered by %r",
+                spec.name,
+                source,
+                self._sources[spec.name],
+            )
+            return False
         self._specs.append(spec)
         self._by_name[spec.name] = spec
+        self._sources[spec.name] = source
+        self._notify()
+        return True
+
+    def unregister(self, name: str) -> bool:
+        """Remove a dynamic command by name; returns whether it existed.
+
+        Built-ins are permanent — trying to unregister one raises.
+        """
+        key = name.strip()
+        spec = self._by_name.get(key)
+        if spec is None:
+            return False
+        if self._sources[key] == BUILTIN_SOURCE:
+            raise ValueError(f"built-in command cannot be unregistered: {key}")
+        self._specs.remove(spec)
+        del self._by_name[key]
+        del self._sources[key]
+        self._notify()
+        return True
+
+    def source_of(self, name: str) -> CommandSource | None:
+        """Who registered *name* — ``None`` when unknown."""
+        return self._sources.get(name.strip())
+
+    def contributions(self, source: CommandSource) -> tuple[CommandSpec, ...]:
+        """All commands registered under *source*, in registration order."""
+        return tuple(
+            spec for spec in self._specs if self._sources[spec.name] == source
+        )
+
+    def subscribe(self, listener: Callable[[], None]) -> None:
+        """Call *listener* after every successful register/unregister
+        (skipped collisions and no-op unregisters stay silent) — the
+        palette re-reads :attr:`specs` on each change."""
+        self._listeners.append(listener)
+
+    def _notify(self) -> None:
+        for listener in tuple(self._listeners):
+            listener()
 
     def get(self, name: str) -> CommandSpec | None:
         return self._by_name.get(name.strip())
@@ -372,10 +466,12 @@ class CommandRegistry:
 
 
 __all__ = [
+    "BUILTIN_SOURCE",
     "CommandContext",
     "CommandGroup",
     "CommandHandler",
     "CommandRegistry",
+    "CommandSource",
     "CommandSpec",
     "CommandTag",
     "GROUP_ORDER",

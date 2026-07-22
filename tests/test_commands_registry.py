@@ -12,7 +12,12 @@ from amplifier_app_newtui.commands.registry import (
 )
 
 
-def _spec(name: str, group: str = "During", key_action: str | None = None) -> CommandSpec:
+def _spec(
+    name: str,
+    group: str = "During",
+    key_action: str | None = None,
+    tag: str = "built-in",
+) -> CommandSpec:
     def handler(ctx, args: str) -> None:
         ctx.calls.append(f"ran:{name}:{args}")
 
@@ -20,7 +25,7 @@ def _spec(name: str, group: str = "During", key_action: str | None = None) -> Co
         group=group,  # type: ignore[arg-type]
         name=name,
         desc=f"desc for {name}",
-        tag="built-in",
+        tag=tag,
         handler=handler,
         key_action=key_action,
     )
@@ -119,3 +124,102 @@ def test_keybound_maps_key_actions_to_specs() -> None:
     tasks = _spec("/tasks", "Parallel", key_action="toggle_lanes")
     registry = CommandRegistry((_spec("/mode"), tasks))
     assert registry.keybound() == {"toggle_lanes": tasks}
+
+
+# --- open registry: dynamic contributions tagged by source (story #2) ---
+
+
+def test_register_returns_true_and_records_source() -> None:
+    registry = CommandRegistry((_spec("/mode"),))
+    assert registry.register(_spec("/review", tag="skill"), source="skill")
+    assert registry.source_of("/review") == "skill"
+    assert registry.source_of("/mode") == "builtin"  # seeded specs are built-ins
+    assert registry.source_of("/nope") is None
+
+
+def test_dynamic_collision_skips_with_log_and_builtin_wins(caplog) -> None:
+    builtin = _spec("/status")
+    registry = CommandRegistry((builtin,))
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        assert not registry.register(_spec("/status", tag="skill"), source="skill")
+    assert "/status" in caplog.text
+    # The built-in survives untouched; order and lookup unchanged.
+    assert registry.get("/status") is builtin
+    assert registry.names == ("/status",)
+    assert registry.source_of("/status") == "builtin"
+
+
+def test_first_dynamic_registration_wins_over_later_ones() -> None:
+    registry = CommandRegistry()
+    first = _spec("/approve", tag="skill")
+    assert registry.register(first, source="skill")
+    assert not registry.register(_spec("/approve", tag="recipe"), source="recipe")
+    assert registry.get("/approve") is first
+    assert registry.source_of("/approve") == "skill"
+
+
+def test_builtin_duplicate_still_raises() -> None:
+    registry = CommandRegistry((_spec("/mode"),))
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register(_spec("/mode"))  # default source is builtin
+
+
+def test_future_sources_register_without_registry_changes(fake_command_context) -> None:
+    # Acceptance: recipe/pipeline verbs must be registerable later with no
+    # further registry changes — open source label, open display tag.
+    registry = CommandRegistry((_spec("/mode"),))
+    assert registry.register(
+        _spec("/recipe-approve", "Parallel", tag="recipe"), source="recipe"
+    )
+    assert registry.register(
+        _spec("/pipeline-status", "Parallel", tag="pipeline"), source="pipeline"
+    )
+    assert registry.parse_and_run(fake_command_context, "/recipe-approve now")
+    assert fake_command_context.calls == ["ran:/recipe-approve:now"]
+    assert registry.get("/pipeline-status") is not None
+
+
+def test_contributions_filter_by_source_in_registration_order() -> None:
+    registry = CommandRegistry((_spec("/mode"),))
+    a = _spec("/aa", tag="skill")
+    b = _spec("/bb", tag="recipe")
+    c = _spec("/cc", tag="skill")
+    registry.register(a, source="skill")
+    registry.register(b, source="recipe")
+    registry.register(c, source="skill")
+    assert registry.contributions("skill") == (a, c)
+    assert registry.contributions("recipe") == (b,)
+    assert registry.contributions("builtin") == (registry.get("/mode"),)
+    assert registry.contributions("pipeline") == ()
+
+
+def test_unregister_removes_dynamic_command_and_keeps_order() -> None:
+    registry = CommandRegistry((_spec("/mode"),))
+    registry.register(_spec("/aa", tag="skill"), source="skill")
+    registry.register(_spec("/bb", tag="skill"), source="skill")
+    assert registry.unregister("/aa")
+    assert registry.names == ("/mode", "/bb")  # stable order for palette/help
+    assert registry.get("/aa") is None
+    assert registry.source_of("/aa") is None
+    assert not registry.unregister("/aa")  # already gone → False, no raise
+
+
+def test_unregister_builtin_is_refused() -> None:
+    registry = CommandRegistry((_spec("/mode"),))
+    with pytest.raises(ValueError, match="built-in"):
+        registry.unregister("/mode")
+    assert registry.get("/mode") is not None
+
+
+def test_subscribers_hear_successful_changes_only() -> None:
+    registry = CommandRegistry((_spec("/mode"),))
+    pings: list[int] = []
+    registry.subscribe(lambda: pings.append(len(registry.specs)))
+    registry.register(_spec("/aa", tag="skill"), source="skill")
+    registry.register(_spec("/aa", tag="skill"), source="skill")  # skipped: silent
+    registry.register(_spec("/mode2"))
+    registry.unregister("/aa")
+    assert not registry.unregister("/zz")  # no-op: silent
+    assert pings == [2, 3, 2]

@@ -12,19 +12,23 @@ protocol.
 
 from .builtin import BUILTIN_COMMANDS, build_registry
 from .registry import (
+    BUILTIN_SOURCE,
     GROUP_ORDER,
     CommandContext,
     CommandGroup,
     CommandRegistry,
+    CommandSource,
     CommandSpec,
     CommandTag,
 )
 
 __all__ = [
     "BUILTIN_COMMANDS",
+    "BUILTIN_SOURCE",
     "CommandContext",
     "CommandGroup",
     "CommandRegistry",
+    "CommandSource",
     "CommandSpec",
     "CommandTag",
     "GROUP_ORDER",
