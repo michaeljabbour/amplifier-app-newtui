@@ -63,6 +63,11 @@ class RuntimeAdapter:
         ids offset past it — DESIGN-SPEC §9); 0 for fresh/demo sessions."""
         self.restored_history: tuple[tuple[str, str], ...] = ()
         """(role, text) pairs replayed into the transcript on resume."""
+        self.restored_events: tuple[UIEvent, ...] = ()
+        """The resumed session's stored UIEvents, replayed through the
+        reducer to rebuild the full transcript (digests, delegate
+        summaries, turn rules — DESIGN-SPEC §3/§11); empty means the
+        prose ``restored_history`` fallback renders instead."""
         self.startup_notices: tuple[str, ...] = ()
         self.compaction = CompactionConfig(
             auto_compact=True, compact_threshold=0.8
@@ -275,6 +280,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.session_cost_start = runtime.session_cost_start
         self.turn_base = runtime.turn_base
         self.restored_history = runtime.restored_history
+        self.restored_events = runtime.restored_events
         self.compaction = runtime.compaction
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)

@@ -37,7 +37,7 @@ from decimal import Decimal, InvalidOperation
 from itertools import count
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 _event_counter = count(1)
 
@@ -437,6 +437,27 @@ UIEvent = Annotated[
 """Discriminated union of every normalized UI event (on ``kind``)."""
 
 
+_EVENT_ADAPTER: TypeAdapter[UIEvent] = TypeAdapter(UIEvent)
+"""Built once — TypeAdapter construction over the full union is costly."""
+
+
+def parse_event(record: Mapping[str, Any]) -> UIEvent | None:
+    """Round-trip one stored event record back into a typed :class:`UIEvent`.
+
+    The inverse of ``event.model_dump(mode="json")`` as persisted by
+    ``SessionStore.append_event`` — powers resume transcript replay
+    (DESIGN-SPEC §3/§11: digests, delegate summaries and turn rules are
+    "reconstructed from events.jsonl on resume"). Returns ``None`` for
+    foreign records: the event log can carry other writers' lines today,
+    and the frozen ``extra="forbid"`` envelope makes any raw hook payload
+    or unknown ``kind`` fail validation rather than half-parse.
+    """
+    try:
+        return _EVENT_ADAPTER.validate_python(dict(record))
+    except ValidationError:
+        return None
+
+
 # --------------------------------------------------------------------------
 # Normalization
 # --------------------------------------------------------------------------
@@ -822,4 +843,5 @@ __all__ = [
     "ToolPre",
     "UIEvent",
     "normalize",
+    "parse_event",
 ]

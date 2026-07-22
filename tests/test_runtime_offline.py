@@ -499,17 +499,30 @@ async def test_offline_steer_injected_at_provider_request_boundary(offline_env) 
 
 @pytest.mark.asyncio
 async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> None:
-    """Resume: the stored transcript is restored into the live context and
-    ``turn_base`` counts the restored user messages (DESIGN-SPEC §9)."""
+    """Resume: the stored transcript is restored into the live context,
+    ``turn_base`` counts the restored user messages (DESIGN-SPEC §9), and
+    the stored UIEvents come back typed for transcript replay — with
+    foreign/unparseable event-log lines skipped and the per-answer
+    evidence map rebuilt (DESIGN-SPEC §3/§10/§11)."""
+    from amplifier_app_newtui.kernel.persistence import SessionStore
+
     first = await _started_runtime(offline_env["project"])
     try:
         answer = asyncio.create_task(_answer_next_approval(first, ALLOW_ONCE))
-        await first.submit("please write hello.txt with hi")
+        response = await first.submit("please write hello.txt with hi")
         await answer
         assert first._initialized is not None
         session_id = first._initialized.session_id
     finally:
         await first.cleanup()
+
+    # Other apps' hook events share this file today — replay must skip
+    # anything that is not one of our own persisted UIEvent records.
+    store = SessionStore(project_dir=offline_env["project"])
+    with store.events_path(session_id).open("a", encoding="utf-8") as handle:
+        handle.write("not json at all\n")
+        handle.write(json.dumps({"event": "tool:pre", "foreign": True}) + "\n")
+        handle.write(json.dumps({"kind": "mystery_kind"}) + "\n")
 
     resumed = RealRuntime(
         bundle="offline",
@@ -527,8 +540,133 @@ async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> 
         assert roles.count("user") == 1
         assert roles.count("assistant") == 1
         assert any(m["role"] == "system" for m in messages)
+
+        kinds = [event.kind for event in resumed.restored_events]
+        for expected in ("prompt_submit", "tool_pre", "tool_post", "prompt_complete"):
+            assert expected in kinds, f"missing {expected} in {kinds}"
+        # Channel A is dropped at load time (the durable content blocks
+        # carry the text); foreign lines never parse into events.
+        assert "stream_block_delta" not in kinds
+        # The evidence map is rebuilt from the same stored stream, so the
+        # restored final answer stays clickable after resume (spec §10).
+        assert resumed.evidence.links_for(response.strip()) != ()
     finally:
         await resumed.cleanup()
+
+
+def _resume_bundle_project(
+    offline_workspace: dict[str, Path],
+    name: str,
+    *,
+    active: str | None = None,
+    use_active: bool = False,
+) -> Path:
+    """A fresh project dir with offline + offline2 bundles and settings.
+
+    Separate from the shared ``proj`` so per-test settings (active bundle,
+    resume override) never leak into the other offline tests.
+    """
+    import yaml
+
+    root = offline_workspace["project"].parent
+    modules = root / "modules"
+    project = root / name
+    bundles = project / ".amplifier" / "bundles"
+    bundles.mkdir(parents=True, exist_ok=True)
+    template = _BUNDLE_TEMPLATE.format(modules=modules)
+    (bundles / "offline.md").write_text(template, encoding="utf-8")
+    (bundles / "offline2.md").write_text(template, encoding="utf-8")
+    settings: dict = {}
+    if active:
+        settings["bundle"] = {"active": active}
+    if use_active:
+        settings["resume"] = {"use_active_bundle": True}
+    if settings:
+        (project / ".amplifier" / "settings.yaml").write_text(
+            yaml.safe_dump(settings), encoding="utf-8"
+        )
+    return project
+
+
+def _store_session(project: Path, session_id: str, bundle: str) -> None:
+    from amplifier_app_newtui.kernel.persistence import SessionStore
+
+    SessionStore(project_dir=project).save(
+        session_id,
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ],
+        {"bundle": bundle, "session_id": session_id},
+    )
+
+
+def _notifications(runtime: RealRuntime) -> list[str]:
+    return [e.message for e in _drain_kinds(runtime) if e.kind == "notification"]
+
+
+@pytest.mark.asyncio
+async def test_resume_attaches_under_the_stored_bundle_by_default(offline_env) -> None:
+    """Contract: session stored under bundle X, active bundle Y — resume
+    runs under X (resolved through the normal resolve_config/foundation
+    path) and one notice names both bundles. Previously the session
+    reattached under Y: a silent module-stack swap."""
+    project = _resume_bundle_project(offline_env, "proj-resume-stored", active="offline2")
+    _store_session(project, "resumestored01", "offline")
+
+    runtime = RealRuntime(
+        resume_id="resumestored01", project_dir=project, mode=lambda: "chat"
+    )
+    await runtime.start()
+    try:
+        assert runtime.bundle_name == "offline"
+        notices = _notifications(runtime)
+        assert any("offline" in m and "offline2" in m for m in notices), notices
+    finally:
+        await runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_resume_override_setting_attaches_the_active_bundle(offline_env) -> None:
+    """Contract: with ``resume.use_active_bundle: true`` the session runs
+    under the ACTIVE bundle and the notice says what happened."""
+    project = _resume_bundle_project(
+        offline_env, "proj-resume-active", active="offline2", use_active=True
+    )
+    _store_session(project, "resumeactive01", "offline")
+
+    runtime = RealRuntime(
+        resume_id="resumeactive01", project_dir=project, mode=lambda: "chat"
+    )
+    await runtime.start()
+    try:
+        assert runtime.bundle_name == "offline2"
+        notices = _notifications(runtime)
+        assert any(
+            "offline" in m and "offline2" in m and "resume.use_active_bundle" in m
+            for m in notices
+        ), notices
+    finally:
+        await runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_resume_missing_stored_bundle_falls_back_loudly(offline_env) -> None:
+    """A stored bundle that no longer discovers must not kill the resume:
+    the boot continues on the active bundle with an explicit notice."""
+    project = _resume_bundle_project(offline_env, "proj-resume-ghost", active="offline2")
+    _store_session(project, "resumeghost01", "ghost-bundle")
+
+    runtime = RealRuntime(
+        resume_id="resumeghost01", project_dir=project, mode=lambda: "chat"
+    )
+    await runtime.start()
+    try:
+        assert runtime.bundle_name == "offline2"
+        notices = _notifications(runtime)
+        assert any("ghost-bundle" in m and "not found" in m for m in notices), notices
+    finally:
+        await runtime.cleanup()
 
 
 @pytest.mark.asyncio
@@ -653,31 +791,72 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
     assert _SUPPRESSED_HOOKS_DEFAULT <= resolved
 
 
-def test_resume_notices_bundle_name_mismatch() -> None:
-    """Resuming a session stored under a different bundle than the one
-    currently resolved must not silently reattach it - one Notification
-    names both the stored and current bundle."""
+def test_resume_bundle_plan_defaults_to_stored() -> None:
+    """A session's module stack is part of its identity: with no explicit
+    --bundle and no override setting, resume boots the STORED bundle."""
+    from amplifier_app_newtui.kernel.runtime import _plan_resume_bundle
+
+    assert _plan_resume_bundle("offline", None, use_active=False) == ("offline", "stored")
+    # Explicit --bundle: the caller asked for it by name — it wins.
+    assert _plan_resume_bundle("offline", "other", use_active=False) == ("other", "explicit")
+    # Settings override: attach under whatever is currently active.
+    assert _plan_resume_bundle("offline", None, use_active=True) == (None, "active")
+    # No stored bundle recorded (older metadata): nothing to honor.
+    assert _plan_resume_bundle(None, None, use_active=False) == (None, "active")
+
+
+def test_resume_use_active_bundle_setting_shapes() -> None:
+    """Junk-shaped settings fall back to the default (honor stored)."""
+    from amplifier_app_newtui.kernel.runtime import resume_use_active_bundle
+
+    assert resume_use_active_bundle({}) is False
+    assert resume_use_active_bundle({"resume": "junk"}) is False
+    assert resume_use_active_bundle({"resume": {"use_active_bundle": "yes"}}) is False
+    assert resume_use_active_bundle({"resume": {"use_active_bundle": True}}) is True
+
+
+def test_resume_bundle_notice_names_both_on_divergence() -> None:
+    """Every non-default resume-bundle outcome is said out loud, naming
+    both the stored and the attached bundle."""
     from amplifier_app_newtui.kernel.events import Notification
     from amplifier_app_newtui.kernel.runtime import _resume_bundle_notice
 
+    # Stored honored while a different bundle is active.
     emitted: list[Notification] = []
-    _resume_bundle_notice({"bundle": "offline"}, "newtui", emitted.append)
-
+    _resume_bundle_notice("offline", "stored", "offline", "newtui", emitted.append)
     assert len(emitted) == 1
-    notif = emitted[0]
-    assert "offline" in notif.message
-    assert "newtui" in notif.message
+    assert "offline" in emitted[0].message and "newtui" in emitted[0].message
+
+    # Override attached the active bundle over the stored one.
+    emitted.clear()
+    _resume_bundle_notice("offline", "active", "newtui", "newtui", emitted.append)
+    assert len(emitted) == 1
+    assert "offline" in emitted[0].message and "newtui" in emitted[0].message
+    assert "resume.use_active_bundle" in emitted[0].message
+
+    # Explicit --bundle override.
+    emitted.clear()
+    _resume_bundle_notice("offline", "explicit", "other", "newtui", emitted.append)
+    assert len(emitted) == 1
+    assert "--bundle" in emitted[0].message
+
+    # Stored bundle no longer discoverable — fallback said loudly.
+    emitted.clear()
+    _resume_bundle_notice("ghost", "stored-missing", "newtui", "newtui", emitted.append)
+    assert len(emitted) == 1
+    assert "ghost" in emitted[0].message and "not found" in emitted[0].message
 
 
-def test_resume_notice_silent_on_same_bundle() -> None:
-    """No notice when the stored bundle matches the current one - the
-    common case must stay quiet."""
+def test_resume_bundle_notice_silent_on_common_cases() -> None:
+    """Quiet when stored and attached agree, and when nothing was stored."""
     from amplifier_app_newtui.kernel.runtime import _resume_bundle_notice
 
     emitted: list[object] = []
-    _resume_bundle_notice({"bundle": "newtui"}, "newtui", emitted.append)
-
-    assert len(emitted) == 0
+    _resume_bundle_notice("newtui", "stored", "newtui", "newtui", emitted.append)
+    _resume_bundle_notice("newtui", "explicit", "newtui", "newtui", emitted.append)
+    _resume_bundle_notice("newtui", "active", "newtui", "newtui", emitted.append)
+    _resume_bundle_notice(None, "active", "newtui", "newtui", emitted.append)
+    assert emitted == []
 
 
 def test_restored_history_extracts_prose_and_skips_tool_traffic() -> None:

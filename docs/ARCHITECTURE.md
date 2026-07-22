@@ -578,6 +578,14 @@ not a turn. What survives restarts: the full conversation, metadata, and the eve
 which in turn powers cost re-seeding on resume, evidence links, lane replay, and the stored-
 session fork path for rewind.
 
+On resume the stored events replay through `TranscriptReducer.replay` (behind a
+side-effect-suppressing host proxy), rebuilding the full transcript — tool digests,
+delegate summaries, lane focus transcripts, plan state, turn rules with checkpoints —
+with a prose-only fallback for sessions that have no usable event log. Resume also
+reattaches under the session's **stored** bundle by default (resolved through the normal
+`resolve_config` path); settings `resume.use_active_bundle: true` or an explicit
+`--bundle` attach under the current one instead, and every divergent outcome is announced.
+
 ---
 
 ## 10. Testing architecture

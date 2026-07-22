@@ -241,26 +241,35 @@ def announce_ready(app: NewTuiApp) -> None:
             SessionBanner(id=app.allocator.next_id(), headline=headline, detail=detail)
         )
     # Resume replay: an empty screen over a restored context reads as a
-    # fresh session — replay the stored conversation (prompts + prose;
-    # tool traffic skipped) so scrollback matches what the model knows.
+    # fresh session. Full-fidelity path first — the stored UIEvents run
+    # back through the reducer, rebuilding the transcript exactly as it
+    # rendered live: tool digests, delegate summaries, lane focus
+    # transcripts, plan state, turn rules (DESIGN-SPEC §3/§11). Sessions
+    # without a usable event log (e.g. created by another amplifier app)
+    # degrade to the prose-only prompts + answers below.
     from .live_tail import answer_spans
 
     app.composer.seed_history(
         text for role, text in app.adapter.restored_history if role == "user"
     )
-    for role, text in app.adapter.restored_history:
-        if role == "user":
-            app.append_block(
-                UserLine(id=app.allocator.next_id(), text=text, mode=app.mode_id)
-            )
-        else:
-            app.append_block(
-                Answer(
-                    id=app.allocator.next_id(),
-                    spans=answer_spans(text),
-                    clickable=False,
+    if not app.reducer.replay(
+        app.adapter.restored_events,
+        turn_base=app.adapter.turn_base,
+        session_cost=app.adapter.session_cost_start,
+    ):
+        for role, text in app.adapter.restored_history:
+            if role == "user":
+                app.append_block(
+                    UserLine(id=app.allocator.next_id(), text=text, mode=app.mode_id)
                 )
-            )
+            else:
+                app.append_block(
+                    Answer(
+                        id=app.allocator.next_id(),
+                        spans=answer_spans(text),
+                        clickable=False,
+                    )
+                )
     for notice in app.adapter.startup_notices:
         app.append_block(
             Answer(
