@@ -29,7 +29,7 @@ import pytest
 import pytest_asyncio
 
 from amplifier_app_newtui.kernel.compaction import CompactionConfig
-from amplifier_app_newtui.kernel.events import Notification
+from amplifier_app_newtui.kernel.events import Notification, PromptSubmit
 from amplifier_app_newtui.kernel.rewind import RewindError
 from amplifier_app_newtui.kernel.session_ops import ModelListing, StatusInfo
 from amplifier_app_newtui.model.trust import CapabilityClass, TrustDecision
@@ -145,6 +145,7 @@ class FakeRealRuntime:
         self.session_cost_start = Decimal("1.25")
         self.turn_base = 3
         self.restored_history = (("user", "hi"), ("assistant", "hey"))
+        self.restored_events = (PromptSubmit(session_id="stored", prompt="hi"),)
         self.compaction = CompactionConfig(auto_compact=False, compact_threshold=0.5)
         self.degraded_notice = ""
         self.broker = FakeBroker()
@@ -302,6 +303,7 @@ async def test_start_happy_path_copies_identity(booted: Booted) -> None:
     assert adapter.session_cost_start == Decimal("1.25")
     assert adapter.turn_base == 3
     assert adapter.restored_history == fake.restored_history
+    assert adapter.restored_events == fake.restored_events
     assert adapter.compaction is fake.compaction
     assert adapter.startup_notices == ()  # no degraded notice
 

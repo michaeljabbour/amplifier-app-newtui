@@ -244,6 +244,17 @@ class OutcomeLedger:
                 return turn.checkpoint
         return None
 
+    def clear(self) -> None:
+        """Drop every recorded turn (resume-replay degrade path, spec §9).
+
+        Used when a replayed event log disagrees with the restored
+        transcript (foreign/truncated log, post-rewind ghost turns): the
+        replayed checkpoints would slice the live context at the wrong
+        turns, so they are discarded and new checkpoints fall back to the
+        transcript-derived ``turn_base`` offset.
+        """
+        self._turns.clear()
+
     def trim_to(self, checkpoint_id: str) -> None:
         """Drop ledger turns after *checkpoint_id* (post-fork, confirm-then-trim).
 

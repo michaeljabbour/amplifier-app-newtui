@@ -510,3 +510,35 @@ class TestUsageFromContentBlockEnd:
             "provider_response_usage",
             "content_block_end",
         ]
+
+
+class TestParseEvent:
+    """Stored events.jsonl records round-trip back into typed UIEvents
+    (the resume transcript-replay loader, DESIGN-SPEC §3/§11)."""
+
+    def test_round_trips_a_persisted_record(self) -> None:
+        from decimal import Decimal
+
+        from amplifier_app_newtui.kernel.events import parse_event
+
+        event = ProviderResponseUsage(
+            session_id="root01",
+            input_tokens=10,
+            output_tokens=20,
+            cost_usd=Decimal("0.5"),
+        )
+        parsed = parse_event(event.model_dump(mode="json"))
+        assert parsed == event
+
+    def test_rejects_foreign_and_malformed_records(self) -> None:
+        from amplifier_app_newtui.kernel.events import parse_event
+
+        # Raw hook payloads from other writers sharing the file.
+        assert parse_event({"event": "tool:pre", "tool_name": "bash"}) is None
+        # Unknown discriminator.
+        assert parse_event({"kind": "mystery_kind"}) is None
+        # Extra keys fail the frozen extra="forbid" envelope — a foreign
+        # record can never half-parse into one of ours.
+        record = PromptSubmit(prompt="hi").model_dump(mode="json")
+        record["foreign_field"] = True
+        assert parse_event(record) is None
