@@ -15,6 +15,8 @@ dim done.
 from __future__ import annotations
 
 import re
+from collections import Counter
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import Literal
 
@@ -386,4 +388,54 @@ class LaneRegistry:
         return rebound
 
 
-__all__ = ["LaneRecord", "LaneRegistry", "LaneState", "LaneStateName"]
+def _short_lane_id(session_id: str) -> str:
+    """A short, stable disambiguator drawn from a session id.
+
+    Governance redaction can wrap ids in ``[REDACTED:…]`` brackets; those
+    (and any other non-alphanumeric noise) are stripped, then the LAST four
+    usable characters are taken. Foundation prefixes sibling sub-sessions
+    with a shared timestamp, so the random tail disambiguates where the head
+    would not. Falls back to the whole cleaned id when shorter than four.
+    """
+    cleaned = re.sub(r"\[[^\]]*\]", "", session_id)
+    cleaned = "".join(ch for ch in cleaned if ch.isalnum())
+    return cleaned[-4:] if len(cleaned) >= 4 else cleaned
+
+
+def lane_labels(records: Sequence[LaneRecord]) -> tuple[str, ...]:
+    """Display labels for a lane listing, disambiguating same-named agents.
+
+    Two delegates of the same agent (e.g. two ``test-writer`` lanes) render
+    byte-identical rows — ambiguous the moment the supervisor tries to tell
+    them apart. Every lane whose ``name`` is shared gets a short session-id
+    tag appended (``test-writer #a1b2``); uniquely-named lanes are returned
+    unchanged. A rare tail collision (two ids ending the same four chars)
+    falls back to a stable 1-based ordinal within the group, so the labels
+    are always distinct and deterministic in registration order.
+    """
+    counts = Counter(record.lane.name for record in records)
+    ordinals: dict[str, int] = {}
+    used: set[str] = set()
+    labels: list[str] = []
+    for record in records:
+        name = record.lane.name
+        if not name or counts[name] == 1:
+            labels.append(name)
+            continue
+        ordinals[name] = ordinals.get(name, 0) + 1
+        tag = _short_lane_id(record.session_id)
+        label = f"{name} #{tag}" if tag else f"{name} #{ordinals[name]}"
+        if label in used:
+            label = f"{name} #{ordinals[name]}"
+        used.add(label)
+        labels.append(label)
+    return tuple(labels)
+
+
+__all__ = [
+    "LaneRecord",
+    "LaneRegistry",
+    "LaneState",
+    "LaneStateName",
+    "lane_labels",
+]

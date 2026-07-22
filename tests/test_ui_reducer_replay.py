@@ -271,3 +271,40 @@ def test_replay_reconciles_cost_to_the_kernel_baseline() -> None:
         is True
     )
     assert reducer.session_cost == Decimal("1.23")
+
+
+def test_replay_stamps_historical_mode_on_the_user_line() -> None:
+    """The stored prompt_submit carries the posture the turn ran under, so
+    replay stamps that HISTORICAL mode badge \u2014 not the current live one."""
+    reducer, host = make_reducer()  # ProbeHost live mode is 'chat'
+    events: list[ev.UIEvent] = [
+        ev.PromptSubmit(**_env(0.0), prompt="draft the plan", mode="plan"),
+        ev.PromptComplete(**_env(1.0), response="planned"),
+    ]
+    assert reducer.replay(events, turn_base=1) is True
+    user_line = next(b for b in host.blocks if b.kind == "user_line")
+    assert user_line.mode == "plan"  # recorded posture, not the live 'chat'
+
+
+def test_replay_falls_back_to_live_mode_on_legacy_logs() -> None:
+    """Pre-stamp logs have no mode field; the badge falls back to the live
+    posture rather than an empty/blank badge (backward compatible)."""
+    reducer, host = make_reducer()
+    host.mode_id = "auto"
+    events: list[ev.UIEvent] = [
+        ev.PromptSubmit(**_env(0.0), prompt="legacy turn"),  # mode == ""
+        ev.PromptComplete(**_env(1.0), response="done"),
+    ]
+    assert reducer.replay(events, turn_base=1) is True
+    user_line = next(b for b in host.blocks if b.kind == "user_line")
+    assert user_line.mode == "auto"
+
+
+def test_live_turn_prefers_event_mode_over_host_posture() -> None:
+    """Live dispatch honours the event's stamped mode too, so the durable
+    user line matches the posture at submit even if the app later flips."""
+    reducer, host = make_reducer()
+    host.mode_id = "auto"
+    reducer.handle(ev.PromptSubmit(**_env(0.0), prompt="build it", mode="build"))
+    user_line = next(b for b in host.blocks if b.kind == "user_line")
+    assert user_line.mode == "build"

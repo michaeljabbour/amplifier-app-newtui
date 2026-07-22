@@ -178,6 +178,18 @@ def test_turn_lifecycle_events() -> None:
     assert isinstance(normalize("execution:end", {**SID}), ExecutionEnd)
 
 
+def test_prompt_submit_records_active_mode() -> None:
+    """The turn boundary carries the app posture so the durable log (and
+    resume replay) can show which mode a historical turn ran under."""
+    event = normalize("prompt:submit", {**SID, "prompt": "ship it", "mode": "build"})
+    assert isinstance(event, PromptSubmit)
+    assert event.mode == "build"
+    # Legacy logs without a mode field stay valid (empty → live fallback).
+    legacy = normalize("prompt:submit", {**SID, "prompt": "ship it"})
+    assert isinstance(legacy, PromptSubmit)
+    assert legacy.mode == ""
+
+
 def test_provider_usage_nested_and_flat() -> None:
     nested = normalize(
         "provider:response",

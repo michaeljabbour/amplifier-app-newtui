@@ -1081,7 +1081,12 @@ class TranscriptReducer:
             prompt=event.prompt,
             start_ts=event.ts,
             last_ts=event.ts,
-            mode=self._host.mode_id,
+            # The event carries the posture the turn was submitted under
+            # (stamped into ui-events.jsonl), so resume replay stamps the
+            # user line's ``[mode]`` badge with the HISTORICAL mode rather
+            # than the current live one. Legacy logs (no mode) fall back to
+            # the live posture — the pre-stamp behavior.
+            mode=event.mode or self._host.mode_id,
             spec=self._spec_lookup(event.prompt),
         )
         self._turn = turn

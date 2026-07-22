@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.model.lanes import LaneRecord, LaneState
+from amplifier_app_newtui.model.lanes import LaneRecord, LaneState, lane_labels
 from amplifier_app_newtui.ui.lanes_panel import (
     LANE_MOTION_INTERVAL_SECONDS,
     LANES_HEADER,
@@ -289,3 +289,81 @@ def test_format_lane_lines_without_width_is_unchanged() -> None:
     wide = format_lane_lines(_wide_lanes())
     assert "Exploring the codebase for relevant files" in wide[0]
     assert wide == format_lane_lines(_wide_lanes(), width=None)
+
+
+# -- same-named-agent lane aliasing (runtime parity) --------------------------
+
+
+def test_lane_labels_leave_unique_names_untouched() -> None:
+    labels = lane_labels(RECORDS)
+    assert labels == ("researcher", "coder", "tester")
+
+
+def test_lane_labels_disambiguate_same_named_agents() -> None:
+    """Two delegates of the same agent get a short session-id tag so their
+    lane rows stop reading identically (the whole point of the panel)."""
+    records = (
+        _record("sub-aaaa", "test-writer", "running", "writing tests", 10, "0.05"),
+        _record("sub-bbbb", "test-writer", "working", "writing tests", 20, "0.06"),
+        _record("s3", "reviewer", "done", "done \u00b7 ok", 5, "0.01"),
+    )
+    assert lane_labels(records) == ("test-writer #aaaa", "test-writer #bbbb", "reviewer")
+
+
+def test_lane_labels_tail_collision_falls_back_to_ordinal() -> None:
+    """Two ids sharing the last four usable chars can't disambiguate by tag,
+    so the group falls back to a stable 1-based ordinal (deterministic)."""
+    records = (
+        _record("x-9999", "worker", "running", "a", 1, "0.01"),
+        _record("y-9999", "worker", "running", "b", 2, "0.01"),
+    )
+    assert lane_labels(records) == ("worker #9999", "worker #2")
+
+
+def test_lane_labels_ignore_blank_names() -> None:
+    records = (
+        _record("s1", "", "running", "a", 1, "0.01"),
+        _record("s2", "", "running", "b", 2, "0.01"),
+    )
+    assert lane_labels(records) == ("", "")
+
+
+def test_format_lane_lines_disambiguates_same_named_lanes() -> None:
+    """Golden: the aliased labels flow into the aligned rows and the ``\u00b7``
+    separator columns still line up exactly."""
+    records = (
+        _record("sub-aaaa", "test-writer", "running", "writing tests", 10, "0.05", 1000),
+        _record("sub-bbbb", "test-writer", "working", "writing tests", 20, "0.06", 2000),
+        _record("s3", "reviewer", "done", "done \u00b7 ok", 5, "0.01", 300),
+    )
+    lines = format_lane_lines(
+        tuple(r.lane for r in records), labels=lane_labels(records)
+    )
+    assert lines == (
+        "  \u25d0 test-writer #aaaa \u00b7 writing tests \u00b7 10s \u00b7 \u2193 1.0k tokens \u00b7 $0.05",
+        "  \u25a0 test-writer #bbbb \u00b7 writing tests \u00b7 20s \u00b7 \u2193 2.0k tokens \u00b7 $0.06",
+        "  \u2714 reviewer          \u00b7 done \u00b7 ok     \u00b7 5s  \u00b7 \u2193 0.3k tokens \u00b7 $0.01",
+    )
+    # Alignment holds across the disambiguated (wider) name column.
+    assert lines[0].index(" \u00b7 ") == lines[1].index(" \u00b7 ") == lines[2].index(" \u00b7 ")
+
+
+@pytest.mark.asyncio
+async def test_panel_disambiguates_same_named_lanes() -> None:
+    records = (
+        _record("sub-aaaa", "test-writer", "running", "writing tests", 10, "0.05", 1000),
+        _record("sub-bbbb", "test-writer", "working", "writing tests", 20, "0.06", 2000),
+    )
+    app = LanesHost()
+    async with app.run_test(size=(100, 40)) as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes(records)
+        panel.show_panel()
+        await pilot.pause()
+        joined = "\n".join(panel.lane_lines)
+        assert "test-writer #aaaa" in joined
+        assert "test-writer #bbbb" in joined
+        # Focus routing still carries the raw agent name (session id disambiguates).
+        await pilot.click("#lane-row-1")
+        await pilot.pause()
+        assert app.focused_lanes == [("test-writer", "sub-bbbb")]
