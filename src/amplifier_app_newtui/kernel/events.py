@@ -522,6 +522,23 @@ def usage_from_content_block_end(event: "ContentBlockEnd") -> "ProviderResponseU
     )
 
 
+def recipe_approval_prompt(data: Mapping[str, Any]) -> str:
+    """One prompt string for a ``recipe:approval`` gate.
+
+    Used by :func:`normalize` (durable ApprovalRequired record) AND the
+    kernel recipe bridge's broker ask, so the approval bar and the event
+    log show the same text. Names the recipe and stage explicitly — a
+    bare gate prompt like "Continue?" is meaningless without them.
+    """
+    recipe = _str(data, "name") or "recipe"
+    stage = _str(data, "stage_name")
+    gate = _str(data, "prompt") or (
+        f"Approve completion of stage '{stage}'?" if stage else "Approve to continue?"
+    )
+    subject = f"Recipe '{recipe}'" + (f" · stage '{stage}'" if stage else "")
+    return f"{subject} — {gate}"
+
+
 def _dict(data: Mapping[str, Any], *keys: str) -> dict[str, Any]:
     for key in keys:
         value = data.get(key)
@@ -757,6 +774,21 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 command=_str(payload, "command"),
                 continuation=_str(payload, "continuation"),
             )
+        case "recipe:approval":
+            # tool-recipes approval gate (amplifier-bundle-recipes
+            # executor._show_progress → hooks.emit("recipe:approval")).
+            # Payload: {name, description, current_step, total_steps,
+            # steps, status: "waiting_approval", prompt, stage_name} — it
+            # carries NO recipe session id; answer routing resolves that
+            # through the tool's own ``approvals`` operation
+            # (kernel/recipes.py). Options are not in the payload either:
+            # the broker presents the fail-closed verbatim triple, so the
+            # durable record states the same.
+            return ApprovalRequired(
+                **env,
+                prompt=recipe_approval_prompt(payload),
+                options=("Allow once", "Allow always", "Deny"),
+            )
         case "cancel:requested":
             return CancelRequested(**env)
         case "cancel:completed":
@@ -850,4 +882,5 @@ __all__ = [
     "UIEvent",
     "normalize",
     "parse_event",
+    "recipe_approval_prompt",
 ]
