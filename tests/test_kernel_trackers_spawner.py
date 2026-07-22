@@ -41,6 +41,17 @@ class FakeCancellation:
         self.children.remove(child)
 
 
+class FakeContext:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    async def add_message(self, message: dict[str, Any]) -> None:
+        self.messages.append(dict(message))
+
+    async def set_messages(self, messages: list[dict[str, Any]]) -> None:
+        self.messages = [dict(m) for m in messages]
+
+
 class FakeCoordinator:
     def __init__(self) -> None:
         self.hooks = FakeHooks()
@@ -48,9 +59,19 @@ class FakeCoordinator:
         self.capabilities: dict[str, Any] = {}
         self.approval_system = object()
         self.display_system: Any = None
+        self.context = FakeContext()
+        self.mounts: dict[str, Any] = {}
 
     def get(self, name: str) -> Any:
-        return self.hooks if name == "hooks" else None
+        if name == "hooks":
+            return self.hooks
+        if name == "context":
+            return self.context
+        return self.mounts.get(name)
+
+    async def mount(self, mount_point: str, module: Any, name: str | None = None) -> None:
+        del name
+        self.mounts[mount_point] = module
 
     def get_capability(self, name: str) -> Any:
         return self.capabilities.get(name)
@@ -264,6 +285,137 @@ async def test_agent_overlay_merges_over_parent_config() -> None:
     config = created[0].config
     assert config["providers"] == ["anthropic"]  # inherited
     assert config["model"] == "fast"  # overlay wins
+
+
+@pytest.mark.asyncio
+async def test_spawn_honors_tool_delegate_contract_kwargs() -> None:
+    """The exact kwargs foundation tool-delegate passes must all take
+    effect: agent session overlay merges per-key (parent streaming
+    orchestrator survives), orchestrator_config merges into
+    session.orchestrator.config, tool/hook exclusions apply to
+    inheritance only (agent declarations kept), session_metadata lands
+    under session.metadata, self_delegation_depth becomes a capability.
+    The parent's own config must stay untouched."""
+    spawner, created = make_spawner()
+    parent = FakeSession(
+        config={
+            "session": {
+                "orchestrator": {"module": "loop-streaming", "config": {"a": 1}},
+                "context": {"module": "context-parent"},
+            },
+            "tools": [{"module": "tool-a"}, {"module": "tool-delegate"}],
+            "hooks": [{"module": "hook-a"}, {"module": "hook-b"}],
+        },
+        session_id="sess-root",
+    )
+    result = await spawner.spawn(
+        agent_name="scout",
+        instruction="go",
+        parent_session=parent,
+        agent_configs={
+            "scout": {
+                "session": {"context": {"module": "context-agent"}},
+                "tools": [{"module": "tool-x"}],
+            }
+        },
+        sub_session_id="sess-root-deadbeef_scout",
+        tool_inheritance={"exclude_tools": ["tool-delegate"]},
+        hook_inheritance={"exclude_hooks": ["hook-b"]},
+        orchestrator_config={"b": 2},
+        provider_preferences=None,
+        self_delegation_depth=1,
+        session_metadata={"agent_name": "scout", "tool_call_id": "call-1"},
+    )
+    assert result["status"] == "success"
+    assert result["session_id"] == "sess-root-deadbeef_scout"
+    config = created[0].config
+    assert config["session"]["orchestrator"]["module"] == "loop-streaming"
+    assert config["session"]["orchestrator"]["config"] == {"a": 1, "b": 2}
+    assert config["session"]["context"] == {"module": "context-agent"}
+    assert config["session"]["metadata"] == {"agent_name": "scout", "tool_call_id": "call-1"}
+    assert [t["module"] for t in config["tools"]] == ["tool-a", "tool-x"]
+    assert [h["module"] for h in config["hooks"]] == ["hook-a"]
+    assert created[0].coordinator.capabilities["self_delegation_depth"] == 1
+    # deny-and-continue semantics untouched; parent config not mutated
+    assert parent.config["session"]["orchestrator"]["config"] == {"a": 1}
+    assert [t["module"] for t in parent.config["tools"]] == ["tool-a", "tool-delegate"]
+
+
+@pytest.mark.asyncio
+async def test_spawn_keeps_agent_declared_tool_despite_exclusion() -> None:
+    """tool-delegate contract: exclusions apply to INHERITANCE only —
+    an agent that explicitly declares an excluded module keeps it."""
+    spawner, created = make_spawner()
+    parent = FakeSession(
+        config={
+            "session": {"orchestrator": {"module": "loop"}, "context": {"module": "ctx"}},
+            "tools": [{"module": "tool-delegate"}],
+        },
+        session_id="sess-root",
+    )
+    await spawner.spawn(
+        "scout",
+        "go",
+        parent,
+        agent_configs={"scout": {"tools": [{"module": "tool-delegate"}]}},
+        tool_inheritance={"exclude_tools": ["tool-delegate"]},
+    )
+    assert [t["module"] for t in created[0].config["tools"]] == ["tool-delegate"]
+
+
+@pytest.mark.asyncio
+async def test_spawn_inherits_module_resolver_and_working_dir() -> None:
+    """The child mounts the parent's module-source-resolver and inherits
+    session.working_dir BEFORE initialize — without the resolver a real
+    child (git+/file: module sources) cannot mount its orchestrator and
+    no telemetry ever fires."""
+    resolver = object()
+    spawner, created = make_spawner()
+    parent = make_parent()
+    parent.coordinator.mounts["module-source-resolver"] = resolver
+    parent.coordinator.capabilities["session.working_dir"] = "/proj"
+    await spawner.spawn("scout", "go", parent)
+    child = created[0]
+    assert child.coordinator.mounts["module-source-resolver"] is resolver
+    assert child.coordinator.capabilities["session.working_dir"] == "/proj"
+
+
+@pytest.mark.asyncio
+async def test_spawn_seeds_agent_instruction_and_parent_messages() -> None:
+    """The agent overlay's instruction (the agent .md body) becomes the
+    child's system prompt; parent_messages, when a caller passes them,
+    land in the child context first (reference in-process semantics)."""
+    spawner, created = make_spawner()
+    await spawner.spawn(
+        "scout",
+        "go",
+        make_parent(),
+        agent_configs={"scout": {"instruction": "You are scout."}},
+        parent_messages=[{"role": "user", "content": "earlier context"}],
+    )
+    messages = created[0].coordinator.context.messages
+    assert {"role": "user", "content": "earlier context"} in messages
+    assert {"role": "system", "content": "You are scout."} in messages
+
+
+@pytest.mark.asyncio
+async def test_spawn_records_brief_and_result() -> None:
+    """The spawner remembers the delegate brief (lane seed) and the child
+    output keyed by sub-session id (AgentCompleted.result synthesis)."""
+    spawner, _created = make_spawner()
+    instruction = "[PARENT CONVERSATION CONTEXT]\nold\n[YOUR TASK]\nfind the bug in auth.py"
+    result = await spawner.spawn("scout", instruction, make_parent())
+    assert spawner.brief_for("scout") == "find the bug in auth.py"
+    assert spawner.result_for(result["session_id"]).startswith("done: ")
+    assert spawner.brief_for("unknown") == ""
+    assert spawner.result_for("unknown") == ""
+
+
+@pytest.mark.asyncio
+async def test_spawn_records_failure_output_as_result() -> None:
+    spawner, _created = make_spawner(fail_execute=True)
+    result = await spawner.spawn("scout", "explode", make_parent())
+    assert "boom" in spawner.result_for(result["session_id"])
 
 
 def test_register_installs_spawn_capability() -> None:

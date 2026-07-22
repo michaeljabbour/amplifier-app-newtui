@@ -185,10 +185,15 @@ class FakeLoop:
             "llm:stream_block_end",
             {"request_id": "req-1", "block_index": 0, "block_type": "text"},
         )
-        await hooks.emit(
-            "provider:response",
-            {"usage": dict(response["usage"]), "model": response["model"]},
-        )
+        # Real loop-streaming never fires provider:response; usage rides the
+        # final content_block:end instead. The flag mirrors that surface so
+        # the orchestrator_config seam and the bridge's usage synthesis are
+        # both exercised (spawn passes usage_on_block_end through).
+        if not self.config.get("usage_on_block_end"):
+            await hooks.emit(
+                "provider:response",
+                {"usage": dict(response["usage"]), "model": response["model"]},
+            )
 
         tool_note = ""
         tool = tools.get("write_file")
@@ -220,15 +225,15 @@ class FakeLoop:
 
         final = f"{text} [{tool_note}]" if tool_note else text
         await context.add_message({"role": "assistant", "content": final})
-        await hooks.emit(
-            "content_block:end",
-            {
-                "block_type": "text",
-                "block_index": 0,
-                "total_blocks": 1,
-                "block": {"type": "text", "text": final},
-            },
-        )
+        block_end = {
+            "block_type": "text",
+            "block_index": 0,
+            "total_blocks": 1,
+            "block": {"type": "text", "text": final},
+        }
+        if self.config.get("usage_on_block_end"):
+            block_end["usage"] = dict(response["usage"])
+        await hooks.emit("content_block:end", block_end)
         await hooks.emit(
             "orchestrator:complete",
             {"orchestrator": "loop-fake", "turn_count": 1, "status": "success"},
@@ -437,6 +442,105 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
         recorded_kinds = {json.loads(line)["kind"] for line in events_lines}
         assert "provider_response_usage" in recorded_kinds
         assert "tool_post" in recorded_kinds
+    finally:
+        await runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_offline_spawn_child_telemetry_reaches_the_queue(offline_env) -> None:
+    """The fan-out telemetry seam, end to end through the REAL SessionSpawner.
+
+    Drives the registered ``session.spawn`` capability with the exact
+    kwargs foundation's tool-delegate passes (ground truth: the pinned
+    ``amplifier_module_tool_delegate._spawn_new_session``) and emits the
+    module's spawn/completion events verbatim — the completion payload
+    carries NO ``result`` field. Asserts on the UI queue:
+
+    - child-stamped ``stream_block_delta`` (Channel A lives for lanes)
+    - synthesized child usage (``orchestrator_config`` reached the child
+      orchestrator, which rode usage on ``content_block:end`` exactly like
+      real loop-streaming; the bridge synthesized the telemetry event)
+    - ``agent_spawned`` + ``agent_completed`` with a non-empty result
+      synthesized from the child output the spawner captured
+    """
+    runtime = await _started_runtime(offline_env["project"], mode="auto")
+    try:
+        initialized = runtime._initialized
+        assert initialized is not None
+        root_id = initialized.session_id
+        spawn = initialized.coordinator.get_capability("session.spawn")
+        assert spawn is not None
+        hooks = initialized.coordinator.hooks
+        sub_id = f"{root_id}-deadbeefcafef00d_scout"
+
+        # Payload shapes below are verbatim copies of tool-delegate's emits.
+        await hooks.emit(
+            "delegate:agent_spawned",
+            {
+                "agent": "scout",
+                "sub_session_id": sub_id,
+                "parent_session_id": root_id,
+                "context_depth": "recent",
+                "context_scope": "conversation",
+                "tool_call_id": "call-7",
+                "parallel_group_id": None,
+                "model_role": None,
+                "provider_preferences": None,
+            },
+        )
+        result = await spawn(
+            agent_name="scout",
+            instruction="[YOUR TASK]\nplease write hello.txt with hi",
+            parent_session=initialized.session,
+            agent_configs={},
+            sub_session_id=sub_id,
+            tool_inheritance={"exclude_tools": ["tool-delegate"]},
+            hook_inheritance={},
+            orchestrator_config={"usage_on_block_end": True},
+            provider_preferences=None,
+            self_delegation_depth=0,
+            session_metadata={"agent_name": "scout", "tool_call_id": "call-7"},
+        )
+        await hooks.emit(
+            "delegate:agent_completed",
+            {
+                "agent": "scout",
+                "sub_session_id": sub_id,
+                "parent_session_id": root_id,
+                "success": True,
+                "tool_call_id": "call-7",
+                "parallel_group_id": None,
+            },
+        )
+
+        assert result["status"] == "success"
+        assert result["session_id"] == sub_id
+        assert "Hello from the fake provider." in str(result["output"])
+
+        events = _drain_kinds(runtime)
+        # Channel A: the child's live tail, stamped with the child id.
+        child_deltas = [
+            e for e in events if e.kind == "stream_block_delta" and e.session_id == sub_id
+        ]
+        assert "".join(d.text for d in child_deltas) == "Hello from the fake provider."
+        assert all(d.parent_id == root_id for d in child_deltas)
+        # Child usage synthesized from its final content_block:end — proof
+        # the orchestrator_config kwarg reached the child's orchestrator.
+        (child_usage,) = [
+            e for e in events if e.kind == "provider_response_usage" and e.session_id == sub_id
+        ]
+        assert (child_usage.input_tokens, child_usage.output_tokens) == (12, 7)
+        # Child tool records flow too (lane activity ticker source).
+        assert any(e.kind == "tool_post" and e.session_id == sub_id for e in events)
+        # Lifecycle: spawn event normalized; completion result synthesized
+        # from the child output (the raw payload had no result field).
+        (spawned,) = [e for e in events if e.kind == "agent_spawned"]
+        assert spawned.sub_session_id == sub_id
+        (completed,) = [e for e in events if e.kind == "agent_completed"]
+        assert completed.sub_session_id == sub_id
+        assert "Hello from the fake provider." in completed.result
+        # Real lane seed: the delegate brief is recorded for the adapter.
+        assert runtime.agent_brief("scout") == "please write hello.txt with hi"
     finally:
         await runtime.cleanup()
 

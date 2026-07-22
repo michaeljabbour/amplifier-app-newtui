@@ -527,5 +527,23 @@ class RealRuntimeAdapter(RuntimeAdapter):
             return ()
         return self._runtime.evidence.links_for(answer_text)
 
+    def lane_seed(self, agent_name: str) -> LaneSeed | None:
+        """Seed a real lane with the delegate brief as its activity line.
+
+        Real telemetry (elapsed/cost/tokens) starts at zero and accrues
+        from the child-stamped events the spawner's re-attached bridge
+        forwards; only the presentation seed comes from the spawn brief.
+        Cross-thread read of the spawner's brief map (dict get under the
+        GIL) — no marshalling needed for this synchronous lookup.
+        """
+        if self._runtime is None:
+            return None
+        brief = self._runtime.agent_brief(agent_name)
+        if not brief:
+            return None
+        from .reducer import LaneSeed
+
+        return LaneSeed(activity=brief)
+
 
 __all__ = ["RealRuntimeAdapter", "RuntimeAdapter"]

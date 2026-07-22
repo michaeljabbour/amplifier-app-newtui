@@ -165,6 +165,10 @@ class FakeRealRuntime:
         self.cleanup_called.set()
         self.record("cleanup", ())
 
+    def agent_brief(self, agent_name: str) -> str:
+        self.record("agent_brief", (agent_name,))
+        return "fix the flaky test" if agent_name == "scout" else ""
+
     async def set_model(self, model: str) -> object:
         self.record("set_model", (model,))
         if self.next_model_name is not None:
@@ -481,6 +485,23 @@ async def test_neutral_guards_before_boot() -> None:
         await adapter.fork("cp-1", _LEDGER)
     assert adapter.evidence_links("answer") == ()
     assert adapter.answer_approval("t1", "allow") is None  # silent return
+    assert adapter.lane_seed("scout") is None
+
+
+@pytest.mark.asyncio
+async def test_lane_seed_uses_the_delegate_brief(booted: Booted) -> None:
+    """Real lanes seed from the spawner-recorded delegate brief; the
+    telemetry fields stay zero (they accrue from child-stamped events)."""
+    seed = booted.adapter.lane_seed("scout")
+    assert seed is not None
+    assert seed.activity == "fix the flaky test"
+    assert (seed.elapsed, seed.tokens, seed.cost, seed.state) == (
+        0.0,
+        0,
+        Decimal("0"),
+        "running",
+    )
+    assert booted.adapter.lane_seed("never-spawned") is None
 
 
 # ---------------------------------------------------------------------------

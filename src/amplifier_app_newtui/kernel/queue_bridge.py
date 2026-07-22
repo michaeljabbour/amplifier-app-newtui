@@ -16,7 +16,13 @@ from typing import Any
 
 from amplifier_core import HookResult
 
-from .events import ContentBlockEnd, UIEvent, normalize, usage_from_content_block_end
+from .events import (
+    AgentCompleted,
+    ContentBlockEnd,
+    UIEvent,
+    normalize,
+    usage_from_content_block_end,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +88,7 @@ class QueueBridge:
         *,
         tap: Callable[[UIEvent], None] | None = None,
         events: tuple[str, ...] | None = None,
+        agent_result_lookup: Callable[[str], str] | None = None,
     ) -> None:
         self.queue: asyncio.Queue[UIEvent] = queue if queue is not None else asyncio.Queue()
         self.dropped = 0
@@ -96,6 +103,12 @@ class QueueBridge:
         """Raw hook events this bridge instance registers for. The real
         runtime excludes ``prompt:complete`` here and synthesizes its own
         enriched close-out event after the end-of-turn git snapshot."""
+        self._agent_result_lookup = agent_result_lookup
+        """Fills an empty ``AgentCompleted.result`` by sub-session id.
+        Foundation tool-delegate's ``delegate:agent_completed`` payload
+        carries no result field (verified against the pinned module), so
+        without this the delegate-summary snippets and lane recaps stay
+        blank; the spawner records each child's final output."""
 
     def emit(self, event: UIEvent) -> None:
         """Push one already-typed event (used by DisplaySystem notices and
@@ -121,6 +134,19 @@ class QueueBridge:
                 usage = usage_from_content_block_end(normalized)
                 if usage is not None:
                     self.emit(usage)
+            if (
+                isinstance(normalized, AgentCompleted)
+                and not normalized.result
+                and self._agent_result_lookup is not None
+            ):
+                try:
+                    result = self._agent_result_lookup(
+                        normalized.sub_session_id or normalized.session_id
+                    )
+                except Exception:  # noqa: BLE001 — lookup is best-effort enrichment
+                    result = ""
+                if result:
+                    normalized = normalized.model_copy(update={"result": result})
             self.emit(normalized)
         return HookResult(action="continue")
 
