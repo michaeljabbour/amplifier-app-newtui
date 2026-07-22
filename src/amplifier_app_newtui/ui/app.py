@@ -190,6 +190,9 @@ class NewTuiApp(App[None]):
         self.live_tail = LiveTail(id="live-tail")
         self.notice_slot = NoticeSlot(id="notice-slot")
         self.palette = PaletteStrip(self._commands.specs, id="palette-strip")
+        # Open registry (story #2): any runtime registration — skills at
+        # boot, recipe/pipeline verbs later — re-feeds the palette rows.
+        self._commands.subscribe(self._sync_palette_commands)
         self.lanes_panel = LanesPanel(id="lanes-panel")
         self.plan_panel = PlanPanel(id="plan-panel")
         self.rewind = RewindStrip(id="rewind-strip")
@@ -536,14 +539,20 @@ class NewTuiApp(App[None]):
             Answer(id=self.allocator.next_id(), spans=diff_spans(patch, staged=staged))
         )
 
+    def _sync_palette_commands(self) -> None:
+        """Registry subscriber: every successful register/unregister
+        re-feeds the palette rows — palette and help stay a live
+        reflection of the ONE registry (story #2)."""
+        self.palette.set_commands(self._commands.specs)
+
     def _register_skill_commands(self, skills: tuple[Any, ...]) -> None:
-        """Discovered skills (+ ``shortcut:`` aliases) become palette
-        commands, so ``/cosam`` resolves in dispatch before the
-        unknown-command notice (skill aliases, story #1)."""
+        """Discovered skills (+ ``shortcut:`` aliases) become
+        ``skill``-sourced registry contributions, so ``/cosam`` resolves
+        in dispatch before the unknown-command notice (story #1); the
+        palette follows via the registry subscription."""
         from ..commands.skills import register_skill_commands
 
-        if register_skill_commands(self._commands, skills):
-            self.palette.set_commands(self._commands.specs)
+        register_skill_commands(self._commands, skills)
 
     def show_skills(self) -> None:
         self.run_worker(self._show_skills(), exclusive=False)
