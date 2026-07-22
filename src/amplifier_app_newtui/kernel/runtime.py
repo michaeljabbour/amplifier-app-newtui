@@ -855,7 +855,14 @@ class RealRuntime:
         coord = self._coordinator()
         if coord is None:
             return (False, "session still starting")
-        return await session_ops.set_model(coord, model)
+        ok, detail = await session_ops.set_model(coord, model)
+        if ok:
+            # ``model_name`` feeds the footer; without this a switch kept
+            # showing the boot-time model until restart. Success detail is
+            # "provider · model" (session_ops.set_model).
+            provider_name = detail.partition(" · ")[0]
+            self.model_name = "/".join(part for part in (provider_name, model.strip()) if part)
+        return (ok, detail)
 
     async def get_effort(self) -> str | None:
         coord = self._coordinator()

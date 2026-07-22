@@ -136,6 +136,7 @@ src/amplifier_app_newtui/
 ├── commands/          slash commands as data + callables
 │   ├── registry.py        CommandSpec, CommandRegistry, CommandContext protocol
 │   ├── builtin.py         registration of all built-ins (thin glue)
+│   ├── skills.py          discovered skills registered as first-class commands (+ shortcut aliases)
 │   └── copy/export/improve/doctor/permissions/context.py   pure command logic
 ├── data/bundles/newtui.md   packaged default bundle (byte-identical to repo bundle.md)
 └── ui/                Textual layer
@@ -154,6 +155,8 @@ src/amplifier_app_newtui/
     ├── keymap.py          keymap-as-data + ESC_CHAIN + validation
     ├── palette.py         command palette strip (substring filter)
     ├── lanes_panel.py     live subagent panel
+    ├── plan_panel.py      ambient Plan N/M checklist strip (todo tool)
+    ├── motion.py          shared presentation-only motion primitives for active labels
     └── footer.py / chrome.py / approval_bar.py / rewind_strip.py / needs_you.py /
         queued_strip.py / notices.py / themes.py / segments.py / term_probe.py
 ```

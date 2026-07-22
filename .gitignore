@@ -10,3 +10,6 @@ exports/
 docs/notes/
 .ai/
 .claude/worktrees/
+.coverage
+.coverage.*
+htmlcov/

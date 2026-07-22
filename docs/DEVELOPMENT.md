@@ -9,9 +9,10 @@ checklist to run before a PR. Architecture background is in
 
 ```sh
 uv sync                              # install / update dependencies
-uv run pytest -q                     # full suite (offline, no credentials, ~70 files)
+uv run pytest -q                     # full suite (offline, no credentials, ~90 files)
 uv run pytest tests/test_ui_reducer_outcomes.py   # one file
 uv run pytest -q -k "steer"                       # by keyword
+uv run pytest -q --cov=src/amplifier_app_newtui --cov-report=term  # with coverage
 uv run ruff check .                  # lint
 uv run pyright src/                  # types
 (cd sdk/typescript && npm ci && npm test)  # TypeScript SDK build + tests
@@ -19,7 +20,10 @@ uv run amplifier-newtui --demo       # eyeball changes on the scripted session
 ```
 
 CI (`.github/workflows/ci.yml`) runs exactly: `uv sync --frozen` → `ruff check .` →
-`pyright src/` → `pytest -q`. If those four pass locally, CI passes.
+`pyright src/` → `pytest -q` with coverage (floor: 85%, actual ~89%), then the perf and
+snapshot tests uninstrumented — coverage tracing blows the frame budget on CI runners.
+If those pass locally, CI passes. PR titles are linted for Conventional Commits format
+(`.github/workflows/pr-title.yml`) — squash-merge titles become the permanent history.
 
 ## The rules the code holds itself to
 

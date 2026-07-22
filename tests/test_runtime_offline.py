@@ -35,8 +35,6 @@ import pytest
 from amplifier_app_newtui.kernel.approval import ALLOW_ONCE, DENY, STANDARD_OPTIONS
 from amplifier_app_newtui.kernel.runtime import RealRuntime
 
-pytestmark = pytest.mark.asyncio
-
 
 # --------------------------------------------------------------------------
 # Fake module + bundle workspace (written once per test session)
@@ -371,6 +369,7 @@ def _drain_kinds(runtime: RealRuntime) -> list:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
     """One real turn: stream deltas, ask_user approval, tool pre/post,
     orchestrator complete — all normalized onto the UI queue."""
@@ -442,6 +441,7 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
         await runtime.cleanup()
 
 
+@pytest.mark.asyncio
 async def test_offline_turn_approval_deny_is_deny_and_continue(offline_env) -> None:
     """Human Deny: the real engine synthesizes a denied tool result; the
     turn still completes (deny-and-continue, no tool_post)."""
@@ -460,6 +460,7 @@ async def test_offline_turn_approval_deny_is_deny_and_continue(offline_env) -> N
         await runtime.cleanup()
 
 
+@pytest.mark.asyncio
 async def test_offline_steer_injected_at_provider_request_boundary(offline_env) -> None:
     """A queued steer is consumed at ``provider:request`` and lands as ONE
     persistent user-role context message via the real inject_context path."""
@@ -483,6 +484,7 @@ async def test_offline_steer_injected_at_provider_request_boundary(offline_env) 
         ]
         assert narrations == ["Applying steer: prefer short answers"]
 
+        assert runtime._initialized is not None
         context = runtime._initialized.coordinator.get("context")
         messages = await context.get_messages()
         injected = [
@@ -495,6 +497,7 @@ async def test_offline_steer_injected_at_provider_request_boundary(offline_env) 
         await runtime.cleanup()
 
 
+@pytest.mark.asyncio
 async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> None:
     """Resume: the stored transcript is restored into the live context and
     ``turn_base`` counts the restored user messages (DESIGN-SPEC §9)."""
@@ -503,6 +506,7 @@ async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> 
         answer = asyncio.create_task(_answer_next_approval(first, ALLOW_ONCE))
         await first.submit("please write hello.txt with hi")
         await answer
+        assert first._initialized is not None
         session_id = first._initialized.session_id
     finally:
         await first.cleanup()
@@ -516,6 +520,7 @@ async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> 
     await resumed.start()
     try:
         assert resumed.turn_base == 1
+        assert resumed._initialized is not None
         context = resumed._initialized.coordinator.get("context")
         messages = await context.get_messages()
         roles = [m["role"] for m in messages]
@@ -526,6 +531,7 @@ async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> 
         await resumed.cleanup()
 
 
+@pytest.mark.asyncio
 async def test_session_directory_capability_is_live_and_restored(offline_env) -> None:
     """TUI add/remove writes session settings and updates the live policy;
     a resumed session folds the same capability in before mounting tools."""
@@ -731,10 +737,43 @@ def test_native_modes_go_through_the_mounted_mode_tool() -> None:
         assert [c.get("operation") for c in tool.calls] == ["list", "set", "set"]
 
         bare = RealRuntime()
-        assert asyncio.iscoroutine(bare.list_native_modes()) or True
-        assert (await bare.list_native_modes()) == ""
+        catalog_coro = bare.list_native_modes()
+        assert asyncio.iscoroutine(catalog_coro)
+        assert (await catalog_coro) == ""
         ok, detail = await bare.set_native_mode("debug")
         assert not ok and "no native mode system" in detail
+
+    asyncio.run(run())
+
+
+def test_set_model_refreshes_the_footer_model_name() -> None:
+    """Codex review on PR #14: a successful ``/model`` switch mutated the
+    live provider but left ``model_name`` at its boot-time value, so the
+    footer kept showing the old model until restart."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from amplifier_app_newtui.kernel.runtime import RealRuntime
+
+    async def run() -> None:
+        runtime = RealRuntime()
+        runtime.model_name = "anthropic/m1"
+        provider = SimpleNamespace(default_model="m1", config={"default_model": "m1"})
+        coordinator = SimpleNamespace(
+            get=lambda point: {"providers": {"anthropic": provider}}.get(point),
+            session_state={},
+        )
+        runtime._initialized = SimpleNamespace(coordinator=coordinator)  # type: ignore[assignment]
+
+        ok, detail = await runtime.set_model("m2")
+        assert ok and detail == "anthropic · m2"
+        assert provider.default_model == "m2"
+        assert runtime.model_name == "anthropic/m2"
+
+        # a failed switch must not clobber the live name
+        ok, _detail = await runtime.set_model("")
+        assert not ok
+        assert runtime.model_name == "anthropic/m2"
 
     asyncio.run(run())
 

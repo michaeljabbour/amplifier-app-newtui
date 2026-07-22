@@ -460,6 +460,8 @@ class NewTuiApp(App[None]):
     async def _show_model(self, arg: str) -> None:
         if arg:
             ok, detail = await self.adapter.set_model(arg)
+            if ok:
+                self.refresh_status()  # footer model field is adapter-derived
             self.show_notice(f"model · {detail}" if ok else detail)
             return
         listing = await self.adapter.list_models()
