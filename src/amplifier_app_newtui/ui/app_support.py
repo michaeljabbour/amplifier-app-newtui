@@ -364,6 +364,39 @@ def echo_steer(app: NewTuiApp, text: str) -> None:
     app.show_notice(STEER_NOTICE if app.kitty_protocol else STEER_NOTICE_LEGACY)
 
 
+def echo_lane_steer(app: NewTuiApp, session_id: str, text: str) -> None:
+    """Queue a steer for a running delegate and acknowledge it (issue #39).
+
+    The root :func:`echo_steer` steers the coordinator; this steers ONE
+    lane. On send the design sketch calls for a "queued for lane" line in
+    chat plus a ``▸ N queued`` badge on the lane row; the delivery echo
+    ("Applying steer: …") lands in the lane's focus transcript later, when
+    the runtime consumes the steer at that delegate's next step boundary.
+    """
+    record = app.lanes.get(session_id)
+    name = record.lane.name if record is not None else session_id
+    try:
+        app.adapter.lane_steering.enqueue(session_id, text)
+    except ValueError as error:
+        app.show_notice(str(error))
+        return
+    # Chat acknowledgement line (append lands in the stashed parent chat
+    # while a lane is focused — spec §8: the parent keeps accumulating).
+    app.append_block(
+        Answer(
+            id=app.allocator.next_id(),
+            spans=(
+                Segment(text="  ↳ ", style_token="teal"),
+                Segment(text=f'queued for lane {name}: "{text}" ', style_token="teal"),
+                Segment(text="· applies at its next step boundary", style_token="dimmer"),
+            ),
+            clickable=False,
+        )
+    )
+    app.show_notice(f"steer queued for lane · {name}")
+    app.lanes_changed()  # paint the ▸ N queued badge on the lane row
+
+
 def handle_lane_focus_change(app: NewTuiApp, lane_id: str | None) -> None:
     """Lane focus swap follow-ups (spec §7/§8).
 
@@ -692,6 +725,7 @@ __all__ = [
     "apply_decision",
     "apply_plan_change",
     "confirm_fork",
+    "echo_lane_steer",
     "echo_steer",
     "finish_turn_queues",
     "footer_state",

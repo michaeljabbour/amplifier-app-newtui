@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import Any
 
 from ..model.config import SessionConfigState
-from ..model.queues import NeedsYouItem, NeedsYouQueue, QueuedMessage, SteeringQueue
+from ..model.queues import (
+    LaneSteeringQueue,
+    NeedsYouItem,
+    NeedsYouQueue,
+    QueuedMessage,
+    SteeringQueue,
+)
 from ..model.terminal import TerminalSurface
 from ..model.trust import CapabilityClass, DenialLog, TrustDecision
 from .approval import ApprovalBroker
@@ -423,6 +429,7 @@ class RealRuntime:
         resume_id: str | None = None,
         queue: asyncio.Queue[UIEvent] | None = None,
         steering: SteeringQueue | None = None,
+        lane_steering: LaneSteeringQueue | None = None,
         needs_you: NeedsYouQueue | None = None,
         denial_log: DenialLog | None = None,
         surface: TerminalSurface | None = None,
@@ -468,6 +475,10 @@ class RealRuntime:
         self.surface = surface or TerminalSurface()
         """Live terminal width for the width-aware surface hint (#35);
         the UI updates it on resize, the surface-hint hook reads it."""
+        self.lane_steering = lane_steering or LaneSteeringQueue()
+        """Per-lane steer FIFOs (issue #39): steers aimed at a running
+        delegate, delivered at that child's next provider:request boundary
+        by the shared StepBoundaryBridge."""
         self.needs_you = needs_you or NeedsYouQueue()
         # Every kernel-side deferral (broker ctrl-y park, auto-classifier
         # deny, escalation) becomes ONE decision Notification carrying the
@@ -748,6 +759,10 @@ class RealRuntime:
             initialized.session_id,
             self.steering,
             needs_you=self.needs_you,
+            # Same hook, keyed by child session id: a delegate's own
+            # provider:request drains its lane queue (issue #39).
+            lane_steering=self.lane_steering,
+            on_lane_applied=self._lane_steer_applied,
             on_applied=self._steer_applied,
             # Each applied injection is one more persistent user-role
             # message in the live context; the reducer shifts checkpoint
@@ -987,6 +1002,26 @@ class RealRuntime:
         (``ContentBlockEnd`` with a ``narration`` role marker).
         """
         session_id = self._initialized.session_id if self._initialized else ""
+        self.bridge.emit(
+            ContentBlockEnd(
+                session_id=session_id,
+                block_type="text",
+                block={
+                    "type": "text",
+                    "text": f"Applying steer: {steer.text}",
+                    "demo_role": "narration",
+                },
+            )
+        )
+
+    def _lane_steer_applied(self, session_id: str, steer: QueuedMessage) -> None:
+        """Narrate a per-lane steer delivered to a delegate (issue #39).
+
+        Symmetric with :meth:`_steer_applied`, but stamped with the CHILD
+        ``session_id`` so the reducer diverts the ``Applying steer: <text>``
+        narration into that lane's focused transcript (DESIGN-SPEC §8) —
+        the delivery echo the acceptance calls for.
+        """
         self.bridge.emit(
             ContentBlockEnd(
                 session_id=session_id,

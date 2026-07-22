@@ -222,6 +222,7 @@ class NewTuiApp(App[None]):
         self.composer.focus_input()
         self._ui_thread_id = threading.get_ident()
         self.adapter.steering.add_listener(self._on_steering_changed)
+        self.adapter.lane_steering.add_listener(self._on_lane_steering_changed)
         self.refresh_status()
         self.run_worker(self._consume_events(), exclusive=False)
         self.run_worker(self._boot_runtime(), exclusive=False)
@@ -267,6 +268,23 @@ class NewTuiApp(App[None]):
         else:
             self.call_from_thread(app_support.sync_steer_echoes, self)
 
+    def _on_lane_steering_changed(self) -> None:
+        # Per-lane steers are consumed on the runtime thread (the step-
+        # boundary bridge); the ▸ N queued badge repaint must hop back to
+        # the UI thread (issue #39).
+        if threading.get_ident() == self._ui_thread_id:
+            self._repaint_lane_badges()
+        else:
+            self.call_from_thread(self._repaint_lane_badges)
+
+    def _repaint_lane_badges(self) -> None:
+        """Repaint the lanes panel's per-lane steer badges in place."""
+        tailed = self.lanes.tail_lane
+        self.lanes_panel.update_lanes(
+            self.lanes.lanes,
+            tailed_session_id=None if tailed is None else tailed.session_id,
+            queued_counts=self.adapter.lane_steering.counts(),
+        )
 
     async def _boot_runtime(self) -> None:
         self.adapter.attach(self)
@@ -505,10 +523,19 @@ class NewTuiApp(App[None]):
         self.refresh_status()
 
     def lanes_changed(self) -> None:
+        # A finished delegate never reaches another step boundary, so drop
+        # any undelivered steers queued for it — otherwise a stale ▸ queued
+        # badge would pin to a done lane (issue #39).
+        for record in self.lanes.lanes:
+            if record.lane.state == "done" and self.adapter.lane_steering.queued_count(
+                record.session_id
+            ):
+                self.adapter.lane_steering.drain(record.session_id)
         tailed = self.lanes.tail_lane
         self.lanes_panel.update_lanes(
             self.lanes.lanes,
             tailed_session_id=None if tailed is None else tailed.session_id,
+            queued_counts=self.adapter.lane_steering.counts(),
         )
         active = self.lanes.active_count > 0
         if active and not self._lanes_fanout_open and not self.lanes_panel.display:
@@ -694,6 +721,14 @@ class NewTuiApp(App[None]):
                 self._commands.run(selected.name, self._ctx)
             self._refresh_footer()
             return
+        # A focused lane targets THAT delegate: mid-turn Enter steers the
+        # running child at its next step boundary (issue #39), not the root.
+        focused = self.transcript.focused_lane
+        if focused is not None:
+            record = self.lanes.get(focused)
+            if record is not None and record.lane.state != "done":
+                app_support.echo_lane_steer(self, record.session_id, message.text)
+                return
         if self.adapter.steering.pending_steers:
             self._queue_message(message.text)  # second steer queues (spec §5)
             return
@@ -1022,7 +1057,10 @@ class NewTuiApp(App[None]):
             self.lanes_panel.hide_panel()
             self._restore_keyboard()
         else:
-            self.lanes_panel.update_lanes(self.lanes.lanes)
+            self.lanes_panel.update_lanes(
+                self.lanes.lanes,
+                queued_counts=self.adapter.lane_steering.counts(),
+            )
             self.lanes_panel.show_panel()
             if self.approval_bar is not None:
                 self.approval_bar.focus()  # approval owns the keyboard (spec §7)

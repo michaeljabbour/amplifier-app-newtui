@@ -19,7 +19,7 @@ transcripts itself — focusing a lane is the app's job.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from rich.style import Style
 from rich.text import Text
@@ -73,6 +73,7 @@ def format_lane_lines(
     *,
     labels: Sequence[str] | None = None,
     width: int | None = None,
+    queued_counts: Sequence[int] | None = None,
 ) -> tuple[str, ...]:
     """Aligned lane lines per Claude Code's live agent panel:
     ``  <glyph> <name> · <activity> · <elapsed> · ↓ Nk tokens · $<cost>``.
@@ -81,6 +82,11 @@ def format_lane_lines(
     entry so every ``·`` separator column lines up (mockup alignment).
     ``tailed_index`` appends the DESIGN-SPEC §8 ``▸`` tail marker to that
     lane's name (inside the padded name column, so alignment holds).
+
+    ``queued_counts`` (aligned to *lanes*) appends a ``▸ N queued`` steer
+    badge after the cost when a lane has messages queued for it (issue
+    #39) — it rhymes with the tail-pin ``▸`` and sits last so it never
+    disturbs the aligned columns.
 
     ``width`` is the row budget: rows are height-1 Statics, so overflow is
     CROPPED, and what fell off was the right-side telemetry — the panel's
@@ -92,6 +98,14 @@ def format_lane_lines(
     # ``labels`` disambiguates same-named agent lanes (LaneRegistry order);
     # absent, the raw agent name is the label (unique-name fast path).
     display = list(labels) if labels is not None else [lane.name for lane in lanes]
+    badges = [
+        f"▸ {queued_counts[index]} queued"
+        if queued_counts is not None
+        and index < len(queued_counts)
+        and queued_counts[index] > 0
+        else ""
+        for index in range(len(lanes))
+    ]
     names = [
         f"{display[index]} ▸" if index == tailed_index else display[index]
         for index in range(len(lanes))
@@ -112,6 +126,8 @@ def format_lane_lines(
             if show_tokens:
                 line += f" · {tokens[i]:<{tok_w}}"
             line += f" · {costs[i]}"
+            if badges[i]:
+                line += f" · {badges[i]}"
             lines.append(line)
         return tuple(lines)
 
@@ -267,6 +283,7 @@ class LanesPanel(Vertical):
         self._records: tuple[LaneRecord, ...] = ()
         self._selected = 0
         self._tailed: str | None = None
+        self._queued: dict[str, int] = {}
         self._motion_frame = 0
         self._motion_timer: Timer | None = None
         self._remount_pending = False
@@ -298,6 +315,9 @@ class LanesPanel(Vertical):
             labels=lane_labels(self._records),
             # Pre-layout (width 0) → no budget; rows refit on_resize.
             width=width if width > 0 else None,
+            queued_counts=[
+                self._queued.get(record.session_id, 0) for record in self._records
+            ],
         )
 
     @property
@@ -311,10 +331,17 @@ class LanesPanel(Vertical):
         records: Sequence[LaneRecord],
         *,
         tailed_session_id: str | None = None,
+        queued_counts: Mapping[str, int] | None = None,
     ) -> None:
-        """Replace the lane listing (registration order, per LaneRegistry)."""
+        """Replace the lane listing (registration order, per LaneRegistry).
+
+        ``queued_counts`` (``{session_id: depth}``) drives each lane row's
+        ``▸ N queued`` steer badge (issue #39); omitted leaves it unchanged.
+        """
         self._records = tuple(records)
         self._tailed = tailed_session_id
+        if queued_counts is not None:
+            self._queued = dict(queued_counts)
         self._selected = min(self._selected, max(0, len(self._records) - 1))
         self._sync_motion()
         self._refresh_or_rebuild_rows()

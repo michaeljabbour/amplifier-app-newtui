@@ -183,6 +183,86 @@ class SteeringQueue(_ListenerMixin):
         return leftover
 
 
+class LaneSteeringQueue(_ListenerMixin):
+    """Per-lane steering: a bounded steer FIFO per running delegate.
+
+    The root :class:`SteeringQueue` steers the coordinator; this steers a
+    *child* session (issue #39). It mirrors the same next-boundary
+    semantics — each queued message is delivered at that delegate's next
+    ``provider:request`` step boundary (kernel/steering.py) — but keys the
+    FIFOs by child ``session_id`` so every live lane gets its own queue.
+
+    Bounds match :class:`SteeringQueue`: :data:`MAX_QUEUE_ITEMS` items /
+    :data:`MAX_ITEM_CHARS` chars per item, per lane. ``enqueue`` raises
+    ``ValueError`` when full or empty — the UI surfaces that as a notice;
+    typed text is never dropped silently.
+    """
+
+    def __init__(self, *, clock: Callable[[], float] = monotonic) -> None:
+        super().__init__()
+        self._clock = clock
+        self._next_id = 1
+        self._pending: dict[str, list[QueuedMessage]] = {}
+
+    def enqueue(self, session_id: str, text: object) -> QueuedMessage:
+        """Queue a steer for the delegate *session_id*; raises ``ValueError``
+        when that lane's queue is full or the text is empty."""
+        if not session_id:
+            raise ValueError("lane steering needs a session id")
+        clean = _clean_multiline(text)
+        if not clean.strip():
+            raise ValueError("queued text cannot be empty")
+        queue = self._pending.setdefault(session_id, [])
+        if len(queue) >= MAX_QUEUE_ITEMS:
+            raise ValueError("lane steering queue limit reached")
+        message = QueuedMessage(
+            message_id=f"lane-{self._next_id}",
+            text=clean,
+            kind="steer",
+            created_at=self._clock(),
+        )
+        self._next_id += 1
+        queue.append(message)
+        self._notify()
+        return message
+
+    def pending_for(self, session_id: str) -> tuple[QueuedMessage, ...]:
+        """The lane's queued steers, oldest first."""
+        return tuple(self._pending.get(session_id, ()))
+
+    def queued_count(self, session_id: str) -> int:
+        """Depth of one lane's queue — the ``N queued`` lane-row badge."""
+        return len(self._pending.get(session_id, ()))
+
+    def counts(self) -> dict[str, int]:
+        """``{session_id: depth}`` for every lane with queued steers."""
+        return {sid: len(queue) for sid, queue in self._pending.items() if queue}
+
+    @property
+    def total_pending(self) -> int:
+        return sum(len(queue) for queue in self._pending.values())
+
+    def consume_next(self, session_id: str) -> QueuedMessage | None:
+        """Pop the lane's oldest steer (once per child ``provider:request``)."""
+        queue = self._pending.get(session_id)
+        if not queue:
+            return None
+        message = queue.pop(0)
+        if not queue:
+            del self._pending[session_id]
+        self._notify()
+        return message
+
+    def drain(self, session_id: str) -> tuple[QueuedMessage, ...]:
+        """Drop a finished lane's undelivered steers (it will never reach
+        another step boundary) — the lane analogue of
+        :meth:`SteeringQueue.drain_steers`."""
+        leftover = tuple(self._pending.pop(session_id, ()))
+        if leftover:
+            self._notify()
+        return leftover
+
+
 NeedsYouStatus = Literal["pending", "answered", "consumed", "dismissed"]
 
 
@@ -342,6 +422,7 @@ class NeedsYouQueue(_ListenerMixin):
 __all__ = [
     "MAX_ITEM_CHARS",
     "MAX_QUEUE_ITEMS",
+    "LaneSteeringQueue",
     "NeedsYouItem",
     "NeedsYouQueue",
     "NeedsYouStatus",
