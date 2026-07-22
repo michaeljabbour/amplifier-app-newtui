@@ -207,16 +207,21 @@ class RuntimeAdapter:
         return ()
 
     def deferred_decision(
-        self, message: str
+        self, message: str, decision_id: str = ""
     ) -> tuple[str, str, tuple[str, ...], str, str]:
         """(question, reason, choices, highlight, action) for a
         deferred-decision event — ``highlight`` is the question substring
         rendered teal; ``action`` is the denied action key (the /improve
-        override-evidence join against the DenialLog)."""
+        override-evidence join against the DenialLog). ``decision_id`` is
+        the already-parked NeedsYouQueue item when the deferral happened
+        kernel-side; empty for message-only (scripted) deferrals."""
+        del decision_id
         return (message, "", (), "", "")
 
-    def decision_narration(self, choice: str) -> str:
-        """The ``Applying decision: …`` narration for an acted-on choice."""
+    def decision_narration(self, choice: str, action: str = "") -> str:
+        """The ``Applying decision: …`` narration for an acted-on choice.
+        ``action`` is the decision's denied-action key, when it has one."""
+        del action
         return f"Applying decision: {choice}"
 
 
@@ -550,6 +555,34 @@ class RealRuntimeAdapter(RuntimeAdapter):
         from .reducer import LaneSeed
 
         return LaneSeed(activity=brief)
+
+    def deferred_decision(
+        self, message: str, decision_id: str = ""
+    ) -> tuple[str, str, tuple[str, ...], str, str]:
+        """Resolve the kernel-parked NeedsYouItem by id.
+
+        Real deferrals park their item in the shared queue at the point
+        of deferral (broker/governance, fed by the native approval
+        request payload); the decision Notification carries only the id.
+        Nothing is re-parsed from the message string. An unknown/empty id
+        degrades to the base message-only stub."""
+        if decision_id:
+            for item in self.needs_you.items:
+                if item.decision_id == decision_id:
+                    return (
+                        item.question,
+                        item.reason,
+                        item.choices,
+                        item.highlight,
+                        item.action,
+                    )
+        return super().deferred_decision(message, decision_id)
+
+    def decision_narration(self, choice: str, action: str = "") -> str:
+        """Name the denied action being applied, when the item carries one."""
+        if action:
+            return f"Applying decision: {choice} · {action}"
+        return super().decision_narration(choice)
 
 
 __all__ = ["RealRuntimeAdapter", "RuntimeAdapter"]
