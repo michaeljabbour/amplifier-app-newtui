@@ -980,6 +980,11 @@ class NewTuiApp(App[None]):
         message.stop()
         blocks = self.adapter.lane_blocks(message.name, message.session_id, self.allocator)
         if blocks is None:
+            # Real sessions have no scripted lane logs — the reducer
+            # accumulates each child's diverted events into a focus
+            # transcript instead (DESIGN-SPEC §8).
+            blocks = self.reducer.lane_transcript(message.session_id or message.name)
+        if blocks is None:
             self.show_notice(f"no transcript for lane · {message.name}")
             return
         # The panel stays open while a lane is focused (mockup focusLane

@@ -39,6 +39,7 @@ from ..model.blocks import (
     PlanItemState,
     Recap,
     Segment,
+    SessionBanner,
     TodoItem,
     TodoStatus,
     ToolLine,
@@ -51,6 +52,7 @@ from ..model.evidence import EvidenceLink
 from ..model.lanes import LaneRecord, LaneRegistry, LaneStateName
 from ..model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
 from .live_tail import answer_spans
+from .needs_you import focused_lane_banner
 
 _RECAP_RE = re.compile(r"^Goal:\s*(?P<goal>.+?)\.\s*Next:\s*(?P<next>.+?)\.?\s*$", re.DOTALL)
 _IDEA_RE = re.compile(r"^(\d+)\s+(.*)$", re.DOTALL)
@@ -67,6 +69,15 @@ between paints, so throttling drops paints — never text."""
 
 _LANE_TAIL_MAX_CHARS = 2_000
 """Per-lane tail buffer cap; the widget paints only the last 3 lines."""
+
+_LANE_TRANSCRIPT_MAX_BLOCKS = 400
+"""Per-lane focus-transcript cap; oldest activity rows drop first."""
+
+_LANE_TRANSCRIPT_MAX_LANES = 32
+"""Stored focus transcripts; the oldest lane's is evicted past this."""
+
+_LANE_SEED_ROWS = 2
+"""Rows the per-lane cap never trims (banner + delegated brief)."""
 
 
 def _plan_state(value: object) -> PlanItemState:
@@ -440,6 +451,14 @@ class TranscriptReducer:
         self._lane_tail_last = 0.0
         self._lane_tail_shown: str | None = None
         self._root_streaming = False
+        # -- focused-lane transcripts (DESIGN-SPEC §8) -----------------------
+        # Real sessions have no scripted lane logs (that is the demo
+        # adapter's ``lane_blocks``); the child events already diverted
+        # from the root transcript accumulate here instead, keyed by
+        # canonical lane session id, so lane focus can replay a
+        # subagent's own work.
+        self._lane_transcripts: dict[str, list[TranscriptBlock]] = {}
+        self._pending_briefs: dict[str, str] = {}
 
     # -- public state -------------------------------------------------------
 
@@ -607,16 +626,39 @@ class TranscriptReducer:
                 activity = _live_op_label(event.tool_name, event.tool_input or {})
                 state = "working"
             case ev.ToolPost():
-                if self._turn is not None:
-                    call = self._turn.child_calls.pop((record.session_id, event.tool_call_id), None)
-                    tool = str(call.get("tool", "")) if call else event.tool_name
-                    tool_input = dict(call.get("input", {})) if call else (event.tool_input or {})
-                    status = str(event.result.get("status", "")).lower()
-                    success = event.result.get("success", True)
-                    if success is not False and status not in {"denied", "error", "failed"}:
-                        self._record_change(self._turn, record.lane.name, tool, tool_input)
+                call = (
+                    self._turn.child_calls.pop((record.session_id, event.tool_call_id), None)
+                    if self._turn is not None
+                    else None
+                )
+                tool = str(call.get("tool", "")) if call else event.tool_name
+                tool_input = dict(call.get("input", {})) if call else (event.tool_input or {})
+                status = str(event.result.get("status", "")).lower()
+                success = event.result.get("success", True)
+                ok = success is not False and status not in {"denied", "error", "failed"}
+                if ok and self._turn is not None:
+                    self._record_change(self._turn, record.lane.name, tool, tool_input)
+                self._append_lane_block(
+                    record,
+                    ToolLine(
+                        id=self._ids.next_id(),
+                        summary=_live_op_label(tool, tool_input),
+                        status="completed" if ok else "failed",
+                        tool_call_ids=(event.tool_call_id,) if event.tool_call_id else (),
+                    ),
+                )
                 activity = "reviewing tool result"
             case ev.ToolError():
+                self._append_lane_block(
+                    record,
+                    ToolLine(
+                        id=self._ids.next_id(),
+                        summary=f"{event.tool_name.replace('_', ' ')} · "
+                        f"{event.error_message}".rstrip(" ·"),
+                        status="failed",
+                        tool_call_ids=(event.tool_call_id,) if event.tool_call_id else (),
+                    ),
+                )
                 activity = f"recovering from {event.tool_name.replace('_', ' ')} error"
             case ev.StreamBlockStart():
                 activity = "thinking" if event.block_type == "thinking" else "writing response"
@@ -626,6 +668,17 @@ class TranscriptReducer:
             case ev.StreamBlockEnd():
                 activity = "reviewing response"
             case ev.ContentBlockEnd():
+                if event.block_type == "text":
+                    text = str(event.block.get("text", ""))
+                    if text:
+                        self._append_lane_block(
+                            record,
+                            Answer(
+                                id=self._ids.next_id(),
+                                spans=answer_spans(text),
+                                clickable=False,
+                            ),
+                        )
                 activity = "reporting findings" if event.block_type == "text" else "thinking"
             case ev.OrchestratorComplete():
                 activity = "wrapping up"
@@ -637,6 +690,78 @@ class TranscriptReducer:
         if updated is None:
             return
         self._host.lanes_changed()
+
+    # -- focused-lane transcripts (DESIGN-SPEC §8) ---------------------------
+
+    def _seed_lane_transcript(self, event: ev.AgentSpawned) -> None:
+        """(Re)start a lane's focus transcript at spawn.
+
+        A known sub-session re-spawning is a replayed turn reusing its
+        ids (the ``lanes.register`` reopen rule) — its transcript resets
+        with it. Opens with the focused-lane banner and, when the parent
+        delegate call carried one, the delegated brief as a ``delegated``
+        user line (the demo's ``lane_focus_blocks`` shape).
+        """
+        record = self.lanes.get(event.sub_session_id)
+        key = record.session_id if record is not None else event.sub_session_id
+        parent = event.parent_session_id or event.session_id
+        blocks: list[TranscriptBlock] = [
+            SessionBanner(
+                id=self._ids.next_id(),
+                headline="",
+                focus_note=focused_lane_banner(event.agent, parent[:6]),
+            )
+        ]
+        brief = self._pending_briefs.pop(event.agent, "")
+        if brief:
+            blocks.append(UserLine(id=self._ids.next_id(), text=brief, mode="delegated"))
+        while key not in self._lane_transcripts and (
+            len(self._lane_transcripts) >= _LANE_TRANSCRIPT_MAX_LANES
+        ):
+            del self._lane_transcripts[next(iter(self._lane_transcripts))]
+        self._lane_transcripts[key] = blocks
+
+    def _append_lane_block(self, record: LaneRecord, block: TranscriptBlock) -> None:
+        """Append one block to a lane's focus transcript, bounded.
+
+        Lanes restored without a spawn event get a banner-only seed so
+        their activity still accumulates somewhere focusable.
+        """
+        blocks = self._lane_transcripts.get(record.session_id)
+        if blocks is None:
+            seeded: list[TranscriptBlock] = [
+                SessionBanner(
+                    id=self._ids.next_id(),
+                    headline="",
+                    focus_note=focused_lane_banner(
+                        record.lane.name, (record.parent_id or "")[:6]
+                    ),
+                )
+            ]
+            while len(self._lane_transcripts) >= _LANE_TRANSCRIPT_MAX_LANES:
+                del self._lane_transcripts[next(iter(self._lane_transcripts))]
+            blocks = self._lane_transcripts[record.session_id] = seeded
+        blocks.append(block)
+        if len(blocks) > _LANE_TRANSCRIPT_MAX_BLOCKS:
+            del blocks[min(_LANE_SEED_ROWS, len(blocks) - 1)]
+
+    def lane_transcript(self, key: str) -> list[TranscriptBlock] | None:
+        """A lane's accumulated focus transcript, by session id or name.
+
+        The real-runtime counterpart of the demo adapter's
+        ``lane_blocks`` — ``None`` (not ``[]``) when nothing is known so
+        the caller's no-transcript notice stays meaningful.
+        """
+        record = self.lanes.get(key)
+        if record is not None:
+            key = record.session_id
+        blocks = self._lane_transcripts.get(key)
+        if blocks is None:
+            for candidate in self.lanes.lanes:
+                if candidate.lane.name == key:
+                    blocks = self._lane_transcripts.get(candidate.session_id)
+                    break
+        return list(blocks) if blocks else None
 
     # -- lane live tail (DESIGN-SPEC §8, design doc D4) ---------------------
 
@@ -1060,6 +1185,19 @@ class TranscriptReducer:
             return
         tool_input = event.tool_input or {}
         command = str(tool_input.get("command", ""))
+        if "delegate" in event.tool_name:
+            # Remember the instruction so the spawned lane's focus
+            # transcript can open with the delegated brief (the
+            # normalized AgentSpawned event carries no instruction).
+            agent = str(tool_input.get("agent") or tool_input.get("agent_name") or "")
+            brief = str(
+                tool_input.get("instruction")
+                or tool_input.get("prompt")
+                or tool_input.get("task")
+                or ""
+            )
+            if agent and brief:
+                self._pending_briefs[agent] = brief
         # No durable per-tool line: the in-flight op shows as the active
         # branch in the live tree beneath the pulse, and rolls into the
         # burst digest on completion (DESIGN-SPEC §3).
@@ -1398,6 +1536,7 @@ class TranscriptReducer:
                 cost=seed.cost,
                 tokens=seed.tokens,
             )
+        self._seed_lane_transcript(event)
         now = event.ts
         if not self._delegate_rows:
             self._fanout_start_ts = now
@@ -1416,6 +1555,25 @@ class TranscriptReducer:
         self._clear_lane_tail(
             record.session_id if record is not None else event.sub_session_id
         )
+        if record is not None:
+            # Focus-transcript close-out (mockup focusLane state recap):
+            # ``✳ `` dimmer + dim italic state line, never clickable.
+            recap = (
+                "completed · result reported back to parent"
+                if event.success
+                else ("failed" if result in ("", "failed") else f"failed · {result}")
+            )
+            self._append_lane_block(
+                record,
+                Answer(
+                    id=self._ids.next_id(),
+                    spans=(
+                        Segment(text="✳ ", style_token="dimmer"),
+                        Segment(text=recap, style_token="dim", italic=True),
+                    ),
+                    clickable=False,
+                ),
+            )
         self.lanes.complete(event.sub_session_id, result=result)
         row = self._delegate_rows.get(event.sub_session_id)
         if row is not None:
