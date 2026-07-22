@@ -1,0 +1,150 @@
+"""Base ``RuntimeAdapter`` contract: neutral stubs + optional data hooks.
+
+The base adapter (``ui/runtime_adapter.py``) is the contract every
+runtime implementation (real, demo) subclasses. Its async stubs must
+return NEUTRAL values — the app renders them directly when no live
+session backs the call. This file sweeps that surface table-style and
+guards the table with introspection (pattern:
+``test_command_context_contract.py``) so a new public async method on
+the adapter fails HERE until the table learns about it.
+
+Pure asyncio — no threads, no monkeypatching.
+"""
+
+from __future__ import annotations
+
+import inspect
+from typing import Any
+
+import pytest
+
+from amplifier_app_newtui.kernel.session_ops import ModelListing, StatusInfo
+from amplifier_app_newtui.model.blocks import BlockIdAllocator
+from amplifier_app_newtui.ui.runtime_adapter import RuntimeAdapter
+
+# ---------------------------------------------------------------------------
+# T1 — neutral-return table for every public async stub
+# ---------------------------------------------------------------------------
+
+# (method, call args, expected neutral return)
+NEUTRAL_CASES: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
+    ("submit", ("hello", ()), None),
+    ("interrupt", (), False),
+    ("list_native_modes", (), ""),
+    ("set_native_mode", ("plan",), (False, "native modes need a real session")),
+    ("list_models", (), ModelListing(provider="", current="")),
+    ("set_model", ("gpt",), (False, "switching models needs a real session")),
+    ("get_effort", (), None),
+    ("set_effort", ("high",), (False, "reasoning effort needs a real session")),
+    ("compact", ("focus",), (False, "compaction needs a real session")),
+    ("clear_context", (), (False, 0)),
+    ("status", (), StatusInfo()),
+    ("list_tools", (), ()),
+    ("list_agents", (), ()),
+    ("diff", (True,), None),
+    ("workspace_files", (), ()),
+    ("list_skills", (), ()),
+    ("load_skill", ("brainstorming",), (False, "skills need a real session")),
+    ("mcp_tools", (), ()),
+    ("directory_entries", ("allowed",), ()),
+    (
+        "update_directory",
+        ("allowed", "add", "/tmp/p"),
+        (False, "directory management needs a real session"),
+    ),
+)
+
+# Async methods deliberately NOT in the neutral table — each has its own
+# behavioral test below (they do work rather than return a neutral value).
+COVERED_ELSEWHERE: frozenset[str] = frozenset(
+    {
+        "start",  # T4: invokes ready()
+        "submit_queued",  # T3: delegates to submit()
+        "fork",  # T4: trims the ledger (confirm-then-trim)
+    }
+)
+
+PUBLIC_ASYNC_METHODS: frozenset[str] = frozenset(
+    name
+    for name, member in vars(RuntimeAdapter).items()
+    if not name.startswith("_") and inspect.iscoroutinefunction(member)
+)
+
+
+def test_neutral_table_covers_every_public_async_method() -> None:
+    """Introspection guard: adding a public async method to the base
+    adapter without teaching this table (or COVERED_ELSEWHERE) fails
+    here, not in production."""
+    table = {method for method, _, _ in NEUTRAL_CASES}
+    assert not table & COVERED_ELSEWHERE, "a method is listed twice"
+    assert table | COVERED_ELSEWHERE == PUBLIC_ASYNC_METHODS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("method", "args", "expected"), NEUTRAL_CASES)
+async def test_base_stub_neutral_returns(method: str, args: tuple[Any, ...], expected: Any) -> None:
+    adapter = RuntimeAdapter()
+    result = await getattr(adapter, method)(*args)
+    assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# T2 — sync data hooks stay neutral
+# ---------------------------------------------------------------------------
+
+
+def test_base_sync_hooks_neutral() -> None:
+    adapter = RuntimeAdapter()
+    assert adapter.turn_spec("prompt") is None
+    assert adapter.lane_seed("agent") is None
+    assert adapter.lane_blocks("lane", "s1", BlockIdAllocator()) is None
+    assert adapter.evidence_links("answer") == ()
+    assert adapter.deferred_decision("msg") == ("msg", "", (), "", "")
+    assert adapter.decision_narration("ship it") == "Applying decision: ship it"
+    assert adapter.answer_approval("t1", "allow") is None  # no-op
+
+
+# ---------------------------------------------------------------------------
+# T3 — submit_queued delegates to submit
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSubmit(RuntimeAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.submitted: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def submit(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
+        self.submitted.append((text, attachments))
+
+
+@pytest.mark.asyncio
+async def test_submit_queued_delegates_to_submit() -> None:
+    adapter = _RecordingSubmit()
+    await adapter.submit_queued("x")
+    assert adapter.submitted == [("x", ())]
+
+
+# ---------------------------------------------------------------------------
+# T4 — start() invokes ready(); fork() trims the ledger immediately
+# ---------------------------------------------------------------------------
+
+
+class _FakeLedger:
+    def __init__(self) -> None:
+        self.trimmed: list[str] = []
+
+    def trim_to(self, checkpoint_id: str) -> None:
+        self.trimmed.append(checkpoint_id)
+
+
+@pytest.mark.asyncio
+async def test_base_start_calls_ready_and_fork_trims() -> None:
+    adapter = RuntimeAdapter()
+    ready_calls: list[int] = []
+    await adapter.start(lambda: ready_calls.append(1))
+    assert ready_calls == [1]
+
+    ledger = _FakeLedger()
+    await adapter.fork("cp-3", ledger)  # in-memory: confirmation is immediate
+    assert ledger.trimmed == ["cp-3"]
