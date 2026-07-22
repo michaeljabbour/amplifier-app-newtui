@@ -56,6 +56,7 @@ from ..model.blocks import (
     GLYPH_ERROR,
     GLYPH_LANE_RUNNING,
     GLYPH_PLAN_DONE,
+    GLYPH_QUOTE_GUTTER,
     GLYPH_SPINNER_FRAMES,
     Answer,
     Blocked,
@@ -430,10 +431,13 @@ logical answer line — its cell width becomes the hanging indent."""
 
 
 def _answer_marker_hang(first: Segment) -> int:
-    """Cell width of a leading list marker, or 0 if the line is not a list
-    item (continuation lines wrap under the body, not the marker)."""
+    """Cell width of a leading list marker or blockquote gutter, or 0 if
+    the line is neither (continuation lines wrap under the body, not the
+    marker)."""
     if first.style_token == "dim" and _ANSWER_MARKER_RE.match(first.text):
         return cell_len(first.text)
+    if first.style_token == "blue" and first.text == GLYPH_QUOTE_GUTTER:
+        return cell_len(GLYPH_QUOTE_GUTTER)
     return 0
 
 

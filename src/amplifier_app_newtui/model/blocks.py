@@ -52,6 +52,10 @@ GLYPH_REWIND_RIGHT = "›"
 GLYPH_ERROR = "✖"
 GLYPH_CHEVRON_COLLAPSED = "▸"
 GLYPH_CHEVRON_EXPANDED = "▾"
+GLYPH_QUOTE_GUTTER = "▌ "
+"""Blockquote left gutter in answers — the TUI-native frame for the
+insight/machete callouts hooks-inline-blocks teaches the model to emit
+(Rich draws the same ``▌`` edge for blockquotes in the line-mode CLI)."""
 
 # Theme-token names a Segment may reference (DESIGN-SPEC §1 table rows).
 StyleToken = Literal[

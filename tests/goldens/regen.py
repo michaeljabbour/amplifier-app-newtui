@@ -222,10 +222,27 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
     )
 
 
+_CALLOUT_ANSWER_SOURCE = (
+    "Trimmed the retry wrapper.\n"
+    "\n"
+    "> ★ **Insight:** the caller already retries — the inner loop was "
+    "belt-and-suspenders. Principle: one owner per concern."
+)
+"""An answer carrying an insight callout blockquote — the inline block
+shape the hooks-inline-blocks module teaches the model to emit. Pins the
+``▌`` gutter + hanging-indent wrap (the TUI-native callout rendering)."""
+
+
 def variant_blocks() -> tuple[tuple[str, TranscriptBlock], ...]:
     """State variants of expandable kinds — same golden rigor, labeled headers."""
     collapsed = next(b for b in canonical_blocks() if b.kind == "delegate_summary")
-    return (("delegate_summary (expanded)", collapsed.model_copy(update={"expanded": True})),)
+    return (
+        ("delegate_summary (expanded)", collapsed.model_copy(update={"expanded": True})),
+        (
+            "answer (insight callout)",
+            Answer(id="g21", spans=answer_spans(_CALLOUT_ANSWER_SOURCE)),
+        ),
+    )
 
 
 def golden_text(width: int) -> str:

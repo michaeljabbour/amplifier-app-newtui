@@ -63,6 +63,41 @@ def test_answer_spans_plain_and_empty() -> None:
     assert answer_spans("") == (Segment(text=""),)
 
 
+def test_answer_spans_blockquote_callout_gutter() -> None:
+    """``> ``-quoted lines render behind a colored left gutter — the
+    TUI-native form of the insight/machete callouts the (formerly
+    suppressed) hooks-inline-blocks module teaches the model to emit as
+    Markdown blockquotes. Inline emphasis still applies inside the quote."""
+    spans = answer_spans("> ★ **Insight:** one owner per concern.")
+    assert spans == (
+        Segment(text="▌ ", style_token="blue"),
+        Segment(text="★ "),
+        Segment(text="Insight:", style_token="bright", bold=True),
+        Segment(text=" one owner per concern."),
+    )
+
+
+def test_answer_spans_blockquote_run_reads_as_its_own_paragraph() -> None:
+    """A quote run gets one blank line before and after (like headings and
+    lists); every quoted line carries the gutter; bare ``>`` still quotes."""
+    spans = answer_spans("intro\n> ★ **Insight:** a\n>b\ntail")
+    assert spans == (
+        Segment(text="intro"),
+        Segment(text="\n"),
+        Segment(text="\n"),
+        Segment(text="▌ ", style_token="blue"),
+        Segment(text="★ "),
+        Segment(text="Insight:", style_token="bright", bold=True),
+        Segment(text=" a"),
+        Segment(text="\n"),
+        Segment(text="▌ ", style_token="blue"),
+        Segment(text="b"),
+        Segment(text="\n"),
+        Segment(text="\n"),
+        Segment(text="tail"),
+    )
+
+
 def test_visible_length_holds_back_trailing_table() -> None:
     # Trailing table run (with streaming-newline artifact) is withheld.
     assert visible_length(["Results:", "| a | b |", "| 1 | 2 |"]) == 1

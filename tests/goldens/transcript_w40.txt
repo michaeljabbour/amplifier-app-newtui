@@ -86,3 +86,11 @@
 [$dimmer]    ├─ [/][$green]✔ [/][$dim]coder       [/][$dim]6s · "2 files"[/]
 [$dimmer]    └─ [/][$green]✔ [/][$dim]tester      [/][$dim]2s · "tests ✔"[/]
 [$dim]    Plan  [/][$green]✔ [/][$dim]Audit persistence paths …[/]
+
+=== answer (insight callout) ===
+[$fg]Trimmed the retry wrapper.[/]
+
+[$blue]▌ [/][$fg]★ [/][bold $bright]Insight:[/][$fg] the caller already retries[/]
+[$fg]  — the inner loop was[/]
+[$fg]  belt-and-suspenders. Principle: one[/]
+[$fg]  owner per concern.[/]
