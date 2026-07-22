@@ -67,6 +67,9 @@ CONSUMED_EVENTS: tuple[str, ...] = (
     "delegate:agent_cancelled",
     "delegate:error",
     "user:notification",
+    # Recipes (tool-recipes approval gates → durable ApprovalRequired
+    # record; presentation + answer routing live in kernel/recipes.py)
+    "recipe:approval",
 )
 """Every raw hook event :func:`normalize` produces a UIEvent for."""
 

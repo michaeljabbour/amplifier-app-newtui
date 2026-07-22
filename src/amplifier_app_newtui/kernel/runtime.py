@@ -53,6 +53,7 @@ from . import session_ops
 from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
 from .queue_bridge import CONSUMED_EVENTS, QueueBridge
+from .recipes import RecipeApprovalBridge
 from .turn_yield import TurnYieldTracker
 from .session_factory import InitializedSession, SessionRequest, create_initialized_session
 from .spawner import SessionSpawner
@@ -469,6 +470,19 @@ class RealRuntime:
         # hooks-approval owns bundle-mode ask/allow-always policy. The app's
         # broker is its presentation provider as well as governance's asker.
         self._register_approval_provider(initialized)
+        # tool-recipes gates bypass the approval:* path entirely (custom
+        # recipe:approval event + tool-operation resume) — bridge them onto
+        # the same broker so a paused recipe raises the approval bar instead
+        # of hanging invisibly (contract details: kernel/recipes.py).
+        recipes_bridge = RecipeApprovalBridge(
+            broker=self.broker,
+            tools=lambda: self._initialized.coordinator.get("tools")
+            if self._initialized is not None
+            else None,
+            emit=self.bridge.emit,
+            is_executing=lambda: self._executing,
+        )
+        initialized.unregister_handles.append(recipes_bridge.register_hooks(hooks))
         boundary = StepBoundaryBridge(
             initialized.session_id,
             self.steering,
