@@ -57,8 +57,23 @@ def test_wrapper_keeps_default_provider() -> None:
 def test_wrapper_has_no_vendored_sections() -> None:
     data = _frontmatter()
     assert "session" not in data, "inherit anchors' 300k context"
-    assert "hooks" not in data, "anchors brings hooks-mode/hooks-approval"
     assert "agents" not in data, "anchors ships 6 bundle-local agents"
+
+
+def test_wrapper_overlays_only_push_notify_hook() -> None:
+    """anchors brings hooks-mode/hooks-approval; the wrapper overlays exactly
+    one hook: hooks-notify-push (ntfy HTTP side-channel — no stdout, no-op
+    without AMPLIFIER_NTFY_TOPIC). It must listen to orchestrator:complete
+    directly: its default event (notify:turn-complete) is emitted by
+    hooks-notify, which the kernel suppresses at boot (raw OSC/BEL stdout)."""
+    hooks = _frontmatter().get("hooks") or []
+    modules = {h.get("module") for h in hooks if isinstance(h, dict)}
+    assert modules == {"hooks-notify-push"}
+    push_mounts = [
+        h for h in hooks if isinstance(h, dict) and h.get("module") == "hooks-notify-push"
+    ]
+    assert len(push_mounts) == 1
+    assert push_mounts[0].get("config", {}).get("listen_event") == "orchestrator:complete"
 
 
 def test_wrapper_overlays_only_tui_specific_tools() -> None:
