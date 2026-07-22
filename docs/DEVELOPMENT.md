@@ -20,8 +20,9 @@ uv run amplifier-newtui --demo       # eyeball changes on the scripted session
 ```
 
 CI (`.github/workflows/ci.yml`) runs exactly: `uv sync --frozen` → `ruff check .` →
-`pyright src/` → `pytest -q` with coverage (floor: 85%, actual ~89%). If those four pass
-locally, CI passes. PR titles are linted for Conventional Commits format
+`pyright src/` → `pytest -q` with coverage (floor: 85%, actual ~89%), then the perf and
+snapshot tests uninstrumented — coverage tracing blows the frame budget on CI runners.
+If those pass locally, CI passes. PR titles are linted for Conventional Commits format
 (`.github/workflows/pr-title.yml`) — squash-merge titles become the permanent history.
 
 ## The rules the code holds itself to
