@@ -341,6 +341,13 @@ class DirectoryPolicy:
         for index, token in enumerate(cleaned):
             if token.startswith(("http://", "https://", "/dev/")):
                 continue
+            if ("*" in token or "?" in token) and not write_head and index not in redirect_targets:
+                # A glob in a read-shaped command is a filter pattern, not a
+                # concrete target — `find -not -path "./.git/*"` names .git
+                # precisely to AVOID it (false-positive block found live).
+                # Write-shaped commands keep strict flagging: `rm -rf .git/*`
+                # and `> .git/*` must still stop.
+                continue
             protected_relative = any(
                 token == relative or token.startswith(f"{relative}/")
                 for relative in PROTECTED_PROJECT_PATHS

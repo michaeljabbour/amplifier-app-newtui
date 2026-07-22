@@ -88,6 +88,23 @@ def test_read_shaped_shell_roams_outside_project(tmp_path: Path) -> None:
     assert policy.shell_outside_target("grep -r needle ~/somewhere/src") is None
 
 
+def test_read_shaped_glob_filter_naming_protected_path_is_not_a_target(tmp_path: Path) -> None:
+    """Found live: an agent's read-only survey was blocked because its find
+    EXCLUSION pattern named .git — `-not -path "./.git/*"` names the path
+    precisely to avoid it. Globs in read-shaped commands are filter
+    patterns, not concrete targets."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    survey = (
+        'cd /p && ls && find . -name "*.py" -not -path "./.venv/*" '
+        '-not -path "./.git/*" | head -50 && wc -l $(find . -name "*.py" '
+        '-not -path "./.git/*") 2>/dev/null | tail -5'
+    )
+    assert policy.shell_outside_target(survey) is None
+    # Write-shaped commands keep strict glob flagging.
+    assert policy.shell_outside_target("rm -rf ./.git/*") is not None
+    assert policy.shell_outside_target('echo x > "./.git/hooks/pre-commit"') is not None
+
+
 def test_write_shaped_shell_is_flagged_outside_project_when_guarded(tmp_path: Path) -> None:
     policy = DirectoryPolicy(tmp_path / "project", write_boundary="guarded")
     assert policy.shell_outside_target("rm /tmp/elsewhere/x.txt") is not None
