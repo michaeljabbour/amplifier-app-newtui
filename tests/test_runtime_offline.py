@@ -625,12 +625,16 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
         {
             "hooks-streaming-ui",
             "hooks-todo-display",
-            "hooks-insight-blocks",
-            "hooks-inline-blocks",
             "hooks-logging",
             "hooks-notify",
         }
     )
+    # hooks-insight-blocks / hooks-inline-blocks are NOT suppressed: recon
+    # of the cached modules shows they are inject_context instruction hooks
+    # (session:start / prompt:submit) with zero stdout — suppressing them
+    # severed the insight/MJ callout channel, it never protected the screen.
+    assert "hooks-insight-blocks" not in _SUPPRESSED_HOOKS_DEFAULT
+    assert "hooks-inline-blocks" not in _SUPPRESSED_HOOKS_DEFAULT
     assert suppressed_hooks_setting({}) == _SUPPRESSED_HOOKS_DEFAULT
     assert suppressed_hooks_setting({"hooks": "junk"}) == _SUPPRESSED_HOOKS_DEFAULT
     assert (
