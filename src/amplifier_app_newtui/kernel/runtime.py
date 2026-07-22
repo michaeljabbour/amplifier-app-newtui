@@ -319,6 +319,11 @@ class RealRuntime:
             events=tuple(
                 e for e in CONSUMED_EVENTS if e not in ("prompt:submit", "prompt:complete")
             ),
+            # tool-delegate's delegate:agent_completed payload has no result
+            # field — the spawner records each child's final output and the
+            # bridge fills AgentCompleted.result from it (lane recap +
+            # delegate-summary snippets).
+            agent_result_lookup=self._spawn_result,
         )
         self.turn_yield = TurnYieldTracker()
         """Per-turn ``tests ✔`` evidence from tool results (bridge tap)."""
@@ -340,6 +345,7 @@ class RealRuntime:
         self._permission_resolver = permission_resolver
         self._capability_resolver = capability_resolver
         self._project_dir = project_dir
+        self._spawner: SessionSpawner | None = None
         self._initialized: InitializedSession | None = None
         self._executing = False  # a submit() turn is live (fork must refuse)
         self._interrupt_requested = False
@@ -436,6 +442,7 @@ class RealRuntime:
             approval_system=self.broker,
             display_system=display,
         )
+        self._spawner = spawner
         initialized = await create_initialized_session(
             SessionRequest(
                 resolved=resolved,
@@ -553,6 +560,18 @@ class RealRuntime:
     @property
     def session_id(self) -> str:
         return self._initialized.session_id if self._initialized is not None else ""
+
+    def _spawn_result(self, sub_session_id: str) -> str:
+        """Child final-output summary for AgentCompleted.result synthesis."""
+        return self._spawner.result_for(sub_session_id) if self._spawner is not None else ""
+
+    def agent_brief(self, agent_name: str) -> str:
+        """Latest delegate brief for *agent_name* — the real lane seed.
+
+        Read cross-thread by the adapter's ``lane_seed`` (a plain dict get
+        under the GIL); "" until the agent's first spawn this session.
+        """
+        return self._spawner.brief_for(agent_name) if self._spawner is not None else ""
 
     def _governance_blocked(self, action: str, reason: str) -> None:
         session_id = self._initialized.session_id if self._initialized else ""
