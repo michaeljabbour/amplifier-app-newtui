@@ -81,6 +81,18 @@ _LANE_SEED_ROWS = 2
 """Rows the per-lane cap never trims (banner + delegated brief)."""
 
 
+def _display_short(session_id: str) -> str:
+    """First 6 usable chars of a session id for the focused-lane banner.
+
+    Governance redaction can rewrite ids on the live bus
+    (``[REDACTED:PII]…`` — found live); bracketed tokens are stripped so
+    a mangled id neither leaks into the banner nor reads as markup.
+    """
+    cleaned = re.sub(r"\[[^\]]*\]", "", session_id)
+    cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ch == "-")
+    return cleaned[:6]
+
+
 def _plan_state(value: object) -> PlanItemState:
     """Coerce a raw plan-step ``status`` to a valid state (else pending)."""
     if isinstance(value, str) and value in _PLAN_STATES:
@@ -890,12 +902,15 @@ class TranscriptReducer:
         """
         record = self.lanes.get(event.sub_session_id)
         key = record.session_id if record is not None else event.sub_session_id
-        parent = event.parent_session_id or event.session_id
+        # The envelope session_id IS the parent for agent_spawned and sits
+        # on the redaction module's structural allowlist; the payload's
+        # parent_session_id may arrive scrubbed.
+        parent = event.session_id or event.parent_session_id
         blocks: list[TranscriptBlock] = [
             SessionBanner(
                 id=self._ids.next_id(),
                 headline="",
-                focus_note=focused_lane_banner(event.agent, parent[:6]),
+                focus_note=focused_lane_banner(event.agent, _display_short(parent)),
             )
         ]
         brief = self._pending_briefs.pop(event.agent, "")
@@ -920,7 +935,7 @@ class TranscriptReducer:
                     id=self._ids.next_id(),
                     headline="",
                     focus_note=focused_lane_banner(
-                        record.lane.name, (record.parent_id or "")[:6]
+                        record.lane.name, _display_short(record.parent_id or "")
                     ),
                 )
             ]

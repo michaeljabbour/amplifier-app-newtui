@@ -72,6 +72,19 @@ hooks:
     source: git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=modules/hooks-notify-push
     config:
       listen_event: "orchestrator:complete"
+  # Redaction allowlist extension (module-native config; the module unions
+  # user entries with its structural defaults). anchors' redaction behavior
+  # scrubs live event payloads, and the delegate lifecycle carries its
+  # routing ids in sub_session_id / parent_session_id — fields NOT in the
+  # module's DEFAULT_ALLOWLIST (session_id/parent_id are). Verified live:
+  # without this, those ids arrive as "[REDACTED:PII]…" and child→lane
+  # routing (telemetry, focus transcripts, banners) degrades or breaks.
+  - module: hook-redaction
+    source: git+https://github.com/microsoft/amplifier-bundle-redaction@main#subdirectory=modules/hook-redaction
+    config:
+      allowlist:
+        - sub_session_id
+        - parent_session_id
 ---
 
 # Amplifier NewTUI Bundle
