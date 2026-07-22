@@ -47,9 +47,7 @@ class ErrorRecord(RecordEnvelope):
     duration_ms: float
 
 
-JsonlRecord = (
-    SessionStartedRecord | RuntimeEventRecord | TurnCompletedRecord | ErrorRecord
-)
+JsonlRecord = SessionStartedRecord | RuntimeEventRecord | TurnCompletedRecord | ErrorRecord
 
 
 class AmplifierSdkError(RuntimeError):
@@ -87,14 +85,10 @@ class RunResult:
     events: tuple[RuntimeEventRecord, ...]
 
 
-def _require(
-    record: dict[str, Any], name: str, kind: type | tuple[type, ...]
-) -> None:
+def _require(record: dict[str, Any], name: str, kind: type | tuple[type, ...]) -> None:
     if not isinstance(record.get(name), kind):
         names = (
-            "/".join(item.__name__ for item in kind)
-            if isinstance(kind, tuple)
-            else kind.__name__
+            "/".join(item.__name__ for item in kind) if isinstance(kind, tuple) else kind.__name__
         )
         raise ProtocolError(f"JSONL field {name!r} must be {names}")
 
@@ -110,18 +104,11 @@ def _validate_record(value: Any, expected_sequence: int) -> JsonlRecord:
         or schema_version != SCHEMA_VERSION
     ):
         raise ProtocolError(
-            f"unsupported JSONL schema_version {schema_version!r}; "
-            f"expected {SCHEMA_VERSION}"
+            f"unsupported JSONL schema_version {schema_version!r}; expected {SCHEMA_VERSION}"
         )
     sequence = record.get("sequence")
-    if (
-        not isinstance(sequence, int)
-        or isinstance(sequence, bool)
-        or sequence != expected_sequence
-    ):
-        raise ProtocolError(
-            f"expected JSONL sequence {expected_sequence}, got {sequence!r}"
-        )
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence != expected_sequence:
+        raise ProtocolError(f"expected JSONL sequence {expected_sequence}, got {sequence!r}")
     _require(record, "timestamp", str)
     record_type = record.get("type")
     if record_type == "session.started":

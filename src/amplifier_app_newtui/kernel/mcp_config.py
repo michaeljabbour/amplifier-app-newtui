@@ -48,9 +48,7 @@ def _write(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def add_stdio_server(
-    path: Path, name: str, command: str, args: tuple[str, ...] = ()
-) -> None:
+def add_stdio_server(path: Path, name: str, command: str, args: tuple[str, ...] = ()) -> None:
     """Add/replace a stdio MCP server (``command`` + ``args``)."""
     data = read_config(path)
     servers = data.get(_KEY)

@@ -13,17 +13,43 @@ uv run pytest -q                     # full suite (offline, no credentials, ~90 
 uv run pytest tests/test_ui_reducer_outcomes.py   # one file
 uv run pytest -q -k "steer"                       # by keyword
 uv run pytest -q --cov=src/amplifier_app_newtui --cov-report=term  # with coverage
-uv run ruff check .                  # lint
+uv run ruff format src/ sdk/         # format (adopted; CI checks --check)
+uv run ruff check .                  # lint (ruff defaults + B + BLE)
 uv run pyright src/                  # types
 (cd sdk/typescript && npm ci && npm test)  # TypeScript SDK build + tests
 uv run amplifier-newtui --demo       # eyeball changes on the scripted session
 ```
 
-CI (`.github/workflows/ci.yml`) runs exactly: `uv sync --frozen` → `ruff check .` →
-`pyright src/` → `pytest -q` with coverage (floor: 85%, actual ~89%), then the perf and
-snapshot tests uninstrumented — coverage tracing blows the frame budget on CI runners.
+CI (`.github/workflows/ci.yml`) runs exactly: `uv sync --frozen` →
+`ruff format --check src/ sdk/` → `ruff check .` → `pyright src/` → `pytest -q` with
+coverage (floor: 85%, actual ~89%), then the perf and snapshot tests uninstrumented —
+coverage tracing blows the frame budget on CI runners.
 If those pass locally, CI passes. PR titles are linted for Conventional Commits format
 (`.github/workflows/pr-title.yml`) — squash-merge titles become the permanent history.
+
+### Formatting, lint, and type-check policy (issue #29)
+
+- **`ruff format` is adopted.** `src/` and `sdk/` are formatted with ruff's formatter
+  and CI runs `ruff format --check src/ sdk/` so style can't drift back. Run
+  `uv run ruff format src/ sdk/` before pushing.
+- **Lint select is explicit** (`[tool.ruff.lint]`): ruff defaults (`E4/E7/E9`, `F`)
+  plus **`B`** (flake8-bugbear — real latent-bug catches) and **`BLE`**
+  (flake8-blind-except). BLE makes the codebase's own `# noqa: BLE001` convention
+  load-bearing: an intentional blind `except Exception` must carry
+  `# noqa: BLE001 — <why>`; anything else is a lint error.
+- **`SIM`/`UP` were trialed and deferred.** They flag stylistic / modernization
+  rewrites (`contextlib.suppress`, PEP-695 generics, `StrEnum`). `UP042` in
+  particular would turn `CapabilityClass(str, Enum)` into a `StrEnum` and change
+  `str(CapabilityClass.READ)` output — a behavior change. They are out of scope for a
+  behavior-preserving hygiene pass and can land as a separate follow-up.
+- **pyright stays on `basic`.** `strict` was trialed: **666 errors**, ~90%
+  `reportUnknown*` from untyped Textual / amplifier-core surfaces with no type stubs
+  — not real defects. Adopting strict would demand 600+ suppressions for no safety
+  gain, so the diff is not "small" and we keep `basic`.
+- **One token formatter home.** Token formatting lives in `model/formatting.py`
+  (`format_tokens_k` for the fixed `X.Xk` telemetry figure, `format_tokens` for the
+  adaptive `/context` units). `ui/` and `commands/` import the public helpers instead
+  of reaching into `model/turn`'s private `_format_tokens`.
 
 ## The rules the code holds itself to
 

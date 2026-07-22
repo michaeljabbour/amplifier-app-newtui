@@ -145,9 +145,7 @@ def global_bindings() -> list[BindingType]:
     # Copy whichever selection exists (composer text or transcript drag).
     # Priority: TextArea's own ctrl+c binding otherwise swallows the key
     # while the composer has focus — transcript copies silently no-oped.
-    bindings.append(
-        Binding("ctrl+c,super+c", "copy_selection", "copy", show=False, priority=True)
-    )
+    bindings.append(Binding("ctrl+c,super+c", "copy_selection", "copy", show=False, priority=True))
     return bindings
 
 
@@ -184,9 +182,7 @@ def permissions_block(
             style_token="dim",
         ),
     ]
-    spans.extend(
-        Segment(text=f"  {slot.label()}\n", style_token="fg") for slot in surface.slots()
-    )
+    spans.extend(Segment(text=f"  {slot.label()}\n", style_token="fg") for slot in surface.slots())
     if snapshot.exceptions:
         spans.append(
             Segment(
@@ -249,9 +245,7 @@ def announce_ready(app: NewTuiApp) -> None:
     # degrade to the prose-only prompts + answers below.
     from .live_tail import answer_spans
 
-    app.composer.seed_history(
-        text for role, text in app.adapter.restored_history if role == "user"
-    )
+    app.composer.seed_history(text for role, text in app.adapter.restored_history if role == "user")
     if not app.reducer.replay(
         app.adapter.restored_events,
         turn_base=app.adapter.turn_base,
@@ -259,9 +253,7 @@ def announce_ready(app: NewTuiApp) -> None:
     ):
         for role, text in app.adapter.restored_history:
             if role == "user":
-                app.append_block(
-                    UserLine(id=app.allocator.next_id(), text=text, mode=app.mode_id)
-                )
+                app.append_block(UserLine(id=app.allocator.next_id(), text=text, mode=app.mode_id))
             else:
                 app.append_block(
                     Answer(
@@ -347,9 +339,7 @@ async def mount_approval(
     bar.focus()
     app.show_notice(APPROVAL_NOTICE, duration=APPROVAL_NOTICE_DURATION)
     if lane_was_focused:
-        app.show_notice(
-            "back to parent · approval required", duration=APPROVAL_NOTICE_DURATION
-        )
+        app.show_notice("back to parent · approval required", duration=APPROVAL_NOTICE_DURATION)
     app.refresh_status()
 
 
@@ -497,9 +487,9 @@ def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
     except (KeyError, ValueError) as error:
         app.show_notice(str(error))
         return
-    narration = app.adapter.decision_narration(
-        answer, item.action
-    ) or applying_decision_line(answer)
+    narration = app.adapter.decision_narration(answer, item.action) or applying_decision_line(
+        answer
+    )
     # Mockup logs the applied decision as a narration line: bright "● "
     # marker + fg text (design-v3-cohesive.html:289).
     app.append_block(Narration(id=app.allocator.next_id(), text=narration))
@@ -537,13 +527,18 @@ def os_clipboard_copy(text: str) -> bool:
     """
     import shutil
     import subprocess
+
     for command in _os_clipboard_commands():
         if shutil.which(command[0]) is None:
             continue
         try:
             subprocess.run(
-                command, input=text.encode("utf-8"), timeout=5, check=True,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                command,
+                input=text.encode("utf-8"),
+                timeout=5,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             return True
         except Exception:  # noqa: BLE001 — clipboard is best-effort

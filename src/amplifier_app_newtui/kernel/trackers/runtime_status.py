@@ -130,9 +130,7 @@ class RuntimeStatusTracker:
         """Re-seed restored spend on resume (ui-events.jsonl replay)."""
         if prior_cost <= 0:
             return
-        self._session = self._session.model_copy(
-            update={"cost": self._session.cost + prior_cost}
-        )
+        self._session = self._session.model_copy(update={"cost": self._session.cost + prior_cost})
         self._notify()
 
     def add_listener(self, listener: Listener) -> Callable[[], None]:
@@ -207,7 +205,7 @@ class RuntimeStatusTracker:
         if self._cost_fn is not None:
             try:
                 cost = self._cost_fn(usage)
-            except Exception:
+            except Exception:  # noqa: BLE001 — cost function is best-effort
                 logger.debug("Cost function failed", exc_info=True)
         self._turn = self._turn.adding(usage, cost)
         self._session = self._session.adding(usage, cost)
@@ -217,7 +215,7 @@ class RuntimeStatusTracker:
         for listener in tuple(self._listeners):
             try:
                 listener()
-            except Exception:
+            except Exception:  # noqa: BLE001 — a bad listener must not break notify
                 logger.debug("Runtime status listener failed", exc_info=True)
 
 

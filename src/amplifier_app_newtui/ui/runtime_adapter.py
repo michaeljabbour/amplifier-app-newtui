@@ -69,9 +69,7 @@ class RuntimeAdapter:
         summaries, turn rules — DESIGN-SPEC §3/§11); empty means the
         prose ``restored_history`` fallback renders instead."""
         self.startup_notices: tuple[str, ...] = ()
-        self.compaction = CompactionConfig(
-            auto_compact=True, compact_threshold=0.8
-        )
+        self.compaction = CompactionConfig(auto_compact=True, compact_threshold=0.8)
 
     def attach(self, app: Any) -> None:
         """Give the adapter its app handle (approval presentation etc.)."""
@@ -159,9 +157,7 @@ class RuntimeAdapter:
     async def mcp_tools(self) -> tuple[str, ...]:
         return ()
 
-    async def directory_entries(
-        self, kind: DirectoryKind
-    ) -> tuple[DirectoryEntry, ...]:
+    async def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
         del kind
         return ()
 
@@ -321,7 +317,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
                 on_progress=self._boot_progress,
             )
             await runtime.start()
-        except BaseException as error:  # surface boot failures on the app loop
+        except BaseException as error:  # noqa: BLE001 — surface any boot failure on the app loop
             # Bind before the except block exits — Python unbinds the
             # handler name, and the lambda runs later on the app loop.
             failure = error
@@ -332,7 +328,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         await self._stop.wait()  # keep the loop alive for proxied calls
         try:
             await runtime.cleanup()
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort teardown on exit
             pass  # best-effort teardown on exit
 
     def _boot_progress(self, action: str, detail: str) -> None:
@@ -467,9 +463,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
             return ()
         return await self._in_runtime(self._runtime.mcp_tools())
 
-    async def directory_entries(
-        self, kind: DirectoryKind
-    ) -> tuple[DirectoryEntry, ...]:
+    async def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
         if self._runtime is None:
             return ()
 
@@ -483,9 +477,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
     ) -> tuple[bool, str]:
         if self._runtime is None:
             return (False, "session still starting")
-        return await self._in_runtime(
-            self._runtime.update_session_directory(kind, operation, path)
-        )
+        return await self._in_runtime(self._runtime.update_session_directory(kind, operation, path))
 
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Real fork: foundation in-memory fork + ``context.set_messages()``."""

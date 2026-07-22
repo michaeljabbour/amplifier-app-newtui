@@ -59,8 +59,22 @@ venvPath = "."
 venv = ".venv"
 exclude = ["**/__pycache__"]
 pythonVersion = "3.12"
+# Strict was trialed 2026-07-22 (issue #29): 666 errors, ~90% reportUnknown*
+# from untyped Textual / amplifier-core surfaces (no type stubs) rather than
+# real defects. Adopting strict would require 600+ suppressions for no safety
+# gain, so we stay on basic. Rationale: docs/DEVELOPMENT.md.
 typeCheckingMode = "basic"
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Was bare defaults, so the codebase's own `# noqa: BLE001` convention went
+# unenforced. Select ruff defaults (pyflakes F + pycodestyle E4/E7/E9) plus
+# flake8-bugbear (B, real latent-bug catches) and flake8-blind-except (BLE).
+# SIM/UP were trialed (issue #29) and deferred: they are stylistic /
+# modernization rewrites (contextlib.suppress, PEP-695, StrEnum) that would
+# refactor code or change `str(CapabilityClass)` output - out of scope for a
+# behavior-preserving hygiene pass. See docs/DEVELOPMENT.md.
+select = ["E4", "E7", "E9", "F", "B", "BLE"]

@@ -77,12 +77,12 @@ async def _run_once(
             bundle_name = runtime.bundle_name
             model_name = runtime.model_name
             response = await runtime.submit(prompt)
-        except Exception as caught:  # structured error is part of the CLI contract
+        except Exception as caught:  # noqa: BLE001 — structured error is part of the CLI contract
             error = caught
         finally:
             try:
                 await runtime.cleanup()
-            except Exception as caught:
+            except Exception as caught:  # noqa: BLE001 — cleanup failure is folded into the CLI error
                 if error is None:
                     error = caught
 
@@ -130,14 +130,14 @@ async def _run_once(
                 while not runtime.queue.empty():
                     emit(records.runtime_event(runtime.queue.get_nowait()))
                 response = await submit
-            except Exception as caught:
+            except Exception as caught:  # noqa: BLE001 — surfaced as a structured CLI error record
                 error = caught
                 while not runtime.queue.empty():
                     emit(records.runtime_event(runtime.queue.get_nowait()))
             finally:
                 try:
                     await runtime.cleanup()
-                except Exception as caught:
+                except Exception as caught:  # noqa: BLE001 — cleanup failure is folded into the CLI error
                     if error is None:
                         error = caught
 
@@ -213,7 +213,9 @@ def _resolve_run_prompt(prompt: str | None) -> str:
 
 
 @click.group(invoke_without_command=True)
-@click.option("--demo", is_flag=True, help="Run the scripted DemoRuntime instead of a real session.")
+@click.option(
+    "--demo", is_flag=True, help="Run the scripted DemoRuntime instead of a real session."
+)
 @click.option("--bundle", default=None, help="Bundle name or URI (default: settings/bundled).")
 @click.version_option(__version__, prog_name="amplifier-newtui")
 @click.pass_context
@@ -266,9 +268,7 @@ def sessions() -> None:
 @click.option("--bundle", default=None, help="Bundle name or URI.")
 def resume(session_id: str, bundle: str | None) -> None:
     """Launch the TUI resuming a stored session."""
-    raise SystemExit(
-        asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=session_id))
-    )
+    raise SystemExit(asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=session_id)))
 
 
 @main.command()
@@ -297,9 +297,15 @@ def _scope(
 
 
 def _scope_options(fn):  # noqa: ANN001 — click decorator stack
-    fn = click.option("--local", "is_local", is_flag=True, help="Write to .amplifier/settings.local.yaml.")(fn)
-    fn = click.option("--project", "is_project", is_flag=True, help="Write to .amplifier/settings.yaml.")(fn)
-    fn = click.option("--global", "is_global", is_flag=True, help="Write to ~/.amplifier/settings.yaml (default).")(fn)
+    fn = click.option(
+        "--local", "is_local", is_flag=True, help="Write to .amplifier/settings.local.yaml."
+    )(fn)
+    fn = click.option(
+        "--project", "is_project", is_flag=True, help="Write to .amplifier/settings.yaml."
+    )(fn)
+    fn = click.option(
+        "--global", "is_global", is_flag=True, help="Write to ~/.amplifier/settings.yaml (default)."
+    )(fn)
     return fn
 
 
@@ -339,7 +345,9 @@ def bundle_list(all_bundles: bool) -> None:
 
     active = bundle_admin.current_bundle()
     console.print(
-        f"Active: [green]{active}[/green]" if active else f"No bundle active ({DEFAULT_BUNDLE} default)",
+        f"Active: [green]{active}[/green]"
+        if active
+        else f"No bundle active ({DEFAULT_BUNDLE} default)",
         style="dim",
     )
     if not all_bundles:
@@ -524,26 +532,30 @@ def allowed_dirs_list(scope_filter: str | None) -> None:
 @allowed_dirs.command("add")
 @click.argument("path")
 @_scope_options
-def allowed_dirs_add(
-    path: str, is_global: bool, is_project: bool, is_local: bool
-) -> None:
+def allowed_dirs_add(path: str, is_global: bool, is_project: bool, is_local: bool) -> None:
     """Allow PATH at the selected settings scope."""
     _update_directory(
-        "allowed", "add", path,
-        is_global=is_global, is_project=is_project, is_local=is_local,
+        "allowed",
+        "add",
+        path,
+        is_global=is_global,
+        is_project=is_project,
+        is_local=is_local,
     )
 
 
 @allowed_dirs.command("remove")
 @click.argument("path")
 @_scope_options
-def allowed_dirs_remove(
-    path: str, is_global: bool, is_project: bool, is_local: bool
-) -> None:
+def allowed_dirs_remove(path: str, is_global: bool, is_project: bool, is_local: bool) -> None:
     """Remove PATH from the selected settings scope."""
     _update_directory(
-        "allowed", "remove", path,
-        is_global=is_global, is_project=is_project, is_local=is_local,
+        "allowed",
+        "remove",
+        path,
+        is_global=is_global,
+        is_project=is_project,
+        is_local=is_local,
     )
 
 
@@ -562,26 +574,30 @@ def denied_dirs_list(scope_filter: str | None) -> None:
 @denied_dirs.command("add")
 @click.argument("path")
 @_scope_options
-def denied_dirs_add(
-    path: str, is_global: bool, is_project: bool, is_local: bool
-) -> None:
+def denied_dirs_add(path: str, is_global: bool, is_project: bool, is_local: bool) -> None:
     """Deny PATH at the selected settings scope."""
     _update_directory(
-        "denied", "add", path,
-        is_global=is_global, is_project=is_project, is_local=is_local,
+        "denied",
+        "add",
+        path,
+        is_global=is_global,
+        is_project=is_project,
+        is_local=is_local,
     )
 
 
 @denied_dirs.command("remove")
 @click.argument("path")
 @_scope_options
-def denied_dirs_remove(
-    path: str, is_global: bool, is_project: bool, is_local: bool
-) -> None:
+def denied_dirs_remove(path: str, is_global: bool, is_project: bool, is_local: bool) -> None:
     """Remove PATH from the selected settings scope."""
     _update_directory(
-        "denied", "remove", path,
-        is_global=is_global, is_project=is_project, is_local=is_local,
+        "denied",
+        "remove",
+        path,
+        is_global=is_global,
+        is_project=is_project,
+        is_local=is_local,
     )
 
 
@@ -629,9 +645,7 @@ async def _init(
     status = setup.setup_status()
     click.echo(f"keys file: {status.keys_path}")
     click.echo(f"active bundle: {status.active_bundle or 'newtui (default)'}")
-    click.echo(
-        "stored keys: " + (", ".join(status.stored_keys) if status.stored_keys else "none")
-    )
+    click.echo("stored keys: " + (", ".join(status.stored_keys) if status.stored_keys else "none"))
 
     choices = await setup.discover_providers()
     if not choices:
@@ -652,7 +666,9 @@ async def _init(
         if yes:
             # Non-interactive with no provider selected → status only.
             return 0
-        raw = click.prompt("\nset up which provider? (number, or blank to skip)", default="", show_default=False)
+        raw = click.prompt(
+            "\nset up which provider? (number, or blank to skip)", default="", show_default=False
+        )
         if not raw.strip():
             return 0
         try:
@@ -689,9 +705,7 @@ async def _init(
         base_url=base_url.strip() if base_url else None,
         base_url_var=target.base_url_var,
     )
-    cfg_path = setup.write_provider_config(
-        bundle_admin.settings_paths(None, None), "global", entry
-    )
+    cfg_path = setup.write_provider_config(bundle_admin.settings_paths(None, None), "global", entry)
     click.echo(f"\nwrote {', '.join(written)} → {path}")
     click.echo(f"configured provider {target.module_id} → {cfg_path}")
     click.echo("run `amplifier-newtui` to start a session.")
@@ -703,7 +717,9 @@ async def _init(
 @click.option("--api-key", default=None, help="API key (non-interactive; else prompted).")
 @click.option("--base-url", default=None, help="Optional provider base-URL override.")
 @click.option("--model", default=None, help="Default model for the provider.")
-@click.option("--from-env", is_flag=True, help="Non-interactive: configure a provider detected from env vars.")
+@click.option(
+    "--from-env", is_flag=True, help="Non-interactive: configure a provider detected from env vars."
+)
 @click.option("--yes", "-y", is_flag=True, help="Non-interactive: never prompt (needs --api-key).")
 def init(
     provider: str | None,

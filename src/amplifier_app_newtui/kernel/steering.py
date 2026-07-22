@@ -66,8 +66,7 @@ class StepBoundaryBridge:
             )
         if answers:
             answer_lines = [
-                f"{item.decision_id}: {item.question}\nAnswer: {item.answer}"
-                for item in answers
+                f"{item.decision_id}: {item.question}\nAnswer: {item.answer}" for item in answers
             ]
             injections.append(
                 "The user answered deferred decisions. Apply these answers to "

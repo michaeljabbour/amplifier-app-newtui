@@ -1555,9 +1555,7 @@ class TranscriptView(VerticalScroll):
             return block.model_copy(update={"expanded": True})
         return block
 
-    def replace(
-        self, block: TranscriptBlock, *, preserve_expansion: bool = True
-    ) -> None:
+    def replace(self, block: TranscriptBlock, *, preserve_expansion: bool = True) -> None:
         """Swap a block's content in place, keyed by its stable id.
 
         ``preserve_expansion=False`` is for explicit user toggles (the
@@ -1687,9 +1685,7 @@ class TranscriptView(VerticalScroll):
         """Keep canonical history aligned with a tail widget's local toggle."""
 
         widget = self._widgets.get(message.block_id)
-        if isinstance(widget, BlockWidget) and isinstance(
-            widget.block, DelegateSummaryBlock
-        ):
+        if isinstance(widget, BlockWidget) and isinstance(widget.block, DelegateSummaryBlock):
             self._blocks[message.block_id] = widget.block
 
     # -- tail-follow anchor --------------------------------------------------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from amplifier_app_newtui.commands.permissions import (
     DEFAULT_BOUNDARY,
@@ -127,7 +128,7 @@ def test_snapshot_is_frozen_and_complete() -> None:
     assert snap.blocks == ("rm -rf",)
     assert len(snap.slots) == len(SLOT_ORDER)
     assert all(isinstance(slot, TrustSlot) for slot in snap.slots)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         snap.mode = "chat"  # type: ignore[misc]
 
 

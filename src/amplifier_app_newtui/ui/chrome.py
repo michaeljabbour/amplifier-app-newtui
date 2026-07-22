@@ -46,8 +46,7 @@ def terminal_title_sequence(title: str) -> str:
     """
 
     without_controls = "".join(
-        " " if unicodedata.category(character) == "Cc" else character
-        for character in title
+        " " if unicodedata.category(character) == "Cc" else character for character in title
     )
     safe_title = " ".join(without_controls.split())[:TERMINAL_TITLE_MAX_CHARS]
     return f"\x1b]0;{safe_title}\x07"
@@ -115,9 +114,7 @@ class TitleBar(Static):
     def terminal_spinner_glyph(self) -> str:
         """The current high-motion braille frame for native terminal chrome."""
 
-        return TERMINAL_SPINNER_FRAMES[
-            self._frame_index % len(TERMINAL_SPINNER_FRAMES)
-        ]
+        return TERMINAL_SPINNER_FRAMES[self._frame_index % len(TERMINAL_SPINNER_FRAMES)]
 
     def title_text(self) -> str:
         """Plain rendered title, spinner prefix included while running."""
@@ -173,9 +170,7 @@ class TitleBar(Static):
         if running:
             self._frame_index = 0
             if self._spinner_timer is None and self.is_running:
-                self._spinner_timer = self.set_interval(
-                    SPINNER_INTERVAL, self.advance_spinner
-                )
+                self._spinner_timer = self.set_interval(SPINNER_INTERVAL, self.advance_spinner)
         else:
             if self._spinner_timer is not None:
                 self._spinner_timer.stop()
@@ -195,9 +190,7 @@ class TitleBar(Static):
     def on_mount(self) -> None:
         # If running was set before mount, the timer could not start yet.
         if self.running and self._spinner_timer is None:
-            self._spinner_timer = self.set_interval(
-                SPINNER_INTERVAL, self.advance_spinner
-            )
+            self._spinner_timer = self.set_interval(SPINNER_INTERVAL, self.advance_spinner)
         self._repaint()
 
     def on_unmount(self) -> None:

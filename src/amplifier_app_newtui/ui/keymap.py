@@ -187,8 +187,7 @@ FOOTER_HINTS: dict[str, str] = {
 
 
 COMPOSER_PLACEHOLDER = (
-    "Message Amplifier…  "
-    "( ↑ history · ctrl+j newline · enter send · / commands )"
+    "Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )"
 )
 """Composer placeholder — exact string per DESIGN-SPEC §2."""
 

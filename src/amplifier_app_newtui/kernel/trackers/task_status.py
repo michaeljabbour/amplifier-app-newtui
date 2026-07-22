@@ -175,7 +175,7 @@ class TaskStatusTracker:
         for listener in tuple(self._listeners):
             try:
                 listener()
-            except Exception:
+            except Exception:  # noqa: BLE001 — a bad listener must not break notify
                 logger.debug("Task status listener failed", exc_info=True)
 
 

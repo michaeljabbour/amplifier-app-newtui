@@ -652,9 +652,11 @@ class RealRuntime:
         # of hanging invisibly (contract details: kernel/recipes.py).
         recipes_bridge = RecipeApprovalBridge(
             broker=self.broker,
-            tools=lambda: self._initialized.coordinator.get("tools")
-            if self._initialized is not None
-            else None,
+            tools=lambda: (
+                self._initialized.coordinator.get("tools")
+                if self._initialized is not None
+                else None
+            ),
             emit=self.bridge.emit,
             is_executing=lambda: self._executing,
         )

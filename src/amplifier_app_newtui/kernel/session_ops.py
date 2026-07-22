@@ -87,8 +87,10 @@ def _model_ids(models: Any) -> tuple[str, ...]:
     """Best-effort model-id extraction from a ``list_models()`` result."""
     ids: list[str] = []
     for model in models or ():
-        ident = getattr(model, "id", None) or getattr(model, "name", None) or (
-            model if isinstance(model, str) else None
+        ident = (
+            getattr(model, "id", None)
+            or getattr(model, "name", None)
+            or (model if isinstance(model, str) else None)
         )
         if ident:
             ids.append(str(ident))

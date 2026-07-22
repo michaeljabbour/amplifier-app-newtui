@@ -14,22 +14,11 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..model.blocks import ContextBlock
+from ..model.formatting import format_tokens
 
 DEFAULT_WINDOW_TOKENS = 200_000
 DEFAULT_BAR_WIDTH = 20
 """Bar cell count in the mockup's ``/context`` line (20 × 5% cells)."""
-
-
-def format_tokens(tokens: int) -> str:
-    """``742`` / ``4.1k`` / ``52k`` / ``1.2m`` — mockup token formatting."""
-    if tokens < 1_000:
-        return str(tokens)
-    if tokens < 1_000_000:
-        thousands = tokens / 1_000
-        if thousands < 10 and round(thousands, 1) != round(thousands):
-            return f"{thousands:.1f}k"
-        return f"{round(thousands)}k"
-    return f"{tokens / 1_000_000:.1f}m"
 
 
 class ContextUsage(BaseModel):
@@ -50,9 +39,7 @@ class ContextUsage(BaseModel):
     @model_validator(mode="after")
     def _fits_window(self) -> "ContextUsage":
         if self.used > self.window:
-            raise ValueError(
-                f"used tokens ({self.used}) exceed the context window ({self.window})"
-            )
+            raise ValueError(f"used tokens ({self.used}) exceed the context window ({self.window})")
         return self
 
     @property
@@ -101,9 +88,7 @@ def _bar_cells(values: tuple[int, ...], bar_width: int) -> tuple[int, ...]:
             break
         largest = max(candidates, key=lambda i: cells[i])
         cells[largest] -= 1
-    remainders = sorted(
-        range(len(values)), key=lambda i: exact[i] - int(exact[i]), reverse=True
-    )
+    remainders = sorted(range(len(values)), key=lambda i: exact[i] - int(exact[i]), reverse=True)
     cursor = 0
     while sum(cells) < bar_width and remainders:
         cells[remainders[cursor % len(remainders)]] += 1

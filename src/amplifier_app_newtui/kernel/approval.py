@@ -234,9 +234,7 @@ class ApprovalBroker:
             ticket.prompt,
             ticket.detail.rule or "deferred approval",
             choices=ticket.options,
-            highlight=deferral_highlight(
-                ticket.prompt, ticket.detail.cwd, ticket.detail.command
-            ),
+            highlight=deferral_highlight(ticket.prompt, ticket.detail.cwd, ticket.detail.command),
             # MUST equal _record_timeout's DenialLog key: a retro-answer's
             # override joins the timeout denial for /improve trust slots.
             action=ticket.detail.command or ticket.prompt,
@@ -297,8 +295,7 @@ def presented_options(options: Iterable[str]) -> tuple[str, ...]:
     extras = tuple(
         option
         for option in options
-        if option not in STANDARD_OPTIONS
-        and option.strip().casefold() not in {"allow", "deny"}
+        if option not in STANDARD_OPTIONS and option.strip().casefold() not in {"allow", "deny"}
     )
     return STANDARD_OPTIONS + extras
 

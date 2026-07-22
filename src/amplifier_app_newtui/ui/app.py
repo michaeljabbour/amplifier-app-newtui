@@ -273,14 +273,13 @@ class NewTuiApp(App[None]):
         else:
             self.call_from_thread(app_support.sync_steer_echoes, self)
 
-
     async def _boot_runtime(self) -> None:
         self.adapter.attach(self)
         try:
             await self.adapter.start(lambda: app_support.announce_ready(self))
             self.file_mentions.set_files(await self.adapter.workspace_files())
             self._register_skill_commands(await self.adapter.list_skills())
-        except Exception as error:  # boot failed — show why, don't crash out
+        except Exception as error:  # noqa: BLE001 — boot failed; show why, don't crash out
             # (CancelledError/KeyboardInterrupt stay uncaught: a real
             # shutdown mid-boot must not read as "session failed to start".)
             app_support.announce_boot_failure(self, error)
@@ -465,9 +464,7 @@ class NewTuiApp(App[None]):
             self.show_notice(f"model · {detail}" if ok else detail)
             return
         listing = await self.adapter.list_models()
-        self.append_block(
-            Answer(id=self.allocator.next_id(), spans=model_listing_spans(listing))
-        )
+        self.append_block(Answer(id=self.allocator.next_id(), spans=model_listing_spans(listing)))
 
     def apply_effort(self, arg: str) -> None:
         if arg and self._ops_starting():
@@ -602,9 +599,7 @@ class NewTuiApp(App[None]):
                 for name, spec in mcp_config.read_servers(path).items()
             }
             live = await self.adapter.mcp_tools()
-            self.append_block(
-                Answer(id=self.allocator.next_id(), spans=mcp_spans(servers, live))
-            )
+            self.append_block(Answer(id=self.allocator.next_id(), spans=mcp_spans(servers, live)))
         elif sub == "add":
             if len(parts) < 3:
                 self.show_notice("usage: /mcp add <name> <command> [args…]")
@@ -633,9 +628,7 @@ class NewTuiApp(App[None]):
         # its seconds counter — usage events alone froze it during long
         # provider calls (supervisor feedback, spec §3/§11).
         if self._working_timer is None:
-            self._working_timer = self.set_interval(
-                1.0, lambda: self.reducer.tick(time.time())
-            )
+            self._working_timer = self.set_interval(1.0, lambda: self.reducer.tick(time.time()))
         self.refresh_status()
 
     def turn_finished(self) -> None:
@@ -653,9 +646,7 @@ class NewTuiApp(App[None]):
         # Attention signal for the suppressed hooks-notify (raw OSC/BEL would
         # corrupt Textual): ring the driver-safe bell after long turns only —
         # policy + rationale in app_support.attention_bell_needed.
-        elapsed = (
-            0.0 if self._turn_started_at is None else time.monotonic() - self._turn_started_at
-        )
+        elapsed = 0.0 if self._turn_started_at is None else time.monotonic() - self._turn_started_at
         self._turn_started_at = None
         if app_support.attention_bell_needed("turn_finished", elapsed):
             self.bell()
@@ -886,9 +877,7 @@ class NewTuiApp(App[None]):
         self.palette.apply_filter(message.filter)
         self._refresh_footer()
 
-    def on_composer_palette_filter_cleared(
-        self, message: Composer.PaletteFilterCleared
-    ) -> None:
+    def on_composer_palette_filter_cleared(self, message: Composer.PaletteFilterCleared) -> None:
         message.stop()
         self.palette.apply_filter(None)
         self._refresh_footer()
@@ -1073,11 +1062,7 @@ class NewTuiApp(App[None]):
         # already-open block instead.
         ids = self.transcript.block_ids
         last = self.transcript.get_block(ids[-1]) if ids else None
-        if (
-            last is not None
-            and last.kind == "evidence"
-            and last.links == tuple(message.links)
-        ):
+        if last is not None and last.kind == "evidence" and last.links == tuple(message.links):
             existing = self.transcript.get_widget(last.id)
             if existing is not None:
                 existing.focus()
@@ -1143,9 +1128,7 @@ class NewTuiApp(App[None]):
         if widget is self.transcript or self.transcript in widget.ancestors:
             self._restore_keyboard()
 
-    def on_footer_bar_waiting_badge_clicked(
-        self, message: FooterBar.WaitingBadgeClicked
-    ) -> None:
+    def on_footer_bar_waiting_badge_clicked(self, message: FooterBar.WaitingBadgeClicked) -> None:
         message.stop()
         self.action_show_needs_you()
 
@@ -1250,9 +1233,7 @@ class NewTuiApp(App[None]):
     # -- command-context surface ------------------------------------------------------------
 
     def echo_user_line(self, text: str) -> None:
-        self.append_block(
-            UserLine(id=self.allocator.next_id(), text=text, mode=self._mode.id)
-        )
+        self.append_block(UserLine(id=self.allocator.next_id(), text=text, mode=self._mode.id))
 
     def context_usage(self) -> ContextUsage:
         window = self.adapter.compaction.max_tokens

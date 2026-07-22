@@ -441,8 +441,7 @@ DEMO_DEFERRED_DECISION = DemoDeferredDecision(
     highlight="mj/waypoint",
     action="push-to-fork",
     applied_narration=(
-        "Applying decision: pushing to fork mj/waypoint. "
-        "Trust-slot suggestion queued for /improve."
+        "Applying decision: pushing to fork mj/waypoint. Trust-slot suggestion queued for /improve."
     ),
 )
 
@@ -561,9 +560,7 @@ def _build_turn_specs() -> tuple[DemoTurnSpec, ...]:
             cost_after=cost,
             outcome="answer · plan ready",
             shipped=False,
-            rule_label=rule_label(
-                "11s", 9_400, 93, Decimal("0.06"), "answer · plan ready"
-            ),
+            rule_label=rule_label("11s", 9_400, 93, Decimal("0.06"), "answer · plan ready"),
             checkpoint_id="t4",
             checkpoint_label="durable-history plan · answer",
             recap=PLAN_RECAP,
@@ -607,9 +604,7 @@ def _build_turn_specs() -> tuple[DemoTurnSpec, ...]:
             cost_after=cost,
             outcome=agents_outcome,
             shipped=True,
-            rule_label=rule_label(
-                "6s", agents_tokens, None, Decimal("0.52"), agents_outcome
-            ),
+            rule_label=rule_label("6s", agents_tokens, None, Decimal("0.52"), agents_outcome),
             checkpoint_id="t6",
             checkpoint_label="DTU reality check · shipped",
             answer=AGENTS_ANSWER,
@@ -976,9 +971,7 @@ class DemoRuntime:
         self._request_id = f"demo-req-{key}"
         self._ticks = list(tick_tokens(key)) if key in _TICK_COUNTS else None
         if spec.mode_notice and not self._suppress_mode_notice:
-            await self._emit(
-                Notification(**self._env(), message=spec.mode_notice, source="mode")
-            )
+            await self._emit(Notification(**self._env(), message=spec.mode_notice, source="mode"))
         self._suppress_mode_notice = False
         prompt = self._prompt_override or spec.prompt
         self._prompt_override = None
@@ -997,9 +990,7 @@ class DemoRuntime:
         self._ticks = None
         self._running = False
         await self._emit(
-            OrchestratorComplete(
-                **self._env(), orchestrator="demo", turn_count=1, status=status
-            )
+            OrchestratorComplete(**self._env(), orchestrator="demo", turn_count=1, status=status)
         )
         await self._emit(ExecutionEnd(**self._env()))
         await self._emit(PromptComplete(**self._env(), response=response))
@@ -1081,7 +1072,7 @@ class DemoRuntime:
         await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
         await self._todo(STORE_STEPS, statuses)
         denied = False
-        for i, (step, narration, command) in enumerate(
+        for i, (_step, narration, command) in enumerate(
             zip(STORE_STEPS, STORE_NARRATIONS, STORE_COMMANDS, strict=True)
         ):
             if self._interrupted:  # mockup: step-boundary break
@@ -1154,9 +1145,7 @@ class DemoRuntime:
                         await self._todo(STORE_STEPS, statuses)
                         continue
                     await self._emit(
-                        ApprovalGranted(
-                            **self._env(), prompt=PYTEST_APPROVAL_PROMPT, choice=choice
-                        )
+                        ApprovalGranted(**self._env(), prompt=PYTEST_APPROVAL_PROMPT, choice=choice)
                     )
                 tool_input = {"command": command}
                 call_id = await self._tool_pre("bash", tool_input)
@@ -1165,9 +1154,7 @@ class DemoRuntime:
                     # Mockup breaks before rm(cmdLine): the live ``└ $ cmd``
                     # line stays in the transcript, no collapsed tool line.
                     break
-                await self._tool_post(
-                    call_id, "bash", tool_input, {"output": "(output collapsed)"}
-                )
+                await self._tool_post(call_id, "bash", tool_input, {"output": "(output collapsed)"})
             statuses[i] = "done"
             await self._plan(STORE_PLAN_TITLE, STORE_STEPS, statuses)
             await self._todo(STORE_STEPS, statuses)

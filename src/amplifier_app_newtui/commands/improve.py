@@ -131,9 +131,7 @@ class ApprovalJournal:
         rows = []
         for action, overridden in sorted(self._overridden.items()):
             denied = max(denied_counts.get(action, 0), overridden)
-            rows.append(
-                OverriddenDenial(action=action, denied=denied, overridden=overridden)
-            )
+            rows.append(OverriddenDenial(action=action, denied=denied, overridden=overridden))
         return tuple(rows)
 
 
@@ -150,9 +148,7 @@ def allowlist_proposals(
                 ImproveProposal(
                     title="allowlist:",
                     action=tally.action,
-                    rationale=(
-                        f"approved {tally.approved}/{tally.asked} times · add to auto"
-                    ),
+                    rationale=(f"approved {tally.approved}/{tally.asked} times · add to auto"),
                 )
             )
     return tuple(proposals)
@@ -213,9 +209,7 @@ def improve_proposals(
     )
 
 
-def build_improve_block(
-    block_id: str, proposals: tuple[ImproveProposal, ...]
-) -> ImproveBlock:
+def build_improve_block(block_id: str, proposals: tuple[ImproveProposal, ...]) -> ImproveBlock:
     """Assemble the ``/improve`` transcript block (proposals only — the
     header line ``Improve  from ledger + denial log · proposes, never
     applies silently`` is the renderer's)."""

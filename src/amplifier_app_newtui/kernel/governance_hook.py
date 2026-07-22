@@ -308,7 +308,7 @@ class GovernanceHook:
                 target=target,
                 user_messages=tuple(self._user_messages),
             )
-        except Exception as error:  # fail closed — a broken classifier denies
+        except Exception as error:  # noqa: BLE001 — fail closed, a broken classifier denies
             allowed, reason = False, f"classifier failed closed · {error}"
         if allowed:
             self._denial_log.record_non_denial()

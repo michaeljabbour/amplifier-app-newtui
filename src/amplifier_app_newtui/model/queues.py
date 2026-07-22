@@ -29,9 +29,7 @@ Listener = Callable[[], None]
 
 def _clean_multiline(value: object, limit: int = MAX_ITEM_CHARS) -> str:
     """Strip control characters (keeping newline/tab) and cap length."""
-    return "".join(
-        ch for ch in str(value) if ch in {"\n", "\t"} or ord(ch) >= 32
-    )[:limit]
+    return "".join(ch for ch in str(value) if ch in {"\n", "\t"} or ord(ch) >= 32)[:limit]
 
 
 def _clean_line(value: object, limit: int = MAX_ITEM_CHARS) -> str:
@@ -202,9 +200,7 @@ class NeedsYouQueue(_ListenerMixin):
         self._items: list[NeedsYouItem] = []
         self._defer_listeners: list[Callable[[NeedsYouItem], None]] = []
 
-    def add_defer_listener(
-        self, listener: Callable[[NeedsYouItem], None]
-    ) -> Callable[[], None]:
+    def add_defer_listener(self, listener: Callable[[NeedsYouItem], None]) -> Callable[[], None]:
         """Register a per-item deferral callback; returns its removal.
 
         Plain change listeners can't tell WHAT changed; the real runtime
@@ -290,9 +286,7 @@ class NeedsYouQueue(_ListenerMixin):
             self._notify()
         return tuple(consumed)
 
-    def _transition(
-        self, decision_id: str, status: NeedsYouStatus, answer: str
-    ) -> NeedsYouItem:
+    def _transition(self, decision_id: str, status: NeedsYouStatus, answer: str) -> NeedsYouItem:
         for index, item in enumerate(self._items):
             if item.decision_id != decision_id:
                 continue

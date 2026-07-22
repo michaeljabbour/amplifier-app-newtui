@@ -173,9 +173,7 @@ class SessionSpawner:
                 "error": reason,
             }
 
-        child_id = sub_session_id or self._id_generator(
-            str(parent_session.session_id), agent_name
-        )
+        child_id = sub_session_id or self._id_generator(str(parent_session.session_id), agent_name)
         overlay = _agent_overlay(agent_configs, agent_name)
         config = _merged_config(parent_session, overlay)
         _apply_inheritance_filter(config, "tools", tool_inheritance, overlay.get("tools"))
@@ -190,15 +188,11 @@ class SessionSpawner:
         # any prefs the routing hook wrote onto the agent config. Best-effort:
         # a single-provider setup or missing resolver leaves the child on the
         # parent provider (apply_* skips unmounted providers). Never raises.
-        config = await _apply_routing(
-            config, parent_coordinator, provider_preferences, model_role
-        )
+        config = await _apply_routing(config, parent_coordinator, provider_preferences, model_role)
         approval_system = self._approval_system or getattr(
             parent_coordinator, "approval_system", None
         )
-        display_system = self._display_system or getattr(
-            parent_coordinator, "display_system", None
-        )
+        display_system = self._display_system or getattr(parent_coordinator, "display_system", None)
         _remember(self._briefs, agent_name, _brief(instruction))
         child = self._session_factory(
             config=config,
@@ -244,7 +238,7 @@ class SessionSpawner:
         try:
             output = await child.execute(instruction)
             status = "success"
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 — child agent failure is returned as an error result
             logger.debug("Child session %s failed", child_id, exc_info=True)
             output = f"agent failed: {error}"
             status = "error"
@@ -252,18 +246,18 @@ class SessionSpawner:
             for unregister in reversed(unregisters):
                 try:
                     unregister()
-                except Exception:
+                except Exception:  # noqa: BLE001 — tracker unregister is best-effort teardown
                     logger.debug("Tracker unregister failed", exc_info=True)
             if cancellation_linked and parent_cancellation is not None:
                 try:
                     parent_cancellation.unregister_child(child_cancellation)
-                except Exception:
+                except Exception:  # noqa: BLE001 — cancellation unlink is best-effort teardown
                     logger.debug("Cancellation unlink failed", exc_info=True)
             if display_system is not None and hasattr(display_system, "pop_nesting"):
                 display_system.pop_nesting()
             try:
                 await child.cleanup()
-            except Exception:
+            except Exception:  # noqa: BLE001 — child cleanup is best-effort teardown
                 logger.debug("Child cleanup failed", exc_info=True)
 
         summary = _result_summary(output)
@@ -283,7 +277,7 @@ def _current_depth(coordinator: Any) -> int:
         return 0
     try:
         depth = get_capability(DEPTH_CAPABILITY)
-    except Exception:
+    except Exception:  # noqa: BLE001 — an unavailable/failed capability means depth 0
         return 0
     return depth if isinstance(depth, int) and depth >= 0 else 0
 
@@ -362,8 +356,7 @@ def _apply_inheritance_filter(
     if not isinstance(entries, list) or not entries:
         return
     explicit = {
-        _module_id(entry)
-        for entry in (agent_declared if isinstance(agent_declared, list) else ())
+        _module_id(entry) for entry in (agent_declared if isinstance(agent_declared, list) else ())
     }
     inherit = inheritance.get(f"inherit_{section}")
     exclude = inheritance.get(f"exclude_{section}") or ()
@@ -416,7 +409,7 @@ async def _inherit_module_resolver(parent_coordinator: Any, child_coordinator: A
         return
     try:
         resolver = get("module-source-resolver")
-    except Exception:
+    except Exception:  # noqa: BLE001 — resolver inheritance is best-effort
         resolver = None
     if resolver is None:
         return
@@ -424,7 +417,7 @@ async def _inherit_module_resolver(parent_coordinator: Any, child_coordinator: A
         mounted = mount("module-source-resolver", resolver)
         if asyncio.iscoroutine(mounted):
             await mounted
-    except Exception:
+    except Exception:  # noqa: BLE001 — resolver inheritance is best-effort
         logger.debug("module resolver inheritance failed", exc_info=True)
 
 
@@ -439,13 +432,13 @@ def _inherit_capabilities(
     for name in names:
         try:
             value = get_capability(name)
-        except Exception:
+        except Exception:  # noqa: BLE001 — capability inheritance is best-effort
             value = None
         if value is None:
             continue
         try:
             register(name, value)
-        except Exception:
+        except Exception:  # noqa: BLE001 — capability inheritance is best-effort
             logger.debug("capability inheritance failed: %s", name, exc_info=True)
 
 
@@ -469,7 +462,7 @@ async def _seed_child_context(
     context: Any = None
     try:
         context = get("context")
-    except Exception:
+    except Exception:  # noqa: BLE001 — a missing/failed context is tolerated
         context = None
     if context is None:
         return
@@ -565,9 +558,7 @@ async def _apply_routing(
             apply_provider_preferences_with_resolution,
         )
 
-        return await apply_provider_preferences_with_resolution(
-            config, coerced, parent_coordinator
-        )
+        return await apply_provider_preferences_with_resolution(config, coerced, parent_coordinator)
     except Exception:  # noqa: BLE001 — routing is best-effort; never break spawn
         logger.debug("routing application failed for spawn", exc_info=True)
         return config

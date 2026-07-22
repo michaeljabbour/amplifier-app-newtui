@@ -63,9 +63,7 @@ def tool_ref(tool_name: str, tool_input: Mapping[str, Any]) -> str:
     return tool_name
 
 
-def derive_links(
-    answer_text: str, calls: Sequence[tuple[str, str]]
-) -> tuple[EvidenceLink, ...]:
+def derive_links(answer_text: str, calls: Sequence[tuple[str, str]]) -> tuple[EvidenceLink, ...]:
     """Pair the answer's leading sentences with the turn's tool calls.
 
     *calls* is ``(tool_ref, tool_call_id)`` in completion order. The
@@ -109,9 +107,7 @@ class EvidenceCollector:
                 return  # plan updates are not grounding evidence
             if str(event.result.get("status", "")) == "denied":
                 return  # a denied call ran nothing — grounds no claim
-            self._calls.append(
-                (tool_ref(event.tool_name, event.tool_input), event.tool_call_id)
-            )
+            self._calls.append((tool_ref(event.tool_name, event.tool_input), event.tool_call_id))
         elif isinstance(event, ContentBlockEnd):
             if event.block_type != "text":
                 return

@@ -66,9 +66,7 @@ async def test_demo_boot_banner_seed_and_typed_turn() -> None:
         blocks = app.transcript.blocks
         user_lines = [b for b in blocks if b.kind == "user_line"]
         assert user_lines and user_lines[0].text == SEED_PROMPT
-        assert any(
-            b.kind == "tool_line" and b.summary == "Ran 2 shell commands" for b in blocks
-        )
+        assert any(b.kind == "tool_line" and b.summary == "Ran 2 shell commands" for b in blocks)
         rule = next(b for b in blocks if b.kind == "turn_rule")
         assert rule.checkpoint_id == "t1"
         assert app.ledger.turn_count == 1
@@ -84,10 +82,7 @@ async def test_demo_boot_banner_seed_and_typed_turn() -> None:
         await pilot.press("h", "i", "enter")
         assert await _wait_for(
             pilot,
-            lambda: any(
-                b.kind == "user_line" and b.text == "hi"
-                for b in app.transcript.blocks
-            ),
+            lambda: any(b.kind == "user_line" and b.text == "hi" for b in app.transcript.blocks),
         )
         assert app.turn_active
         assert app.title_bar.running
@@ -107,8 +102,9 @@ async def test_demo_build_turn_reaches_approval_bar() -> None:
     async with app.run_test(size=(110, 40)) as pilot:
         await _wait_for(
             pilot,
-            lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks)
-            and not app.turn_active,
+            lambda: (
+                any(b.kind == "turn_rule" for b in app.transcript.blocks) and not app.turn_active
+            ),
         )
         # The pytest approval only asks in chat (spec §4); the app boots
         # in auto (§4 amendment), so put it in chat explicitly.
@@ -150,7 +146,7 @@ async def test_demo_full_sequence_all_five_turns() -> None:
             if expected == 2:  # build turn stops at the pytest approval
                 assert await _wait_for(pilot, lambda: app.approval_bar is not None)
                 await pilot.press("enter")
-            assert await _wait_for(pilot, lambda: rules() >= expected), expected
+            assert await _wait_for(pilot, lambda expected=expected: rules() >= expected), expected
         blocks = app.transcript.blocks
         # Auto turn: force-push blocked + decision deferred to the queue.
         assert any(b.kind == "blocked" for b in blocks)
@@ -199,8 +195,9 @@ async def test_resume_cost_baseline_set_in_adapter_start_reaches_reducer() -> No
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(
             pilot,
-            lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks)
-            and not app.turn_active,
+            lambda: (
+                any(b.kind == "turn_rule" for b in app.transcript.blocks) and not app.turn_active
+            ),
         )
         # Seed turn cost $0.17 on top of the $0.40 resumed baseline.
         assert app.reducer.session_cost == DEMO_SESSION_COST_START  # $0.57
@@ -336,7 +333,5 @@ async def test_provider_usage_repaints_footer_before_prompt_complete() -> None:
             lambda: app.turn_active and app.footer_bar.state.cost == Decimal("0.42"),
         )
         assert app.reducer.session_cost == Decimal("0")
-        await adapter.queue.put(
-            PromptComplete(session_id="root", response="done", ts=3.0)
-        )
+        await adapter.queue.put(PromptComplete(session_id="root", response="done", ts=3.0))
         assert await _wait_for(pilot, lambda: not app.turn_active)

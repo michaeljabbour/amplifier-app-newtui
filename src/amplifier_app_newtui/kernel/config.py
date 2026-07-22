@@ -65,9 +65,7 @@ _UNION_TOOL_CONFIG_FIELDS = frozenset(
 """Tool permission lists extend across scopes instead of replacing each other."""
 
 
-def merge_tool_configs(
-    base: dict[str, Any], overlay: dict[str, Any]
-) -> dict[str, Any]:
+def merge_tool_configs(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """Merge one tool config with stable union semantics for path policy.
 
     Amplifier's directory settings are additive capabilities: adding a project-
@@ -262,9 +260,7 @@ def build_source_resolver(settings: dict[str, Any]) -> Callable[[str, str], str]
     return resolve
 
 
-def apply_module_overrides(
-    mount_plan: dict[str, Any], settings: dict[str, Any]
-) -> dict[str, Any]:
+def apply_module_overrides(mount_plan: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
     """Merge settings ``config.providers`` / ``modules.tools`` /
     ``overrides.<id>.config`` into *mount_plan* **in place**.
 
@@ -288,9 +284,7 @@ def apply_module_overrides(
                     override_config = generic.get(str(entry.get("module")))
                     if override_config:
                         merge = merge_tool_configs if section == "tools" else deep_merge
-                        entry["config"] = merge(
-                            entry.get("config") or {}, override_config
-                        )
+                        entry["config"] = merge(entry.get("config") or {}, override_config)
 
     # config.providers — provider entries merged by identity (id | module).
     provider_overrides = (settings.get("config") or {}).get("providers")
@@ -333,9 +327,7 @@ def expand_env_placeholders(config: dict[str, Any]) -> dict[str, Any]:
     def _is_unset_placeholder(value: str) -> bool:
         match = _ENV_PATTERN.fullmatch(value)
         return (
-            match is not None
-            and match.group(2) is None
-            and os.environ.get(match.group(1)) is None
+            match is not None and match.group(2) is None and os.environ.get(match.group(1)) is None
         )
 
     def _walk(value: Any) -> Any:
@@ -343,9 +335,7 @@ def expand_env_placeholders(config: dict[str, Any]) -> dict[str, Any]:
             return _ENV_PATTERN.sub(_replace_match, value)
         if isinstance(value, dict):
             for key in [
-                k
-                for k, v in value.items()
-                if isinstance(v, str) and _is_unset_placeholder(v)
+                k for k, v in value.items() if isinstance(v, str) and _is_unset_placeholder(v)
             ]:
                 del value[key]
             for key in value:
@@ -364,9 +354,7 @@ def _entry_key(entry: dict[str, Any]) -> str:
     return str(entry.get("id") or entry.get("instance_id") or entry.get("module") or "")
 
 
-def _merge_module_entries(
-    mount_plan: dict[str, Any], section: str, overlay: list[Any]
-) -> None:
+def _merge_module_entries(mount_plan: dict[str, Any], section: str, overlay: list[Any]) -> None:
     """Merge *overlay* module entries into ``mount_plan[section]`` by identity."""
     entries = mount_plan.setdefault(section, [])
     index_by_key = {
@@ -380,9 +368,7 @@ def _merge_module_entries(
             existing = entries[index_by_key[key]]
             merged = {**existing, **item}
             merge = merge_tool_configs if section == "tools" else deep_merge
-            merged["config"] = merge(
-                existing.get("config") or {}, item.get("config") or {}
-            )
+            merged["config"] = merge(existing.get("config") or {}, item.get("config") or {})
             entries[index_by_key[key]] = merged
         else:
             entries.append(item)
@@ -467,9 +453,7 @@ def inject_mode_search_paths(mount_plan: dict[str, Any], modes_dir: Path) -> Non
             paths.append(target)
 
 
-def ensure_project_write_path(
-    mount_plan: dict[str, Any], project_dir: Path
-) -> None:
+def ensure_project_write_path(mount_plan: dict[str, Any], project_dir: Path) -> None:
     """Keep the session project writable when users add extra directories.
 
     ``tool-filesystem`` defaults to the session working directory only while

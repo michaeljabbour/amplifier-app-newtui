@@ -77,9 +77,7 @@ class CommandSpec(Protocol):
     def group(self) -> str: ...
 
 
-def filter_commands(
-    commands: Sequence[CommandSpec], filter_text: str
-) -> tuple[CommandSpec, ...]:
+def filter_commands(commands: Sequence[CommandSpec], filter_text: str) -> tuple[CommandSpec, ...]:
     """Substring filter over command names (mockup: ``cmd.includes(filter)``).
 
     The filter includes its leading ``/`` so ``"/"`` matches everything.

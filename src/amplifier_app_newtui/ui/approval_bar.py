@@ -129,9 +129,7 @@ class ApprovalBar(Horizontal):
         self.ticket_id = ticket_id
         self.prompt = prompt
         self.options = options
-        self._option_widgets = [
-            ApprovalOption(index, label) for index, label in enumerate(options)
-        ]
+        self._option_widgets = [ApprovalOption(index, label) for index, label in enumerate(options)]
 
     def compose(self):
         with Horizontal(id="approval-head"):
