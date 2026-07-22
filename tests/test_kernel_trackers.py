@@ -417,9 +417,16 @@ async def test_queue_bridge_normalizes_into_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_queue_bridge_drops_unknown_events_silently() -> None:
+async def test_queue_bridge_canaries_unknown_events_once() -> None:
+    """Unknown kinds no longer vanish silently: the drift canary surfaces
+    each one exactly once per session as a debug Notification."""
     bridge = QueueBridge()
     await bridge.handle_event("some:unknown_event", {"session_id": ROOT})
+    await bridge.handle_event("some:unknown_event", {"session_id": ROOT})
+    notice = bridge.queue.get_nowait()
+    assert isinstance(notice, Notification)
+    assert notice.source == "event-canary"
+    assert "some:unknown_event" in notice.message
     assert bridge.queue.empty()
 
 

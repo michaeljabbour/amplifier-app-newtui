@@ -15,7 +15,7 @@ queue bridge and the normalized UIEvents are asserted:
 - steering injection at the ``provider:request`` step boundary
 - ``orchestrator:complete`` arrives normalized
 - persistence side effects (transcript.jsonl / metadata.json /
-  events.jsonl) under the fake HOME.
+  ui-events.jsonl) under the fake HOME.
 
 The fake orchestrator mirrors amplifier-module-loop-streaming's hook
 surface: it emits the same events and routes every aggregated HookResult
@@ -425,7 +425,7 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
         assert closing.response == response
 
         # Persistence: transcript + metadata (incremental save on tool:post)
-        # and the append-only events.jsonl (cost re-seed source).
+        # and the append-only ui-events.jsonl (cost re-seed source).
         session_id = runtime.session_short
         store = runtime._store
         assert store is not None
@@ -433,7 +433,7 @@ async def test_offline_turn_end_to_end_with_approval_allow(offline_env) -> None:
         session_dir = store.session_dir(full_id)
         assert (session_dir / "transcript.jsonl").is_file()
         assert (session_dir / "metadata.json").is_file()
-        events_lines = (session_dir / "events.jsonl").read_text().splitlines()
+        events_lines = (session_dir / "ui-events.jsonl").read_text().splitlines()
         recorded_kinds = {json.loads(line)["kind"] for line in events_lines}
         assert "provider_response_usage" in recorded_kinds
         assert "tool_post" in recorded_kinds
@@ -586,12 +586,18 @@ def test_apply_hook_suppression_strips_and_notifies() -> None:
     emitted: list[Notification] = []
     removed = _apply_hook_suppression(plan, emitted.append)
 
-    assert removed == ["hooks-logging", "hooks-streaming-ui"]
-    assert plan["hooks"] == [{"module": "hooks-approval"}, {"module": "hooks-mode"}]
+    # hooks-logging is NOT suppressed: the app's UIEvent log moved to
+    # ui-events.jsonl, so hooks-logging owns the canonical events.jsonl.
+    assert removed == ["hooks-streaming-ui"]
+    assert plan["hooks"] == [
+        {"module": "hooks-approval"},
+        {"module": "hooks-logging"},
+        {"module": "hooks-mode"},
+    ]
     assert len(emitted) == 1
     assert isinstance(emitted[0], Notification)
-    assert "hooks-logging" in emitted[0].message
     assert "hooks-streaming-ui" in emitted[0].message
+    assert "hooks-logging" not in emitted[0].message
 
 
 def test_apply_hook_suppression_with_user_suppress_setting() -> None:
@@ -631,10 +637,12 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
         {
             "hooks-streaming-ui",
             "hooks-todo-display",
-            "hooks-logging",
             "hooks-notify",
         }
     )
+    # hooks-logging is NOT suppressed: it owns the canonical events.jsonl;
+    # the app's UIEvent log writes ui-events.jsonl (no double-write left).
+    assert "hooks-logging" not in _SUPPRESSED_HOOKS_DEFAULT
     # hooks-insight-blocks / hooks-inline-blocks are NOT suppressed: recon
     # of the cached modules shows they are inject_context instruction hooks
     # (session:start / prompt:submit) with zero stdout — suppressing them

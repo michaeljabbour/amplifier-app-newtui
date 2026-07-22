@@ -16,7 +16,7 @@ from typing import Any
 
 from amplifier_core import HookResult
 
-from .events import ContentBlockEnd, UIEvent, normalize, usage_from_content_block_end
+from .events import ContentBlockEnd, Notification, UIEvent, normalize, usage_from_content_block_end
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,41 @@ CONSUMED_EVENTS: tuple[str, ...] = (
 )
 """Every raw hook event :func:`normalize` produces a UIEvent for."""
 
+IGNORED_EVENTS: frozenset[str] = frozenset(
+    {
+        # Mutation point consumed by dedicated hooks (kernel/steering.py,
+        # kernel/clipboard.py) — never a display event.
+        "provider:request",
+        # Channel A consumes the provider streaming family
+        # (``llm:stream_block_*``); the kernel's canonical delta/thinking
+        # stream and raw LLM round-trip records duplicate it.
+        "content_block:delta",
+        "thinking:delta",
+        "thinking:final",
+        "llm:request",
+        "llm:response",
+        # ``context:compaction`` is the consumed summary; the pre/post
+        # pair is engine-internal detail.
+        "context:pre_compact",
+        "context:post_compact",
+    }
+)
+"""Hook events the app deliberately leaves unbridged — exempt from the
+drift canary. Anything else the engine publishes but CONSUMED_EVENTS
+does not name is upstream drift and must surface, not vanish."""
+
+
+def _published_event_names() -> tuple[str, ...]:
+    """The installed core's canonical hook-event names (drift ground truth)."""
+    try:
+        from amplifier_core import events as core_events
+    except ImportError:  # canary degrades to normalize-time detection only
+        logger.debug("amplifier_core.events unavailable")
+        return ()
+    # getattr: ALL_EVENTS is re-exported from the Rust engine and absent
+    # from type stubs; its disappearance must degrade, not crash.
+    return tuple(str(name) for name in getattr(core_events, "ALL_EVENTS", ()))
+
 
 class QueueBridge:
     """Registers one fast handler per consumed event, feeding the queue."""
@@ -96,6 +131,9 @@ class QueueBridge:
         """Raw hook events this bridge instance registers for. The real
         runtime excludes ``prompt:complete`` here and synthesizes its own
         enriched close-out event after the end-of-turn git snapshot."""
+        self._canaried: set[str] = set()
+        """Event kinds already surfaced by the drift canary — one
+        notification per kind per session, never spam."""
 
     def emit(self, event: UIEvent) -> None:
         """Push one already-typed event (used by DisplaySystem notices and
@@ -110,8 +148,30 @@ class QueueBridge:
         except asyncio.QueueFull:
             self.dropped += 1
 
+    def _canary(self, event_name: str) -> None:
+        """Surface an event kind the pipeline would otherwise silently drop.
+
+        Once per kind per session: a logger line plus a debug-level
+        Notification UIEvent — visible, not spammy.
+        """
+        if event_name in self._canaried:
+            return
+        self._canaried.add(event_name)
+        logger.info("unbridged event kind: %s", event_name)
+        self.emit(
+            Notification(
+                message=f"unbridged event kind · {event_name}",
+                level="debug",
+                source="event-canary",
+            )
+        )
+
     async def handle_event(self, event: str, data: dict[str, Any]) -> HookResult:
         normalized = normalize(event, data or {})
+        if normalized is None:
+            # A subscribed name normalize() no longer recognizes:
+            # CONSUMED_EVENTS drifted from the normalization boundary.
+            self._canary(event)
         if normalized is not None:
             # The streaming orchestrator never fires ``provider:response``;
             # per-response usage (tokens + provider-computed cost) rides on
@@ -142,5 +202,62 @@ class QueueBridge:
 
         return unregister_all
 
+    async def register_canary(self, coordinator: Any, *, priority: int = 990) -> Callable[[], None]:
+        """Observe hook events the app neither bridges nor deliberately ignores.
 
-__all__ = ["CONSUMED_EVENTS", "QueueBridge"]
+        The Rust hook registry matches exact names only (no wildcard
+        subscription — ground-truthed against amplifier-core 1.6:
+        ``register("*", ...)`` stores a literal name that never fires), so
+        drift is observed the same way native ``hooks-logging`` does it:
+        subscribe per-name to the core's published ``ALL_EVENTS`` plus
+        module-contributed names from the ``observability.events``
+        capability / contribution channel. First occurrence of any name
+        outside CONSUMED_EVENTS ∪ IGNORED_EVENTS canaries once.
+        """
+        names: list[str] = list(_published_event_names())
+        getter = getattr(coordinator, "get_capability", None)
+        if callable(getter):
+            discovered: Any = getter("observability.events") or ()
+            names.extend(str(name) for name in discovered)
+        collect = getattr(coordinator, "collect_contributions", None)
+        if callable(collect):
+            contributions: Any
+            try:
+                pending: Any = collect("observability.events")
+                contributions = await pending
+            except Exception:  # noqa: BLE001 — discovery is best-effort observation
+                logger.debug("observability.events contributions failed", exc_info=True)
+                contributions = []
+            for contribution in contributions or []:
+                if isinstance(contribution, str):
+                    names.append(contribution)
+                elif isinstance(contribution, list):
+                    names.extend(str(name) for name in contribution)
+
+        async def handle_unbridged(event: str, data: dict[str, Any]) -> HookResult:
+            self._canary(event)
+            return HookResult(action="continue")
+
+        known = set(CONSUMED_EVENTS) | set(self._events) | IGNORED_EVENTS
+        hooks = coordinator.hooks
+        unregister_callbacks: list[Callable[..., object]] = []
+        for event in dict.fromkeys(names):
+            if event in known:
+                continue
+            unregister = hooks.register(
+                event,
+                handle_unbridged,
+                priority=priority,
+                name=f"newtui-event-canary-{event.replace(':', '-')}",
+            )
+            if callable(unregister):
+                unregister_callbacks.append(unregister)
+
+        def unregister_all() -> None:
+            for unregister in reversed(unregister_callbacks):
+                unregister()
+
+        return unregister_all
+
+
+__all__ = ["CONSUMED_EVENTS", "IGNORED_EVENTS", "QueueBridge"]

@@ -65,7 +65,7 @@ Reading the data-flow diagram, a turn end to end (colors in the diagram):
 - **Subagents (teal)** — `tool-delegate` → `SessionSpawner` (`session.spawn`) → child session
   shares the same bridge → LanesPanel.
 - **Persistence (gray)** — debounced `transcript.jsonl`/`metadata.json`, append-only
-  `events.jsonl`; resume restores history into both the context and the transcript view.
+  `ui-events.jsonl`; resume restores history into both the context and the transcript view.
 
 ### Load-bearing invariants
 
@@ -198,14 +198,16 @@ the *only* place demo and real diverge.
      once; then apply module overrides and expand `${VAR}` / `${VAR:default}` placeholders
      into the mount plan.
 2. **Suppress noisy hooks.** Any line-mode stdout hook (e.g. `hooks-streaming-ui`) would
-   corrupt the Textual screen; `_apply_hook_suppression()` strips them (plus `hooks-logging`,
-   which would double-write the app-owned `events.jsonl`, and `hooks-notify`, whose raw
-   OSC-777/BEL stdout escapes corrupt the full-screen TUI — the app rings Textual's
+   corrupt the Textual screen; `_apply_hook_suppression()` strips them (plus `hooks-notify`,
+   whose raw OSC-777/BEL stdout escapes corrupt the full-screen TUI — the app rings Textual's
    driver-safe bell instead via the `ui/app_support` attention-bell policy) from the mount
    plan at boot, emits a notice naming what was removed, and honours the `hooks.suppress`
-   settings key for user extensions. `hooks-insight-blocks`/`hooks-inline-blocks` are *not*
-   suppressed: they inject instructions (no stdout), and the transcript renders their
-   blockquote callouts natively behind a `▌` gutter.
+   settings key for user extensions. `hooks-logging` mounts natively: it owns the canonical
+   `events.jsonl` (ISO-timestamped hook records), while the app's normalized UIEvent log
+   lives in `ui-events.jsonl` — two writers, two files, no schema mixing.
+   `hooks-insight-blocks`/`hooks-inline-blocks` are *not* suppressed: they inject
+   instructions (no stdout), and the transcript renders their blockquote callouts natively
+   behind a `▌` gutter.
 3. **`create_initialized_session()`** (`kernel/session_factory.py`) — the canonical order:
    mint/accept a session id → stamp root metadata into the mount plan (fill-only, so child
    sessions inherit) → `create_session` (foundation mounts modules) → register
@@ -254,12 +256,21 @@ approvals/cancel (`ApprovalRequired/Granted/Denied`, `CancelRequested/Completed`
 `QueueBridge` registers one fast handler per consumed hook name; each handler normalizes and
 `put_nowait`s onto an `asyncio.Queue[UIEvent]` — it never blocks the engine. A synchronous
 `tap` observes every event for the evidence collector, turn-yield tracker, and the
-`events.jsonl` log. The bridge also synthesizes `ProviderResponseUsage` from
+`ui-events.jsonl` log. The bridge also synthesizes `ProviderResponseUsage` from
 `content_block:end` usage data, because the streaming orchestrator does not fire
 `provider:response`. Providers repeat that usage on every block in a response, so the
 bridge emits telemetry only for the final block. Resume replay applies the same
 exactly-once rule and repairs logs written by older NewTUI builds that recorded every
 repeated block usage.
+
+An **event-drift canary** guards `CONSUMED_EVENTS` against upstream renames/additions.
+The Rust hook registry matches exact names only (no wildcard subscription), so the bridge
+observes drift the way native `hooks-logging` does: it subscribes per-name to the installed
+core's `ALL_EVENTS` plus `observability.events` module contributions, minus the consumed
+set and an explicit `IGNORED_EVENTS` allowlist (deliberately-unbridged kinds like
+`provider:request` and the high-volume canonical delta streams). The first occurrence of an
+unknown kind — or a subscribed name `normalize()` no longer recognizes — surfaces once per
+session as a debug-level `Notification` plus a logger line, instead of silently vanishing.
 
 Two events are deliberately **app-synthesized** rather than hook-driven:
 
@@ -535,7 +546,8 @@ blocks get synthetic error results so the forked history stays provider-valid.
   snapshots it at `start_turn`, so new turns only), else the offline fallback table.
   Usage that cannot be priced increments an `unpriced` counter and the footer/turn-rule
   `$` figures render with a `~` prefix instead of silently recording $0. On resume, prior
-  spend is re-seeded by replaying usage events from `events.jsonl`.
+  spend is re-seeded by replaying usage events from `ui-events.jsonl` (plus the legacy
+  `events.jsonl` for sessions written before the rename).
 - **Evidence** (`kernel/evidence.py`, `model/evidence.py`): a tap on the event stream pairs
   answer claims with the tool calls that support them (`EvidenceLink`), skipping denied
   calls; `EvidenceBlock`s render the links as keyboard-navigable superscripts.
@@ -571,7 +583,7 @@ file writes also feed one bounded, expandable, diff-styled `Changed N files` Too
 |---|---|---|
 | `transcript.jsonl` | user/assistant messages (system/developer skipped) | atomic write + `.backup` recovery |
 | `metadata.json` | session metadata, secrets redacted | atomic write + `.backup` recovery |
-| `events.jsonl` | append-only normalized `UIEvent`s | best-effort, never raises |
+| `ui-events.jsonl` | append-only normalized `UIEvent`s | best-effort, never raises; readers fall back to the pre-rename `events.jsonl`, now owned by `hooks-logging` |
 
 `IncrementalSaver` debounce-saves on `tool:post`, so a crash loses at most one tool call —
 not a turn. What survives restarts: the full conversation, metadata, and the event log —

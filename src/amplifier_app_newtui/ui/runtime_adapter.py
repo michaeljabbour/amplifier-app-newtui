@@ -522,7 +522,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
 
     def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
         """Claims derived from the turn's tool calls (spec §10; ADR-0007
-        resolution 9 — same normalized stream events.jsonl records)."""
+        resolution 9 — same normalized stream ui-events.jsonl records)."""
         if self._runtime is None:
             return ()
         return self._runtime.evidence.links_for(answer_text)

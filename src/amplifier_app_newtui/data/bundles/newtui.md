@@ -10,9 +10,10 @@ bundle:
     what the TUI needs: a default provider so fresh installs boot, tool-mcp,
     tool-team-pulse, hooks-notify-push, and the terminal response contract.
     The TUI renders everything itself; printing hooks composed in via
-    anchors, the double-writing hooks-logging, and the OSC/BEL-writing
-    hooks-notify are suppressed at boot by the app kernel (built-in
-    suppression list + the `hooks.suppress` setting).
+    anchors and the OSC/BEL-writing hooks-notify are suppressed at boot
+    by the app kernel (built-in suppression list + the `hooks.suppress`
+    setting). hooks-logging mounts natively and owns the canonical
+    events.jsonl; the app's UIEvent log lives in ui-events.jsonl.
 
 includes:
   # anchors, pinned to a specific amplifier-foundation commit.
@@ -84,11 +85,13 @@ tool roster (including `tool-delegate` subagents), hooks, and the six
 bundle-local agents all come from the composed `anchors` bundle above. This
 file overlays only the default provider, two TUI-specific tools, and the
 terminal response contract below (which composes alongside anchors'
-system.md). Printing hooks, `hooks-logging`, and the OSC/BEL-writing
-`hooks-notify` composed in via anchors are stripped at boot by the app
-kernel's suppressed-hooks mechanism; the wrapper's own `hooks-notify-push`
-(ntfy HTTP push) survives it — a stdout-free side-channel that no-ops
-unless `AMPLIFIER_NTFY_TOPIC` is set.
+system.md). Printing hooks and the OSC/BEL-writing `hooks-notify`
+composed in via anchors are stripped at boot by the app kernel's
+suppressed-hooks mechanism; `hooks-logging` mounts natively (it owns the
+canonical `events.jsonl`; the app's UIEvent log is `ui-events.jsonl`),
+and the wrapper's own `hooks-notify-push` (ntfy HTTP push) survives it —
+a stdout-free side-channel that no-ops unless `AMPLIFIER_NTFY_TOPIC` is
+set.
 
 A packaged copy ships inside the wheel at
 `amplifier_app_newtui/data/bundles/newtui.md` (lowest-precedence search

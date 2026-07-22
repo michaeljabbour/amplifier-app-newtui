@@ -113,17 +113,21 @@ channel. They now mount normally, and the transcript renders their
 blockquote callouts behind a ``▌`` gutter (``ui/live_tail.answer_spans``).
 """
 
-_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging", "hooks-notify"})
+_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-notify"})
 """Built-in default set of hook module ids suppressed at mount time.
 
 The line-mode printers write raw ANSI (cursor moves, line erases)
-that corrupts the full-screen TUI; ``hooks-logging`` (composed in
-transitively via an anchors ``include``) double-writes the app-owned
-``events.jsonl``; ``hooks-notify`` writes raw OSC-777/BEL escape
-sequences straight to stdout (or the TTY device), which corrupts the
-full-screen Textual TUI the same way the printers do — the app rings
-Textual's own driver-safe bell instead (``ui/app_support``
-attention-bell policy). Settings-extensible via
+that corrupts the full-screen TUI; ``hooks-notify`` writes raw
+OSC-777/BEL escape sequences straight to stdout (or the TTY device),
+which corrupts the full-screen Textual TUI the same way the printers
+do — the app rings Textual's own driver-safe bell instead
+(``ui/app_support`` attention-bell policy).
+
+``hooks-logging`` used to be listed here as a double-writer of the
+app-owned ``events.jsonl`` — that conflict is gone: the app's UIEvent
+log moved to ``ui-events.jsonl`` (kernel/persistence.py), so
+hooks-logging mounts natively and owns the canonical ``events.jsonl``
+(file-only writer, no stdout). Settings-extensible via
 ``suppressed_hooks_setting`` below — user ``hooks.suppress`` entries
 are unioned in, never replace this baseline.
 """
@@ -450,6 +454,13 @@ class RealRuntime:
         self._sync_directory_tools()
         hooks = initialized.coordinator.hooks
         initialized.unregister_handles.append(self.bridge.register_hooks(hooks))
+        # Drift canary: hook kinds the engine publishes (core ALL_EVENTS +
+        # observability.events contributions) that the bridge neither
+        # consumes nor deliberately ignores surface once per session
+        # instead of silently disappearing.
+        initialized.unregister_handles.append(
+            await self.bridge.register_canary(initialized.coordinator)
+        )
         # App posture and outside-project gating is an ephemeral Amplifier
         # hook over the same tool:pre contract as native hooks-mode. Mounted
         # hooks still own bundle-defined modes; this hook owns only the TUI's
@@ -514,7 +525,9 @@ class RealRuntime:
             self._image_injector = injector
 
         if self._resume_id:
-            restore_session_cost(self.cost, store.events_path(initialized.session_id))
+            # Both files: a pre-rename session resumed under this build has
+            # UIEvents split across events.jsonl and ui-events.jsonl.
+            restore_session_cost(self.cost, *store.events_read_paths(initialized.session_id))
             self.session_cost_start = self.cost.session_cost
 
         self.bundle_name = resolved.bundle_name
@@ -626,9 +639,9 @@ class RealRuntime:
         return (True, f"{verb} · {resolved} · session scope")
 
     def _tap(self, event: UIEvent) -> None:
-        """Bridge tap: evidence derivation + append-only events.jsonl.
+        """Bridge tap: evidence derivation + append-only ui-events.jsonl.
 
-        events.jsonl is the append-only normalized UIEvent log
+        ui-events.jsonl is the append-only normalized UIEvent log
         (persistence module contract / ADR-0007 resolution 9); it powers
         the resume cost re-seed (``restore_session_cost``), so every
         emitted event is appended once the session identity exists.
