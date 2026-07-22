@@ -21,7 +21,7 @@ from rich.cells import cell_len
 
 from amplifier_app_newtui.model.blocks import TranscriptBlock
 from amplifier_app_newtui.ui.segments import lines_plain
-from amplifier_app_newtui.ui.transcript import (
+from amplifier_app_newtui.ui.transcript_render import (
     _RENDERERS,  # noqa: PLC2701 — coverage check over the renderer table
     render_block,
 )

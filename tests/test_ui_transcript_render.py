@@ -52,7 +52,7 @@ from amplifier_app_newtui.ui.segments import (
     segment_style,
     to_rich_text,
 )
-from amplifier_app_newtui.ui.transcript import (
+from amplifier_app_newtui.ui.transcript_render import (
     TOOL_EXPAND_HINT,
     render_block,
     render_block_markup,
