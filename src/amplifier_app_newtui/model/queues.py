@@ -200,6 +200,23 @@ class NeedsYouQueue(_ListenerMixin):
         self._clock = clock
         self._next_id = 1
         self._items: list[NeedsYouItem] = []
+        self._defer_listeners: list[Callable[[NeedsYouItem], None]] = []
+
+    def add_defer_listener(
+        self, listener: Callable[[NeedsYouItem], None]
+    ) -> Callable[[], None]:
+        """Register a per-item deferral callback; returns its removal.
+
+        Plain change listeners can't tell WHAT changed; the real runtime
+        needs the created item (decision_id) to surface each kernel-side
+        deferral as one UI event without re-deriving it from text."""
+        self._defer_listeners.append(listener)
+
+        def remove() -> None:
+            if listener in self._defer_listeners:
+                self._defer_listeners.remove(listener)
+
+        return remove
 
     @property
     def items(self) -> tuple[NeedsYouItem, ...]:
@@ -246,6 +263,8 @@ class NeedsYouQueue(_ListenerMixin):
         self._next_id += 1
         self._items.append(item)
         self._notify()
+        for listener in tuple(self._defer_listeners):
+            listener(item)
         return item
 
     def answer(self, decision_id: str, answer: object) -> NeedsYouItem:

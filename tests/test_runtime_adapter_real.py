@@ -29,7 +29,7 @@ import pytest
 import pytest_asyncio
 
 from amplifier_app_newtui.kernel.compaction import CompactionConfig
-from amplifier_app_newtui.kernel.events import Notification
+from amplifier_app_newtui.kernel.events import Notification, PromptSubmit
 from amplifier_app_newtui.kernel.rewind import RewindError
 from amplifier_app_newtui.kernel.session_ops import ModelListing, StatusInfo
 from amplifier_app_newtui.model.trust import CapabilityClass, TrustDecision
@@ -145,6 +145,7 @@ class FakeRealRuntime:
         self.session_cost_start = Decimal("1.25")
         self.turn_base = 3
         self.restored_history = (("user", "hi"), ("assistant", "hey"))
+        self.restored_events = (PromptSubmit(session_id="stored", prompt="hi"),)
         self.compaction = CompactionConfig(auto_compact=False, compact_threshold=0.5)
         self.degraded_notice = ""
         self.broker = FakeBroker()
@@ -164,6 +165,10 @@ class FakeRealRuntime:
     async def cleanup(self) -> None:
         self.cleanup_called.set()
         self.record("cleanup", ())
+
+    def agent_brief(self, agent_name: str) -> str:
+        self.record("agent_brief", (agent_name,))
+        return "fix the flaky test" if agent_name == "scout" else ""
 
     async def set_model(self, model: str) -> object:
         self.record("set_model", (model,))
@@ -298,6 +303,7 @@ async def test_start_happy_path_copies_identity(booted: Booted) -> None:
     assert adapter.session_cost_start == Decimal("1.25")
     assert adapter.turn_base == 3
     assert adapter.restored_history == fake.restored_history
+    assert adapter.restored_events == fake.restored_events
     assert adapter.compaction is fake.compaction
     assert adapter.startup_notices == ()  # no degraded notice
 
@@ -481,6 +487,23 @@ async def test_neutral_guards_before_boot() -> None:
         await adapter.fork("cp-1", _LEDGER)
     assert adapter.evidence_links("answer") == ()
     assert adapter.answer_approval("t1", "allow") is None  # silent return
+    assert adapter.lane_seed("scout") is None
+
+
+@pytest.mark.asyncio
+async def test_lane_seed_uses_the_delegate_brief(booted: Booted) -> None:
+    """Real lanes seed from the spawner-recorded delegate brief; the
+    telemetry fields stay zero (they accrue from child-stamped events)."""
+    seed = booted.adapter.lane_seed("scout")
+    assert seed is not None
+    assert seed.activity == "fix the flaky test"
+    assert (seed.elapsed, seed.tokens, seed.cost, seed.state) == (
+        0.0,
+        0,
+        Decimal("0"),
+        "running",
+    )
+    assert booted.adapter.lane_seed("never-spawned") is None
 
 
 # ---------------------------------------------------------------------------

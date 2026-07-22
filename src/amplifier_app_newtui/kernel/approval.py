@@ -234,6 +234,12 @@ class ApprovalBroker:
             ticket.prompt,
             ticket.detail.rule or "deferred approval",
             choices=ticket.options,
+            highlight=deferral_highlight(
+                ticket.prompt, ticket.detail.cwd, ticket.detail.command
+            ),
+            # MUST equal _record_timeout's DenialLog key: a retro-answer's
+            # override joins the timeout denial for /improve trust slots.
+            action=ticket.detail.command or ticket.prompt,
         )
         ticket.deferred = True
         ticket.decision_id = item.decision_id
@@ -272,6 +278,19 @@ class ApprovalBroker:
             listener()
 
 
+def deferral_highlight(question: str, *candidates: str) -> str:
+    """First candidate appearing verbatim in *question* — the teal accent
+    substring of a needs-you row (DESIGN-SPEC §7). Candidates come from
+    the native approval payload (target/cwd before command); anything
+    absent from the question, empty, or beyond the queue's 200-char
+    highlight bound yields no accent rather than a broken one."""
+    for candidate in candidates:
+        clean = " ".join(str(candidate or "").split())
+        if clean and len(clean) <= 200 and clean in question:
+            return clean
+    return ""
+
+
 def presented_options(options: Iterable[str]) -> tuple[str, ...]:
     """The options the approval bar shows: the verbatim standard triple,
     plus any caller-provided options outside the standard/allow/deny set."""
@@ -299,6 +318,7 @@ __all__ = [
     "ApprovalTicket",
     "DENY",
     "STANDARD_OPTIONS",
+    "deferral_highlight",
     "is_allow",
     "presented_options",
 ]

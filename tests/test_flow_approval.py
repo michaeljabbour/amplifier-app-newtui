@@ -317,3 +317,68 @@ async def test_tail_anchor_holds_through_wrapped_answer_growth() -> None:
         await pilot.pause()
         assert view.follow is True
         assert view.is_vertical_scroll_end
+
+
+@pytest.mark.asyncio
+async def test_kernel_parked_deferral_flows_rich_through_needs_you(monkeypatch) -> None:
+    """Real-runtime path: the kernel parks the deferral item (native
+    approval data) and emits ONE decision Notification with its id — the
+    app must NOT park a duplicate, ctrl-y must render the kernel item's
+    choices/reason/highlight, and acting must narrate the action and
+    record the /improve override under the denied-action key."""
+    from amplifier_app_newtui.kernel.approval import STANDARD_OPTIONS
+    from amplifier_app_newtui.kernel.events import Notification
+    from amplifier_app_newtui.ui.runtime_adapter import (
+        RealRuntimeAdapter,
+        RuntimeAdapter,
+    )
+
+    push = "git push origin main"
+    monkeypatch.delenv("AMPLIFIER_NOTIFY", raising=False)
+    # Boot nothing: the base start() just reports ready — the adapter's
+    # queue resolution and narration paths are what this flow exercises.
+    monkeypatch.setattr(RealRuntimeAdapter, "start", RuntimeAdapter.start)
+    adapter = RealRuntimeAdapter(bundle="x")
+    app = NewTuiApp(adapter)
+    rings: list[str] = []
+    monkeypatch.setattr(app, "bell", lambda: rings.append("bell"))
+    async with app.run_test(size=SIZE) as pilot:
+        # Kernel-side deferral: the item is parked at the point of
+        # deferral (broker/governance), THEN the decision event arrives.
+        item = adapter.needs_you.defer(
+            f"Allow {push}?",
+            "not authorized",
+            choices=STANDARD_OPTIONS,
+            highlight=push,
+            action=push,
+        )
+        adapter.queue.put_nowait(
+            Notification(
+                session_id="root",
+                message=f"decision deferred to queue · {item.question}",
+                level="decision",
+                source="needs_you",
+                decision_id=item.decision_id,
+            )
+        )
+        assert await wait_for(pilot, lambda: app.footer_bar.state.waiting == 1)
+        assert adapter.needs_you.pending_count == 1  # no duplicate park
+        assert rings == ["bell"]
+
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        needs_you = blocks_of(app, "needs_you")[-1]
+        entry = needs_you.items[0]
+        assert entry.question == f"Allow {push}?"
+        assert entry.reason == "not authorized"
+        assert tuple(choice.label for choice in entry.choices) == STANDARD_OPTIONS
+        assert entry.highlight == push
+
+        await pilot.click(f"#needs-you-row-{entry.decision_id}")
+        await pilot.pause()
+        assert adapter.needs_you.pending_count == 0
+        assert app.footer_bar.state.waiting == 0
+        narration = blocks_of(app, "narration")[-1]
+        assert narration.text == f"Applying decision: Allow once · {push}"
+        rows = app.journal.overrides(adapter.denial_log)
+        assert [(row.action, row.overridden) for row in rows] == [(push, 1)]

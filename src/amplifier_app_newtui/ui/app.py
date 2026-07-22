@@ -689,13 +689,21 @@ class NewTuiApp(App[None]):
         del prompt, options  # presentation runs via present_approval
         self._refresh_footer()
 
-    def decision_deferred(self, message: str) -> None:
-        question, reason, choices, highlight, action = self.adapter.deferred_decision(
-            message
+    def decision_deferred(self, message: str, decision_id: str = "") -> None:
+        # A kernel-side deferral (real runtime) already parked its item in
+        # the shared queue — parking again would double the badge count.
+        # Message-only deferrals (demo script, mounted-hook notices) still
+        # derive the item through the adapter and park it here.
+        parked = decision_id and any(
+            item.decision_id == decision_id for item in self.adapter.needs_you.items
         )
-        self.adapter.needs_you.defer(
-            question, reason, choices=choices, highlight=highlight, action=action
-        )
+        if not parked:
+            question, reason, choices, highlight, action = self.adapter.deferred_decision(
+                message, decision_id
+            )
+            self.adapter.needs_you.defer(
+                question, reason, choices=choices, highlight=highlight, action=action
+            )
         # A deferred decision blocks on the human: always worth the bell.
         if app_support.attention_bell_needed("decision_deferred"):
             self.bell()

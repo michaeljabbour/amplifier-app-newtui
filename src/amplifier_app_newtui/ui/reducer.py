@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol, cast
@@ -78,6 +79,18 @@ _LANE_TRANSCRIPT_MAX_LANES = 32
 
 _LANE_SEED_ROWS = 2
 """Rows the per-lane cap never trims (banner + delegated brief)."""
+
+
+def _display_short(session_id: str) -> str:
+    """First 6 usable chars of a session id for the focused-lane banner.
+
+    Governance redaction can rewrite ids on the live bus
+    (``[REDACTED:PII]…`` — found live); bracketed tokens are stripped so
+    a mangled id neither leaks into the banner nor reads as markup.
+    """
+    cleaned = re.sub(r"\[[^\]]*\]", "", session_id)
+    cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ch == "-")
+    return cleaned[:6]
 
 
 def _plan_state(value: object) -> PlanItemState:
@@ -329,12 +342,120 @@ class ReducerHost(Protocol):
     def lanes_changed(self) -> None: ...
     def plan_changed(self, items: tuple[TodoItem, ...]) -> None: ...
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None: ...
-    def decision_deferred(self, message: str) -> None: ...
+    def decision_deferred(self, message: str, decision_id: str = "") -> None: ...
     def stream_opened(self, block_type: str) -> None: ...
     def stream_delta(self, text: str) -> None: ...
     def stream_closed(self) -> None: ...
     def lane_tail_updated(self, text: str) -> None: ...
     def lane_tail_cleared(self) -> None: ...
+
+
+REPLAY_SKIPPED_KINDS = frozenset(
+    {
+        # Channel A: the durable content_block_end records carry the text
+        # (ADR-0007: never reconstruct one channel from the other), and a
+        # live-tail replay would only churn the stream surface.
+        "stream_block_start",
+        "stream_block_delta",
+        "stream_block_end",
+        "stream_aborted",
+        # Interactive/transient surfaces must not re-fire from history:
+        # notifications (transient notices, mode flips, needs-you
+        # deferrals — a stale decision must not resurrect in the queue),
+        # approval presentation, and provider retry/throttle toasts all
+        # belong to the moment they happened.
+        "notification",
+        "provider_notice",
+        "approval_required",
+        "approval_granted",
+    }
+)
+"""Event kinds :meth:`TranscriptReducer.replay` never re-dispatches."""
+
+
+class _ReplayHost:
+    """ReducerHost proxy for resume replay (DESIGN-SPEC §3/§11).
+
+    Chosen over a reducer-wide "replay mode" flag: dispatch stays one
+    code path, and the whole suppression contract is visible here —
+    durable block mutations and plan state pass through; everything
+    interactive or ephemeral (notices, approval presentation, needs-you
+    deferrals, turn timers/bells/queue drains, stream tail, per-event
+    lane repaints) is silenced, so replaying history can never re-trigger
+    a side effect the session already had live.
+    """
+
+    def __init__(self, host: ReducerHost) -> None:
+        self._host = host
+        self._working_ids: set[str] = set()
+
+    @property
+    def mode_id(self) -> str:
+        return self._host.mode_id
+
+    def append_block(self, block: TranscriptBlock) -> None:
+        # The working pulse is running-turn chrome — a replayed
+        # transcript has no running turn, so it never mounts. (Also
+        # load-bearing: the live bottom-ride removes and re-appends the
+        # pulse under the SAME id in one synchronous stretch, and
+        # Textual's prune is deferred — a replayed ride would mount a
+        # duplicate widget id.)
+        if block.kind == "working_status":
+            self._working_ids.add(block.id)
+            return
+        self._host.append_block(block)
+
+    def replace_block(self, block: TranscriptBlock) -> None:
+        if block.kind == "working_status":
+            return
+        self._host.replace_block(block)
+
+    def remove_block(self, block_id: str) -> None:
+        if block_id in self._working_ids:
+            self._working_ids.discard(block_id)
+            return
+        self._host.remove_block(block_id)
+
+    def plan_changed(self, items: tuple[TodoItem, ...]) -> None:
+        # The final todo state is restored ambient state, not a side
+        # effect — the plan panel reopens where the session left off.
+        self._host.plan_changed(items)
+
+    def show_notice(self, text: str) -> None:
+        pass
+
+    def set_mode_by_id(self, mode_id: str, *, notify: bool = True) -> None:
+        pass
+
+    def turn_started(self) -> None:
+        pass
+
+    def turn_finished(self) -> None:
+        pass
+
+    def lanes_changed(self) -> None:
+        pass  # replay() repaints the lanes surface once at the end
+
+    def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
+        pass
+
+    def decision_deferred(self, message: str) -> None:
+        pass
+
+    def stream_opened(self, block_type: str) -> None:
+        pass
+
+    def stream_delta(self, text: str) -> None:
+        pass
+
+    def stream_closed(self) -> None:
+        pass
+
+    def lane_tail_updated(self, text: str) -> None:
+        pass
+
+    def lane_tail_cleared(self) -> None:
+        pass
 
 
 @dataclass
@@ -499,6 +620,83 @@ class TranscriptReducer:
         # Mockup: the title only changes at step activation — before the
         # first step (and on step-less turns) it keeps the idle text.
         return "ready"
+
+    # -- resume replay (DESIGN-SPEC §3/§11) -----------------------------------
+
+    def replay(
+        self,
+        events: Sequence[ev.UIEvent],
+        *,
+        turn_base: int = 0,
+        session_cost: Decimal = Decimal("0"),
+    ) -> bool:
+        """Rebuild the transcript from a resumed session's stored events.
+
+        The session store persists every normalized UIEvent; feeding them
+        back through the same dispatch rebuilds exactly what rendered
+        live — tool digests, ⊘ blocked lines, delegate summaries, lane
+        focus transcripts, plan state, turn rules with real telemetry —
+        instead of the prose-only fallback. Side effects are suppressed
+        via :class:`_ReplayHost` + :data:`REPLAY_SKIPPED_KINDS`.
+
+        ``turn_base``/``session_cost`` are the transcript-derived turn
+        count and the kernel-restored cost baseline; both stay the
+        post-replay authorities (see the reconciliation below). Returns
+        ``False`` — with no state touched — when the log holds no
+        replayable turn (absent/foreign log), so the caller can fall back
+        to prose.
+        """
+        if not any(event.kind == "prompt_submit" for event in events):
+            return False
+        live_host = self._host
+        self._host = cast("ReducerHost", _ReplayHost(live_host))
+        # Replayed turns re-derive their own 1-indexed context positions
+        # from zero, exactly as they did live (ContextInjected advances
+        # included) — the LAST replayed checkpoint's turn_id must land on
+        # *turn_base*; seeding it here as well would double the offset.
+        self.turn_base = 0
+        self.session_cost = Decimal("0")
+        try:
+            for event in events:
+                if event.kind in REPLAY_SKIPPED_KINDS:
+                    continue
+                self.handle(event)
+            if self._turn is not None:
+                # The log ended mid-turn (crash/kill before close-out):
+                # settle it as interrupted — the same durable shape a
+                # live Esc leaves. ts stays in the log's clock domain.
+                self._turn.cancelled = True
+                self.handle(
+                    ev.PromptComplete(
+                        session_id=self._turn.session_id, ts=self._turn.last_ts
+                    )
+                )
+        finally:
+            self._host = live_host
+        # Lanes the log never completed (same crash case) must not keep
+        # ticking against the wall clock after resume.
+        for record in self.lanes.lanes:
+            if record.lane.state != "done":
+                self.lanes.complete(record.session_id, result="interrupted")
+        checkpoints = self.ledger.checkpoints
+        if not checkpoints or checkpoints[-1].turn_id != turn_base:
+            # Degrade explicitly: the event log disagrees with the stored
+            # transcript (truncated log, or post-rewind ghost turns —
+            # events.jsonl is append-only while a confirmed fork trims
+            # the context). The replayed blocks stay as scrollback, but
+            # their checkpoints would fork the live context at the wrong
+            # turns; reset the ledger so new checkpoints fall back to the
+            # transcript-derived turn_base (existing resume math, §9).
+            self.ledger.clear()
+        self.turn_base = turn_base
+        # The kernel's restore_session_cost stays the single authority
+        # for the resumed cost baseline (it carries the exactly-once
+        # repair for logs older builds wrote) — replay's own accumulation
+        # stamped self-consistent checkpoint cost_at values and is
+        # reconciled to that authority here, never added on top of it.
+        self.session_cost = session_cost
+        live_host.lanes_changed()
+        return True
 
     # -- dispatch -------------------------------------------------------------
 
@@ -704,12 +902,15 @@ class TranscriptReducer:
         """
         record = self.lanes.get(event.sub_session_id)
         key = record.session_id if record is not None else event.sub_session_id
-        parent = event.parent_session_id or event.session_id
+        # The envelope session_id IS the parent for agent_spawned and sits
+        # on the redaction module's structural allowlist; the payload's
+        # parent_session_id may arrive scrubbed.
+        parent = event.session_id or event.parent_session_id
         blocks: list[TranscriptBlock] = [
             SessionBanner(
                 id=self._ids.next_id(),
                 headline="",
-                focus_note=focused_lane_banner(event.agent, parent[:6]),
+                focus_note=focused_lane_banner(event.agent, _display_short(parent)),
             )
         ]
         brief = self._pending_briefs.pop(event.agent, "")
@@ -734,7 +935,7 @@ class TranscriptReducer:
                     id=self._ids.next_id(),
                     headline="",
                     focus_note=focused_lane_banner(
-                        record.lane.name, (record.parent_id or "")[:6]
+                        record.lane.name, _display_short(record.parent_id or "")
                     ),
                 )
             ]
@@ -1067,8 +1268,14 @@ class TranscriptReducer:
         if turn.working_id is not None:
             if turn.spec is None:
                 # Real turn: keep the pulse at the BOTTOM, riding under
-                # the newest content next to the composer.
+                # the newest content next to the composer. The re-append
+                # must mint a FRESH id: Textual prunes asynchronously, so
+                # remove+append under the same id in one synchronous
+                # stretch mounts a duplicate widget id (found by resume
+                # replay; live turns logged "reducer failed on tool_post"
+                # and lost the pulse).
                 self._host.remove_block(turn.working_id)
+                turn.working_id = self._ids.next_id()
                 self._host.append_block(self._working_block(turn))
             return
         turn.working_id = self._ids.next_id()
@@ -1500,7 +1707,7 @@ class TranscriptReducer:
                 # turn so its close-out fires no end notice, keeping this
                 # deferred-decision notice visible (spec §11).
                 self._turn.deferred = True
-            self._host.decision_deferred(event.message)
+            self._host.decision_deferred(event.message, event.decision_id)
             self._host.show_notice(event.message)
         elif event.message:
             self._host.show_notice(event.message)
@@ -1619,4 +1826,10 @@ class TranscriptReducer:
             self._host.replace_block(block)
 
 
-__all__ = ["LaneSeed", "ReducerHost", "TranscriptReducer", "TurnSpecLike"]
+__all__ = [
+    "REPLAY_SKIPPED_KINDS",
+    "LaneSeed",
+    "ReducerHost",
+    "TranscriptReducer",
+    "TurnSpecLike",
+]

@@ -76,7 +76,7 @@ class FakeHost:
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
         pass
 
-    def decision_deferred(self, message: str) -> None:
+    def decision_deferred(self, message: str, decision_id: str = "") -> None:
         pass
 
     def stream_opened(self, block_type: str) -> None:

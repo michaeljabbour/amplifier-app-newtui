@@ -37,7 +37,7 @@ from decimal import Decimal, InvalidOperation
 from itertools import count
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 _event_counter = count(1)
 
@@ -374,6 +374,11 @@ class Notification(_Envelope):
     message: str = ""
     level: str = "info"
     source: str = ""
+    decision_id: str = ""
+    """NeedsYouQueue id when ``level == "decision"``: the deferral already
+    parked its item kernel-side; the app resolves that item instead of
+    re-deriving one from the message text. Empty for scripted/legacy
+    notices — the adapter then supplies the decision data."""
 
 
 class ContextInjected(_Envelope):
@@ -437,6 +442,27 @@ UIEvent = Annotated[
 """Discriminated union of every normalized UI event (on ``kind``)."""
 
 
+_EVENT_ADAPTER: TypeAdapter[UIEvent] = TypeAdapter(UIEvent)
+"""Built once — TypeAdapter construction over the full union is costly."""
+
+
+def parse_event(record: Mapping[str, Any]) -> UIEvent | None:
+    """Round-trip one stored event record back into a typed :class:`UIEvent`.
+
+    The inverse of ``event.model_dump(mode="json")`` as persisted by
+    ``SessionStore.append_event`` — powers resume transcript replay
+    (DESIGN-SPEC §3/§11: digests, delegate summaries and turn rules are
+    "reconstructed from events.jsonl on resume"). Returns ``None`` for
+    foreign records: the event log can carry other writers' lines today,
+    and the frozen ``extra="forbid"`` envelope makes any raw hook payload
+    or unknown ``kind`` fail validation rather than half-parse.
+    """
+    try:
+        return _EVENT_ADAPTER.validate_python(dict(record))
+    except ValidationError:
+        return None
+
+
 # --------------------------------------------------------------------------
 # Normalization
 # --------------------------------------------------------------------------
@@ -494,6 +520,23 @@ def usage_from_content_block_end(event: "ContentBlockEnd") -> "ProviderResponseU
         cache_write=_int(usage, "cache_write", "cache_creation_input_tokens", "cache_write_tokens"),
         cost_usd=_cost_usd(usage),
     )
+
+
+def recipe_approval_prompt(data: Mapping[str, Any]) -> str:
+    """One prompt string for a ``recipe:approval`` gate.
+
+    Used by :func:`normalize` (durable ApprovalRequired record) AND the
+    kernel recipe bridge's broker ask, so the approval bar and the event
+    log show the same text. Names the recipe and stage explicitly — a
+    bare gate prompt like "Continue?" is meaningless without them.
+    """
+    recipe = _str(data, "name") or "recipe"
+    stage = _str(data, "stage_name")
+    gate = _str(data, "prompt") or (
+        f"Approve completion of stage '{stage}'?" if stage else "Approve to continue?"
+    )
+    subject = f"Recipe '{recipe}'" + (f" · stage '{stage}'" if stage else "")
+    return f"{subject} — {gate}"
 
 
 def _dict(data: Mapping[str, Any], *keys: str) -> dict[str, Any]:
@@ -731,6 +774,21 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 command=_str(payload, "command"),
                 continuation=_str(payload, "continuation"),
             )
+        case "recipe:approval":
+            # tool-recipes approval gate (amplifier-bundle-recipes
+            # executor._show_progress → hooks.emit("recipe:approval")).
+            # Payload: {name, description, current_step, total_steps,
+            # steps, status: "waiting_approval", prompt, stage_name} — it
+            # carries NO recipe session id; answer routing resolves that
+            # through the tool's own ``approvals`` operation
+            # (kernel/recipes.py). Options are not in the payload either:
+            # the broker presents the fail-closed verbatim triple, so the
+            # durable record states the same.
+            return ApprovalRequired(
+                **env,
+                prompt=recipe_approval_prompt(payload),
+                options=("Allow once", "Allow always", "Deny"),
+            )
         case "cancel:requested":
             return CancelRequested(**env)
         case "cancel:completed":
@@ -783,6 +841,7 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 message=_str(payload, "message", "text"),
                 level=_str(payload, "level", default="info"),
                 source=_str(payload, "source"),
+                decision_id=_str(payload, "decision_id"),
             )
         case _:
             return None
@@ -822,4 +881,6 @@ __all__ = [
     "ToolPre",
     "UIEvent",
     "normalize",
+    "parse_event",
+    "recipe_approval_prompt",
 ]

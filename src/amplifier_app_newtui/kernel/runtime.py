@@ -17,11 +17,19 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from ..model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
+from ..model.queues import NeedsYouItem, NeedsYouQueue, QueuedMessage, SteeringQueue
 from ..model.trust import CapabilityClass, DenialLog, TrustDecision
 from .approval import ApprovalBroker
 from .bundle_admin import read_scope, settings_paths
-from .config import ResolvedConfig, resolve_config
+from .config import (
+    DEFAULT_BUNDLE,
+    BundleNotFoundError,
+    ResolvedConfig,
+    SettingsPaths,
+    active_bundle_name,
+    load_merged_settings,
+    resolve_config,
+)
 from .clipboard import ClipboardImageInjector, ImageAttachment
 from .compaction import CompactionConfig, CompactionRuntimeBinding, compaction_config
 from .cost import CostTracker, restore_session_cost, start_live_pricing
@@ -35,6 +43,7 @@ from .events import (
     PromptSubmit,
     ProviderResponseUsage,
     UIEvent,
+    parse_event,
 )
 from .evidence import EvidenceCollector
 from .directory_permissions import (
@@ -53,6 +62,7 @@ from . import session_ops
 from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
 from .queue_bridge import CONSUMED_EVENTS, QueueBridge
+from .recipes import RecipeApprovalBridge
 from .turn_yield import TurnYieldTracker
 from .session_factory import InitializedSession, SessionRequest, create_initialized_session
 from .spawner import SessionSpawner
@@ -113,17 +123,21 @@ channel. They now mount normally, and the transcript renders their
 blockquote callouts behind a ``▌`` gutter (``ui/live_tail.answer_spans``).
 """
 
-_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging", "hooks-notify"})
+_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-notify"})
 """Built-in default set of hook module ids suppressed at mount time.
 
 The line-mode printers write raw ANSI (cursor moves, line erases)
-that corrupts the full-screen TUI; ``hooks-logging`` (composed in
-transitively via an anchors ``include``) double-writes the app-owned
-``events.jsonl``; ``hooks-notify`` writes raw OSC-777/BEL escape
-sequences straight to stdout (or the TTY device), which corrupts the
-full-screen Textual TUI the same way the printers do — the app rings
-Textual's own driver-safe bell instead (``ui/app_support``
-attention-bell policy). Settings-extensible via
+that corrupts the full-screen TUI; ``hooks-notify`` writes raw
+OSC-777/BEL escape sequences straight to stdout (or the TTY device),
+which corrupts the full-screen Textual TUI the same way the printers
+do — the app rings Textual's own driver-safe bell instead
+(``ui/app_support`` attention-bell policy).
+
+``hooks-logging`` used to be listed here as a double-writer of the
+app-owned ``events.jsonl`` — that conflict is gone: the app's UIEvent
+log moved to ``ui-events.jsonl`` (kernel/persistence.py), so
+hooks-logging mounts natively and owns the canonical ``events.jsonl``
+(file-only writer, no stdout). Settings-extensible via
 ``suppressed_hooks_setting`` below — user ``hooks.suppress`` entries
 are unioned in, never replace this baseline.
 """
@@ -178,6 +192,72 @@ def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str],
     return tuple(pairs)
 
 
+_REPLAY_STREAM_KINDS = frozenset(
+    {"stream_block_start", "stream_block_delta", "stream_block_end", "stream_aborted"}
+)
+"""Channel A kinds dropped when loading stored events for resume replay.
+
+Deltas dominate the event log by count and the transcript replay renders
+from Channel B's durable ``content_block_end`` records only (ADR-0007:
+never reconstruct one channel from the other) — dropping them at load
+time bounds the in-memory replay list."""
+
+
+def restored_ui_events(store: SessionStore, session_id: str) -> tuple[UIEvent, ...]:
+    """The session's persisted UIEvents, typed, for resume transcript replay.
+
+    Read through the store's own reader (never a hardcoded filename — the
+    event-log path is the store's contract) and re-typed via
+    :func:`~amplifier_app_newtui.kernel.events.parse_event`; foreign lines
+    from other writers sharing the file are skipped, as are Channel A
+    stream kinds (see :data:`_REPLAY_STREAM_KINDS`).
+    """
+    events: list[UIEvent] = []
+    for record in store.read_events(session_id):
+        if record.get("kind") in _REPLAY_STREAM_KINDS:
+            continue
+        event = parse_event(record)
+        if event is not None:
+            events.append(event)
+    return tuple(events)
+
+
+def resume_use_active_bundle(settings: dict[str, Any]) -> bool:
+    """Resolve ``resume.use_active_bundle`` from merged settings.
+
+    ``False`` (the default) resumes a session under the bundle it was
+    created with; ``True`` opts back into attaching under the currently
+    active bundle. Same defensive shape as :func:`suppressed_hooks_setting`:
+    junk-shaped settings fall back to the default.
+    """
+    resume = settings.get("resume")
+    value = resume.get("use_active_bundle") if isinstance(resume, dict) else None
+    return value is True
+
+
+def _plan_resume_bundle(
+    stored_bundle: str | None,
+    explicit_bundle: str | None,
+    *,
+    use_active: bool,
+) -> tuple[str | None, str]:
+    """Decide which bundle a resumed session boots under.
+
+    Returns ``(bundle argument for resolve_config, reason)`` where reason
+    is one of ``explicit`` / ``active`` / ``stored``. A session's module
+    stack is part of its identity — resuming under whatever bundle is
+    currently active silently swaps orchestrator/tools/hooks out from
+    under the stored conversation, so the stored bundle wins by default.
+    Overrides: an explicit ``--bundle`` argument (the caller asked for it
+    by name) or settings ``resume.use_active_bundle: true``.
+    """
+    if explicit_bundle is not None:
+        return (explicit_bundle, "explicit")
+    if stored_bundle is None or use_active:
+        return (None, "active")
+    return (stored_bundle, "stored")
+
+
 def _apply_hook_suppression(
     mount_plan: dict[str, Any],
     notify: Callable[[Any], None],
@@ -208,24 +288,48 @@ def _apply_hook_suppression(
 
 
 def _resume_bundle_notice(
-    metadata: dict[str, Any],
-    current_bundle: str,
+    stored_bundle: str | None,
+    reason: str,
+    resolved_bundle: str,
+    active_bundle: str,
     notify: Callable[[Any], None],
 ) -> None:
-    """Notice when a resumed session's stored bundle differs from the one
-    currently resolved.
+    """One ``Notification`` saying which bundle a resumed session attached
+    under — and why — whenever stored and attached bundles could diverge.
 
-    Resuming under a different bundle than the session was created with can
-    silently change which modules/tools/hooks govern the turn - one
-    ``Notification`` surfaces the mismatch instead of reattaching quietly.
+    Resuming under a different bundle than the session was created with
+    silently changes which modules/tools/hooks govern the turn, so every
+    non-default outcome is said out loud; the common case (stored bundle
+    honored and identical to the active one) stays quiet.
     """
-    stored_bundle = metadata.get("bundle")
-    if stored_bundle and stored_bundle != current_bundle:
+    if not stored_bundle:
+        return
+    if reason == "stored":
+        if stored_bundle != active_bundle:
+            notify(
+                Notification(
+                    message=(
+                        f"resumed under stored bundle '{stored_bundle}' · active bundle "
+                        f"'{active_bundle}' not attached (resume.use_active_bundle overrides)"
+                    )
+                )
+            )
+    elif reason == "stored-missing":
         notify(
             Notification(
                 message=(
-                    f"resuming session from '{stored_bundle}' bundle "
-                    f"under '{current_bundle}' bundle"
+                    f"stored bundle '{stored_bundle}' not found — resumed under "
+                    f"'{resolved_bundle}' bundle instead"
+                )
+            )
+        )
+    elif stored_bundle != resolved_bundle:
+        cause = "--bundle" if reason == "explicit" else "resume.use_active_bundle"
+        notify(
+            Notification(
+                message=(
+                    f"session stored under '{stored_bundle}' bundle · resumed under "
+                    f"'{resolved_bundle}' bundle ({cause})"
                 )
             )
         )
@@ -315,11 +419,21 @@ class RealRuntime:
             events=tuple(
                 e for e in CONSUMED_EVENTS if e not in ("prompt:submit", "prompt:complete")
             ),
+            # tool-delegate's delegate:agent_completed payload has no result
+            # field — the spawner records each child's final output and the
+            # bridge fills AgentCompleted.result from it (lane recap +
+            # delegate-summary snippets).
+            agent_result_lookup=self._spawn_result,
         )
         self.turn_yield = TurnYieldTracker()
         """Per-turn ``tests ✔`` evidence from tool results (bridge tap)."""
         self.steering = steering or SteeringQueue()
         self.needs_you = needs_you or NeedsYouQueue()
+        # Every kernel-side deferral (broker ctrl-y park, auto-classifier
+        # deny, escalation) becomes ONE decision Notification carrying the
+        # queue item's id — the UI resolves that item (bell, badge, turn
+        # deferred-marking) instead of re-deriving data from message text.
+        self.needs_you.add_defer_listener(self._decision_deferred)
         self.denial_log = denial_log or DenialLog()
         self.broker = ApprovalBroker(
             needs_you=self.needs_you,
@@ -336,6 +450,7 @@ class RealRuntime:
         self._permission_resolver = permission_resolver
         self._capability_resolver = capability_resolver
         self._project_dir = project_dir
+        self._spawner: SessionSpawner | None = None
         self._initialized: InitializedSession | None = None
         self._executing = False  # a submit() turn is live (fork must refuse)
         self._interrupt_requested = False
@@ -359,6 +474,12 @@ class RealRuntime:
         history (DESIGN-SPEC §9)."""
         self.restored_history: tuple[tuple[str, str], ...] = ()
         """(role, text) pairs replayed into the transcript on resume."""
+        self.restored_events: tuple[UIEvent, ...] = ()
+        """The session's persisted UIEvents on resume (foreign lines and
+        Channel A stream kinds already filtered) — the reducer replays
+        them so the transcript rebuilds exactly as it rendered live
+        (DESIGN-SPEC §3/§11); empty for fresh sessions and for stored
+        sessions with no usable event log (prose fallback)."""
         self.degraded_notice: str | None = None
         self.compaction = CompactionConfig()
         self._compaction_binding: CompactionRuntimeBinding | None = None
@@ -377,9 +498,49 @@ class RealRuntime:
 
     async def start(self) -> None:
         """Resolve config, create the session, register every hook."""
-        resolved = await resolve_config(
-            self._bundle, project_dir=self._project_dir, progress=self._progress
-        )
+        # Resume loads the stored session BEFORE config resolution: the
+        # bundle a session was created under (metadata["bundle"]) is part
+        # of its identity, and the boot must resolve THAT bundle through
+        # the normal resolve_config/foundation path — attaching under
+        # whatever bundle is currently active would silently swap the
+        # module stack out from under the stored conversation.
+        store = SessionStore(project_dir=self._project_dir)
+        self._store = store
+        session_id: str | None = None
+        transcript: list[dict[str, Any]] | None = None
+        stored_bundle: str | None = None
+        resume_reason = "active"
+        boot_bundle = self._bundle
+        if self._resume_id:
+            session_id = store.find_session(self._resume_id)
+            transcript, metadata = store.load(session_id)
+            stored_bundle = str(metadata.get("bundle") or "") or None
+            # resolve_config re-reads settings itself; this early read
+            # exists only because the resume-policy knob must be known
+            # BEFORE the golden path takes its bundle argument.
+            project_dir = (self._project_dir or Path.cwd()).resolve()
+            settings = load_merged_settings(
+                SettingsPaths.default(project_dir, Path.home() / ".amplifier")
+            )
+            boot_bundle, resume_reason = _plan_resume_bundle(
+                stored_bundle,
+                self._bundle,
+                use_active=resume_use_active_bundle(settings),
+            )
+        try:
+            resolved = await resolve_config(
+                boot_bundle, project_dir=self._project_dir, progress=self._progress
+            )
+        except BundleNotFoundError:
+            if resume_reason != "stored":
+                raise
+            # The stored bundle is no longer discoverable: resume on the
+            # active bundle rather than refusing the session — the notice
+            # below says so out loud.
+            resume_reason = "stored-missing"
+            resolved = await resolve_config(
+                None, project_dir=self._project_dir, progress=self._progress
+            )
         _apply_hook_suppression(
             resolved.mount_plan, self.bridge.emit, suppressed_hooks_setting(resolved.settings)
         )
@@ -395,19 +556,27 @@ class RealRuntime:
         # Never raises — failure keeps the offline fallback silently.
         start_live_pricing(resolved.settings)
         self._report_progress("creating", "session")
-        store = SessionStore(project_dir=resolved.project_dir)
-        self._store = store
 
-        session_id: str | None = None
-        transcript: list[dict[str, Any]] | None = None
-        if self._resume_id:
-            session_id = store.find_session(self._resume_id)
-            transcript, metadata = store.load(session_id)
-            _resume_bundle_notice(metadata, resolved.bundle_name, self.bridge.emit)
+        if session_id is not None and transcript is not None:
+            _resume_bundle_notice(
+                stored_bundle,
+                resume_reason,
+                resolved.bundle_name,
+                active_bundle_name(resolved.settings) or DEFAULT_BUNDLE,
+                self.bridge.emit,
+            )
             # Same turn semantics as foundation's fork slicing: every
             # user-role message in the restored history is one turn.
             self.turn_base = sum(1 for m in transcript if m.get("role") == "user")
             self.restored_history = restored_history(transcript)
+            self.restored_events = restored_ui_events(store, session_id)
+            # Rebuild the per-answer evidence map from the same stored
+            # stream (keyed by exact answer text, so replaying the whole
+            # log in order restores links for EVERY turn's answer) — the
+            # collector otherwise starts empty and every restored answer
+            # would render unclickable.
+            for event in self.restored_events:
+                self.evidence.observe(event)
 
         # Directory policy is derived from the prepared mount plan so the
         # filesystem tool, child sessions, CLI administration and shell
@@ -432,6 +601,7 @@ class RealRuntime:
             approval_system=self.broker,
             display_system=display,
         )
+        self._spawner = spawner
         initialized = await create_initialized_session(
             SessionRequest(
                 resolved=resolved,
@@ -450,6 +620,13 @@ class RealRuntime:
         self._sync_directory_tools()
         hooks = initialized.coordinator.hooks
         initialized.unregister_handles.append(self.bridge.register_hooks(hooks))
+        # Drift canary: hook kinds the engine publishes (core ALL_EVENTS +
+        # observability.events contributions) that the bridge neither
+        # consumes nor deliberately ignores surface once per session
+        # instead of silently disappearing.
+        initialized.unregister_handles.append(
+            await self.bridge.register_canary(initialized.coordinator)
+        )
         # App posture and outside-project gating is an ephemeral Amplifier
         # hook over the same tool:pre contract as native hooks-mode. Mounted
         # hooks still own bundle-defined modes; this hook owns only the TUI's
@@ -469,6 +646,19 @@ class RealRuntime:
         # hooks-approval owns bundle-mode ask/allow-always policy. The app's
         # broker is its presentation provider as well as governance's asker.
         self._register_approval_provider(initialized)
+        # tool-recipes gates bypass the approval:* path entirely (custom
+        # recipe:approval event + tool-operation resume) — bridge them onto
+        # the same broker so a paused recipe raises the approval bar instead
+        # of hanging invisibly (contract details: kernel/recipes.py).
+        recipes_bridge = RecipeApprovalBridge(
+            broker=self.broker,
+            tools=lambda: self._initialized.coordinator.get("tools")
+            if self._initialized is not None
+            else None,
+            emit=self.bridge.emit,
+            is_executing=lambda: self._executing,
+        )
+        initialized.unregister_handles.append(recipes_bridge.register_hooks(hooks))
         boundary = StepBoundaryBridge(
             initialized.session_id,
             self.steering,
@@ -514,7 +704,9 @@ class RealRuntime:
             self._image_injector = injector
 
         if self._resume_id:
-            restore_session_cost(self.cost, store.events_path(initialized.session_id))
+            # Both files: a pre-rename session resumed under this build has
+            # UIEvents split across events.jsonl and ui-events.jsonl.
+            restore_session_cost(self.cost, *store.events_read_paths(initialized.session_id))
             self.session_cost_start = self.cost.session_cost
 
         self.bundle_name = resolved.bundle_name
@@ -540,6 +732,31 @@ class RealRuntime:
     @property
     def session_id(self) -> str:
         return self._initialized.session_id if self._initialized is not None else ""
+
+    def _spawn_result(self, sub_session_id: str) -> str:
+        """Child final-output summary for AgentCompleted.result synthesis."""
+        return self._spawner.result_for(sub_session_id) if self._spawner is not None else ""
+
+    def agent_brief(self, agent_name: str) -> str:
+        """Latest delegate brief for *agent_name* — the real lane seed.
+
+        Read cross-thread by the adapter's ``lane_seed`` (a plain dict get
+        under the GIL); "" until the agent's first spawn this session.
+        """
+        return self._spawner.brief_for(agent_name) if self._spawner is not None else ""
+
+    def _decision_deferred(self, item: NeedsYouItem) -> None:
+        """Surface a needs-you deferral to the UI (demo-contract parity:
+        DemoRuntime emits the same ``level="decision"`` notification)."""
+        self.bridge.emit(
+            Notification(
+                session_id=self.session_id,
+                message=f"decision deferred to queue · {item.question}",
+                level="decision",
+                source="needs_you",
+                decision_id=item.decision_id,
+            )
+        )
 
     def _governance_blocked(self, action: str, reason: str) -> None:
         session_id = self._initialized.session_id if self._initialized else ""
@@ -626,9 +843,9 @@ class RealRuntime:
         return (True, f"{verb} · {resolved} · session scope")
 
     def _tap(self, event: UIEvent) -> None:
-        """Bridge tap: evidence derivation + append-only events.jsonl.
+        """Bridge tap: evidence derivation + append-only ui-events.jsonl.
 
-        events.jsonl is the append-only normalized UIEvent log
+        ui-events.jsonl is the append-only normalized UIEvent log
         (persistence module contract / ADR-0007 resolution 9); it powers
         the resume cost re-seed (``restore_session_cost``), so every
         emitted event is appended once the session identity exists.

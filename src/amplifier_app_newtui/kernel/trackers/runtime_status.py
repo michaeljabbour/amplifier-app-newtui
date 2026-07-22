@@ -127,7 +127,7 @@ class RuntimeStatusTracker:
         )
 
     def seed_session_cost(self, prior_cost: Decimal) -> None:
-        """Re-seed restored spend on resume (events.jsonl replay)."""
+        """Re-seed restored spend on resume (ui-events.jsonl replay)."""
         if prior_cost <= 0:
             return
         self._session = self._session.model_copy(

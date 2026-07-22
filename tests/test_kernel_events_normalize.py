@@ -267,6 +267,16 @@ def test_notification() -> None:
     event = normalize("user:notification", {**SID, "message": "saved", "level": "info"})
     assert isinstance(event, Notification)
     assert event.message == "saved"
+    assert event.decision_id == ""
+
+
+def test_notification_carries_decision_id() -> None:
+    event = normalize(
+        "user:notification",
+        {**SID, "message": "deferred", "level": "decision", "decision_id": "decision-3"},
+    )
+    assert isinstance(event, Notification)
+    assert event.decision_id == "decision-3"
 
 
 def test_context_compaction_stats_are_normalized() -> None:
@@ -393,7 +403,7 @@ def test_event_ids_are_unique() -> None:
 
 
 def test_events_json_roundtrip() -> None:
-    """Normalized events survive events.jsonl round-trips."""
+    """Normalized events survive ui-events.jsonl round-trips."""
     event = normalize(
         "tool:post",
         {**SID, "tool_name": "bash", "tool_call_id": "c1", "result": {"output": "ok"}},
@@ -510,3 +520,35 @@ class TestUsageFromContentBlockEnd:
             "provider_response_usage",
             "content_block_end",
         ]
+
+
+class TestParseEvent:
+    """Stored events.jsonl records round-trip back into typed UIEvents
+    (the resume transcript-replay loader, DESIGN-SPEC §3/§11)."""
+
+    def test_round_trips_a_persisted_record(self) -> None:
+        from decimal import Decimal
+
+        from amplifier_app_newtui.kernel.events import parse_event
+
+        event = ProviderResponseUsage(
+            session_id="root01",
+            input_tokens=10,
+            output_tokens=20,
+            cost_usd=Decimal("0.5"),
+        )
+        parsed = parse_event(event.model_dump(mode="json"))
+        assert parsed == event
+
+    def test_rejects_foreign_and_malformed_records(self) -> None:
+        from amplifier_app_newtui.kernel.events import parse_event
+
+        # Raw hook payloads from other writers sharing the file.
+        assert parse_event({"event": "tool:pre", "tool_name": "bash"}) is None
+        # Unknown discriminator.
+        assert parse_event({"kind": "mystery_kind"}) is None
+        # Extra keys fail the frozen extra="forbid" envelope — a foreign
+        # record can never half-parse into one of ours.
+        record = PromptSubmit(prompt="hi").model_dump(mode="json")
+        record["foreign_field"] = True
+        assert parse_event(record) is None

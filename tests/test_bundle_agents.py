@@ -60,20 +60,30 @@ def test_wrapper_has_no_vendored_sections() -> None:
     assert "agents" not in data, "anchors ships 6 bundle-local agents"
 
 
-def test_wrapper_overlays_only_push_notify_hook() -> None:
+def test_wrapper_overlays_only_push_notify_and_redaction_hooks() -> None:
     """anchors brings hooks-mode/hooks-approval; the wrapper overlays exactly
-    one hook: hooks-notify-push (ntfy HTTP side-channel — no stdout, no-op
-    without AMPLIFIER_NTFY_TOPIC). It must listen to orchestrator:complete
+    two hooks. hooks-notify-push (ntfy HTTP side-channel — no stdout, no-op
+    without AMPLIFIER_NTFY_TOPIC) must listen to orchestrator:complete
     directly: its default event (notify:turn-complete) is emitted by
-    hooks-notify, which the kernel suppresses at boot (raw OSC/BEL stdout)."""
+    hooks-notify, which the kernel suppresses at boot (raw OSC/BEL stdout).
+    hook-redaction is re-mounted only to extend its allowlist with the
+    delegate routing ids — without that, live-bus scrubbing rewrites
+    sub_session_id/parent_session_id ("[REDACTED:PII]…", found live) and
+    child→lane telemetry/focus routing degrades."""
     hooks = _frontmatter().get("hooks") or []
     modules = {h.get("module") for h in hooks if isinstance(h, dict)}
-    assert modules == {"hooks-notify-push"}
+    assert modules == {"hooks-notify-push", "hook-redaction"}
     push_mounts = [
         h for h in hooks if isinstance(h, dict) and h.get("module") == "hooks-notify-push"
     ]
     assert len(push_mounts) == 1
     assert push_mounts[0].get("config", {}).get("listen_event") == "orchestrator:complete"
+    redaction_mounts = [
+        h for h in hooks if isinstance(h, dict) and h.get("module") == "hook-redaction"
+    ]
+    assert len(redaction_mounts) == 1
+    allowlist = redaction_mounts[0].get("config", {}).get("allowlist", [])
+    assert set(allowlist) == {"sub_session_id", "parent_session_id"}
 
 
 def test_wrapper_overlays_only_tui_specific_tools() -> None:

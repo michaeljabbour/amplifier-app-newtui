@@ -19,9 +19,12 @@ from amplifier_app_newtui.kernel.demo import (
     SEED_PROMPT,
 )
 from amplifier_app_newtui.kernel.events import (
+    ContentBlockEnd,
     PromptComplete,
     PromptSubmit,
     ProviderResponseUsage,
+    ToolPost,
+    ToolPre,
 )
 from amplifier_app_newtui.ui import app_support
 from amplifier_app_newtui.ui.app import NewTuiApp
@@ -203,6 +206,95 @@ async def test_resume_cost_baseline_set_in_adapter_start_reaches_reducer() -> No
         assert app.reducer.session_cost == DEMO_SESSION_COST_START  # $0.57
         assert app.ledger.checkpoints[0].cost_at == DEMO_SESSION_COST_START
         assert app_support.footer_state(app).cost == DEMO_SESSION_COST_START
+
+
+@pytest.mark.asyncio
+async def test_real_turn_pulse_survives_the_bottom_ride() -> None:
+    """The real-turn working pulse rides to the bottom under new content
+    via remove + re-append. Textual prunes asynchronously, so the
+    re-append must mint a fresh block id — reusing the removed id mounted
+    a duplicate widget id, the reducer event died (swallowed by
+    ``_consume_events``) and live turns lost the pulse and the digest."""
+    sid = "live-root"
+    adapter = RuntimeAdapter()
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=(110, 40)) as pilot:
+        adapter.queue.put_nowait(PromptSubmit(session_id=sid, prompt="hi"))
+        adapter.queue.put_nowait(
+            ToolPre(
+                session_id=sid,
+                tool_name="bash",
+                tool_call_id="c1",
+                tool_input={"command": "ls"},
+            )
+        )
+        adapter.queue.put_nowait(
+            ToolPost(
+                session_id=sid,
+                tool_name="bash",
+                tool_call_id="c1",
+                tool_input={"command": "ls"},
+                result={"success": True},
+            )
+        )
+        assert await _wait_for(
+            pilot, lambda: any(b.kind == "tool_line" for b in app.transcript.blocks)
+        )
+        kinds = [b.kind for b in app.transcript.blocks]
+        assert kinds[-1] == "working_status"  # the pulse rode below the digest
+        adapter.queue.put_nowait(PromptComplete(session_id=sid, response="done"))
+        assert await _wait_for(pilot, lambda: not app.turn_active)
+        assert not any(b.kind == "working_status" for b in app.transcript.blocks)
+
+
+@pytest.mark.asyncio
+async def test_resume_replay_rebuilds_full_transcript_at_announce_ready() -> None:
+    """An adapter exposing stored UIEvents gets the full-fidelity replay
+    (tool digests + turn rules with checkpoints — DESIGN-SPEC §3/§11);
+    the prose restored_history renders only as the fallback."""
+    sid = "restored-root"
+    adapter = RuntimeAdapter()
+    adapter.turn_base = 1
+    adapter.session_cost_start = Decimal("0.42")
+    adapter.restored_history = (("user", "fix the bug"), ("assistant", "All done."))
+    adapter.restored_events = (
+        PromptSubmit(session_id=sid, ts=0.0, prompt="fix the bug"),
+        ToolPre(
+            session_id=sid,
+            ts=1.0,
+            tool_name="bash",
+            tool_call_id="c1",
+            tool_input={"command": "uv run pytest -q"},
+        ),
+        ToolPost(
+            session_id=sid,
+            ts=2.0,
+            tool_name="bash",
+            tool_call_id="c1",
+            tool_input={"command": "uv run pytest -q"},
+            result={"success": True},
+        ),
+        ContentBlockEnd(
+            session_id=sid,
+            ts=3.0,
+            block_type="text",
+            block={"type": "text", "text": "All done."},
+        ),
+        PromptComplete(session_id=sid, ts=4.0, response="All done."),
+    )
+    app = NewTuiApp(adapter)
+    async with app.run_test(size=(110, 40)) as pilot:
+        assert await _wait_for(
+            pilot, lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks)
+        )
+        kinds = [b.kind for b in app.transcript.blocks]
+        assert "tool_line" in kinds  # digest, not the prose-only fallback
+        assert kinds.count("user_line") == 1  # replay replaced prose, not doubled
+        # The replayed turn's checkpoint chains with the restored history
+        # (spec §9) and the kernel cost baseline stays the footer basis.
+        assert [c.turn_id for c in app.ledger.checkpoints] == [1]
+        assert app.reducer.session_cost == Decimal("0.42")
+        assert not app.turn_active  # replay never arms turn timers/bells
 
 
 def test_demo_adapter_advertises_demo_model() -> None:

@@ -309,9 +309,9 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         return demo_evidence_links()
 
     def deferred_decision(
-        self, message: str
+        self, message: str, decision_id: str = ""
     ) -> tuple[str, str, tuple[str, ...], str, str]:
-        del message
+        del message, decision_id
         return (
             DEMO_DEFERRED_DECISION.text,
             "",
@@ -320,7 +320,8 @@ class DemoRuntimeAdapter(RuntimeAdapter):
             DEMO_DEFERRED_DECISION.action,
         )
 
-    def decision_narration(self, choice: str) -> str:
+    def decision_narration(self, choice: str, action: str = "") -> str:
+        del action  # scripted narration is keyed by the chip label alone
         if choice == DEMO_DEFERRED_DECISION.chip_label:
             return DEMO_DEFERRED_DECISION.applied_narration
         return f"Applying decision: {choice}"

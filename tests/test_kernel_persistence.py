@@ -14,6 +14,7 @@ import pytest
 from amplifier_app_newtui.kernel.events import normalize
 from amplifier_app_newtui.kernel.persistence import (
     EVENTS_FILENAME,
+    LEGACY_EVENTS_FILENAME,
     METADATA_FILENAME,
     TRANSCRIPT_FILENAME,
     IncrementalSaver,
@@ -98,7 +99,7 @@ def test_unserializable_metadata_degrades_to_str(store: SessionStore) -> None:
 
 
 # --------------------------------------------------------------------------
-# events.jsonl — append-only normalized UIEvents
+# ui-events.jsonl — append-only normalized UIEvents
 # --------------------------------------------------------------------------
 
 
@@ -150,6 +151,62 @@ def test_read_events_missing_file_yields_nothing(store: SessionStore) -> None:
 def test_append_event_accepts_plain_mapping(store: SessionStore) -> None:
     store.append_event("s1", {"kind": "custom", "x": 1})
     assert list(store.read_events("s1")) == [{"kind": "custom", "x": 1}]
+
+
+def test_append_event_writes_ui_events_never_legacy(store: SessionStore) -> None:
+    """The app's UIEvent log is ui-events.jsonl; events.jsonl belongs to
+    foundation's hooks-logging and must never receive app records."""
+    assert EVENTS_FILENAME == "ui-events.jsonl"
+    store.append_event("s1", {"kind": "custom", "x": 1})
+    assert (store.session_dir("s1") / EVENTS_FILENAME).is_file()
+    assert not (store.session_dir("s1") / LEGACY_EVENTS_FILENAME).exists()
+    assert store.events_path("s1").name == EVENTS_FILENAME
+
+
+def test_events_path_falls_back_to_legacy_only_session(store: SessionStore) -> None:
+    """Sessions written before the rename logged UIEvents to events.jsonl."""
+    store.session_dir("s1").mkdir(parents=True)
+    legacy = store.session_dir("s1") / LEGACY_EVENTS_FILENAME
+    legacy.write_text('{"kind": "session_start", "session_id": "s1"}\n', encoding="utf-8")
+
+    assert store.events_path("s1") == legacy
+    assert [record["kind"] for record in store.read_events("s1")] == ["session_start"]
+
+    # Once the current file exists it wins; the legacy file is read-only history.
+    store.append_event("s1", {"kind": "custom"})
+    assert store.events_path("s1").name == EVENTS_FILENAME
+
+
+def test_read_events_spans_legacy_then_current(store: SessionStore) -> None:
+    """A rename-straddling session replays its whole history, oldest first."""
+    store.session_dir("s1").mkdir(parents=True)
+    (store.session_dir("s1") / LEGACY_EVENTS_FILENAME).write_text(
+        '{"kind": "session_start", "session_id": "s1"}\n', encoding="utf-8"
+    )
+    store.append_event("s1", {"kind": "tool_post", "tool_call_id": "t1"})
+
+    assert [record["kind"] for record in store.read_events("s1")] == [
+        "session_start",
+        "tool_post",
+    ]
+    assert store.events_read_paths("s1") == (
+        store.session_dir("s1") / LEGACY_EVENTS_FILENAME,
+        store.session_dir("s1") / EVENTS_FILENAME,
+    )
+
+
+def test_read_events_skips_foreign_hooks_logging_records(store: SessionStore) -> None:
+    """hooks-logging's ISO-timestamped hook records (no ``kind``) share the
+    legacy filename in mixed files written before the rename — skipped."""
+    store.session_dir("s1").mkdir(parents=True)
+    (store.session_dir("s1") / LEGACY_EVENTS_FILENAME).write_text(
+        '{"ts": "2026-07-21T00:00:00Z", "event": "tool:pre", "data": {"tool": "bash"}}\n'
+        '{"kind": "tool_pre", "session_id": "s1", "ts": 12.5}\n'
+        "not json\n",
+        encoding="utf-8",
+    )
+    records = list(store.read_events("s1"))
+    assert [record["kind"] for record in records] == ["tool_pre"]
 
 
 # --------------------------------------------------------------------------

@@ -417,9 +417,16 @@ async def test_queue_bridge_normalizes_into_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_queue_bridge_drops_unknown_events_silently() -> None:
+async def test_queue_bridge_canaries_unknown_events_once() -> None:
+    """Unknown kinds no longer vanish silently: the drift canary surfaces
+    each one exactly once per session as a debug Notification."""
     bridge = QueueBridge()
     await bridge.handle_event("some:unknown_event", {"session_id": ROOT})
+    await bridge.handle_event("some:unknown_event", {"session_id": ROOT})
+    notice = bridge.queue.get_nowait()
+    assert isinstance(notice, Notification)
+    assert notice.source == "event-canary"
+    assert "some:unknown_event" in notice.message
     assert bridge.queue.empty()
 
 
@@ -471,6 +478,57 @@ async def test_queue_bridge_normalizes_delegate_error() -> None:
     event = bridge.queue.get_nowait()
     assert event.kind == "agent_completed"
     assert event.success is False
+
+
+@pytest.mark.asyncio
+async def test_queue_bridge_synthesizes_agent_completed_result() -> None:
+    """Ground truth: tool-delegate's delegate:agent_completed payload has
+    NO result field (agent/sub_session_id/parent_session_id/success/
+    tool_call_id/parallel_group_id only) — the bridge fills it from the
+    spawner-recorded child output so snippets/recaps aren't blank."""
+    bridge = QueueBridge(agent_result_lookup={"kid-1_worker": "child said hi"}.get)
+    await bridge.handle_event(
+        "delegate:agent_completed",
+        {
+            "session_id": ROOT,
+            "agent": "worker",
+            "sub_session_id": "kid-1_worker",
+            "parent_session_id": ROOT,
+            "success": True,
+            "tool_call_id": "call-1",
+            "parallel_group_id": None,
+        },
+    )
+    event = bridge.queue.get_nowait()
+    assert event.kind == "agent_completed"
+    assert event.result == "child said hi"
+
+
+@pytest.mark.asyncio
+async def test_queue_bridge_keeps_native_result_and_error_markers() -> None:
+    """A payload that DOES carry a result is authoritative, and the
+    delegate:error normalization marker ('error') is never overwritten."""
+    bridge = QueueBridge(agent_result_lookup=lambda _sid: "synthesized")
+    await bridge.handle_event(
+        "task:agent_completed",
+        {"session_id": ROOT, "agent": "w", "sub_session_id": "kid-2_w", "result": "native"},
+    )
+    assert bridge.queue.get_nowait().result == "native"
+    await bridge.handle_event(
+        "delegate:error",
+        {"session_id": ROOT, "agent": "w", "sub_session_id": "kid-2_w", "error": "boom"},
+    )
+    assert bridge.queue.get_nowait().result == "error"
+
+
+@pytest.mark.asyncio
+async def test_queue_bridge_without_lookup_leaves_result_empty() -> None:
+    bridge = QueueBridge()
+    await bridge.handle_event(
+        "delegate:agent_completed",
+        {"session_id": ROOT, "agent": "w", "sub_session_id": "kid-3_w", "success": True},
+    )
+    assert bridge.queue.get_nowait().result == ""
 
 
 # =============================================================================

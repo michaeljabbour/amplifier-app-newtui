@@ -144,12 +144,12 @@ def test_seed_adds_prior_spend() -> None:
 
 
 # --------------------------------------------------------------------------
-# Resume re-seed from events.jsonl
+# Resume re-seed from ui-events.jsonl
 # --------------------------------------------------------------------------
 
 
 def _events_file_with_usage(tmp_path: Path) -> Path:
-    """Write an events.jsonl through the real SessionStore pipeline."""
+    """Write a ui-events.jsonl through the real SessionStore pipeline."""
     store = SessionStore(base_dir=tmp_path / "sessions")
     for _ in range(2):
         event = normalize(
@@ -247,7 +247,54 @@ def test_restore_session_cost_seeds_tracker(tmp_path: Path) -> None:
 def test_restore_session_cost_no_prior_is_noop(tmp_path: Path) -> None:
     tracker = CostTracker()
     assert restore_session_cost(tracker, tmp_path / "nope.jsonl") is None
-    assert tracker.session_cost == Decimal("0")
+
+
+def test_restore_from_legacy_only_session_dir(tmp_path: Path) -> None:
+    """A session written before the ui-events.jsonl rename re-seeds from its
+    events.jsonl (mixed foreign hook records and corrupt lines skipped)."""
+    import json
+
+    from amplifier_app_newtui.kernel.persistence import LEGACY_EVENTS_FILENAME
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    store.session_dir("s1").mkdir(parents=True)
+    usage = ProviderResponseUsage(session_id="s1", model="claude-sonnet-4", cost_usd=Decimal("0.42"))
+    (store.session_dir("s1") / LEGACY_EVENTS_FILENAME).write_text(
+        '{"ts": "2026-07-21T00:00:00Z", "event": "provider:response", "data": {}}\n'
+        + json.dumps(usage.model_dump(mode="json"))
+        + "\ncorrupt line provider_response_usage\n",
+        encoding="utf-8",
+    )
+
+    assert store.events_path("s1").name == LEGACY_EVENTS_FILENAME
+    tracker = CostTracker()
+    assert restore_session_cost(tracker, *store.events_read_paths("s1")) == Decimal("0.42")
+    assert tracker.session_cost == Decimal("0.42")
+
+
+def test_restore_sums_split_legacy_and_current_files(tmp_path: Path) -> None:
+    """A legacy session resumed under this build splits usage across
+    events.jsonl and ui-events.jsonl — both halves count once."""
+    import json
+
+    from amplifier_app_newtui.kernel.persistence import LEGACY_EVENTS_FILENAME
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    store.session_dir("s1").mkdir(parents=True)
+    legacy_usage = ProviderResponseUsage(
+        session_id="s1", model="claude-sonnet-4", cost_usd=Decimal("0.42")
+    )
+    (store.session_dir("s1") / LEGACY_EVENTS_FILENAME).write_text(
+        json.dumps(legacy_usage.model_dump(mode="json")) + "\n", encoding="utf-8"
+    )
+    store.append_event(
+        "s1",
+        ProviderResponseUsage(session_id="s1", model="claude-sonnet-4", cost_usd=Decimal("0.55")),
+    )
+
+    tracker = CostTracker()
+    assert restore_session_cost(tracker, *store.events_read_paths("s1")) == Decimal("0.97")
+    assert tracker.session_cost == Decimal("0.97")
 
 
 def test_cost_of_normalized_event_flat_usage_keys() -> None:

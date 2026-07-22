@@ -63,6 +63,11 @@ class RuntimeAdapter:
         ids offset past it — DESIGN-SPEC §9); 0 for fresh/demo sessions."""
         self.restored_history: tuple[tuple[str, str], ...] = ()
         """(role, text) pairs replayed into the transcript on resume."""
+        self.restored_events: tuple[UIEvent, ...] = ()
+        """The resumed session's stored UIEvents, replayed through the
+        reducer to rebuild the full transcript (digests, delegate
+        summaries, turn rules — DESIGN-SPEC §3/§11); empty means the
+        prose ``restored_history`` fallback renders instead."""
         self.startup_notices: tuple[str, ...] = ()
         self.compaction = CompactionConfig(
             auto_compact=True, compact_threshold=0.8
@@ -202,16 +207,21 @@ class RuntimeAdapter:
         return ()
 
     def deferred_decision(
-        self, message: str
+        self, message: str, decision_id: str = ""
     ) -> tuple[str, str, tuple[str, ...], str, str]:
         """(question, reason, choices, highlight, action) for a
         deferred-decision event — ``highlight`` is the question substring
         rendered teal; ``action`` is the denied action key (the /improve
-        override-evidence join against the DenialLog)."""
+        override-evidence join against the DenialLog). ``decision_id`` is
+        the already-parked NeedsYouQueue item when the deferral happened
+        kernel-side; empty for message-only (scripted) deferrals."""
+        del decision_id
         return (message, "", (), "", "")
 
-    def decision_narration(self, choice: str) -> str:
-        """The ``Applying decision: …`` narration for an acted-on choice."""
+    def decision_narration(self, choice: str, action: str = "") -> str:
+        """The ``Applying decision: …`` narration for an acted-on choice.
+        ``action`` is the decision's denied-action key, when it has one."""
+        del action
         return f"Applying decision: {choice}"
 
 
@@ -275,6 +285,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.session_cost_start = runtime.session_cost_start
         self.turn_base = runtime.turn_base
         self.restored_history = runtime.restored_history
+        self.restored_events = runtime.restored_events
         self.compaction = runtime.compaction
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
@@ -522,10 +533,56 @@ class RealRuntimeAdapter(RuntimeAdapter):
 
     def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
         """Claims derived from the turn's tool calls (spec §10; ADR-0007
-        resolution 9 — same normalized stream events.jsonl records)."""
+        resolution 9 — same normalized stream ui-events.jsonl records)."""
         if self._runtime is None:
             return ()
         return self._runtime.evidence.links_for(answer_text)
+
+    def lane_seed(self, agent_name: str) -> LaneSeed | None:
+        """Seed a real lane with the delegate brief as its activity line.
+
+        Real telemetry (elapsed/cost/tokens) starts at zero and accrues
+        from the child-stamped events the spawner's re-attached bridge
+        forwards; only the presentation seed comes from the spawn brief.
+        Cross-thread read of the spawner's brief map (dict get under the
+        GIL) — no marshalling needed for this synchronous lookup.
+        """
+        if self._runtime is None:
+            return None
+        brief = self._runtime.agent_brief(agent_name)
+        if not brief:
+            return None
+        from .reducer import LaneSeed
+
+        return LaneSeed(activity=brief)
+
+    def deferred_decision(
+        self, message: str, decision_id: str = ""
+    ) -> tuple[str, str, tuple[str, ...], str, str]:
+        """Resolve the kernel-parked NeedsYouItem by id.
+
+        Real deferrals park their item in the shared queue at the point
+        of deferral (broker/governance, fed by the native approval
+        request payload); the decision Notification carries only the id.
+        Nothing is re-parsed from the message string. An unknown/empty id
+        degrades to the base message-only stub."""
+        if decision_id:
+            for item in self.needs_you.items:
+                if item.decision_id == decision_id:
+                    return (
+                        item.question,
+                        item.reason,
+                        item.choices,
+                        item.highlight,
+                        item.action,
+                    )
+        return super().deferred_decision(message, decision_id)
+
+    def decision_narration(self, choice: str, action: str = "") -> str:
+        """Name the denied action being applied, when the item carries one."""
+        if action:
+            return f"Applying decision: {choice} · {action}"
+        return super().decision_narration(choice)
 
 
 __all__ = ["RealRuntimeAdapter", "RuntimeAdapter"]

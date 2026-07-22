@@ -57,7 +57,7 @@ newtui feature; no amplifier tool exposes a corpus-document delete.
 - `FALLBACK_PRICING` — offline default table; cold starts and unit tests never touch the network.
 - `cost_of()` — a provider-reported `cost_usd` is **authoritative** over the local estimate (same policy as app-cli).
 - `CostTracker` — session + per-turn accounting; already feeds the footer total and the turn-rule `$` figure.
-- `sum_prior_cost()` — re-seeds the session total from `events.jsonl` on `--resume`.
+- `sum_prior_cost()` — re-seeds the session total from `ui-events.jsonl` (legacy `events.jsonl` fallback) on `--resume`.
 - `fetch_live_pricing()` — Helicone fetch, stdlib-only, 5 s timeout, never raises.
 
 **Remaining:** *(all shipped)*
