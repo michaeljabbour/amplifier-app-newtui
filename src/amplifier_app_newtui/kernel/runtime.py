@@ -106,15 +106,18 @@ live: the whole turn rendered blank in real mode. Stripped for the
 headless ``run`` subcommand too, where the same printers double-echo.
 """
 
-_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging"})
+_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging", "hooks-notify"})
 """Built-in default set of hook module ids suppressed at mount time.
 
 The four line-mode printers write raw ANSI (cursor moves, line erases)
 that corrupts the full-screen TUI; ``hooks-logging`` (composed in
 transitively via an anchors ``include``) double-writes the app-owned
-``events.jsonl``. Settings-extensible via ``suppressed_hooks_setting``
-below — user ``hooks.suppress`` entries are unioned in, never replace
-this baseline.
+``events.jsonl``; ``hooks-notify`` writes raw OSC-777/BEL escape
+sequences straight to stdout (or the TTY device), which corrupts the
+full-screen Textual TUI the same way the printers do — a TUI-native
+re-emit is planned via the hook-output adapter. Settings-extensible via
+``suppressed_hooks_setting`` below — user ``hooks.suppress`` entries
+are unioned in, never replace this baseline.
 """
 
 

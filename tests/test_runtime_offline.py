@@ -628,6 +628,7 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
             "hooks-insight-blocks",
             "hooks-inline-blocks",
             "hooks-logging",
+            "hooks-notify",
         }
     )
     assert suppressed_hooks_setting({}) == _SUPPRESSED_HOOKS_DEFAULT

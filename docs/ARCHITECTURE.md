@@ -196,9 +196,10 @@ the *only* place demo and real diverge.
      into the mount plan.
 2. **Suppress noisy hooks.** Any line-mode stdout hook (e.g. `hooks-streaming-ui`) would
    corrupt the Textual screen; `_apply_hook_suppression()` strips them (plus `hooks-logging`,
-   which would double-write the app-owned `events.jsonl`) from the mount plan at boot, emits a
-   notice naming what was removed, and honours the `hooks.suppress` settings key for user
-   extensions.
+   which would double-write the app-owned `events.jsonl`, and `hooks-notify`, whose raw
+   OSC-777/BEL stdout escapes corrupt the full-screen TUI — a TUI-native re-emit is planned
+   via the hook-output adapter) from the mount plan at boot, emits a notice naming what was
+   removed, and honours the `hooks.suppress` settings key for user extensions.
 3. **`create_initialized_session()`** (`kernel/session_factory.py`) — the canonical order:
    mint/accept a session id → stamp root metadata into the mount plan (fill-only, so child
    sessions inherit) → `create_session` (foundation mounts modules) → register
