@@ -111,6 +111,15 @@ def test_skills_spans_roster_and_empty() -> None:
     assert "no skills" in _text(skills_spans(()))
 
 
+def test_skills_spans_show_shortcut_aliases() -> None:
+    text = _text(skills_spans((
+        SkillInfo("cranky-old-sam", "crusty review", shortcut="cosam"),
+        SkillInfo("simplify", "cut cruft"),
+    )))
+    assert "/cosam" in text  # the alias reads as its slash trigger
+    assert "/simplify" not in text  # no fake alias for shortcut-less skills
+
+
 def test_skill_loaded_spans_has_header_and_body() -> None:
     text = _text(skill_loaded_spans("simplify", "# simplify\n\ncut the cruft"))
     assert "Skill loaded" in text

@@ -275,6 +275,7 @@ class NewTuiApp(App[None]):
         try:
             await self.adapter.start(lambda: app_support.announce_ready(self))
             self.file_mentions.set_files(await self.adapter.workspace_files())
+            self._register_skill_commands(await self.adapter.list_skills())
         except Exception as error:  # boot failed — show why, don't crash out
             # (CancelledError/KeyboardInterrupt stay uncaught: a real
             # shutdown mid-boot must not read as "session failed to start".)
@@ -535,6 +536,15 @@ class NewTuiApp(App[None]):
             Answer(id=self.allocator.next_id(), spans=diff_spans(patch, staged=staged))
         )
 
+    def _register_skill_commands(self, skills: tuple[Any, ...]) -> None:
+        """Discovered skills (+ ``shortcut:`` aliases) become palette
+        commands, so ``/cosam`` resolves in dispatch before the
+        unknown-command notice (skill aliases, story #1)."""
+        from ..commands.skills import register_skill_commands
+
+        if register_skill_commands(self._commands, skills):
+            self.palette.set_commands(self._commands.specs)
+
     def show_skills(self) -> None:
         self.run_worker(self._show_skills(), exclusive=False)
 
@@ -761,8 +771,14 @@ class NewTuiApp(App[None]):
                 self._commands.run(selected.name, self._ctx)
                 self._refresh_footer()
                 return
-            # Mockup onKeyDown Enter: with zero palette matches the slash
-            # text falls through and is sent as a normal user turn (§5/§6).
+            # Story #1 amendment to the mockup: zero matches no longer
+            # falls through as chat — an unrecognized /command costs a
+            # notice, never a silent provider turn. Skills + shortcuts
+            # registered at boot resolve above via parse_and_run.
+            name = text.split(maxsplit=1)[0]
+            self.show_notice(f"unknown command: {name} · / lists commands")
+            self._refresh_footer()
+            return
         self.submit_prompt(text, message.attachments)
 
     def on_composer_paste_image(self, message: Composer.PasteImage) -> None:
