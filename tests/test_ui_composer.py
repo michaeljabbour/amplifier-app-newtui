@@ -540,10 +540,13 @@ async def test_native_clipboard_write_does_not_block_the_ui(monkeypatch) -> None
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.3)
-        started = time.perf_counter()
+        # Non-timing proof of non-blocking (replaces a wall-clock
+        # ``elapsed < 0.05`` flake — audit 2026-07): the patched native
+        # writer sleeps 0.2s before it sets ``finished``. Had
+        # ``copy_to_clipboard`` run it on the UI loop, ``finished`` would
+        # already be set the instant the call returns — that it is NOT
+        # proves the write was off-loaded to a worker thread.
         app.copy_to_clipboard("non-blocking")
-        elapsed = time.perf_counter() - started
-        assert elapsed < 0.05
         assert not finished.is_set()
         await pilot.pause(0.3)
         assert finished.is_set()
