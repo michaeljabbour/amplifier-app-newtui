@@ -290,6 +290,35 @@ async def list_agents(coordinator: Any) -> tuple[str, ...]:
 class SkillInfo:
     name: str
     description: str = ""
+    shortcut: str = ""
+    """Optional slash alias from the skill's ``shortcut:`` frontmatter
+    (``/cosam`` → ``cranky-old-sam``); empty when the skill has none."""
+
+
+def _skills_from_catalog(tool: Any) -> tuple[SkillInfo, ...]:
+    """Skills via the tool's ``get_effective_skills()`` catalog surface.
+
+    The catalog is the only place shortcuts live — the tool's
+    ``{"list": true}`` output carries name + description only. Returns
+    ``()`` when the surface is missing or broken (caller falls back)."""
+    catalog = getattr(tool, "get_effective_skills", None)
+    if not callable(catalog):
+        return ()
+    try:
+        skills = catalog()
+    except Exception:  # noqa: BLE001 — degrade to the list output
+        return ()
+    if not isinstance(skills, dict):
+        return ()
+    return tuple(
+        SkillInfo(
+            name=str(name),
+            description=str(getattr(meta, "description", "") or ""),
+            shortcut=str(getattr(meta, "shortcut", "") or ""),
+        )
+        for name, meta in sorted(skills.items())
+        if name
+    )
 
 
 async def list_skills(coordinator: Any) -> tuple[SkillInfo, ...]:
@@ -297,6 +326,8 @@ async def list_skills(coordinator: Any) -> tuple[SkillInfo, ...]:
     tool = _tool(coordinator, "load_skill")
     if tool is None:
         return ()
+    if from_catalog := _skills_from_catalog(tool):
+        return from_catalog
     try:
         result = await tool.execute({"list": True})
     except Exception:  # noqa: BLE001 — a broken skills tool must not kill the UI
@@ -308,7 +339,11 @@ async def list_skills(coordinator: Any) -> tuple[SkillInfo, ...]:
         return ()
     skills = output.get("skills") or []
     return tuple(
-        SkillInfo(name=str(s.get("name", "")), description=str(s.get("description", "")))
+        SkillInfo(
+            name=str(s.get("name", "")),
+            description=str(s.get("description", "")),
+            shortcut=str(s.get("shortcut", "") or ""),
+        )
         for s in skills
         if isinstance(s, dict) and s.get("name")
     )

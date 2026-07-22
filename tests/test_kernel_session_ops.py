@@ -228,10 +228,44 @@ def test_list_skills() -> None:
     skills = asyncio.run(session_ops.list_skills(coord))
     assert [s.name for s in skills] == ["design-patterns", "simplify"]
     assert skills[0].description == "SOLID etc."
+    # The list output has no shortcut field — the alias defaults empty.
+    assert [s.shortcut for s in skills] == ["", ""]
 
 
 def test_list_skills_no_tool_is_empty() -> None:
     assert asyncio.run(session_ops.list_skills(_coord())) == ()
+
+
+class FakeCatalogSkillsTool(FakeSkillsTool):
+    """The real tool-skills surface: ``get_effective_skills`` returns the
+    merged catalog of ``SkillMetadata`` — the only place shortcuts live
+    (the ``{"list": true}`` output carries name + description only)."""
+
+    def get_effective_skills(self):
+        return {
+            "simplify": SimpleNamespace(description="cut cruft", shortcut=None),
+            "cranky-old-sam": SimpleNamespace(
+                description="crusty review", shortcut="cosam"
+            ),
+        }
+
+
+def test_list_skills_prefers_catalog_and_carries_shortcuts() -> None:
+    coord = _coord(tools={"load_skill": FakeCatalogSkillsTool()})
+    skills = asyncio.run(session_ops.list_skills(coord))
+    assert [(s.name, s.shortcut) for s in skills] == [
+        ("cranky-old-sam", "cosam"),
+        ("simplify", ""),
+    ]
+    assert skills[0].description == "crusty review"
+
+
+def test_list_skills_broken_catalog_falls_back_to_list() -> None:
+    tool = FakeSkillsTool()
+    tool.get_effective_skills = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    coord = _coord(tools={"load_skill": tool})
+    skills = asyncio.run(session_ops.list_skills(coord))
+    assert [s.name for s in skills] == ["design-patterns", "simplify"]
 
 
 def test_load_skill_returns_content() -> None:
