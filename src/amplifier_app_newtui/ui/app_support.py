@@ -10,10 +10,12 @@ surface — no hidden state.
 from __future__ import annotations
 
 import asyncio
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from textual.binding import Binding, BindingType
 
@@ -59,6 +61,45 @@ _GLOBAL_ACTIONS = frozenset(
         "open_rewind",
     }
 )
+
+ATTENTION_MIN_TURN_SECONDS = 10.0
+"""Turn-end bell threshold: a turn shorter than this is a live exchange
+(the user is watching); a longer one plausibly lost their attention, so
+its close-out rings. Deferred decisions always ring — they block on the
+human by definition."""
+
+_NOTIFY_DISABLED_VALUES = frozenset({"false", "0", "no", "off"})
+"""``AMPLIFIER_NOTIFY`` values that disable the bell — the exact kill
+switch the (suppressed) hooks-notify module honored, kept for parity."""
+
+
+def attention_bell_needed(
+    reason: Literal["turn_finished", "decision_deferred"],
+    elapsed_s: float = 0.0,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """The TUI-native replacement policy for the suppressed hooks-notify.
+
+    hooks-notify wrote OSC-777 + BEL straight to the TTY on
+    ``orchestrator:complete`` — raw escapes that corrupt the full-screen
+    Textual TUI, so the kernel strips it at mount. The signal it carried
+    ("the assistant needs you") is re-emitted here through Textual's own
+    driver (``App.bell``), which is the one escape path Textual proves
+    safe. OSC-777 itself has no public Textual write path (``_driver`` is
+    private and unsynchronized with the compositor), so this ships
+    bell-only by design.
+
+    Rings when a decision was deferred to the needs-you queue (always),
+    or when a turn finishes after :data:`ATTENTION_MIN_TURN_SECONDS`.
+    ``AMPLIFIER_NOTIFY=false/0/no/off`` disables it entirely.
+    """
+    env = environ if environ is not None else os.environ
+    if env.get("AMPLIFIER_NOTIFY", "").strip().lower() in _NOTIFY_DISABLED_VALUES:
+        return False
+    if reason == "decision_deferred":
+        return True
+    return elapsed_s >= ATTENTION_MIN_TURN_SECONDS
 
 
 @dataclass

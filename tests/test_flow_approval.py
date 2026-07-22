@@ -217,6 +217,29 @@ async def test_auto_mode_deferred_decision_ctrl_y_needs_you_flow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_deferred_decision_rings_the_attention_bell(monkeypatch) -> None:
+    """The TUI-native hooks-notify replacement: a decision deferred to the
+    needs-you queue rings Textual's driver-safe bell exactly once; quick
+    turn close-outs (< ATTENTION_MIN_TURN_SECONDS) stay silent."""
+    monkeypatch.delenv("AMPLIFIER_NOTIFY", raising=False)
+    adapter = DemoRuntimeAdapter(instant=True)
+    app = NewTuiApp(adapter)
+    rings: list[str] = []
+    monkeypatch.setattr(app, "bell", lambda: rings.append("bell"))
+    async with app.run_test(size=SIZE) as pilot:
+        await _reach_pytest_approval(pilot, app)
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        # Instant demo turns finish in well under the threshold — no bell.
+        assert rings == []
+        await type_text(pilot, "hi")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
+        assert adapter.needs_you.pending_count == 1
+        assert rings == ["bell"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("size", [(120, 50), (160, 50)])
 async def test_needs_you_chip_stays_visible_and_clickable_after_late_wrap(size) -> None:
     """Regression (s7/s12): the tail anchor must hold through LATE height growth.
