@@ -683,6 +683,9 @@ class NewTuiApp(App[None]):
         app_support.apply_plan_change(self, items)
 
     def on_resize(self, event: events.Resize) -> None:
+        # Feed the live terminal width to the kernel's width-aware surface
+        # hint (#35); a resize lands on the next turn's provider:request.
+        self.adapter.terminal.set_cols(event.size.width)
         app_support.sync_plan_surfaces(self)  # responsive ladder (D2)
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:

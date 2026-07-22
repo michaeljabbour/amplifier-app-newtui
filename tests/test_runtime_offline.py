@@ -601,6 +601,73 @@ async def test_offline_steer_injected_at_provider_request_boundary(offline_env) 
         await runtime.cleanup()
 
 
+def _surface_hints(messages: list[dict]) -> list[dict]:
+    return [
+        m
+        for m in messages
+        if isinstance(m.get("metadata"), dict)
+        and m["metadata"].get("source") == "newtui-surface-hint"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_offline_surface_hint_kept_current_at_provider_request(offline_env) -> None:
+    """The width-aware surface hint (#35) rides ``provider:request`` through
+    the REAL engine: firing the hook edits the root context to hold exactly
+    one system hint carrying the live terminal width, refreshes it in place on
+    a resize, coexists with a persistent steer, and skips child sessions."""
+    from amplifier_core import HookResult
+
+    runtime = await _started_runtime(offline_env["project"])
+    try:
+        assert runtime._initialized is not None
+        root = runtime._initialized.session_id
+        coordinator = runtime._initialized.coordinator
+        hooks = coordinator.hooks
+        context = coordinator.get("context")
+        await context.add_message({"role": "system", "content": "system prompt"})
+
+        runtime.surface.set_cols(132)
+        await hooks.emit("provider:request", {"session_id": root})
+        hints = _surface_hints(await context.get_messages())
+        assert len(hints) == 1
+        assert hints[0]["role"] == "system"
+        assert "~132 cols" in hints[0]["content"]
+
+        # A resize lands on the next turn's request -- updated in place, never
+        # a duplicate.
+        runtime.surface.set_cols(48)
+        await hooks.emit("provider:request", {"session_id": root})
+        hints = _surface_hints(await context.get_messages())
+        assert len(hints) == 1
+        assert "~48 cols" in hints[0]["content"]
+
+        # A persistent steer at the SAME boundary must survive as its own
+        # user message -- the hint edits context directly instead of returning
+        # inject_context, so it never flips the steer to ephemeral.
+        steer = HookResult(
+            action="inject_context",
+            context_injection="prefer short answers",
+            context_injection_role="user",
+            ephemeral=False,
+        )
+        request = await hooks.emit("provider:request", {"session_id": root})
+        await coordinator.process_hook_result(request, "provider:request", "provider")
+        await coordinator.process_hook_result(steer, "provider:request", "provider")
+        messages = await context.get_messages()
+        assert len(_surface_hints(messages)) == 1
+        assert any(
+            m["role"] == "user" and "prefer short answers" in str(m["content"]) for m in messages
+        )
+
+        # Subagents render through the root's summary, not the terminal.
+        before = await context.get_messages()
+        await hooks.emit("provider:request", {"session_id": f"{root}_worker"})
+        assert await context.get_messages() == before
+    finally:
+        await runtime.cleanup()
+
+
 @pytest.mark.asyncio
 async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> None:
     """Resume: the stored transcript is restored into the live context,
