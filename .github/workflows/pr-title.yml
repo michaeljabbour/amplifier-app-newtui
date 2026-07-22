@@ -1,0 +1,21 @@
+# Squash-merge PR titles become the permanent main history — lint them the
+# way commit subjects are expected to read (Conventional Commits).
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a Conventional Commits title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR title: $TITLE"
+          if ! printf '%s' "$TITLE" | grep -qE '^(feat|fix|docs|test|refactor|perf|build|ci|chore|style|revert)(\([a-zA-Z0-9._/-]+\))?!?: .+'; then
+            echo "::error::PR title must follow Conventional Commits, e.g. 'feat: add plan panel' or 'fix(ui): footer model refresh'."
+            exit 1
+          fi

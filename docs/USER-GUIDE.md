@@ -54,7 +54,7 @@ wired? `--demo` always works and exercises the whole UI offline.
 ├─ overlay strips appear here (palette / lanes / rewind / queued) ────┤
 │ [mode] ❯ composer — type here            (swaps to approval bar)    │
 ├─────────────────────────────────────────────────────────────────────┤
-│ mode · trust · bundle · $cost                     contextual hints  │
+│ mode · trust · bundle · model · session · $cost   contextual hints  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,9 +63,20 @@ braille spinner is mirrored into your terminal window or tab title. Both use
 the same active-turn timer, so they stop immediately when the turn finishes and
 consume no idle redraw loop.
 
-The footer always shows your current mode, trust posture, and session cost on the left, and
-the keys that work *right now* on the right. The hints change with context — when in doubt,
-read the footer.
+The footer's left side always shows your current mode, trust posture, bundle, model,
+session id, and session cost (`~$…` when any usage couldn't be priced — the total is a
+floor). A green `▲` appears after a turn that shipped, and an orange `q1` badge while a
+next-turn message is queued. On narrow terminals the decorations drop one by one (trust,
+then session, then bundle, then model) — mode and cost never drop. The right side shows
+the keys that work *right now*. The hints change with context — when in doubt, read the
+footer.
+
+**Plan panel.** When the agent keeps a live checklist (the `todo` tool), a compact
+**`Plan N/M`** panel appears in the bottom strip's right column: `✔` done, `▶` in
+progress, `○` pending — windowed around the in-progress item, with a `⋮ +N more` line
+when the plan is long. Once every item completes it collapses to the header line
+(done stays visible). On narrow terminals the panel hides and the footer carries the
+`Plan N/M` count instead — the count never shows in both places at once.
 
 ## 3. Talking to Amplifier
 
@@ -181,6 +192,7 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | | `/agents` | list the delegatable agents |
 | | `/skills` | list available skills |
 | | `/skill <name>` | load a skill by name |
+| | `/<skill-name>` | every discovered skill is also its own command (plus its `shortcut:` alias) |
 | | `/mcp [add\|remove]` | list MCP servers + connected tools; add/remove in `mcp.json` |
 | Parallel | `/tasks` | toggle the agent lanes panel (ctrl+t) |
 | Ship | `/ledger` | session outcome ledger — spend vs. yield summary (ctrl+l) |
@@ -212,6 +224,9 @@ token and message-count narration in the transcript.
 each configured server's tools mount as `mcp_<server>_<tool>` at session start, so
 `/mcp add` / `/mcp remove` take effect on the next launch. `/skills` and `/skill`
 drive the mounted skills tool — the agent also loads skills on its own when relevant.
+Discovered skills additionally register as first-class commands: `/cranky-old-sam`
+(and its declared `shortcut:` alias, e.g. `/cosam`) resolves exactly like a built-in —
+in the palette, in the help listing, and at the prompt — and loads that skill.
 
 **Directory capabilities.** The project root is always an implicit allowed write path.
 Top-level `amplifier-newtui allowed-dirs` / `denied-dirs` commands persist global, project,
@@ -295,6 +310,12 @@ own transcript (focus the lane to read it), and nothing from the tail lands in y
 Select a lane with ↑↓ and press **enter** to *focus* it: the transcript switches to that
 subagent's own work. **esc** steps back out — first unfocusing the lane, then closing the
 panel; with nothing left open, esc interrupts the whole agent tree.
+
+The transcript itself keeps one **delegate summary** line per fan-out: `● 2 delegates
+running…` while work is in flight, then `● Used 2 delegates · Plan 3/4 · 1m 12s ›` when
+it settles. Click it (or focus it and press **enter**) to expand the agent tree in
+place — each agent's outcome glyph, elapsed time, and a snippet of its final answer,
+plus the final plan on one line. Click again to collapse.
 
 ## 10. Rewind
 

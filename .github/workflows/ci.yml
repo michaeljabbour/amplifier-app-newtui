@@ -16,4 +16,4 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run pyright src/
-      - run: uv run pytest -q
+      - run: uv run pytest -q --cov=src/amplifier_app_newtui --cov-report=term --cov-fail-under=85

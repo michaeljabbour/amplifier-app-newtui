@@ -392,7 +392,9 @@ class RealRuntimeAdapter(RuntimeAdapter):
     async def set_model(self, model: str) -> tuple[bool, str]:
         if self._runtime is None:
             return (False, "session still starting")
-        return await self._in_runtime(self._runtime.set_model(model))
+        result = await self._in_runtime(self._runtime.set_model(model))
+        self.model_name = self._runtime.model_name  # keep the footer's copy live
+        return result
 
     async def get_effort(self) -> str | None:
         if self._runtime is None:
