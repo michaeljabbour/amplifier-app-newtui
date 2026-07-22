@@ -166,3 +166,62 @@ def test_bare_protected_shell_target_is_also_blocked(tmp_path: Path) -> None:
         resolve_capability=_capability,
     )
     assert safety.execution_policy == "blocked"
+
+
+def test_embedded_protected_shell_target_escalates_to_ask(tmp_path: Path) -> None:
+    """Audit H1 fail-closed: a protected path buried inside `python3 -c`
+    escapes the command-list token pass (and the bash tool's own validator
+    enforces no write-path list), so governance escalates it to *ask* rather
+    than silently allowing it -- even in the default open posture."""
+    policy = DirectoryPolicy(tmp_path / "project")  # open posture (default)
+    command = "python3 -c \"open('.git/config','w').write('x')\""
+    approval = resolve("build", "bash", {"command": command})
+    safety = resolve_safety(
+        approval,
+        action=command,
+        target="",
+        directory_policy=policy,
+        resolve_capability=_capability,
+    )
+    assert safety.execution_policy == "outside-policy"
+    assert safety.approval.decision == "ask"
+    assert safety.approval.capability == CapabilityClass.OUTSIDE_PROJECT
+    assert safety.target == ".git"
+
+
+def test_embedded_protected_shell_target_in_auto_is_classifier_gated(tmp_path: Path) -> None:
+    """In auto mode the escalated ask is classifier-gated -- the reasoning-blind
+    classifier adjudicates and denies-and-continue on refusal."""
+    policy = DirectoryPolicy(tmp_path / "project")
+
+    def auto_capability(capability: CapabilityClass):
+        return resolve_capability("auto", capability)
+
+    command = "sed -i 's/a/b/' vendored/.git/config"
+    approval = resolve("auto", "bash", {"command": command})
+    safety = resolve_safety(
+        approval,
+        action=command,
+        target="",
+        directory_policy=policy,
+        resolve_capability=auto_capability,
+    )
+    assert safety.execution_policy == "outside-policy"
+    assert safety.approval.classifier_gated is True
+
+
+def test_embedded_outside_write_still_roams_when_open(tmp_path: Path) -> None:
+    """Documented residual: a merely-outside write via python3 -c is not
+    path-confined in the default open posture (the filesystem tool cannot see
+    interpreter code). Only protected paths fail closed here."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    command = "python3 -c \"open('/tmp/outside.txt','w')\""
+    approval = resolve("auto", "bash", {"command": command})
+    safety = resolve_safety(
+        approval,
+        action=command,
+        target="",
+        directory_policy=policy,
+        resolve_capability=_capability,
+    )
+    assert safety.execution_policy == "within-policy"

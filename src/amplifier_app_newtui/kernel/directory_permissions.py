@@ -9,6 +9,7 @@ amplifier-app-cli.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +76,34 @@ _WRITE_COMMANDS = frozenset(
 """Command heads that treat their path arguments as write targets."""
 
 _COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|"})
+
+
+def _compile_protected_pattern(relative: str) -> re.Pattern[str]:
+    """Compile a fail-closed matcher for one protected path.
+
+    Protected *files* (``AGENTS.md``) match as a whole path segment.
+    Protected *directories* (``.git``, ``.agents``, ``.codex``) match only
+    when a concrete subpath follows (``.git/config``) and are exempt when a
+    glob metacharacter follows the slash (``./.git/*``) -- a glob names the
+    directory to *exclude* it (a read filter), not to write into it. The
+    leading lookbehind keeps ``.gitignore``/``.github`` and a bare repo like
+    ``foo.git`` from matching ``.git``.
+    """
+    escaped = re.escape(relative)
+    if Path(relative).suffix:
+        return re.compile(rf"(?<![\w.\-]){escaped}(?![\w])")
+    return re.compile(rf"(?<![\w.\-]){escaped}/(?![*?])")
+
+
+_PROTECTED_REFERENCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (relative, _compile_protected_pattern(relative)) for relative in PROTECTED_PROJECT_PATHS
+)
+"""Precompiled fail-closed matchers for protected paths embedded anywhere in
+an EXEC command string (audit H1). The command-head/redirect token pass in
+:meth:`DirectoryPolicy.shell_outside_target` cannot see a path buried inside a
+quoted interpreter script (``python3 -c "...open('.git/config')..."``) or hidden
+behind a directory prefix (``vendored/.git/config``); these patterns close that
+gap."""
 
 
 @dataclass(frozen=True)
@@ -362,6 +391,35 @@ class DirectoryPolicy:
                 return (token, reason)
             if write_head or index in redirect_targets:
                 return (token, reason)
+        # Fail-closed fallback (audit H1): the token pass above is command-list
+        # based -- writes via `python3 -c`, `sed -i`, `curl -o`, or a
+        # directory-prefixed path hide the target from write-head/redirect
+        # detection. The mounted bash tool's validator is a dangerous-command
+        # blocklist that enforces NO write-path list, so a protected path buried
+        # anywhere in the command would otherwise reach the shell unseen. Scan
+        # the raw string for a protected reference and escalate to *ask*.
+        return self._embedded_protected_reference(command)
+
+    def _embedded_protected_reference(self, command: str) -> tuple[str, str] | None:
+        """Return a protected path referenced anywhere in an EXEC command.
+
+        Where the token pass flags a *concrete target token* and hard-blocks
+        it, this scan catches a protected path lurking inside a quoted
+        interpreter script (``python3 -c "...open('.git/config')..."``), a sed
+        expression, or behind a directory prefix (``vendored/.git/config``).
+        An embedded reference is lower confidence than a target token -- it may
+        be a harmless mention -- so the reason routes to *ask* (the human
+        adjudicates) rather than a silent allow. Glob filters that name a
+        protected directory to exclude it (``find ... -not -path './.git/*'``)
+        stay exempt; ``.gitignore`` and ``.github`` never match ``.git``.
+        """
+        for relative, pattern in _PROTECTED_REFERENCE_PATTERNS:
+            if pattern.search(command):
+                return (
+                    relative,
+                    f"protected path referenced in command \u00b7 {relative} "
+                    "\u00b7 review before exec",
+                )
         return None
 
     def merged_tool_config(self, config: dict[str, Any]) -> dict[str, Any]:
