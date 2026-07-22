@@ -75,6 +75,62 @@ def test_second_save_creates_backup_and_recovery_uses_it(store: SessionStore) ->
     assert loaded == [{"role": "user", "content": "v1"}]
 
 
+# --------------------------------------------------------------------------
+# secret scrubbing at the transcript + metadata sinks (issue #23)
+# --------------------------------------------------------------------------
+
+_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+
+def test_transcript_save_redacts_secrets(store: SessionStore) -> None:
+    transcript = [
+        {"role": "user", "content": f"here is my key {_AWS_KEY}"},
+        {
+            "role": "assistant",
+            "content": (
+                "cat ~/.aws/credentials\n[default]\n"
+                f"aws_access_key_id = {_AWS_KEY}\n"
+                f"aws_secret_access_key = {_AWS_SECRET}\n"
+            ),
+        },
+    ]
+    store.save("s1", transcript, {})
+
+    # raw bytes on disk carry no plaintext secret
+    raw = (store.session_dir("s1") / TRANSCRIPT_FILENAME).read_text(encoding="utf-8")
+    assert _AWS_KEY not in raw
+    assert _AWS_SECRET not in raw
+    assert "[REDACTED]" in raw
+
+    # and the round-tripped transcript is redacted, structure preserved
+    loaded, _ = store.load("s1")
+    assert loaded[0]["role"] == "user"
+    assert _AWS_KEY not in loaded[0]["content"]
+    assert _AWS_SECRET not in loaded[1]["content"]
+
+
+def test_transcript_redacts_nested_content_blocks(store: SessionStore) -> None:
+    transcript = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": f"token {_AWS_KEY}"}],
+        }
+    ]
+    store.save("s1", transcript, {})
+    loaded, _ = store.load("s1")
+    assert loaded[0]["content"][0]["text"] == "token [REDACTED]"
+
+
+def test_metadata_value_pattern_redacted(store: SessionStore) -> None:
+    # A secret-shaped VALUE under a non-sensitive KEY (key-based redaction
+    # alone would miss it); the shared value scrub catches it.
+    store.save("s1", [], {"note": f"deployed with {_AWS_KEY}"})
+    raw = (store.session_dir("s1") / METADATA_FILENAME).read_text(encoding="utf-8")
+    assert _AWS_KEY not in raw
+    assert "[REDACTED]" in raw
+
+
 def test_load_missing_session_raises(store: SessionStore) -> None:
     with pytest.raises(FileNotFoundError):
         store.load("nope")

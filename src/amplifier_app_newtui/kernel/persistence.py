@@ -37,6 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..model.redaction import scrub_value
 from .config import get_project_slug
 from .events import UIEvent
 
@@ -98,13 +99,21 @@ def _sanitize_message(message: Any) -> Any:
 
 
 def _redact_secrets(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Redact secret-looking values before persisting metadata."""
+    """Redact secret-looking values before persisting metadata.
+
+    Two complementary layers, shared with the transcript/export/copy
+    sinks: amplifier-core's key-based ``redact_secrets`` (kernel-only)
+    scrubs sensitive metadata KEYS, then the shared value-pattern scrub
+    (``model.redaction``) catches secret-shaped VALUES (AWS keys, bearer
+    tokens) that key redaction misses (issue #23).
+    """
     try:
         from amplifier_core.utils.truncate import redact_secrets
 
-        return redact_secrets(metadata)
+        redacted = redact_secrets(metadata)
     except ImportError:  # pragma: no cover — amplifier-core is a hard dependency
-        return metadata
+        redacted = metadata
+    return scrub_value(redacted)
 
 
 class SessionStore:
@@ -192,9 +201,15 @@ class SessionStore:
             # by providers at request time; developer messages are context.
             if msg_dict.get("role") in ("system", "developer"):
                 continue
+            # Scrub secret-shaped values at the sink (issue #23) so all
+            # block kinds are covered — the transcript path previously
+            # only JSON-sanitized, never redacted. Same rules as export,
+            # copy and the metadata path (model.redaction).
             lines.append(
                 json.dumps(
-                    _sanitize_message(message), ensure_ascii=False, default=_json_default
+                    scrub_value(_sanitize_message(message)),
+                    ensure_ascii=False,
+                    default=_json_default,
                 )
             )
         content = "\n".join(lines) + "\n" if lines else ""

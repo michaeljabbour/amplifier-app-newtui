@@ -58,3 +58,35 @@ def test_returns_none_when_no_answers() -> None:
         ToolLine(id="b2", summary="Read blocks.py"),
     )
     assert last_answer_text(blocks) is None
+
+
+# --------------------------------------------------------------------------
+# secret scrubbing at the copy sink (issue #23)
+# --------------------------------------------------------------------------
+
+
+def test_copy_redacts_aws_key_in_last_answer() -> None:
+    blocks = (
+        Answer(
+            id="b1",
+            spans=(
+                Segment(text="use "),
+                Segment(text="AKIAIOSFODNN7EXAMPLE"),
+                Segment(text=" then done"),
+            ),
+        ),
+    )
+    text = last_answer_text(blocks)
+    assert text is not None
+    assert "AKIAIOSFODNN7EXAMPLE" not in text
+    assert text == "use [REDACTED] then done"
+
+
+def test_copy_redacts_bearer_token() -> None:
+    blocks = (
+        Answer(id="b1", spans=(Segment(text="Authorization: Bearer abc123def456ghi"),)),
+    )
+    text = last_answer_text(blocks)
+    assert text is not None
+    assert "abc123def456ghi" not in text
+    assert text == "Authorization: Bearer [REDACTED]"
