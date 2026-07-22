@@ -92,11 +92,18 @@ def register_skill_commands(
     registry: CommandRegistry, skills: Iterable[SkillLike]
 ) -> tuple[CommandSpec, ...]:
     """Register *skills* (names + shortcuts) into *registry*; returns the
-    specs actually added — ``()`` when everything was already present."""
-    specs = skill_command_specs(registry, skills)
-    for spec in specs:
-        registry.register(spec)
-    return specs
+    specs actually added — ``()`` when everything was already present.
+
+    Rides the open-registry mechanism (story #2): each row registers as
+    a ``skill``-sourced contribution, so ``registry.contributions("skill")``
+    lists them and the registry's own collision policy (existing command
+    wins, skip with a log line) backstops the prefilter above.
+    """
+    return tuple(
+        spec
+        for spec in skill_command_specs(registry, skills)
+        if registry.register(spec, source="skill")
+    )
 
 
 __all__ = ["SkillLike", "register_skill_commands", "skill_command_specs"]

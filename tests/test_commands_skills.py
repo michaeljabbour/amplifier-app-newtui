@@ -89,3 +89,19 @@ def test_registering_twice_is_idempotent() -> None:
     skills = (_skill("cranky-old-sam", "crusty review", "cosam"),)
     register_skill_commands(registry, skills)
     assert register_skill_commands(registry, skills) == ()
+
+
+def test_skill_rows_are_skill_sourced_contributions() -> None:
+    # Story #2: skills ride the open-registry mechanism — their rows are
+    # 'skill'-sourced contributions, unregisterable as a group, distinct
+    # from the seeded built-ins.
+    registry = build_registry()
+    added = register_skill_commands(
+        registry, (_skill("cranky-old-sam", "crusty review", "cosam"),)
+    )
+    assert registry.contributions("skill") == added
+    assert registry.source_of("/cosam") == "skill"
+    assert registry.source_of("/mode") == "builtin"
+    assert registry.unregister("/cosam")
+    assert registry.get("/cosam") is None
+    assert registry.get("/cranky-old-sam") is not None
