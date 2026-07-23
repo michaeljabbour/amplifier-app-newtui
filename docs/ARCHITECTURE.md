@@ -455,6 +455,35 @@ filesystem tools and protects `.git`, `.agents`, `.codex`, and `AGENTS.md` by de
 recognizable shell paths use the same resolution. This is policy enforcement, not an OS
 sandbox for opaque interpreter code.
 
+**The two-layer shell-write contract (audit H1).** Shell (`bash`/`exec`) writes are
+governed by two independent layers, and neither is a sandbox:
+
+1. **The mounted bash tool's own validator** (`amplifier-module-tool-bash`,
+   `safety.py`) is a *dangerous-command blocklist* — profile-based patterns such as
+   `rm -rf /`, `sudo`, `mkfs`, `dd if=/dev/*`. It enforces **no** allowed/denied
+   write-path list; the audited `tool-filesystem` allowlist (`is_path_allowed`) gates
+   only the filesystem *tools* (`write_file`/`edit_file`), never a shell subprocess. A
+   write through `bash` therefore reaches the OS with no path enforcement from either
+   external module.
+2. **The app governance layer** (`DirectoryPolicy.shell_outside_target`) is the only
+   place a shell write meets the protected/denied lists, and it is a *governance
+   signal*, not a shell sandbox. Its token pass recognises write-command heads and
+   redirects; a concrete protected target token (`> .git/config`, `rm .git/x`) hard
+   **blocks**. Because that pass is command-list based, a protected path buried inside a
+   quoted interpreter script (`python3 -c "...open('.git/config')..."`), a `sed -i`
+   expression, or behind a directory prefix (`vendored/.git/config`) escapes it — and
+   layer 1 will not catch it either. To fail closed, a substring scan flags any
+   protected path referenced **anywhere** in the command and escalates it to **ask**
+   (the human adjudicates; deny-and-continue in restrictive modes). Glob *filters* that
+   name a protected dir to exclude it (`find … -not -path './.git/*'`) stay exempt, and
+   `.gitignore`/`.github` never match `.git`.
+
+Residual (accepted): a write to a *merely-outside* path (not protected/denied) via an
+interpreter — `python3 -c "open('/etc/hosts','w')"` — is not path-confined in the default
+`open` posture, matching amplifier-CLI's unconfined bash; the filesystem tool cannot see
+interpreter code, so no layer inspects the argument. Protected paths, which are enforced
+in both postures, are the crown jewels this fail-closed scan defends.
+
 ### 7.2 Gating: app postures + native modes
 
 Two policies share Amplifier's hook/approval mechanism:
