@@ -525,6 +525,12 @@ class RealRuntime:
         self.degraded_notice: str | None = None
         self.compaction = CompactionConfig()
         self._compaction_binding: CompactionRuntimeBinding | None = None
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+        """Strong refs for fire-and-forget tasks spawned off the bridge tap
+        (e.g. compaction token observation). A bare ``create_task`` result
+        may be garbage-collected mid-flight, silently stopping the work
+        (mirrors ``recipes`` ``self._tasks`` + ``add_done_callback``)."""
+
 
     def _progress(self, action: str = "", detail: str = "", *rest: object) -> None:
         del rest
@@ -590,7 +596,15 @@ class RealRuntime:
             # A settings-configured bundle failed discovery — the boot
             # continued on the app default; tell the user loudly.
             self.bridge.emit(Notification(message=resolved.fallback_notice))
+        if resolved.settings_notice:
+            # A settings.yaml scope was malformed and skipped — surface it
+            # loudly rather than silently dropping the whole scope (the
+            # analogous bundle fallback above already speaks up).
+            self.bridge.emit(
+                Notification(message=resolved.settings_notice, level="warning")
+            )
         self._resolved = resolved
+
         self.compaction = compaction_config(resolved.mount_plan)
         # Live pricing (BACKLOG item 1, behind settings ``pricing.live``,
         # default on): fresh disk cache applies immediately; otherwise a
@@ -607,6 +621,21 @@ class RealRuntime:
                 active_bundle_name(resolved.settings) or DEFAULT_BUNDLE,
                 self.bridge.emit,
             )
+            if store.transcript_recovery_failed:
+                # The stored transcript existed but neither it nor its
+                # .backup parsed: the resumed conversation lost its history.
+                # Say so loudly rather than silently resuming empty (the
+                # metadata path already flags this with a `recovered` marker).
+                self.bridge.emit(
+                    Notification(
+                        message=(
+                            "Resumed session transcript was unreadable — prior "
+                            "history could not be recovered."
+                        ),
+                        level="warning",
+                    )
+                )
+
             # Same turn semantics as foundation's fork slicing: every
             # user-role message in the restored history is one turn.
             self.turn_base = sum(1 for m in transcript if m.get("role") == "user")
@@ -933,7 +962,15 @@ class RealRuntime:
             and self._compaction_binding is not None
             and event.input_tokens > 0
         ):
-            asyncio.create_task(self._compaction_binding.observe_input_tokens(event.input_tokens))
+            # Keep a strong ref until done: a bare create_task result can be
+            # GC'd mid-flight, silently stopping token observation until the
+            # context overflows (contrast recipes.py's self._tasks set).
+            task = asyncio.create_task(
+                self._compaction_binding.observe_input_tokens(event.input_tokens)
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
         if (
             self._store is not None
             and self._initialized is not None

@@ -144,6 +144,13 @@ class SessionStore:
             )
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.transcript_recovery_failed = False
+        """Set by :meth:`_load_transcript` when a resumed session's
+        transcript file(s) existed but were ALL unreadable — the history
+        is lost. The runtime surfaces it as a user-facing Notification,
+        mirroring ``_load_metadata``'s ``recovered`` marker (which was the
+        only side of this pair that spoke up)."""
+
 
     # -- paths -------------------------------------------------------------
 
@@ -245,6 +252,7 @@ class SessionStore:
     def _load_transcript(self, session_dir: Path) -> list[dict[str, Any]]:
         main = session_dir / TRANSCRIPT_FILENAME
         backup = session_dir / (TRANSCRIPT_FILENAME + ".backup")
+        self.transcript_recovery_failed = False
         for path, from_backup in ((main, False), (backup, True)):
             if not path.exists():
                 continue
@@ -259,7 +267,18 @@ class SessionStore:
                 return transcript
             except (OSError, json.JSONDecodeError):
                 logger.warning("Failed to load %s", path, exc_info=True)
+        if main.exists() or backup.exists():
+            # Both main and .backup existed but neither parsed: a resumed
+            # session silently loses its history. _load_metadata already
+            # flags this case with a ``recovered`` marker; raise an
+            # equivalent signal so the transcript loss is surfaced too.
+            self.transcript_recovery_failed = True
+            logger.warning(
+                "Transcript recovery failed for %s: resumed history is unavailable",
+                session_dir.name,
+            )
         return []
+
 
     def _load_metadata(self, session_dir: Path) -> dict[str, Any]:
         main = session_dir / METADATA_FILENAME

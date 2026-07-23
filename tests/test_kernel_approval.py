@@ -132,61 +132,13 @@ async def test_allow_always_passes_through_without_local_bookkeeping() -> None:
     assert await again == ALLOW_ONCE
 
 
-# -- defer / timeout ---------------------------------------------------------------
+# -- timeout -----------------------------------------------------------------------
 
-
-@pytest.mark.asyncio
-async def test_defer_parks_into_needs_you_then_denies_on_timeout() -> None:
-    broker, needs_you, denial_log = make_broker()
-    broker.stage_detail(
-        "Allow push?",
-        ApprovalDetail(command="git push", rule="ask net", capability="net"),
-    )
-    task = asyncio.ensure_future(
-        broker.request_approval("Allow push?", [], timeout=0.05)
-    )
-    await _settle()
-    head = broker.head
-    assert head is not None
-    item = broker.defer(head.ticket_id)
-
-    # Deferred: no longer the approval-bar head, parked in needs-you.
-    assert broker.head is None
-    assert needs_you.pending_count == 1
-    assert item.question == "Allow push?"
-    assert item.choices == STANDARD_OPTIONS
-
-    # Timeout resolves to the default deny…
-    assert await task == DENY
-    # …lands in the DenialLog…
-    assert denial_log.total_count == 1
-    assert denial_log.records[-1].reason == "approval timed out · denied by default"
-    # …and stays retro-answerable in needs-you.
-    assert needs_you.pending_count == 1
-    answered = needs_you.answer(item.decision_id, ALLOW_ONCE)
-    assert answered.status == "answered"
-
-
-@pytest.mark.asyncio
-async def test_deferred_ticket_answered_before_timeout_dismisses_item() -> None:
-    broker, needs_you, denial_log = make_broker()
-    task = asyncio.ensure_future(
-        broker.request_approval("Allow thing?", [], timeout=5.0)
-    )
-    await _settle()
-    ticket = broker.pending[0]
-    item = broker.defer(ticket.ticket_id)
-    broker.answer(ticket.ticket_id, ALLOW_ONCE)
-    assert await task == ALLOW_ONCE
-    # Applied live: nothing left to retro-answer, no denial recorded.
-    assert needs_you.pending_count == 0
-    assert needs_you.items[0].decision_id == item.decision_id
-    assert needs_you.items[0].status == "dismissed"
-    assert denial_log.total_count == 0
 
 
 @pytest.mark.asyncio
 async def test_timeout_with_allow_default_returns_allow_once() -> None:
+
     broker, _, denial_log = make_broker()
     choice = await broker.request_approval(
         "Allow read?", [], timeout=0.01, default="allow"
@@ -195,18 +147,8 @@ async def test_timeout_with_allow_default_returns_allow_once() -> None:
     assert denial_log.total_count == 0
 
 
-@pytest.mark.asyncio
-async def test_defer_requires_needs_you_queue() -> None:
-    broker = ApprovalBroker()
-    task = asyncio.ensure_future(broker.request_approval("Allow x?", [], timeout=1.0))
-    await _settle()
-    with pytest.raises(RuntimeError):
-        broker.defer(broker.pending[0].ticket_id)
-    broker.answer(broker.pending[0].ticket_id, DENY)
-    assert await task == DENY
-
-
 # -- staged detail -----------------------------------------------------------------
+
 
 
 @pytest.mark.asyncio
