@@ -367,3 +367,41 @@ async def test_panel_disambiguates_same_named_lanes() -> None:
         await pilot.click("#lane-row-1")
         await pilot.pause()
         assert app.focused_lanes == [("test-writer", "sub-bbbb")]
+
+
+@pytest.mark.asyncio
+async def test_lane_tail_mounts_under_focused_row_then_drops(monkeypatch) -> None:
+    """Issue #90: the focused lane's live tail renders directly under that
+    lane's row (co-located with its agent), and drops on focus change / clear."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    from amplifier_app_newtui.ui.lanes_panel import _LaneRow, _LaneTail
+
+    app = LanesHost()
+    async with app.run_test() as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes(RECORDS, tailed_session_id="s2")  # coder focused
+        panel.show_panel()
+        await pilot.pause()
+
+        panel.show_lane_tail("scanning the queue bridge\nfeeding the lanes\nnext: trackers")
+        await pilot.pause()
+        assert panel.has_lane_tail
+
+        # The tail widget sits immediately after the focused (s2 = coder) row.
+        kids = list(panel.children)
+        tail = app.query_one(_LaneTail)
+        coder_row = next(r for r in panel.query(_LaneRow) if r.record.session_id == "s2")
+        assert kids.index(tail) == kids.index(coder_row) + 1
+
+        # Cycling focus drops it (the reducer re-feeds for the newly focused lane).
+        panel.update_lanes(RECORDS, tailed_session_id="s1")
+        await pilot.pause()
+        assert not panel.has_lane_tail
+
+        # Explicit clear (turn end) drops it too.
+        panel.show_lane_tail("x")
+        await pilot.pause()
+        assert panel.has_lane_tail
+        panel.clear_lane_tail()
+        await pilot.pause()
+        assert not panel.has_lane_tail

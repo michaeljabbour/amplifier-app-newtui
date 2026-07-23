@@ -32,6 +32,7 @@ from textual.widgets import Static
 
 from ..model.lanes import LaneRecord, LaneState, lane_labels
 from ..model.turn import _format_tokens
+from .live_tail import lane_tail_markup
 from .motion import SHIMMER_INTERVAL_SECONDS, shimmer_band
 
 LANES_HEADER_TITLE = "Agent lanes"
@@ -212,6 +213,24 @@ class _LaneRow(Static):
         )
 
 
+class _LaneTail(Static):
+    """Dim ``┆``-guttered live tail of the focused lane, mounted directly
+    under that lane's row so the stream sits with the agent it belongs to
+    (issue #90) instead of a detached strip. Ephemeral — never a transcript
+    block; the reducer owns accumulation + the ~0.05s throttle."""
+
+    DEFAULT_CSS = """
+    _LaneTail {
+        width: 100%;
+        height: auto;
+        padding: 0 1;
+    }
+    """
+
+    def set_text(self, text: str) -> None:
+        self.update(lane_tail_markup(text))
+
+
 class LanesPanel(Vertical):
     """The agent-lanes overlay strip (DESIGN-SPEC §8).
 
@@ -277,6 +296,8 @@ class LanesPanel(Vertical):
         self._motion_frame = 0
         self._motion_timer: Timer | None = None
         self._remount_pending = False
+        self._tail_text = ""
+        self._tail_widget: _LaneTail | None = None
 
     def on_unmount(self) -> None:
         self._stop_motion()
@@ -327,12 +348,58 @@ class LanesPanel(Vertical):
         ``▸ N queued`` steer badge (issue #39); omitted leaves it unchanged.
         """
         self._records = tuple(records)
+        focus_changed = tailed_session_id != self._tailed
         self._tailed = tailed_session_id
+        if focus_changed:
+            # ctrl+o moved the ▸ focus — drop the old row's tail; the reducer
+            # re-feeds show_lane_tail for the newly focused lane.
+            self._drop_tail_widget()
         if queued_counts is not None:
             self._queued = dict(queued_counts)
         self._selected = min(self._selected, max(0, len(self._records) - 1))
         self._sync_motion()
         self._refresh_or_rebuild_rows()
+
+    # -- focused-lane live tail (issue #90) ----------------------------------
+
+    def _tailed_index(self) -> int | None:
+        return next(
+            (i for i, r in enumerate(self._records) if r.session_id == self._tailed),
+            None,
+        )
+
+    def _tailed_row(self) -> _LaneRow | None:
+        index = self._tailed_index()
+        if index is None:
+            return None
+        found = self.query(f"#lane-row-{index}")
+        return found.first(_LaneRow) if found else None
+
+    def _drop_tail_widget(self) -> None:
+        if self._tail_widget is not None:
+            self._tail_widget.remove()
+            self._tail_widget = None
+
+    def show_lane_tail(self, text: str) -> None:
+        """Paint the focused lane's accumulated tail directly under its row."""
+        self._tail_text = text
+        row = self._tailed_row()
+        if row is None:  # not mounted yet, or focused lane not listed
+            return
+        if self._tail_widget is None or not self._tail_widget.is_mounted:
+            self._tail_widget = _LaneTail()
+            self.mount(self._tail_widget, after=row)
+        self._tail_widget.set_text(text)
+
+    def clear_lane_tail(self) -> None:
+        """Drop the lane tail (root preemption / lane done / turn end)."""
+        self._tail_text = ""
+        self._drop_tail_widget()
+
+    @property
+    def has_lane_tail(self) -> bool:
+        """True while a focused-lane tail is mounted under its row."""
+        return self._tail_widget is not None and self._tail_widget.is_mounted
 
     def show_panel(self, *, focus: bool = True) -> None:
         self.display = True
@@ -425,6 +492,7 @@ class LanesPanel(Vertical):
     async def _remount_rows(self) -> None:
         try:
             await self.remove_children()
+            self._tail_widget = None  # remove_children dropped it
             lines = self.lane_lines
             rows: list[Static] = [_LanesHeader()]
             rows.extend(
@@ -433,6 +501,8 @@ class LanesPanel(Vertical):
             )
             await self.mount(*rows)
             self._apply_selection()
+            if self._tail_text:  # re-place the focused lane's tail under its row
+                self.show_lane_tail(self._tail_text)
         finally:
             self._remount_pending = False
 
