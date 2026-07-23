@@ -31,3 +31,13 @@
 52	routing-matrix-mount	implemented
 53	anchors-pin-lifecycle	implemented
 54	amplifier-agent-eval	implemented
+101	deferred-decision-dependency-blocking	new
+102	provider-backed-classifier-seam	new
+103	key-store-advisory-lock	new
+104	sources-bundles-prepare	new
+105	bundle-added-resolve	new
+106	notification-config-and-cli	new
+107	tool-invoke-cli	new
+108	fork-session	new
+109	run-invocation-flags	new
+110	reset-command	new
