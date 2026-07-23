@@ -321,7 +321,19 @@ class NewTuiApp(App[None]):
             self.composer.insert_text(text)
             self.show_notice("session still starting · message kept in the composer")
             return
-        self.run_worker(self.adapter.submit(text, attachments), exclusive=False)
+        self.run_worker(self._submit_prompt(text, attachments), exclusive=False)
+
+    async def _submit_prompt(self, text: str, attachments: tuple[Any, ...]) -> None:
+        try:
+            await self.adapter.submit(text, attachments)
+        except Exception as error:  # noqa: BLE001 — a turn error must not tear down the app
+            # ``run_worker`` defaults to ``exit_on_error=True``: an exception
+            # raised by ``submit`` (provider auth expiry, network drop mid-turn)
+            # used to crash the whole TUI. Surface it and keep the session live.
+            # (CancelledError/KeyboardInterrupt are BaseException — they stay
+            # uncaught so a real shutdown isn't misreported as a turn failure.)
+            self.log.error(f"turn failed: {error}")
+            self.show_notice(f"turn failed · {error}")
 
     # -- ReducerHost ---------------------------------------------------------------
 
