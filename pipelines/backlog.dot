@@ -57,9 +57,9 @@ digraph backlog_attractor {
     PlanWork [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
         prompt="Read .ai/bk_current.md (+ .ai/bk_donor.md if present), docs/ARCHITECTURE.md, docs/decisions/ADR-0007-*. Design the change through newtui's kernel/model/ui/commands seams; name exact files, amplifier-core/foundation primitives to reuse, tests and goldens to add. Write .ai/bk_plan.md. THEN author .ai/bk_forge_check.sh: a bash probe using $forge_tool (env FORGE) that boots the real TUI (`uv run amplifier-newtui` in a forge pty, session name auto-<slug>) or runs the new CLI via forge exec, asserts the issue's acceptance behavior from screen/grep, exit 0 on pass. $goal"]
     Implement [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
-        prompt="Read .ai/bk_plan.md including appended 'Fix N' sections. Implement in $work_tree on the current auto/<slug> branch. Add/extend tests; regenerate goldens for pure-renderer changes. ADR-0007-clean; never import amplifier-app-cli. Append changed files to .ai/bk_impl.log. $goal"]
+        prompt="Read .ai/bk_plan.md including appended 'Fix N' sections. Implement in $work_tree on the current auto/<slug> branch. Add/extend tests; regenerate goldens for pure-renderer changes. ADR-0007-clean; never import amplifier-app-cli. Run `uv run ruff format .` before finishing, and give any NEW blind `except Exception:` a justified `# noqa: BLE001 — <reason>` (the BLE lint gate is live). Append changed files to .ai/bk_impl.log. $goal"]
     UnitValidate [shape=parallelogram,
-        tool_command="cd $work_tree && uv run ruff check . >/tmp/bk_lint 2>&1 && uv run pyright src/ >/tmp/bk_types 2>&1 && uv run pytest -q >/tmp/bk_test 2>&1 && printf pass || printf fail"]
+        tool_command="cd $work_tree && uv run ruff check . >/tmp/bk_lint 2>&1 && uv run ruff format --check . >/tmp/bk_fmt 2>&1 && uv run pyright src/ >/tmp/bk_types 2>&1 && uv run pytest -q --cov=src/amplifier_app_newtui --cov-report=term --cov-fail-under=85 >/tmp/bk_test 2>&1 && printf pass || printf fail"]
     ForgeValidate [shape=parallelogram,
         tool_command="cd $work_tree && export FORGE=$forge_tool && python3 \"$FORGE\" doctor >/tmp/bk_doctor 2>&1 && bash $newtui_path/.ai/bk_forge_check.sh >/tmp/bk_forge 2>&1 && printf pass || printf fail"]
 
