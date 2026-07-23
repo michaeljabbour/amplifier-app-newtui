@@ -19,6 +19,7 @@ it unit-tests against a ``tmp_path`` with no amplifier session.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -41,7 +42,19 @@ SCOPES: tuple[Scope, ...] = ("global", "project", "local")
 
 
 def _amplifier_home(amplifier_home: Path | None) -> Path:
-    return amplifier_home or (Path.home() / ".amplifier")
+    """Resolve the amplifier home dir.
+
+    An explicit argument always wins (tests). Otherwise honor the
+    foundation-native ``AMPLIFIER_HOME`` env var (same resolution as
+    ``amplifier_foundation.paths.resolution.get_amplifier_home``), then
+    fall back to ``~/.amplifier``.
+    """
+    if amplifier_home is not None:
+        return amplifier_home
+    env_home = os.environ.get("AMPLIFIER_HOME")
+    if env_home:
+        return Path(env_home).expanduser()
+    return Path.home() / ".amplifier"
 
 
 def settings_paths(project_dir: Path | None, amplifier_home: Path | None) -> SettingsPaths:

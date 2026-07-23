@@ -778,5 +778,245 @@ def update(check_only: bool, yes: bool, force: bool) -> None:
     raise SystemExit(asyncio.run(_update(check_only, yes, force)))
 
 
+# --------------------------------------------------------------------------
+# source group — module/bundle source overrides (add/remove/list/show)
+# --------------------------------------------------------------------------
+
+
+def _source_type_options(fn):  # noqa: ANN001 — click decorator stack
+    fn = click.option("--bundle", "force_bundle", is_flag=True, help="Force treating IDENTIFIER as a bundle (skip auto-detect).")(fn)
+    fn = click.option("--module", "force_module", is_flag=True, help="Force treating IDENTIFIER as a module (skip auto-detect).")(fn)
+    return fn
+
+
+@main.group("source")
+def source() -> None:
+    """Manage source overrides for modules and bundles (add/remove/list/show)."""
+
+
+@source.command("add")
+@click.argument("identifier")
+@click.argument("source_uri")
+@_source_type_options
+@_scope_options
+def source_add(
+    identifier: str,
+    source_uri: str,
+    force_module: bool,
+    force_bundle: bool,
+    is_global: bool,
+    is_project: bool,
+    is_local: bool,
+) -> None:
+    """Add a source override for a module or bundle.
+
+    IDENTIFIER is the module id or bundle name; SOURCE_URI is a local path or
+    git URL. The type is auto-detected (--module/--bundle to force).
+    """
+    from .kernel import bundle_admin, source_admin
+
+    if force_module and force_bundle:
+        click.echo("cannot specify both --module and --bundle", err=True)
+        raise SystemExit(1)
+    if force_module:
+        kind: Literal["module", "bundle"] = "module"
+    elif force_bundle:
+        kind = "bundle"
+    else:
+        kind = source_admin.detect_source_type(identifier, source_uri)
+    scope = _scope(is_global, is_project, is_local)
+    path = source_admin.add_source(
+        bundle_admin.settings_paths(None, None), kind, identifier, source_uri, scope
+    )
+    click.echo(f"{kind} source {identifier} \u2192 {source_uri}  ({scope}: {path})")
+
+
+@source.command("remove")
+@click.argument("identifier")
+@_source_type_options
+@_scope_options
+def source_remove(
+    identifier: str,
+    force_module: bool,
+    force_bundle: bool,
+    is_global: bool,
+    is_project: bool,
+    is_local: bool,
+) -> None:
+    """Remove a module/bundle source override (auto-detects both by default)."""
+    from .kernel import bundle_admin, source_admin
+
+    if force_module and force_bundle:
+        click.echo("cannot specify both --module and --bundle", err=True)
+        raise SystemExit(1)
+    scope = _scope(is_global, is_project, is_local)
+    paths = bundle_admin.settings_paths(None, None)
+    removed_module, removed_bundle = source_admin.remove_source(
+        paths, identifier, scope, module=not force_bundle, bundle=not force_module
+    )
+    provider_cleaned = False
+    if removed_module or not force_bundle:
+        provider_cleaned = source_admin.cleanup_provider_config_source(paths, identifier, scope)
+    if removed_module:
+        click.echo(f"removed module source {identifier} ({scope})")
+    if removed_bundle:
+        click.echo(f"removed bundle source {identifier} ({scope})")
+    if provider_cleaned:
+        click.echo(f"reset provider config source for {identifier} \u2192 default ({scope})")
+    if not (removed_module or removed_bundle or provider_cleaned):
+        click.echo(f"no source override for {identifier} ({scope})")
+
+
+@source.command("list")
+def source_list() -> None:
+    """List configured source overrides (modules then bundles)."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from .kernel import bundle_admin, source_admin
+
+    paths = bundle_admin.settings_paths(None, None)
+    entries = source_admin.list_sources(
+        project_dir=paths.project_settings.parent.parent,
+        amplifier_home=paths.global_settings.parent,
+    )
+    console = Console()
+    if not entries:
+        console.print("no source overrides configured")
+        console.print("Add one with: amplifier-newtui source add <identifier> <uri>", style="dim")
+        return
+    # One table (consistent with `bundle list`); a Type column carries the
+    # module/bundle distinction so narrow per-kind tables never wrap titles.
+    table = Table(title="Source Overrides", title_justify="center", header_style="bold cyan")
+    table.add_column("Name", style="green", no_wrap=True)
+    table.add_column("Type", no_wrap=True)
+    table.add_column("Source", style="magenta", overflow="fold")
+    for entry in entries:
+        table.add_row(entry.name, entry.kind, entry.source_uri)
+    console.print(table)
+
+
+@source.command("show")
+@click.argument("module_id")
+def source_show(module_id: str) -> None:
+    """Show the source-resolution path newtui would use for MODULE_ID."""
+    from .kernel import bundle_admin, source_admin
+
+    paths = bundle_admin.settings_paths(None, None)
+    report = source_admin.resolve_module(
+        module_id,
+        project_dir=paths.project_settings.parent.parent,
+        amplifier_home=paths.global_settings.parent,
+    )
+    click.echo(f"module: {report.module_id}")
+    click.echo("resolution (highest \u2192 lowest precedence):")
+    env = report.env_value if report.env_value else "not set"
+    click.echo(f"  1. env {report.env_var}: {env}")
+    workspace = "found" if report.workspace_found else "not found"
+    click.echo(f"  2. workspace {report.workspace_path}: {workspace}")
+    settings_source = report.settings_source if report.settings_source else "not set"
+    click.echo(f"  3. settings sources.modules: {settings_source}")
+    if report.effective_source:
+        click.echo(f"effective override \u2192 {report.effective_source}")
+    else:
+        click.echo("effective override \u2192 none (foundation resolves the default source)")
+
+
+# --------------------------------------------------------------------------
+# routing group — inspect/choose the model routing matrix (list/use)
+# --------------------------------------------------------------------------
+
+
+@main.group("routing")
+def routing() -> None:
+    """Manage model routing matrices: list, use."""
+
+
+@routing.command("list")
+def routing_list() -> None:
+    """List available routing matrices (\u25cf marks the active one)."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from .kernel import bundle_admin, routing_admin
+
+    paths = bundle_admin.settings_paths(None, None)
+    entries = routing_admin.list_matrices(
+        project_dir=paths.project_settings.parent.parent,
+        amplifier_home=paths.global_settings.parent,
+        fetch=True,
+    )
+    console = Console()
+    if not entries:
+        console.print("no routing matrices found")
+        console.print(
+            "Run `amplifier-newtui update` to fetch the routing-matrix bundle.", style="dim"
+        )
+        return
+    table = Table(title="Routing Matrices", title_justify="center", header_style="bold cyan")
+    table.add_column("", width=1, no_wrap=True)  # active marker
+    table.add_column("Name", style="green", no_wrap=True)
+    table.add_column("Description", style="dim", overflow="fold")
+    table.add_column("Compatibility", no_wrap=True)
+    table.add_column("Updated", no_wrap=True, style="dim")
+    for entry in entries:
+        marker = "\u25cf" if entry.active else ""
+        name = f"[bold]{entry.name}[/bold]" if entry.active else entry.name
+        compat = f"{entry.covered}/{entry.total} roles" if entry.has_providers else "no providers"
+        table.add_row(marker, name, entry.description, compat, entry.updated)
+    console.print(table)
+    active = next((e.name for e in entries if e.active), None)
+    console.print(
+        f"Active: [green]{active}[/green]"
+        if active
+        else f"No matrix active ({routing_admin.DEFAULT_MATRIX} default)",
+        style="dim",
+    )
+
+
+@routing.command("use")
+@click.argument("matrix_name")
+@_scope_options
+def routing_use(
+    matrix_name: str, is_global: bool, is_project: bool, is_local: bool
+) -> None:
+    """Select MATRIX_NAME as the active routing matrix."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from .kernel import bundle_admin, routing_admin
+    from .kernel.config import load_merged_settings
+
+    paths = bundle_admin.settings_paths(None, None)
+    home = paths.global_settings.parent
+    matrices = routing_admin.load_all_matrices(
+        routing_admin.discover_matrix_files(home, fetch=True)
+    )
+    if matrix_name not in matrices:
+        available = ", ".join(sorted(matrices)) or "none"
+        click.echo(f"unknown matrix: {matrix_name} \u00b7 available: {available}", err=True)
+        raise SystemExit(1)
+    scope = _scope(is_global, is_project, is_local)
+    path = routing_admin.set_active_matrix(paths, matrix_name, scope)
+    click.echo(f"active routing matrix \u2192 {matrix_name}  ({scope}: {path})")
+
+    settings = load_merged_settings(paths)
+    provider_types = routing_admin.configured_provider_types(settings)
+    rows = routing_admin.resolve_matrix(matrices[matrix_name], provider_types)
+    if not rows:
+        return
+    console = Console()
+    table = Table(title=f"Routing: {matrix_name}", title_justify="center", header_style="bold cyan")
+    table.add_column("Role", style="cyan", no_wrap=True)
+    table.add_column("Model", style="green")
+    table.add_column("Provider")
+    for row in rows:
+        if row.model and row.provider:
+            table.add_row(row.role, row.model, row.provider)
+        else:
+            table.add_row(row.role, "\u26a0 (no provider)", "-")
+    console.print(table)
+
+
 if __name__ == "__main__":
     main()
