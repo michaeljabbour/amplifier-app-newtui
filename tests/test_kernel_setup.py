@@ -10,7 +10,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
+
+import pytest
 
 from amplifier_app_newtui.kernel import setup
 
@@ -28,6 +31,104 @@ def test_write_key_creates_reads_and_chmods(tmp_path: Path) -> None:
     assert setup.stored_key_names(path) == {"ANTHROPIC_API_KEY"}
     # Secret file locked down (POSIX).
     assert (path.stat().st_mode & 0o777) == 0o600
+
+
+# -- advisory lock (concurrent write_key must not drop keys) -----------------
+
+
+def test_keys_lock_path_sits_next_to_store(tmp_path: Path) -> None:
+    path = tmp_path / "keys.env"
+    assert setup.keys_lock_path(path) == tmp_path / "keys.env.lock"
+    # The lock is a sidecar; the store still reads back and stays chmod 600.
+    setup.write_key(path, "ANTHROPIC_API_KEY", "sk", update_environ=False)
+    assert setup.read_keys(path) == {"ANTHROPIC_API_KEY": "sk"}
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_concurrent_writers_preserve_all_keys(tmp_path: Path) -> None:
+    """N threads each save a *distinct* provider key against one shared store.
+
+    Without the advisory lock this read-modify-write is last-writer-wins and
+    freshly-saved keys get silently dropped; with it every key survives.
+    """
+    path = tmp_path / "keys.env"
+    names = [f"PROVIDER_{i}_API_KEY" for i in range(12)]
+    ready = threading.Barrier(len(names))
+    errors: list[BaseException] = []
+
+    def writer(name: str) -> None:
+        ready.wait()  # release all writers together to maximise contention
+        try:
+            setup.write_key(path, name, name.lower(), update_environ=False)
+        except Exception as exc:  # noqa: BLE001 — surface worker failure to the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(nm,)) for nm in names]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors
+    stored = setup.read_keys(path)
+    assert set(stored) == set(names)  # nothing dropped
+    assert all(stored[name] == name.lower() for name in names)
+
+
+def test_write_key_serialises_on_advisory_lock(tmp_path: Path) -> None:
+    """Holding the lock blocks a concurrent write_key until release.
+
+    Proof the lock (not luck) is what serialises writers: while the lock is
+    held the second writer cannot finish its read-modify-write; once released
+    it completes and both keys are present.
+    """
+    path = tmp_path / "keys.env"
+    setup.write_key(path, "FIRST_KEY", "1", update_environ=False)
+    done = threading.Event()
+
+    def writer() -> None:
+        setup.write_key(path, "SECOND_KEY", "2", update_environ=False)
+        done.set()
+
+    thread = threading.Thread(target=writer)
+    with setup._keys_lock(path):
+        thread.start()
+        assert not done.wait(timeout=0.5)  # blocked while the lock is held
+    thread.join(timeout=10)
+    assert done.is_set()  # released -> the writer completed
+    assert setup.read_keys(path) == {"FIRST_KEY": "1", "SECOND_KEY": "2"}
+
+
+def test_advisory_lock_released_when_write_raises(tmp_path: Path, monkeypatch) -> None:
+    """A failure inside the guarded write still releases the lock.
+
+    The atomic replace is forced to raise; the ``with`` context frees the
+    lock on the way out, so a later writer is never wedged. Also proves the
+    original store is untouched when the write fails (atomic-replace intact).
+    """
+    path = tmp_path / "keys.env"
+    setup.write_key(path, "KEEP_KEY", "keep", update_environ=False)
+
+    def boom(_self: Path, _target: object) -> None:
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(Path, "replace", boom)
+    with pytest.raises(OSError):
+        setup.write_key(path, "DOOMED_KEY", "x", update_environ=False)
+    monkeypatch.undo()
+
+    # Lock is free: a non-blocking acquire succeeds immediately.
+    lock = setup._keys_lock(path)
+    lock.acquire(timeout=0)
+    try:
+        assert lock.is_locked
+    finally:
+        lock.release()
+
+    # The failed write left the store intact; a fresh write now goes through.
+    assert setup.read_keys(path) == {"KEEP_KEY": "keep"}
+    setup.write_key(path, "RECOVER_KEY", "ok", update_environ=False)
+    assert setup.read_keys(path) == {"KEEP_KEY": "keep", "RECOVER_KEY": "ok"}
 
 
 def test_write_key_updates_in_place_and_preserves_others(tmp_path: Path) -> None:
