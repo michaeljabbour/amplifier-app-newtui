@@ -1104,3 +1104,158 @@ def test_broker_approval_provider_adapts_native_requests() -> None:
         assert response.remember is True
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------
+# RealRuntime in-session op wrappers (kernel/runtime.py ~1065-1140).
+#
+# The 2026-07 audit found only ``set_model`` was ever driven on a real
+# ``RealRuntime``; ``compact``/``status``/``set_effort``/``clear_context``
+# (and their coordinator-None guards) were exercised only indirectly via
+# the FakeCoordinator on ``session_ops``. These drive the wrappers on the
+# runtime object itself with a duck-typed stub coordinator, so the guard +
+# marshal lines are covered where they actually live.
+# --------------------------------------------------------------------------
+
+
+class _StubContext:
+    """Minimal duck of the mounted context mechanism (session_ops surface)."""
+
+    def __init__(self, messages: int) -> None:
+        self._messages = list(range(messages))
+        self.compacted: str | None = None
+        self.cleared = False
+
+    async def get_messages(self):
+        return list(self._messages)
+
+    async def compact(self, focus: str = "") -> None:
+        self.compacted = focus
+        self._messages = self._messages[:1]  # compaction keeps a summary
+
+    async def clear(self) -> None:
+        self.cleared = True
+        self._messages = []
+
+
+class _StubCoordinator:
+    """A ``coordinator.get(point)`` stub over an explicit mount table."""
+
+    def __init__(self, mounts: dict, *, session_id: str = "sess-stub") -> None:
+        self._mounts = mounts
+        self.session_id = session_id
+        self.session_state: dict = {}
+
+    def get(self, point: str):
+        return self._mounts.get(point)
+
+
+def _stub_runtime(mounts: dict):
+    from types import SimpleNamespace
+
+    from amplifier_app_newtui.kernel.runtime import RealRuntime
+
+    runtime = RealRuntime()
+    runtime._initialized = SimpleNamespace(  # type: ignore[assignment]
+        coordinator=_StubCoordinator(mounts)
+    )
+    return runtime
+
+
+def test_realruntime_session_op_wrappers_guard_a_missing_coordinator() -> None:
+    """Before ``start()`` the coordinator is ``None``; every wrapper must
+    return its neutral sentinel rather than raise into the UI thread."""
+    import asyncio
+
+    from amplifier_app_newtui.kernel import session_ops
+    from amplifier_app_newtui.kernel.runtime import RealRuntime
+
+    async def run() -> None:
+        bare = RealRuntime()
+        assert bare._coordinator() is None  # type: ignore[attr-defined]
+
+        assert await bare.set_effort("high") == (False, "session still starting")
+        assert await bare.compact("focus") == (False, "session still starting")
+        assert await bare.clear_context() == (False, 0)
+        assert await bare.status() == session_ops.StatusInfo()
+        assert await bare.get_effort() is None
+        assert await bare.list_models() == session_ops.ModelListing(provider="", current="")
+
+    asyncio.run(run())
+
+
+def test_realruntime_effort_wrappers_on_a_stub_coordinator() -> None:
+    """``set_effort``/``get_effort`` marshal onto the orchestrator config;
+    an out-of-range level is rejected without a session error."""
+    import asyncio
+    from types import SimpleNamespace
+
+    async def run() -> None:
+        orchestrator = SimpleNamespace(config={"reasoning_effort": "medium"})
+        runtime = _stub_runtime({"orchestrator": orchestrator})
+
+        assert await runtime.get_effort() == "medium"
+
+        ok, detail = await runtime.set_effort("high")
+        assert ok and detail == "high"
+        assert orchestrator.config["reasoning_effort"] == "high"
+        assert await runtime.get_effort() == "high"
+
+        ok, detail = await runtime.set_effort("turbo")  # not a real level
+        assert not ok and "effort must be one of" in detail
+        assert orchestrator.config["reasoning_effort"] == "high"  # unchanged
+
+    asyncio.run(run())
+
+
+def test_realruntime_compact_and_clear_wrappers_on_a_stub_coordinator() -> None:
+    """``compact`` reports the before→after message delta and forwards the
+    focus; ``clear`` reports the cleared count and calls the real clear."""
+    import asyncio
+
+    async def run() -> None:
+        context = _StubContext(messages=3)
+        runtime = _stub_runtime({"context": context})
+
+        ok, detail = await runtime.compact("keep the API shape")
+        assert ok and detail == "3 \u2192 1 messages"
+        assert context.compacted == "keep the API shape"
+
+        # Refresh the context so clear counts a known population.
+        context2 = _StubContext(messages=4)
+        runtime2 = _stub_runtime({"context": context2})
+        ok, count = await runtime2.clear_context()
+        assert ok and count == 4
+        assert context2.cleared is True
+
+    asyncio.run(run())
+
+
+def test_realruntime_status_wrapper_snapshots_the_stub_coordinator() -> None:
+    """``status`` composes provider/model/effort/messages/tools/agents from
+    the live coordinator mounts — the coordinator-derived half of /status."""
+    import asyncio
+    from types import SimpleNamespace
+
+    async def run() -> None:
+        provider = SimpleNamespace(default_model="claude-fable-5")
+        runtime = _stub_runtime(
+            {
+                "providers": {"anthropic": provider},
+                "context": _StubContext(messages=5),
+                "orchestrator": SimpleNamespace(config={"reasoning_effort": "low"}),
+                "tools": {"bash": object(), "read": object()},
+                "agents": {"zen-architect": object()},
+            }
+        )
+
+        info = await runtime.status()
+        assert info.session_id == "sess-stub"
+        assert info.provider == "anthropic"
+        assert info.model == "claude-fable-5"
+        assert info.effort == "low"
+        assert info.messages == 5
+        assert info.tools == 2
+        assert info.agents == ("zen-architect",)
+
+    asyncio.run(run())
