@@ -29,6 +29,7 @@ import yaml
 from .config import (
     SettingsPaths,
     active_bundle_name,
+    added_bundle_uris,
     bundle_search_paths,
     discover_bundle,
     is_bundle_uri,
@@ -134,11 +135,13 @@ def clear_active_bundle(paths: SettingsPaths, scope: Scope) -> bool:
 
 
 def added_bundles(settings: dict[str, Any]) -> dict[str, str]:
-    """``bundle.added`` name→URI registry from merged settings."""
-    section = settings.get("bundle")
-    if isinstance(section, dict) and isinstance(section.get("added"), dict):
-        return {str(k): str(v) for k, v in section["added"].items()}
-    return {}
+    """``bundle.added`` name→URI registry from merged settings.
+
+    Thin alias for :func:`kernel.config.added_bundle_uris` — the boot path
+    (:func:`resolve_bundle_source`) and this CLI read the registry from one
+    home, so ``bundle add`` / ``bundle list`` / ``bundle use`` can never
+    disagree about what a name resolves to."""
+    return added_bundle_uris(settings)
 
 
 def add_bundle(

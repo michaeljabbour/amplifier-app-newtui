@@ -854,3 +854,106 @@ def test_explicit_bundle_flag_still_fails_loud(tmp_path: Path) -> None:
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     with pytest.raises(BundleNotFoundError):
         resolve_bundle_source("missing-bundle", {}, paths)
+
+
+# -- bundle.added name resolution at boot (issue #105) ----------------------
+
+
+def test_added_bundle_uris_reads_registry_and_ignores_junk() -> None:
+    from amplifier_app_newtui.kernel.config import added_bundle_uris
+
+    assert added_bundle_uris({}) == {}
+    assert added_bundle_uris({"bundle": "nope"}) == {}
+    assert added_bundle_uris({"bundle": {"added": "nope"}}) == {}
+    assert added_bundle_uris({"bundle": {"added": {"a": "uri-a", "b": "uri-b"}}}) == {
+        "a": "uri-a",
+        "b": "uri-b",
+    }
+
+
+def test_bundle_use_added_name_resolves_to_registered_uri(tmp_path: Path) -> None:
+    """`bundle use <added-name>` writes `bundle.active`; boot must resolve that
+    name through the `bundle.added` registry to its URI, not silently fall back
+    to the default (issue #105)."""
+    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+
+    paths = bundle_search_paths(tmp_path, tmp_path / "home")
+    uri = "git+https://github.com/acme/amplifier-bundle-acme@main"
+    settings = {"bundle": {"active": "acme", "added": {"acme": uri}}}
+    name, resolved, notice = resolve_bundle_source(None, settings, paths)
+    assert name == "acme"
+    assert resolved == uri  # the registered URI, NOT the default newtui.md
+    assert notice is None  # honored, not a degraded fallback
+
+
+def test_explicit_added_name_flag_resolves_too(tmp_path: Path) -> None:
+    """An explicit bundle arg naming an added registration also resolves via
+    the registry (and so no longer fails loud)."""
+    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+
+    paths = bundle_search_paths(tmp_path, tmp_path / "home")
+    uri = "git+https://example.com/acme@main"
+    settings = {"bundle": {"added": {"acme": uri}}}
+    name, resolved, notice = resolve_bundle_source("acme", settings, paths)
+    assert name == "acme"
+    assert resolved == uri
+    assert notice is None
+
+
+def test_added_bundle_registered_local_path_is_discovered(tmp_path: Path) -> None:
+    """A registered value that is itself a local path/dir is run back through
+    discovery so URIs, paths and bare names all load uniformly."""
+    from amplifier_app_newtui.kernel.config import resolve_bundle_name
+
+    bundle_dir = tmp_path / "checkout"
+    bundle_dir.mkdir()
+    (bundle_dir / "bundle.md").write_text("name: acme\n", encoding="utf-8")
+    settings = {"bundle": {"added": {"acme": str(bundle_dir)}}}
+    resolved = resolve_bundle_name("acme", settings, [])
+    assert resolved == str(bundle_dir / "bundle.md")
+
+
+def test_added_bundle_local_bundle_wins_over_registry(tmp_path: Path) -> None:
+    """Precedence: a same-named on-disk bundle overrides a `bundle.added`
+    entry — matching `list_bundles`, where a local bundle shadows an added
+    registration of the same name."""
+    from amplifier_app_newtui.kernel.config import resolve_bundle_name
+
+    local_dir = tmp_path / "bundles"
+    local_dir.mkdir()
+    (local_dir / "acme.md").write_text("name: acme-local\n", encoding="utf-8")
+    settings = {"bundle": {"added": {"acme": "git+https://example.com/fork@main"}}}
+    resolved = resolve_bundle_name("acme", settings, [local_dir])
+    assert resolved == str(local_dir / "acme.md")  # local, not the added URI
+
+
+def test_added_bundle_precedence_vs_builtin_default(tmp_path: Path) -> None:
+    """Precedence vs builtin: registering an entry under the packaged default
+    name never shadows the builtin — `bundle use newtui` still loads the
+    packaged bundle, keeping the guaranteed-working default authoritative."""
+    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+
+    paths = bundle_search_paths(tmp_path, tmp_path / "home")
+    settings = {
+        "bundle": {
+            "active": DEFAULT_BUNDLE,
+            "added": {DEFAULT_BUNDLE: "git+https://example.com/fork@main"},
+        }
+    }
+    name, resolved, notice = resolve_bundle_source(None, settings, paths)
+    assert name == DEFAULT_BUNDLE
+    assert resolved.endswith("newtui.md")  # packaged builtin wins over added URI
+    assert notice is None
+
+
+def test_added_bundle_no_match_still_falls_back_to_default(tmp_path: Path) -> None:
+    """When the active name matches neither a local bundle nor a `bundle.added`
+    entry, the default-bundle fallback path is unchanged (loud notice)."""
+    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+
+    paths = bundle_search_paths(tmp_path, tmp_path / "home")
+    settings = {"bundle": {"active": "ghost", "added": {"other": "git+https://x/y@main"}}}
+    name, uri, notice = resolve_bundle_source(None, settings, paths)
+    assert name == DEFAULT_BUNDLE
+    assert uri.endswith("newtui.md")
+    assert notice is not None and "ghost" in notice and DEFAULT_BUNDLE in notice
