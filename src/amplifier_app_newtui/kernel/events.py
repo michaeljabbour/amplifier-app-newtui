@@ -32,7 +32,7 @@ ts}``. ``session_id``/``parent_id`` come from the payload (stamped by
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from itertools import count
 from typing import Annotated, Any, Literal
@@ -276,6 +276,28 @@ class SessionResume(_Envelope):
     kind: Literal["session_resume"] = "session_resume"
 
 
+class RewindMarker(_Envelope):
+    """A confirmed rewind boundary, persisted to the append-only log.
+
+    The ui-events log never truncates, so a resume would otherwise replay
+    the turns a rewind discarded (ghost turns). This marker is written to
+    the log at fork time (never a raw hook — the app synthesizes it) and
+    honored at read time by :func:`drop_rewound_events`: everything after
+    the ``kept_turns``-th surviving turn, up to this marker, is dropped
+    before the events reach the reducer.
+
+    - ``checkpoint_id``: the rewind target (``t2`` …), for diagnostics.
+    - ``kept_turns``: how many ``prompt_submit``-delimited turns survive
+      from the start of the reconstructed timeline (the target's 1-indexed
+      ledger position at fork time — which equals its position in the
+      ghost-filtered replay, one checkpoint per completed turn).
+    """
+
+    kind: Literal["rewind_marker"] = "rewind_marker"
+    checkpoint_id: str = ""
+    kept_turns: int = Field(default=0, ge=0)
+
+
 # --------------------------------------------------------------------------
 # Approvals / cancellation
 # --------------------------------------------------------------------------
@@ -426,6 +448,7 @@ UIEvent = Annotated[
     | SessionEnd
     | SessionFork
     | SessionResume
+    | RewindMarker
     | ApprovalRequired
     | ApprovalGranted
     | ApprovalDenied
@@ -461,6 +484,45 @@ def parse_event(record: Mapping[str, Any]) -> UIEvent | None:
         return _EVENT_ADAPTER.validate_python(dict(record))
     except ValidationError:
         return None
+
+
+def drop_rewound_events(events: Sequence[UIEvent]) -> list[UIEvent]:
+    """Filter post-rewind ghost turns out of a persisted event stream.
+
+    The ui-events log is append-only, so a confirmed rewind leaves the
+    turns it discarded sitting in the log; a naive resume replays them as
+    ghost turns (issue #40). At fork time the app writes a
+    :class:`RewindMarker` recording how many ``prompt_submit``-delimited
+    turns survive from the start of the timeline. This honors those
+    markers by segmenting the stream into turns and truncating back to the
+    marker's ``kept_turns`` each time one is seen — the inverse, read-side
+    half of the append-only contract.
+
+    Turns are renumbered implicitly by position, so nested and repeated
+    rewinds compose: each marker's ``kept_turns`` counts the turns that
+    already survived earlier markers, exactly as the live ledger counted
+    them when the marker was written. Events before the first prompt
+    (session-start preamble) are always kept; the markers themselves are
+    dropped from the result.
+    """
+    preamble: list[UIEvent] = []
+    turns: list[list[UIEvent]] = []
+    current = preamble
+    for event in events:
+        if isinstance(event, RewindMarker):
+            keep = max(0, min(event.kept_turns, len(turns)))
+            del turns[keep:]
+            current = turns[-1] if turns else preamble
+            continue
+        if isinstance(event, PromptSubmit):
+            turns.append([event])
+            current = turns[-1]
+        else:
+            current.append(event)
+    result = list(preamble)
+    for turn in turns:
+        result.extend(turn)
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -868,6 +930,7 @@ __all__ = [
     "PromptSubmit",
     "ProviderNotice",
     "ProviderResponseUsage",
+    "RewindMarker",
     "SessionEnd",
     "SessionFork",
     "SessionResume",
@@ -880,6 +943,7 @@ __all__ = [
     "ToolPost",
     "ToolPre",
     "UIEvent",
+    "drop_rewound_events",
     "normalize",
     "parse_event",
     "recipe_approval_prompt",

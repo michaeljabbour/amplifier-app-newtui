@@ -42,7 +42,9 @@ from .events import (
     PromptComplete,
     PromptSubmit,
     ProviderResponseUsage,
+    RewindMarker,
     UIEvent,
+    drop_rewound_events,
     parse_event,
 )
 from .evidence import EvidenceCollector
@@ -219,6 +221,14 @@ def restored_ui_events(store: SessionStore, session_id: str) -> tuple[UIEvent, .
     :func:`~amplifier_app_newtui.kernel.events.parse_event`; foreign lines
     from other writers sharing the file are skipped, as are Channel A
     stream kinds (see :data:`_REPLAY_STREAM_KINDS`).
+
+    Post-rewind ghost turns are filtered out here (issue #40): the log is
+    append-only, so a confirmed rewind leaves its discarded turns in the
+    file. :func:`~amplifier_app_newtui.kernel.events.drop_rewound_events`
+    honors the :class:`~amplifier_app_newtui.kernel.events.RewindMarker`
+    records written at fork time, so the reducer replays only the turns
+    that were still on screen — the read-side half of the append-only
+    contract.
     """
     events: list[UIEvent] = []
     for record in store.read_events(session_id):
@@ -227,7 +237,21 @@ def restored_ui_events(store: SessionStore, session_id: str) -> tuple[UIEvent, .
         event = parse_event(record)
         if event is not None:
             events.append(event)
-    return tuple(events)
+    return tuple(drop_rewound_events(events))
+
+
+def _kept_turns_for(ledger: Any, checkpoint_id: str) -> int:
+    """1-indexed ledger position of *checkpoint_id* (0 when unknown).
+
+    One checkpoint is cut per completed turn, so the target's position is
+    the number of prompt-delimited turns that survive the rewind — the
+    kept-turns count the resume-side :func:`drop_rewound_events` truncates
+    the replay to.
+    """
+    for index, checkpoint in enumerate(ledger.checkpoints):
+        if checkpoint.id == checkpoint_id:
+            return index + 1
+    return 0
 
 
 def resume_use_active_bundle(settings: dict[str, Any]) -> bool:
@@ -1219,13 +1243,31 @@ class RealRuntime:
         messages: list[dict[str, Any]] = []
         if hasattr(context, "get_messages"):
             messages = list(await context.get_messages())
+        # Count the surviving turns BEFORE the fork trims the ledger: the
+        # rewind marker records how many prompt-delimited turns replay must
+        # keep on resume (issue #40). One checkpoint per completed turn, so
+        # the target's 1-indexed ledger position IS that count.
+        kept_turns = _kept_turns_for(ledger, checkpoint_id)
         controller = RewindController(ledger)
-        return await controller.fork_in_memory(
+        outcome = await controller.fork_in_memory(
             checkpoint_id,
             messages=messages,
             set_messages=context.set_messages,
             parent_id=initialized.session_id,
         )
+        # Backend + ledger both confirmed the trim — now stamp the boundary
+        # into the append-only log so a later resume drops the turns this
+        # fork discarded instead of replaying them as ghost turns.
+        if kept_turns > 0 and self._store is not None:
+            self._store.append_event(
+                initialized.session_id,
+                RewindMarker(
+                    session_id=initialized.session_id,
+                    checkpoint_id=checkpoint_id,
+                    kept_turns=kept_turns,
+                ),
+            )
+        return outcome
 
     async def cleanup(self) -> None:
         if self._initialized is not None:
