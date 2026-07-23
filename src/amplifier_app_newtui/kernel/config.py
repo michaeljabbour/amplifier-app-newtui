@@ -335,6 +335,96 @@ def build_source_resolver(settings: dict[str, Any]) -> Callable[[str, str], str]
     return resolve
 
 
+# A ``namespace:path`` include (e.g. ``foundation:behaviors/streaming-ui``)
+# resolves through the bundle registry's namespace lookup, NOT as a fetchable
+# URI, so it must never be redirected by a bundle-source override: a substring
+# match there would rewrite the include to the override URI and trip
+# foundation's cycle detector, silently dropping the sub-bundle (app-cli issue
+# #257). A namespace identifier is a letter followed by 1+ word/hyphen chars
+# then ``:``; a URI is distinguished by containing ``://`` or a ``git+``/``zip+``
+# prefix.
+_NAMESPACE_PATH_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]+:")
+
+
+def _is_namespace_path(source: str) -> bool:
+    """True when *source* is a ``namespace:path`` registry reference, not a URI."""
+    if "://" in source or source.startswith(("git+", "zip+")):
+        return False
+    return bool(_NAMESPACE_PATH_PATTERN.match(source))
+
+
+def bundle_source_overrides(settings: dict[str, Any]) -> dict[str, str]:
+    """The merged ``sources.bundles`` map (written by ``source add --bundles``).
+
+    Keys are substrings matched against a bundle *include* URI; values are the
+    override URIs the include is redirected to. Empty when nothing is set.
+    """
+    sources_section = settings.get("sources")
+    if not isinstance(sources_section, dict):
+        return {}
+    bundles = sources_section.get("bundles")
+    if not isinstance(bundles, dict):
+        return {}
+    return {str(k): str(v) for k, v in bundles.items()}
+
+
+def build_bundle_include_resolver(
+    settings: dict[str, Any],
+) -> Callable[[str], str | None] | None:
+    """Include-source resolver from ``sources.bundles``, or ``None`` when unset.
+
+    ``source add --bundles`` writes ``sources.bundles.<key> = uri``; those
+    redirect the URIs a bundle *includes* (composes) before foundation resolves
+    them, so a user can point a bundle include at a local checkout or a fork.
+    Returns ``None`` when no bundle sources are configured, so the default load
+    path (no registry override) is left untouched.
+
+    Behavioral contract mirrors amplifier-app-cli
+    (``lib/bundle_loader/prepare._build_include_source_resolver``): each key is
+    matched as a *substring* of an include's source URI; the first match wins
+    and its override replaces the source, preserving the original ``#fragment``
+    (e.g. ``#subdirectory=...``) when the override carries none. A
+    ``namespace:path`` include is never redirected (:func:`_is_namespace_path`).
+    """
+    overrides = bundle_source_overrides(settings)
+    if not overrides:
+        return None
+
+    def resolve(source: str) -> str | None:
+        if _is_namespace_path(source):
+            return None
+        for key, override in overrides.items():
+            if key in source:
+                # Preserve the original include's fragment when the override
+                # carries none; an override's own fragment always wins.
+                if "#" in source and "#" not in override:
+                    return f"{override}#{source.split('#', 1)[1]}"
+                return override
+        return None
+
+    return resolve
+
+
+def _bundle_registry_for(settings: dict[str, Any], amplifier_home: Path) -> Any:
+    """A ``BundleRegistry`` carrying the ``sources.bundles`` include resolver.
+
+    Returns ``None`` when no bundle-source overrides are configured, so
+    ``load_bundle`` keeps building its own default registry (behavior
+    unchanged). Otherwise a registry scoped to *amplifier_home* is created with
+    the include resolver attached, so bundle-include redirects reach
+    foundation's include resolution during load/compose (the seam app-cli uses:
+    ``registry.set_include_source_resolver`` + ``load_bundle(uri, registry=...)``).
+    """
+    include_resolver = build_bundle_include_resolver(settings)
+    if include_resolver is None:
+        return None
+    from amplifier_foundation import BundleRegistry  # lazy: keep module import light
+
+    registry = BundleRegistry(home=amplifier_home)
+    registry.set_include_source_resolver(include_resolver)
+    return registry
+
+
 def apply_module_overrides(mount_plan: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
     """Merge settings ``config.providers`` / ``modules.tools`` /
     ``overrides.<id>.config`` into *mount_plan* **in place**.
@@ -821,15 +911,24 @@ async def resolve_config(
     # 3. Foundation lifecycle: load → compose overlays → prepare() ONCE.
     from amplifier_foundation import load_bundle  # lazy: keep module import light
 
+    # sources.bundles (source add --bundles) redirects bundle *include* URIs.
+    # A registry carrying that include-source resolver must back every
+    # load_bundle call so the redirect reaches foundation's include resolution;
+    # with no bundle-source override this is None and load_bundle keeps its own
+    # default registry (behavior unchanged).
+    registry = _bundle_registry_for(settings, amplifier_home)
+
     if progress:
         progress("loading", bundle_name)
-    root = await load_bundle(uri)
+    root = await load_bundle(uri, registry=registry)
 
     overlays = composed_overlay_uris(settings)
     if overlays:
         if progress:
             progress("composing", f"{len(overlays)} overlay bundle(s)")
-        overlay_bundles = [await load_bundle(overlay_uri) for overlay_uri in overlays]
+        overlay_bundles = [
+            await load_bundle(overlay_uri, registry=registry) for overlay_uri in overlays
+        ]
         composed = root.compose(*overlay_bundles)
     else:
         composed = root
@@ -896,8 +995,10 @@ __all__ = [
     "SettingsPaths",
     "active_bundle_name",
     "apply_module_overrides",
+    "build_bundle_include_resolver",
     "build_source_resolver",
     "bundle_search_paths",
+    "bundle_source_overrides",
     "deep_merge",
     "discover_bundle",
     "expand_env_placeholders",

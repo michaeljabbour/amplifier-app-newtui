@@ -17,8 +17,10 @@ from amplifier_app_newtui.kernel.config import (
     SettingsPaths,
     active_bundle_name,
     apply_module_overrides,
+    build_bundle_include_resolver,
     build_source_resolver,
     bundle_search_paths,
+    bundle_source_overrides,
     deep_merge,
     discover_bundle,
     ensure_project_write_path,
@@ -96,6 +98,62 @@ def test_build_source_resolver_precedence() -> None:
     assert resolve("tool-a", "git+orig") == "/general/a"
     assert resolve("tool-b", "git+orig") == "/specific/b"  # overrides win
     assert resolve("tool-c", "git+orig") == "git+orig"  # passthrough
+
+
+# --------------------------------------------------------------------------
+# bundle-source overrides (sources.bundles -> include-source resolver)
+# --------------------------------------------------------------------------
+
+
+def test_bundle_source_overrides_reads_sources_bundles() -> None:
+    assert bundle_source_overrides({}) == {}
+    assert bundle_source_overrides({"sources": {"modules": {"tool-a": "/x"}}}) == {}
+    settings = {"sources": {"bundles": {"amplifier-bundle-foo": "/local/foo"}}}
+    assert bundle_source_overrides(settings) == {"amplifier-bundle-foo": "/local/foo"}
+
+
+def test_build_bundle_include_resolver_none_when_unset() -> None:
+    # No sources.bundles -> None, so resolve_config keeps the default load path
+    # (load_bundle builds its own registry) untouched.
+    assert build_bundle_include_resolver({}) is None
+    assert build_bundle_include_resolver({"sources": {"modules": {"a": "/b"}}}) is None
+
+
+def test_build_bundle_include_resolver_substring_match_and_fragment() -> None:
+    settings = {"sources": {"bundles": {"amplifier-bundle-superpowers": "/local/sp"}}}
+    resolve = build_bundle_include_resolver(settings)
+    assert resolve is not None
+    # substring match anywhere in the include URI redirects it
+    assert resolve("git+https://github.com/org/amplifier-bundle-superpowers@main") == "/local/sp"
+    # the original include's #fragment is preserved when the override has none
+    assert (
+        resolve("git+https://github.com/org/amplifier-bundle-superpowers@main#subdirectory=b.yaml")
+        == "/local/sp#subdirectory=b.yaml"
+    )
+    # no key matches -> None (fall back to foundation's default resolution)
+    assert resolve("git+https://github.com/org/amplifier-bundle-other@main") is None
+
+
+def test_build_bundle_include_resolver_override_fragment_wins() -> None:
+    settings = {"sources": {"bundles": {"amplifier-bundle-foo": "/local/foo#subdirectory=x"}}}
+    resolve = build_bundle_include_resolver(settings)
+    assert resolve is not None
+    # override already carries a fragment -> the override's fragment wins
+    assert (
+        resolve("git+https://github.com/org/amplifier-bundle-foo@main#subdirectory=y")
+        == "/local/foo#subdirectory=x"
+    )
+
+
+def test_build_bundle_include_resolver_skips_namespace_path() -> None:
+    # A namespace:path include resolves via the registry's namespace lookup and
+    # must never be redirected -- even when the key is a substring of the name.
+    settings = {"sources": {"bundles": {"foundation": "/local/foundation"}}}
+    resolve = build_bundle_include_resolver(settings)
+    assert resolve is not None
+    assert resolve("foundation:behaviors/streaming-ui") is None
+    # a real URI carrying the same substring is still redirected
+    assert resolve("git+https://github.com/org/foundation@main") == "/local/foundation"
 
 
 # --------------------------------------------------------------------------
@@ -507,6 +565,75 @@ async def test_resolve_config_golden_path_offline(
     assert resolved.mount_plan is resolved.prepared.mount_plan
     providers = resolved.mount_plan.get("providers") or []
     assert any(p.get("module") == "provider-anthropic" for p in providers)
+
+
+# A root bundle whose only include is a *URI* (never fetched: the sources.bundles
+# redirect intercepts it before foundation resolves the include). The local
+# override the redirect points at mounts a distinctive sourceless hook, so its
+# marker landing in the prepared mount plan proves the redirect took effect end
+# to end -- through the real resolve_config -> load_bundle -> compose path.
+REDIRECT_ROOT_BUNDLE = """---
+bundle:
+  name: redirect-root
+  version: 0.0.1
+  description: root bundle that includes another bundle by URI
+
+includes:
+  - bundle: git+https://github.com/example/amplifier-bundle-localonly@main
+---
+
+Root body.
+"""
+
+REDIRECT_OVERRIDE_BUNDLE = """---
+bundle:
+  name: local-override
+  version: 0.0.1
+  description: local override target for a redirected include
+
+hooks:
+  - module: hooks-routing
+    config:
+      default_matrix: from-bundle-override
+---
+
+Override body.
+"""
+
+
+@pytest.mark.asyncio
+async def test_resolve_config_bundle_source_redirects_include(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """settings ``sources.bundles`` redirects a bundle include to a local override.
+
+    Regression for the runtime gap where ``source add --bundles`` wrote
+    ``sources.bundles`` but the resolver only fed ``sources.modules`` to
+    ``prepare()`` -- so bundle-URI redirects were silently ignored. Here the
+    root's include URI never resolves remotely; the redirect points it at a
+    local bundle, and that bundle's distinctive hooks-routing marker landing in
+    the prepared mount plan proves the redirect is honored (offline: no network).
+    """
+    project = tmp_path / "proj"
+    home = tmp_path / "home"
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    home.mkdir(parents=True, exist_ok=True)
+    override = tmp_path / "local-override.md"
+    override.write_text(REDIRECT_OVERRIDE_BUNDLE, encoding="utf-8")
+    _write(project / ".amplifier" / "bundles" / "redirect-root.md", REDIRECT_ROOT_BUNDLE)
+    _write(
+        project / ".amplifier" / "settings.yaml",
+        "sources:\n  bundles:\n    amplifier-bundle-localonly: " + str(override) + "\n",
+    )
+
+    resolved = await resolve_config(
+        "redirect-root", project_dir=project, amplifier_home=home, install_deps=False
+    )
+
+    hooks = resolved.mount_plan.get("hooks") or []
+    routing = [h for h in hooks if h.get("module") == "hooks-routing"]
+    assert routing, "redirected include's hooks-routing did not land -> redirect ignored"
+    assert routing[0]["config"]["default_matrix"] == "from-bundle-override"
 
 
 # A local bundle that already mounts a *sourceless* hooks-routing hook. No
