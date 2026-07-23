@@ -63,6 +63,11 @@ def _cmd_context(ctx: CommandContext, args: str) -> None:
     ctx.post_block(build_context_block(ctx.next_block_id(), usage))
 
 
+def _cmd_config(ctx: CommandContext, args: str) -> None:
+    """``/config`` — show/toggle/set/diff/save the live session config."""
+    ctx.manage_config(args.strip())
+
+
 def _cmd_tasks(ctx: CommandContext, args: str) -> None:
     del args
     ctx.toggle_lanes()
@@ -273,6 +278,14 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="context usage grid + suggestions",
         tag="built-in",
         handler=_cmd_context,
+    ),
+    # Live session config editor (amplifier-app-cli /config parity).
+    CommandSpec(
+        group="During",
+        name="/config",
+        desc="live config: show · toggle · set · diff · save",
+        tag="built-in",
+        handler=_cmd_config,
     ),
     # In-session ops over the live amplifier coordinator (app-cli parity).
     CommandSpec(

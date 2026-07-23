@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +25,12 @@ from ..kernel.compaction import CompactionConfig
 from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
 from ..kernel.session_ops import ModelListing, StatusInfo
 from ..model.blocks import BlockIdAllocator, TranscriptBlock
+from ..model.config import (
+    ConfigChange,
+    ConfigSnapshotView,
+    SessionConfigState,
+    default_config_state,
+)
 from ..model.evidence import EvidenceLink
 from ..model.queues import NeedsYouQueue, SteeringQueue
 from ..model.trust import (
@@ -72,6 +79,10 @@ class RuntimeAdapter:
         self.compaction = CompactionConfig(
             auto_compact=True, compact_threshold=0.8
         )
+        self._config_state: SessionConfigState = default_config_state()
+        """Live ``/config`` state — shared by demo and real (invariant 4);
+        real sessions reseed it from the mount plan at ``start()``."""
+        self._config_project_dir: Path = Path.cwd()
 
     def attach(self, app: Any) -> None:
         """Give the adapter its app handle (approval presentation etc.)."""
@@ -186,6 +197,36 @@ class RuntimeAdapter:
     def answer_approval(self, ticket_id: str, choice: str) -> None:
         """Route an approval-bar resolution back to the runtime."""
 
+    # -- /config live session config (base: in-memory state) ----------------
+    # The state is shared verbatim by demo and real (ADR-0007 invariant 4);
+    # RealRuntimeAdapter reseeds it from the mount plan at start().
+
+    async def config_view(self) -> ConfigSnapshotView:
+        """Frozen, thread-hop-safe snapshot of the live config state."""
+        return ConfigSnapshotView.of(self._config_state)
+
+    async def config_toggle(
+        self, category: str, name: str, enable: bool
+    ) -> tuple[bool, str]:
+        """Enable/disable a config item in the session scope."""
+        return self._config_state.toggle(category, name, enable=enable)
+
+    async def config_set(self, path: str, value: str) -> tuple[bool, str]:
+        """Set a config override (session scope) with type inference."""
+        return self._config_state.set_value(path, value)
+
+    async def config_diff(self) -> tuple[ConfigChange, ...]:
+        """Changes to the config state since session start."""
+        return self._config_state.diff()
+
+    async def config_save(self, scope: str) -> tuple[bool, str]:
+        """Persist the session config changes to a settings scope file."""
+        from ..kernel.config_ops import save_config
+
+        return save_config(
+            self._config_state, scope=scope, project_dir=self._config_project_dir
+        )
+
     # -- optional data hooks (demo fidelity / real telemetry) ---------------
 
     def turn_spec(self, prompt: str) -> TurnSpecLike | None:
@@ -289,6 +330,8 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.compaction = runtime.compaction
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
+        self._config_state = runtime.config_state()
+        self._config_project_dir = runtime.project_dir
         runtime.broker.add_listener(self._on_broker_change)
         ready()
 

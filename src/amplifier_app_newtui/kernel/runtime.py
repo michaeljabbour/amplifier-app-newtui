@@ -17,6 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from ..model.config import SessionConfigState
 from ..model.queues import NeedsYouItem, NeedsYouQueue, QueuedMessage, SteeringQueue
 from ..model.trust import CapabilityClass, DenialLog, TrustDecision
 from .approval import ApprovalBroker
@@ -1175,6 +1176,26 @@ class RealRuntime:
     def _coordinator(self) -> Any | None:
         """The live amplifier coordinator, or ``None`` before ``start()``."""
         return self._initialized.coordinator if self._initialized else None
+
+    @property
+    def project_dir(self) -> Path:
+        """Session project root — the settings-scope target for /config save."""
+        return self._turn_cwd()
+
+    def config_state(self) -> SessionConfigState:
+        """A fresh ``/config`` state seeded from this session's mount plan.
+
+        The app builds this ONCE at start and mutates the adapter's copy;
+        toggles/sets live in the session, and ``/config save`` persists
+        them to the chosen settings scope (see ``kernel/config_ops``).
+        """
+        from .config_ops import state_from_plan
+
+        if self._resolved is None:
+            from ..model.config import default_config_state
+
+            return default_config_state(self.bundle_name)
+        return state_from_plan(self._resolved.mount_plan, bundle=self.bundle_name)
 
     # -- in-session ops (/model /effort /compact /clear /status /tools) ------
     # All run on the runtime loop (the coordinator is thread-owned here); the

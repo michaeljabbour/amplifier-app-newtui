@@ -61,6 +61,12 @@ COVERED_ELSEWHERE: frozenset[str] = frozenset(
         "start",  # T4: invokes ready()
         "submit_queued",  # T3: delegates to submit()
         "fork",  # T4: trims the ledger (confirm-then-trim)
+        # T5: /config methods do real work over the in-memory config state.
+        "config_view",
+        "config_toggle",
+        "config_set",
+        "config_diff",
+        "config_save",
     }
 )
 
@@ -136,6 +142,47 @@ class _FakeLedger:
 
     def trim_to(self, checkpoint_id: str) -> None:
         self.trimmed.append(checkpoint_id)
+
+
+# ---------------------------------------------------------------------------
+# T5 — /config surface works on the base adapter (demo == real, invariant 4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_base_config_surface_round_trips(monkeypatch, tmp_path) -> None:
+    """The base adapter fully implements /config over an in-memory state:
+    view lists items, toggle/set round-trip into diff, and save persists to
+    a settings scope (redirected to tmp so no real config is touched)."""
+    monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path))
+    adapter = RuntimeAdapter()
+    adapter._config_project_dir = tmp_path
+
+    view = await adapter.config_view()
+    assert any(i.category == "tools" for i in view.items)
+
+    ok, message = await adapter.config_toggle("tools", "bash", False)
+    assert ok and "Disabled bash" in message
+    ok, message = await adapter.config_set("session.effort", "high")
+    assert ok and "session.effort" in message
+
+    changes = await adapter.config_diff()
+    assert {(c.category, c.name) for c in changes} >= {
+        ("tools", "bash"),
+        ("set", "session.effort"),
+    }
+
+    ok, message = await adapter.config_save("global")
+    assert ok and "global scope" in message
+    written = (tmp_path / "settings.yaml").read_text()
+    assert "configurator" in written and "bash" in written
+
+
+@pytest.mark.asyncio
+async def test_base_config_toggle_hooks_read_only() -> None:
+    adapter = RuntimeAdapter()
+    ok, message = await adapter.config_toggle("hooks", "hooks-mode", False)
+    assert not ok and "read-only" in message
 
 
 @pytest.mark.asyncio

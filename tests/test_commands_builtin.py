@@ -24,6 +24,8 @@ MOCKUP_TABLE = [
     ("During", "/plan", "read-only planning; hands the plan to build", "built-in"),
     ("During", "/brainstorm", "no tools, divergent output; /plan to converge", "built-in"),
     ("During", "/context", "context usage grid + suggestions", "built-in"),
+    # Live session config editor (amplifier-app-cli /config parity).
+    ("During", "/config", "live config: show \u00b7 toggle \u00b7 set \u00b7 diff \u00b7 save", "built-in"),
     # Beyond the mockup table: in-session ops over the live coordinator
     # (amplifier-app-cli parity).
     ("During", "/status", "session status: model, mode, messages, cost", "built-in"),
@@ -76,7 +78,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 29
+    assert len(registry.specs) == 30
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -179,6 +181,22 @@ def test_in_session_ops_dispatch_through_context(fake_command_context) -> None:
         "show_diff:",
         "show_diff:staged",
     ]
+
+
+def test_config_dispatches_through_context(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/config", ctx)
+    registry.run("/config", ctx, "show")
+    registry.run("/config", ctx, "tools disable bash")
+    registry.run("/config", ctx, "save --scope project")
+    assert ctx.calls == [
+        "manage_config:",
+        "manage_config:show",
+        "manage_config:tools disable bash",
+        "manage_config:save --scope project",
+    ]
+    assert ctx.user_lines[0] == "/config"
 
 
 def test_skills_and_mcp_dispatch_through_context(fake_command_context) -> None:

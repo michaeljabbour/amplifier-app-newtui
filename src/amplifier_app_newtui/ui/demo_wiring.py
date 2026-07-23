@@ -46,6 +46,7 @@ from ..model.blocks import (
     TranscriptBlock,
     UserLine,
 )
+from ..model.config import default_config_state
 from ..model.evidence import EvidenceLink
 from ..model.lanes import LaneStateName
 from .live_tail import answer_spans
@@ -164,6 +165,9 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         self.model_name = DEMO_MODEL
         self.session_short = DEMO_SESSION_SHORT
         self.banner = DEMO_BANNER
+        # /config live-editing state — a representative snapshot so the
+        # demo drives show/toggle/set/diff/save exactly like a real session.
+        self._config_state = default_config_state(DEMO_BUNDLE)
         # Session cost accumulates per turn (mockup ``this.cost += turnCost``);
         # the mount-time $0.57 already includes the seed turn's $0.17, and the
         # adapter replays the seed as a live turn — start below it so the

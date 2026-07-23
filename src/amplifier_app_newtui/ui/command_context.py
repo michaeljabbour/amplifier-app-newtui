@@ -176,5 +176,8 @@ class AppCommandContext:
     def manage_mcp(self, args: str) -> None:
         self._app.manage_mcp(args)
 
+    def manage_config(self, args: str) -> None:
+        self._app.manage_config(args)
+
 
 __all__ = ["AppCommandContext"]

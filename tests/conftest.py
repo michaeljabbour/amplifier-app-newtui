@@ -163,6 +163,9 @@ class FakeCommandContext:
     def manage_mcp(self, args: str) -> None:
         self.calls.append(f"manage_mcp:{args}")
 
+    def manage_config(self, args: str) -> None:
+        self.calls.append(f"manage_config:{args}")
+
 
 @pytest.fixture
 def fake_command_context() -> FakeCommandContext:
