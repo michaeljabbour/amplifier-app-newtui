@@ -77,12 +77,12 @@ async def _run_once(
             bundle_name = runtime.bundle_name
             model_name = runtime.model_name
             response = await runtime.submit(prompt)
-        except Exception as caught:  # structured error is part of the CLI contract
+        except Exception as caught:  # noqa: BLE001 — structured error is part of the CLI contract
             error = caught
         finally:
             try:
                 await runtime.cleanup()
-            except Exception as caught:
+            except Exception as caught:  # noqa: BLE001 — best-effort finally cleanup: keep the original error if teardown also fails
                 if error is None:
                     error = caught
 
@@ -130,14 +130,14 @@ async def _run_once(
                 while not runtime.queue.empty():
                     emit(records.runtime_event(runtime.queue.get_nowait()))
                 response = await submit
-            except Exception as caught:
+            except Exception as caught:  # noqa: BLE001 — jsonl error path: any failure is emitted as a structured error record
                 error = caught
                 while not runtime.queue.empty():
                     emit(records.runtime_event(runtime.queue.get_nowait()))
             finally:
                 try:
                     await runtime.cleanup()
-                except Exception as caught:
+                except Exception as caught:  # noqa: BLE001 — best-effort finally cleanup: keep the original error if teardown also fails
                     if error is None:
                         error = caught
 

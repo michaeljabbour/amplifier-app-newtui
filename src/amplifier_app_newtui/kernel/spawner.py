@@ -272,7 +272,7 @@ class SessionSpawner:
         try:
             output = await child.execute(instruction)
             status = "success"
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 — crash-isolate a delegated lane: any child failure becomes a structured error result
             logger.debug("Child session %s failed", child_id, exc_info=True)
             output = f"agent failed: {error}"
             status = "error"
@@ -280,18 +280,18 @@ class SessionSpawner:
             for unregister in reversed(unregisters):
                 try:
                     unregister()
-                except Exception:
+                except Exception:  # noqa: BLE001 — best-effort finally cleanup: a tracker-unregister failure must not mask the result
                     logger.debug("Tracker unregister failed", exc_info=True)
             if cancellation_linked and parent_cancellation is not None:
                 try:
                     parent_cancellation.unregister_child(child_cancellation)
-                except Exception:
+                except Exception:  # noqa: BLE001 — best-effort finally cleanup: a cancellation-unlink failure must not mask the result
                     logger.debug("Cancellation unlink failed", exc_info=True)
             if display_system is not None and hasattr(display_system, "pop_nesting"):
                 display_system.pop_nesting()
             try:
                 await child.cleanup()
-            except Exception:
+            except Exception:  # noqa: BLE001 — best-effort finally cleanup: child teardown is logged, never fatal
                 logger.debug("Child cleanup failed", exc_info=True)
 
         summary = _result_summary(output)
@@ -311,7 +311,7 @@ def _current_depth(coordinator: Any) -> int:
         return 0
     try:
         depth = get_capability(DEPTH_CAPABILITY)
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort probe of a duck-typed coordinator: any read failure falls back to depth 0
         return 0
     return depth if isinstance(depth, int) and depth >= 0 else 0
 
@@ -443,7 +443,7 @@ async def _inherit_module_resolver(parent_coordinator: Any, child_coordinator: A
         return
     try:
         resolver = get("module-source-resolver")
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort probe: a missing/broken resolver simply skips inheritance
         resolver = None
     if resolver is None:
         return
@@ -451,7 +451,7 @@ async def _inherit_module_resolver(parent_coordinator: Any, child_coordinator: A
         mounted = mount("module-source-resolver", resolver)
         if asyncio.iscoroutine(mounted):
             await mounted
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort inheritance: a mount failure is logged, never fatal to the child
         logger.debug("module resolver inheritance failed", exc_info=True)
 
 
@@ -466,13 +466,13 @@ def _inherit_capabilities(
     for name in names:
         try:
             value = get_capability(name)
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort probe: an unreadable capability is skipped
             value = None
         if value is None:
             continue
         try:
             register(name, value)
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort inheritance: a register failure is logged, never fatal
             logger.debug("capability inheritance failed: %s", name, exc_info=True)
 
 
@@ -497,13 +497,13 @@ def _inherit_skill_overlays(parent_coordinator: Any, child_coordinator: Any) -> 
     overlays: Any = None
     try:
         overlays = get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY)
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort probe: no overlay list simply skips inheritance
         overlays = None
     if not overlays:
         return
     try:
         register(RUNTIME_SKILL_OVERLAY_CAPABILITY, list(overlays))
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort inheritance: a register failure is logged, never fatal
         logger.debug("skill overlay inheritance failed", exc_info=True)
 
 
@@ -527,7 +527,7 @@ async def _seed_child_context(
     context: Any = None
     try:
         context = get("context")
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort probe: no context capability simply skips seeding
         context = None
     if context is None:
         return

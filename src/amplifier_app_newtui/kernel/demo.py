@@ -65,6 +65,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..model.formatting import format_tokens_k as format_k_tokens
+
 from .events import (
     AgentCompleted,
     AgentSpawned,
@@ -151,11 +153,6 @@ def tick_tokens(key: str, count: int | None = None) -> tuple[int, ...]:
 def store_turn_cost(secs: int) -> Decimal:
     """Mockup: ``turnCost = 0.04 + secs * 0.01``."""
     return Decimal("0.04") + Decimal(secs) * Decimal("0.01")
-
-
-def format_k_tokens(tokens: int) -> str:
-    """Mockup ``(toks / 1000).toFixed(1) + "k"``."""
-    return f"{tokens / 1000:.1f}k"
 
 
 def rule_label(

@@ -29,7 +29,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..model.blocks import DoctorBlock, DoctorFinding
-from .context import format_tokens
+from ..model.formatting import format_tokens_compact
 from .improve import ApprovalTally
 
 PACKAGE_NAME = "amplifier-app-newtui"
@@ -166,7 +166,7 @@ def check_unused_mcp(
         ok=False,
         message=(
             f"{count} MCP {noun} unused in {round(threshold_days)} days "
-            f"· cost {format_tokens(cost)} tok/session"
+            f"· cost {format_tokens_compact(cost)} tok/session"
         ),
     )
 

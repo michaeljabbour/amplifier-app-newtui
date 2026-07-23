@@ -509,7 +509,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
                 on_progress=self._boot_progress,
             )
             await runtime.start()
-        except BaseException as error:  # surface boot failures on the app loop
+        except BaseException as error:  # noqa: BLE001 — must resolve the boot future for ANY failure or the app-loop waiter hangs
             # Bind before the except block exits — Python unbinds the
             # handler name, and the lambda runs later on the app loop.
             failure = error
@@ -530,7 +530,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         """
         try:
             await runtime.cleanup()
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort teardown on exit: logged with traceback, never silent
             logger.debug("runtime cleanup failed during teardown", exc_info=True)
 
     def _boot_progress(self, action: str, detail: str) -> None:

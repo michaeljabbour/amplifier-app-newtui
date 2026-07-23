@@ -14,22 +14,11 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..model.blocks import ContextBlock
+from ..model.formatting import format_tokens_compact as format_tokens
 
 DEFAULT_WINDOW_TOKENS = 200_000
 DEFAULT_BAR_WIDTH = 20
 """Bar cell count in the mockup's ``/context`` line (20 × 5% cells)."""
-
-
-def format_tokens(tokens: int) -> str:
-    """``742`` / ``4.1k`` / ``52k`` / ``1.2m`` — mockup token formatting."""
-    if tokens < 1_000:
-        return str(tokens)
-    if tokens < 1_000_000:
-        thousands = tokens / 1_000
-        if thousands < 10 and round(thousands, 1) != round(thousands):
-            return f"{thousands:.1f}k"
-        return f"{round(thousands)}k"
-    return f"{tokens / 1_000_000:.1f}m"
 
 
 class ContextUsage(BaseModel):
