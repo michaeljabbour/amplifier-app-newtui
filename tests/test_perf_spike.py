@@ -29,6 +29,7 @@ from collections.abc import Iterator
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.content import Content
 
 from amplifier_app_newtui.model.blocks import (
     Answer,
@@ -40,8 +41,15 @@ from amplifier_app_newtui.model.blocks import (
     UserLine,
 )
 from amplifier_app_newtui.ui.live_tail import LiveTail
+from amplifier_app_newtui.ui.segments import lines_plain
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
-from amplifier_app_newtui.ui.transcript import TranscriptView, render_block_markup
+from amplifier_app_newtui.ui.transcript import (
+    HISTORY_WIDGET_LIMIT,
+    HistoryArchive,
+    TranscriptView,
+    render_block,
+    render_block_markup,
+)
 
 FRAME_BUDGET_SECONDS = 0.016
 """ADR-0007: <16ms/frame during streaming."""
@@ -211,3 +219,64 @@ async def test_append_frame_budget_with_5k_history() -> None:
         f"median frame {median * 1000:.2f}ms at 5k blocks exceeds "
         f"{FRAME_BUDGET_SECONDS * 1000:.0f}ms budget"
     )
+# --------------------------------------------------------------------------
+# The hybrid mechanism, asserted deterministically (not just via timing)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hybrid_archive_bounds_widgets_and_preserves_history_at_5k() -> None:
+    """Why the 5k frame budget holds — and what it does NOT cost.
+
+    ``test_append_frame_budget_with_5k_history`` proves the *timing*; a
+    green wall-clock number alone can hide *how* it was won (e.g. silently
+    dropping old blocks). This locks the ADR-0007 escalation contract
+    deterministically:
+
+    - **Bounded compositor work** — the interactive widget tail never
+      exceeds ``HISTORY_WIDGET_LIMIT``, so Textual arranges ~1k children,
+      not 5k (the actual cause of the missed budget).
+    - **No truncation** — all 5k blocks remain in ``view.blocks`` in order;
+      the older prefix consolidates into exactly one ``HistoryArchive``.
+    - **Byte-identical consolidation** — the archive paints each archived
+      block's text verbatim from the same pure ``render_block`` the widgets
+      use, so collapsing history into the archive changes not one glyph
+      (the visible tail / goldens are untouched).
+    """
+    app = Harness()
+    async with app.run_test(size=(100, 30)) as pilot:
+        view = app.query_one("#transcript", TranscriptView)
+        appended = list(synthetic_blocks(SPIKE_BLOCKS))
+        for block in appended:
+            view.append(block)
+        # Let the scheduled compaction run and the archive mount + lay out.
+        await pilot.pause()
+        await pilot.pause()
+
+        appended_ids = [block.id for block in appended]
+
+        # No truncation: the full conversation is retained, in order.
+        assert [block.id for block in view.blocks] == appended_ids
+
+        # Bounded compositor work: the interactive tail stays within limit.
+        widget_ids = set(view._widgets)  # noqa: SLF001 — asserting the bound directly
+        assert len(widget_ids) <= HISTORY_WIDGET_LIMIT
+
+        # Exactly one archive holds every block that is no longer a widget,
+        # and it is the oldest contiguous prefix (widgets are the newest).
+        archive = view.query_one(HistoryArchive)
+        archived = archive.blocks
+        assert len(archived) == SPIKE_BLOCKS - len(widget_ids)
+        assert [block.id for block in archived] == appended_ids[: len(archived)]
+        assert widget_ids.isdisjoint({block.id for block in archived})
+        assert widget_ids == set(appended_ids[len(archived) :])
+
+        # Byte-identical consolidation: the archive's painted text for each
+        # block equals the pure renderer's text — no drift, no injected
+        # markup leaking into the visible characters.
+        width = archive._painted_width or RENDER_WIDTH  # noqa: SLF001 — paint width
+        for block in archived:
+            painted = Content.from_markup(archive._block_markup(block, width)).plain  # noqa: SLF001
+            assert painted == lines_plain(render_block(block, width)), (
+                f"archive text drifted from render_block for block {block.id!r}"
+            )
