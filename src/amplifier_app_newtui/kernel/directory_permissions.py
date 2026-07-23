@@ -34,6 +34,13 @@ error, never an approval gate). ``guarded`` restores the app-level gate:
 outside writes are blocked pre-flight and write-shaped shell escapes are
 classified outside-project. Denied and protected paths are enforced in
 both postures.
+
+Audit H2 posture (2026-07-22): ``open`` is a *deliberate* default, not a
+parity accident — but it is only sound while a filesystem write-enforcer is
+actually mounted to back it. :func:`resolve_write_boundary` asserts that at
+startup and degrades ``open`` → ``guarded`` (with a boot notice) when no
+``tool-filesystem`` is planned, so enforcement is never silently delegated
+to a non-existent tool.
 """
 
 
@@ -42,6 +49,56 @@ def write_boundary_setting(settings: dict[str, Any]) -> WriteBoundary:
     permissions = settings.get("permissions")
     raw = permissions.get("write_boundary") if isinstance(permissions, dict) else None
     return "guarded" if raw == "guarded" else "open"
+
+
+def filesystem_write_enforcer_present(mount_plan: dict[str, Any]) -> bool:
+    """True when the mount plan includes a ``tool-filesystem`` module.
+
+    The mounted filesystem tool is the hard write enforcement backing the
+    ``open`` posture — its allow/deny lists are injected via
+    :meth:`DirectoryPolicy.merged_tool_config`, and outside-project writes get
+    a graceful tool error from it rather than an app-level gate. When no such
+    module is planned, ``open`` would hand enforcement to nothing, so callers
+    degrade to the app-level ``guarded`` gate. Verifying the tool's *internal*
+    enforcement is a separate, deeper task (audit H1); at this app seam,
+    presence in the plan is the assertion we can make deterministically.
+    """
+    for tool in mount_plan.get("tools") or []:
+        if isinstance(tool, dict) and tool.get("module") == "tool-filesystem":
+            return True
+    return False
+
+
+WRITE_BOUNDARY_DEGRADE_NOTICE = (
+    "write boundary degraded to guarded · no filesystem tool is mounted to enforce "
+    "writes outside the project, so the app-level gate is restored · run doctor for details"
+)
+"""Boot notice emitted when ``open`` is degraded to ``guarded`` (audit H2)."""
+
+
+def resolve_write_boundary(
+    settings: dict[str, Any],
+    mount_plan: dict[str, Any],
+) -> tuple[WriteBoundary, str | None]:
+    """Resolve the effective boundary, asserting ``open`` is backed by a tool.
+
+    Audit H2: the ``open`` default delegates 100% of outside-project write
+    enforcement to the mounted filesystem tool. This resolver makes that a
+    verified decision rather than a silent assumption:
+
+    - An explicit ``guarded`` setting is honored unchanged (no notice — the
+      user chose the app-level gate).
+    - ``open`` with a ``tool-filesystem`` in the plan stays ``open`` (app-cli
+      parity, the common case — behavior unchanged, no notice).
+    - ``open`` with *no* filesystem write-enforcer degrades to ``guarded`` and
+      returns a boot notice, so the app-level gate covers the gap loudly
+      instead of trusting a non-existent enforcer.
+    """
+    if write_boundary_setting(settings) == "guarded":
+        return ("guarded", None)
+    if filesystem_write_enforcer_present(mount_plan):
+        return ("open", None)
+    return ("guarded", WRITE_BOUNDARY_DEGRADE_NOTICE)
 
 
 PROTECTED_PROJECT_PATHS: tuple[str, ...] = (

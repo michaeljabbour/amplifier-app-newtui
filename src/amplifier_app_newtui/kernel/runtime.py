@@ -55,9 +55,9 @@ from .directory_permissions import (
     apply_policy_to_mount_plan,
     configured_entries,
     policy_from_mount_plan,
+    resolve_write_boundary,
     settings_path_values,
     update_settings_path,
-    write_boundary_setting,
 )
 from .governance_hook import GovernanceHook
 from . import session_ops
@@ -614,10 +614,19 @@ class RealRuntime:
         # filesystem tool, child sessions, CLI administration and shell
         # governance all consult one effective source. Session-scoped paths
         # are folded in before a resumed session mounts its tools.
+        # Audit H2: ``open`` (app-cli parity) delegates outside-project write
+        # enforcement to the mounted filesystem tool. Assert that enforcer is
+        # actually planned; when it is not, degrade to the app-level ``guarded``
+        # gate and announce it (never a silent trust of a non-existent tool).
+        write_boundary, write_boundary_notice = resolve_write_boundary(
+            resolved.settings, resolved.mount_plan
+        )
+        if write_boundary_notice is not None:
+            self.bridge.emit(Notification(message=write_boundary_notice))
         directory_policy = policy_from_mount_plan(
             resolved.mount_plan,
             resolved.project_dir,
-            write_boundary=write_boundary_setting(resolved.settings),
+            write_boundary=write_boundary,
         )
         if session_id is not None:
             self._session_settings_path = store.session_dir(session_id) / "settings.yaml"

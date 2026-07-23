@@ -90,3 +90,33 @@ the dedicated permission control is itself the explicit user action this
 ADR requires, for any posture it lands on (not only `bypass`) -- it latches
 `_trust_explicitly_set` so a later mode-only Shift-Tab cycle never silently
 reverts the chosen posture to a mode's default preset.
+
+## Amendment: write-boundary posture is asserted, not assumed (audit H2)
+
+Audit H2 (five-agent security audit 2026-07-22) found that the default
+`permissions.write_boundary: "open"` removed the app-level write gate entirely
+outside the project, delegating 100% of enforcement to the mounted
+`tool-filesystem` — an external mechanism this app does not itself audit. Left
+implicit, `open` silently trusts an enforcer that a stripped-down bundle might
+not even mount.
+
+Decision (Option B of the issue): keep `open` as the **deliberate** default —
+it is genuine amplifier-app-cli parity and the filesystem tool is the correct
+owner of hard write enforcement — but make the trust explicit. At startup
+`kernel/directory_permissions.resolve_write_boundary()` asserts a
+`tool-filesystem` is present in the mount plan to back the `open` posture. When
+none is planned, the boundary **degrades to `guarded`** (the app-level gate,
+everywhere) and a boot `Notification` is emitted, so enforcement is never
+silently delegated to a non-existent tool. An explicit `guarded` setting is
+honored unchanged and silently (the user chose the app-level gate).
+
+Consequences:
+
+- The common case (default bundle, filesystem tool mounted) is unchanged:
+  `open`, app-cli parity, no notice — zero behavior drift.
+- A bundle with no filesystem write-enforcer now fails closed to `guarded`
+  with a visible notice instead of running with no write boundary at all.
+- Verifying the filesystem tool's *internal* enforcement remains a separate,
+  deeper task (shared with audit H1); this amendment only closes the
+  app-layer "is an enforcer even there?" gap. `SETTINGS.md` documents the
+  resulting default.
