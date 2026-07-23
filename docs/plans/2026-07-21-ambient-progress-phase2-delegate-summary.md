@@ -1,5 +1,8 @@
 # Ambient Progress — Phase 2: Collapsible `DelegateSummaryBlock`
 
+> **Status: ✅ Implemented** (PR #13, `476c493`) — `DelegateSummaryBlock` +
+> renderer, reducer one-block-per-fanout, goldens and tests. Historical record.
+
 > **For execution:** Use /execute-plan mode or the subagent-driven-development recipe.
 
 **Date:** 2026-07-21

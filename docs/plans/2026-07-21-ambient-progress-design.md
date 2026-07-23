@@ -1,7 +1,8 @@
 # Feature: "Ambient Progress" — plan panel, lane live tail, collapsible delegate summary
 
 **Date:** 2026-07-21
-**Status:** Approved design (converged via user conversation); ready for planning/implementation
+**Status:** ✅ Implemented — all three phases landed in PR #13 (`476c493`); lane
+transcripts deepened in PR #17. Historical record.
 **Branch context:** `agent/anchors-migration`
 
 ## Problem

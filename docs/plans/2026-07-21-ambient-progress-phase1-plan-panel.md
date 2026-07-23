@@ -1,5 +1,8 @@
 # Implementation Plan: Ambient Progress — Phase 1: Plan Panel
 
+> **Status: ✅ Implemented** (PR #13, `476c493`) — `ui/plan_panel.py`, reducer
+> `plan_changed` reroute, footer fallback, TodoBlock retired. Historical record.
+
 > **For execution:** Use /execute-plan mode or the subagent-driven-development recipe.
 
 **Date:** 2026-07-21

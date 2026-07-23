@@ -169,6 +169,7 @@ bundle.md                   the repo's amplifier bundle (packaged copy kept byte
 | [docs/BACKLOG.md](docs/BACKLOG.md) | what's next, calibrated against what's already shipped |
 | [docs/design-v3-cohesive.html](docs/design-v3-cohesive.html) | executable mockup — exact strings, colors, timing, state machines |
 | [docs/decisions/](docs/decisions/) | ADRs — why it's shaped this way (ADR-0007 = the architecture rules) |
+| [docs/plans/](docs/plans/) | dated implementation plans, each with a status banner (all landed to date) |
 
 ## Architecture
 
