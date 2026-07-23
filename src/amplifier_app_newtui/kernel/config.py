@@ -446,6 +446,104 @@ def inject_routing_config(
             dirs.append(str(user_dir))
 
 
+CONTEXT_INTELLIGENCE_HOOK = "hook-context-intelligence"
+"""Module id of the upstream context-intelligence-logging telemetry hook.
+
+Mounted only when the ``context-intelligence-logging`` behavior is composed
+in (via a ``bundle.app`` overlay); this app never vendors a telemetry sink
+of its own (issue #51 — mount upstream, don't reimplement)."""
+
+_TELEMETRY_SCALAR_KEYS: dict[str, str] = {
+    # settings ``telemetry.<key>`` -> hook config key (scalars only;
+    # ``destinations`` / ``*_events`` are handled specially below).
+    "server_url": "context_intelligence_server_url",
+    "api_key": "context_intelligence_api_key",
+    "workspace": "workspace",
+    "log_level": "log_level",
+    "base_path": "base_path",
+    "project_slug": "project_slug",
+    "dispatch_timeout": "dispatch_timeout",
+    "dispatch_failure_threshold": "dispatch_failure_threshold",
+    "dispatch_queue_capacity": "dispatch_queue_capacity",
+    "close_drain_timeout": "close_drain_timeout",
+}
+"""Single-destination + dispatch-tuning knobs bridged straight through by name."""
+
+
+def _context_intelligence_hook(mount_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """The mounted ``hook-context-intelligence`` entry, or ``None``."""
+    for hook in mount_plan.get("hooks") or []:
+        if isinstance(hook, dict) and hook.get("module") == CONTEXT_INTELLIGENCE_HOOK:
+            return hook
+    return None
+
+
+def inject_telemetry_config(mount_plan: dict[str, Any], settings: dict[str, Any]) -> None:
+    """Bridge ``settings.telemetry`` onto the mounted context-intelligence hook.
+
+    The ``context-intelligence-logging`` behavior (module
+    ``hook-context-intelligence``) is composed in through a ``bundle.app``
+    overlay; this bridge maps the app's ``telemetry`` settings section onto
+    that hook's config so custom telemetry destinations — and the legacy
+    single-destination keys — are configurable through the same three-scope
+    settings path as everything else. The app mounts the upstream sink and
+    never reimplements one (issue #51).
+
+    Mapped:
+
+    - ``telemetry.destinations`` -> hook ``destinations`` (the upstream
+      multi-destination map: per-destination ``url`` / ``api_key`` /
+      ``.gitignore``-style ``include`` / ``exclude`` session routing /
+      ``auth_mode: static|entra`` / dispatch tuning);
+    - ``telemetry.server_url`` / ``api_key`` / ``workspace`` -> the legacy
+      single-destination keys (older module builds without a map);
+    - dispatch tuning + ``log_level`` scalars pass through by name
+      (:data:`_TELEMETRY_SCALAR_KEYS`);
+    - ``telemetry.exclude_events`` -> hook ``exclude_events`` (a ``[]`` value
+      opts back in to every event, including the streaming deltas);
+    - ``telemetry.additional_events`` is UNIONED onto whatever the behavior
+      already ships, so its ``delegate:*`` coverage is never clobbered.
+
+    A no-op when the hook is not mounted (the behavior wasn't composed) or
+    when ``telemetry`` is absent/junk-shaped — so *no destinations configured
+    = local JSONL capture only*, and an unconfigured app is untouched.
+    ``${VAR}`` secrets in any injected value are expanded afterwards by
+    :func:`expand_env_placeholders` (from ``keys.env``). Never raises.
+    """
+    entry = _context_intelligence_hook(mount_plan)
+    if entry is None:
+        return
+    telemetry = settings.get("telemetry")
+    if not isinstance(telemetry, dict):
+        return
+    config = entry.get("config")
+    if not isinstance(config, dict):
+        config = {}
+        entry["config"] = config
+
+    for settings_key, config_key in _TELEMETRY_SCALAR_KEYS.items():
+        value = telemetry.get(settings_key)
+        if value is not None:
+            config[config_key] = value
+
+    destinations = telemetry.get("destinations")
+    if isinstance(destinations, dict) and destinations:
+        config["destinations"] = destinations
+
+    exclude_events = telemetry.get("exclude_events")
+    if isinstance(exclude_events, list):
+        config["exclude_events"] = list(exclude_events)
+
+    extra_events = telemetry.get("additional_events")
+    if isinstance(extra_events, list) and extra_events:
+        existing = config.get("additional_events")
+        merged = list(existing) if isinstance(existing, list) else []
+        for name in extra_events:
+            if name not in merged:
+                merged.append(name)
+        config["additional_events"] = merged
+
+
 def inject_mode_search_paths(mount_plan: dict[str, Any], modes_dir: Path) -> None:
     """Add *modes_dir* to the mounted ``hooks-mode`` config's search_paths.
 
@@ -691,6 +789,10 @@ async def resolve_config(
     # OFF until a posture activates one of these — feature-mapping.md).
     inject_mode_search_paths(mount_plan, packaged_modes_dir())
     inject_routing_config(mount_plan, settings, amplifier_home)
+    # Bridge settings.telemetry -> the composed context-intelligence-logging
+    # hook (custom destinations + legacy single-destination keys); a no-op
+    # unless that behavior is composed in via a bundle.app overlay (issue #51).
+    inject_telemetry_config(mount_plan, settings)
     expand_env_placeholders(mount_plan)
 
     return ResolvedConfig(
@@ -733,6 +835,7 @@ __all__ = [
     "ensure_project_write_path",
     "inject_mode_search_paths",
     "inject_routing_config",
+    "inject_telemetry_config",
     "packaged_modes_dir",
     "get_project_slug",
     "is_bundle_uri",

@@ -59,6 +59,7 @@ This is the complete set of keys the app consumes:
 | `sources.modules` | Map of `module_id → source URI`: redirect where a module is fetched from | none | local (dev checkouts) |
 | `overrides.<id>.source` | Per-module source redirect; wins over `sources.modules` | none | local |
 | `overrides.<id>.config` | Dict deep-merged into that module's config (applied before `config.providers` / `modules.tools`, so those win) | none | project / local |
+| `telemetry.*` | Configures the composed **context-intelligence-logging** behavior (module `hook-context-intelligence`): `telemetry.destinations` is the multi-destination fan-out map, `telemetry.server_url`/`api_key`/`workspace` the legacy single destination, plus dispatch tuning. A no-op unless that behavior is composed via `bundle.app`; see *Context-intelligence telemetry* below | none (local JSONL capture only) | global or project |
 
 **Bundle discovery**, for `--bundle NAME` or `bundle.active`: `<project>/.amplifier/bundles/`
 → `~/.amplifier/bundles/` → the packaged `data/bundles/` — first hit wins. Names resolve as
@@ -77,6 +78,55 @@ as `mcp_<server>_<tool>`. `/mcp add|remove` edits this file (takes effect next l
 modules, same configs). Those native hooks are idle without an active native mode; the app's
 own posture/outside-project governance hook remains active and shares their approval
 provider.
+
+**Context-intelligence telemetry (`context-intelligence-logging`).** The app can fan session
+events out to one or more telemetry destinations by composing the upstream
+`context-intelligence-logging` behavior — the app mounts that behavior's `hook-context-intelligence`
+sink and never reimplements one. Enable it with a `bundle.app` overlay, then configure destinations
+under the `telemetry` settings section:
+
+```yaml
+bundle:
+  app:
+    # the telemetry-only layer of amplifier-bundle-context-intelligence
+    - git+https://github.com/michaeljabbour/amplifier-bundle-context-intelligence@main#subdirectory=behaviors/context-intelligence-logging.yaml
+
+telemetry:
+  destinations:                      # multi-destination fan-out (upstream `destinations` map)
+    team:
+      url: https://ci.example.com
+      api_key: ${CI_TEAM_KEY}        # secrets referenced from keys.env as ${VAR}
+      include: ["*"]                 # .gitignore-style session routing (this dest gets everything)
+      auth_mode: static              # static | entra
+    scratch:
+      url: http://localhost:8000
+      exclude: ["*"]                 # routed away from this destination
+  # dispatch tuning (all optional):
+  dispatch_timeout: 30
+  dispatch_failure_threshold: 3      # boot/turn unaffected when a server is unreachable
+  # legacy single-destination form (older module builds), instead of `destinations`:
+  # server_url: ${AMPLIFIER_CONTEXT_INTELLIGENCE_SERVER_URL}
+  # api_key: ${AMPLIFIER_CONTEXT_INTELLIGENCE_API_KEY}
+  # workspace: my-workspace
+```
+
+Semantics:
+
+- **No destinations configured → local capture only.** With the behavior composed but no
+  `telemetry.destinations` (or legacy `server_url`), the hook writes only its local per-session
+  JSONL under `~/.amplifier/projects/<slug>/sessions/<id>/context-intelligence/` — no network.
+- **Unreachable server never blocks the boot or a turn.** Dispatch is best-effort behind a circuit
+  breaker (`dispatch_failure_threshold` consecutive failures opens it); the session runs regardless.
+- **`delegate:*` events flow to it.** The behavior ships `additional_events` covering the delegate
+  lifecycle (`agent_spawned`/`resumed`/`completed`/`cancelled`/`error`); `telemetry.additional_events`
+  is *unioned* onto that list, never replacing it. The app's boot suppression list never strips
+  `hook-context-intelligence` (add it to `hooks.suppress` yourself to opt out).
+- **In-flight dispatches are drained on exit.** The hook's async `cleanup()` is awaited through the
+  app's normal session teardown (`session.cleanup()`), bounded by `telemetry.close_drain_timeout`.
+- **Relationship to the other logs.** This is a *third* writer, independent of the two per-session
+  logs described in ARCHITECTURE §9: `hooks-logging` owns `events.jsonl` (canonical hook records)
+  and the app owns `ui-events.jsonl` (normalized UIEvents). The context-intelligence hook keeps its
+  own JSONL and fans out to servers; it shares no file or schema with either.
 
 **Compaction accounting.** The runtime binds these settings directly to the mounted
 context module. When that module accepts provider-observed input tokens, NewTUI forwards
@@ -102,7 +152,10 @@ No `AMPLIFIER_*` environment variables are read by the app's own code. Mounted b
 modules may read their own — e.g. `tool-team-pulse` reads `AMPLIFIER_TEAM_PULSE_URL` /
 `AMPLIFIER_TEAM_PULSE_KEY`, and `hooks-notify-push` sends push notifications to the
 ntfy.sh topic named by `AMPLIFIER_NTFY_TOPIC` (the hook mounts but stays inert when
-the variable is unset).
+the variable is unset). When the `context-intelligence-logging`
+behavior is composed, its `hook-context-intelligence` also reads the
+`AMPLIFIER_CONTEXT_INTELLIGENCE_SERVER_URL` / `_API_KEY` / `_WORKSPACE` env vars as a fallback
+for the `telemetry` settings above.
 
 ## Quirks worth knowing
 
