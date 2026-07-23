@@ -121,6 +121,7 @@ class FakeRealRuntime:
         resume_id: str | None,
         queue: Any,
         steering: Any,
+        lane_steering: Any,
         needs_you: Any,
         denial_log: Any,
         surface: Any,
@@ -134,6 +135,7 @@ class FakeRealRuntime:
             "resume_id": resume_id,
             "queue": queue,
             "steering": steering,
+            "lane_steering": lane_steering,
             "needs_you": needs_you,
             "denial_log": denial_log,
             "surface": surface,
@@ -326,6 +328,7 @@ async def test_start_happy_path_copies_identity(booted: Booted) -> None:
     assert fake.kwargs["resume_id"] is None
     assert isinstance(fake.kwargs["queue"], _AppLoopQueue)
     assert fake.kwargs["steering"] is adapter.steering
+    assert fake.kwargs["lane_steering"] is adapter.lane_steering
     assert fake.kwargs["needs_you"] is adapter.needs_you
     assert fake.kwargs["denial_log"] is adapter.denial_log
     assert fake.kwargs["surface"] is adapter.terminal

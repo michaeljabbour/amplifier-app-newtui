@@ -35,7 +35,7 @@ from ..model.config import (
     default_config_state,
 )
 from ..model.evidence import EvidenceLink
-from ..model.queues import NeedsYouQueue, SteeringQueue
+from ..model.queues import LaneSteeringQueue, NeedsYouQueue, SteeringQueue
 from ..model.terminal import TerminalSurface
 from ..model.trust import (
     CapabilityClass,
@@ -159,6 +159,10 @@ class RuntimeAdapter:
     def __init__(self) -> None:
         self.queue: asyncio.Queue[UIEvent] = asyncio.Queue()
         self.steering = SteeringQueue()
+        self.lane_steering = LaneSteeringQueue()
+        """Per-lane steer FIFOs (issue #39): a message aimed at a running
+        delegate, delivered at that child's next step boundary. Shared with
+        the kernel wiring so the app and runtime act on the SAME queues."""
         self.needs_you = NeedsYouQueue()
         self.denial_log = DenialLog()
         self.terminal = TerminalSurface()
@@ -470,6 +474,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
                 resume_id=self._resume_id,
                 queue=_AppLoopQueue(self.queue, self._app_loop),  # type: ignore[arg-type]
                 steering=self.steering,
+                lane_steering=self.lane_steering,
                 needs_you=self.needs_you,
                 denial_log=self.denial_log,
                 surface=self.terminal,

@@ -19,7 +19,13 @@ from typing import Any
 
 from amplifier_core import HookResult
 
-from ..model.queues import NeedsYouItem, NeedsYouQueue, QueuedMessage, SteeringQueue
+from ..model.queues import (
+    LaneSteeringQueue,
+    NeedsYouItem,
+    NeedsYouQueue,
+    QueuedMessage,
+    SteeringQueue,
+)
 
 
 class StepBoundaryBridge:
@@ -33,23 +39,27 @@ class StepBoundaryBridge:
         steering: SteeringQueue,
         *,
         needs_you: NeedsYouQueue | None = None,
+        lane_steering: LaneSteeringQueue | None = None,
         on_applied: Callable[[QueuedMessage], None] | None = None,
         on_answers: Callable[[tuple[NeedsYouItem, ...]], None] | None = None,
         on_inject: Callable[[], None] | None = None,
+        on_lane_applied: Callable[[str, QueuedMessage], None] | None = None,
     ) -> None:
         self._root_session_id = root_session_id
         self._steering = steering
         self._needs_you = needs_you
+        self._lane_steering = lane_steering
         self._on_applied = on_applied
         self._on_answers = on_answers
         self._on_inject = on_inject
+        self._on_lane_applied = on_lane_applied
 
     async def handle_event(self, event: str, data: dict[str, Any]) -> HookResult:
         if event != "provider:request":
             return HookResult(action="continue")
         session_id = str(data.get("session_id") or self._root_session_id)
         if session_id != self._root_session_id:
-            return HookResult(action="continue")
+            return self._handle_lane(session_id)
         steer = self._steering.consume_next_steer()
         answers = self._needs_you.consume_answered() if self._needs_you else ()
         if steer is None and not answers:
@@ -82,6 +92,32 @@ class StepBoundaryBridge:
         return HookResult(
             action="inject_context",
             context_injection="\n\n".join(injections),
+            context_injection_role="user",
+            ephemeral=False,
+            suppress_output=True,
+        )
+
+    def _handle_lane(self, session_id: str) -> HookResult:
+        """Per-lane steering: deliver one queued steer to the delegate at
+        *session_id* at its OWN step boundary (issue #39).
+
+        Root steering is untouched — a child session only ever drains its
+        own lane queue, so the root ``SteeringQueue`` is never consumed by
+        a child ``provider:request`` (the historical "root only" contract).
+        """
+        if self._lane_steering is None:
+            return HookResult(action="continue")
+        steer = self._lane_steering.consume_next(session_id)
+        if steer is None:
+            return HookResult(action="continue")
+        if self._on_lane_applied is not None:
+            self._on_lane_applied(session_id, steer)
+        return HookResult(
+            action="inject_context",
+            context_injection=(
+                "User steering received for this delegate. Apply it at this "
+                f"safe step boundary:\n{steer.text}"
+            ),
             context_injection_role="user",
             ephemeral=False,
             suppress_output=True,
