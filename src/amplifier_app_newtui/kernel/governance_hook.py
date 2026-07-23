@@ -306,6 +306,13 @@ class GovernanceHook:
         tool_input = _mapping(data.get("tool_input") or data.get("input"))
         action = _action_text(tool_name, tool_input)
         target = _target(tool_input)
+        # Dependency gate FIRST: a call that depends on an unanswered parked
+        # decision is denied-and-continued before any other governance runs
+        # (never executed) until the human answers (issue #101).
+        dependencies = _dependency_keys(data, tool_input, action)
+        blocked = self._blocked_dependencies(dependencies)
+        if blocked is not None:
+            return blocked
         decision = (
             self._permission_resolver(tool_name, tool_input)
             if self._permission_resolver is not None
@@ -329,7 +336,7 @@ class GovernanceHook:
         target = safety.target or target
 
         if decision.classifier_gated:
-            return await self._classify(decision, action, target)
+            return await self._classify(decision, action, target, dependencies)
         if decision.decision == "allow":
             self._denial_log.record_non_denial()
             return HookResult(action="continue")
@@ -342,7 +349,13 @@ class GovernanceHook:
             return self._capability_resolver(capability)
         return resolve_capability(self._mode(), capability)
 
-    async def _classify(self, decision: TrustDecision, action: str, target: str) -> HookResult:
+    async def _classify(
+        self,
+        decision: TrustDecision,
+        action: str,
+        target: str,
+        dependencies: tuple[str, ...] = (),
+    ) -> HookResult:
         try:
             allowed, reason = await self._classifier.classify(
                 action=action,
@@ -366,10 +379,45 @@ class GovernanceHook:
                     choices=STANDARD_OPTIONS,
                     highlight=deferral_highlight(question, target, action),
                     action=action,
+                    dependencies=dependencies,
                 )
             except ValueError:
                 pass
         return self._deny(decision.capability, action, reason)
+
+    def _blocked_dependencies(self, dependencies: tuple[str, ...]) -> HookResult | None:
+        """Deny-and-continue a call that depends on an unanswered decision.
+
+        A parked (``pending``) decision keyed to this call's action or a
+        declared orchestration id must be answered before the dependent step
+        runs -- the step is NOT executed and WHY is surfaced. This is a
+        correctness/UX guarantee layered over the classifier (which still
+        independently denies unauthorized ops); once the human answers, the
+        decision leaves ``pending`` and the dependent path proceeds normally.
+        A dependency wait is not a policy denial, so it never touches the
+        DenialLog or its 3-consecutive / 20-total escalation.
+        """
+        if self._needs_you is None:
+            return None
+        blocked = self._needs_you.blocking_decisions(dependencies)
+        if not blocked:
+            return None
+        dependency = next(
+            (key for key in dependencies if any(key in item.dependencies for item in blocked)),
+            "dependent step",
+        )
+        decision_ids = ", ".join(item.decision_id for item in blocked[:3])
+        reason = (
+            f"Deferred decision {decision_ids} blocks {dependency}. Continue with "
+            "unblocked work; retry once the parked decision is answered."
+        )
+        return HookResult(
+            action="deny",
+            reason=reason,
+            user_message=f"deferred · {dependency}",
+            user_message_level="warning",
+            suppress_output=True,
+        )
 
     def _ask(
         self,
@@ -452,6 +500,59 @@ def _target(tool_input: Mapping[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()[:_MAX_ACTION_CHARS]
     return ""
+
+
+_DEPENDENCY_KEYS = (
+    "dependency",
+    "dependency_id",
+    "dependencies",
+    "depends_on",
+    "step_id",
+    "plan_step_id",
+    "task_id",
+    "work_item_id",
+)
+
+
+def _declared_dependencies(
+    data: Mapping[str, Any], tool_input: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Explicit orchestration dependency ids declared on a tool event.
+
+    A plan step can name what it waits on (``depends_on``, ``step_id``, ...)
+    across the event, its input, or either ``metadata`` bag. These join a
+    parked decision to the later step that literally needs its answer.
+    """
+    values: list[str] = []
+    sources = (
+        data,
+        tool_input,
+        _mapping(data.get("metadata")),
+        _mapping(tool_input.get("metadata")),
+    )
+    for source in sources:
+        for key in _DEPENDENCY_KEYS:
+            raw = source.get(key)
+            candidates = raw if isinstance(raw, (list, tuple, set, frozenset)) else (raw,)
+            for candidate in candidates:
+                value = _line(candidate)[:_MAX_ACTION_CHARS]
+                if value and value not in values:
+                    values.append(value)
+    return tuple(values)
+
+
+def _dependency_keys(
+    data: Mapping[str, Any], tool_input: Mapping[str, Any], action: str
+) -> tuple[str, ...]:
+    """Keys identifying what a tool call depends on: the call's own action
+    (so a re-attempt of a parked action is recognized) plus any declared
+    orchestration ids. Matched against parked decisions' ``dependencies``.
+    """
+    keys = list(_declared_dependencies(data, tool_input))
+    action_key = _line(action)[:_MAX_ACTION_CHARS]
+    if action_key and action_key not in keys:
+        keys.insert(0, action_key)
+    return tuple(keys)
 
 
 def _tool_output(data: Mapping[str, Any]) -> object:

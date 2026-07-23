@@ -209,6 +209,45 @@ def test_needs_you_listener_fires() -> None:
     assert len(calls) == 1
 
 
+def test_needs_you_dependency_blocks_only_matching_keys() -> None:
+    queue = NeedsYouQueue()
+    item = queue.defer(
+        "Allow git push origin main?",
+        "unrequested push",
+        action="git push origin main",
+        dependencies=("git push origin main", "push-step"),
+    )
+    assert item.dependencies == ("git push origin main", "push-step")
+    # Matches by action key and by declared orchestration id...
+    assert queue.dependency_blocked("git push origin main") is True
+    assert queue.dependency_blocked("push-step") is True
+    assert queue.blocking_decisions(("push-step",)) == (item,)
+    # ...but an unrelated call sharing no key is never blocked.
+    assert queue.dependency_blocked("read_file · a.py") is False
+    assert queue.blocking_decisions(("deploy-step",)) == ()
+    assert queue.blocking_decisions(()) == ()
+
+
+def test_needs_you_answer_unblocks_dependents() -> None:
+    queue = NeedsYouQueue()
+    item = queue.defer("Allow deploy?", "waits on push", dependencies=("push-step",))
+    assert queue.dependency_blocked("push-step") is True
+    queue.answer(item.decision_id, "yes")
+    # Only PENDING decisions block: answering lets its dependents proceed.
+    assert queue.dependency_blocked("push-step") is False
+    assert queue.blocking_decisions(("push-step",)) == ()
+
+
+def test_needs_you_dependencies_are_cleaned_and_deduped() -> None:
+    queue = NeedsYouQueue()
+    item = queue.defer(
+        "q?",
+        "r",
+        dependencies=("push-step", "push-step", "  ", "x" * 500),
+    )
+    assert item.dependencies == ("push-step", "x" * 200)
+
+
 # --- lanes (DESIGN-SPEC §8) ---------------------------------------------------
 
 

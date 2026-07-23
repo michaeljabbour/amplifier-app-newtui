@@ -177,6 +177,88 @@ async def test_auto_mode_broken_classifier_fails_closed() -> None:
     assert needs_you.pending_count == 1
 
 
+# -- deferred-decision dependency blocking (issue #101) ----------------------------
+
+
+class _AllowAll:
+    async def classify(self, **kwargs: Any) -> tuple[bool, str]:
+        return (True, "ok")
+
+
+@pytest.mark.asyncio
+async def test_dependency_block_denies_without_executing_or_reparking() -> None:
+    """A re-attempt of a parked action is deny-and-continued (deferred) BEFORE
+    the classifier runs -- never executed, never re-parked, never re-counted."""
+
+    class AlwaysDeny:
+        async def classify(self, **kwargs: Any) -> tuple[bool, str]:
+            return (False, "not authorized")
+
+    hook, _, needs_you, log = make_hook("auto", classifier=AlwaysDeny())
+    event = tool_pre("bash", {"command": "git push origin main"})
+    first = await hook.handle_event("tool:pre", event)
+    assert first.action == "deny"  # classifier deny + park
+    assert needs_you.pending_count == 1
+    assert log.total_count == 1
+
+    retry = await hook.handle_event("tool:pre", event)
+    assert retry.action == "deny"  # deny-and-continue, never a halt
+    assert retry.user_message == "deferred · git push origin main"
+    assert "blocks git push origin main" in retry.reason
+    # The dependency wait is NOT a policy denial: no new park, no new count.
+    assert needs_you.pending_count == 1
+    assert log.total_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dependency_block_lifts_once_answered() -> None:
+    """An orchestration step that DECLARES a dependency on a parked decision is
+    blocked while pending, then proceeds normally once the human answers."""
+    hook, _, needs_you, log = make_hook("auto", classifier=_AllowAll())
+    decision = needs_you.defer(
+        "Allow git push origin main?",
+        "unrequested push",
+        action="git push origin main",
+        dependencies=("deploy-step",),
+    )
+    dependent = {
+        "session_id": ROOT,
+        "tool_name": "read_file",
+        "tool_input": {"path": "release.txt", "depends_on": "deploy-step"},
+    }
+    blocked = await hook.handle_event("tool:pre", dependent)
+    assert blocked.action == "deny"
+    assert blocked.user_message == "deferred · deploy-step"
+    assert log.total_count == 0  # a wait, not a denial
+
+    needs_you.answer(decision.decision_id, "yes push")
+    proceeds = await hook.handle_event("tool:pre", dependent)
+    assert proceeds.action == "continue"  # unblocked -> normal path resumes
+
+
+@pytest.mark.asyncio
+async def test_dependency_block_is_keyed_no_false_blocking() -> None:
+    """Only calls sharing a key with a parked decision are blocked; unrelated
+    actions and unrelated declared ids are unaffected."""
+    hook, _, needs_you, _ = make_hook("auto", classifier=_AllowAll())
+    needs_you.defer(
+        "Allow git push origin main?",
+        "unrequested push",
+        action="git push origin main",
+        dependencies=("deploy-step",),
+    )
+    # Different action, no shared declared id -> not blocked.
+    other = await hook.handle_event("tool:pre", tool_pre("bash", {"command": "git status"}))
+    assert other.action == "continue"
+    # A declared dependency that does not match the parked key -> not blocked.
+    unrelated = {
+        "session_id": ROOT,
+        "tool_name": "read_file",
+        "tool_input": {"path": "x.txt", "depends_on": "unrelated-step"},
+    }
+    assert (await hook.handle_event("tool:pre", unrelated)).action == "continue"
+
+
 # -- offline deterministic classifier -----------------------------------------------
 
 
