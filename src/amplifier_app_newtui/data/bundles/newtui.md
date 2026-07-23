@@ -16,12 +16,17 @@ bundle:
     events.jsonl; the app's UIEvent log lives in ui-events.jsonl.
 
 includes:
-  # anchors, pinned to a specific amplifier-foundation commit.
-  # PARTIAL PIN: this pins only anchors' own bundle.md — its internal
-  # includes (behaviors/*.yaml) and module sources still reference @main
-  # and keep floating until upstream pins them. No worse than the previous
-  # vendored bundle (which floated 8 modules @main).
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@93615d9847ce40313cc0d60583cb886de4337f9e#subdirectory=bundles/anchors/bundle.md
+  # anchors, tracked at amplifier-foundation @main (fetchable, floating).
+  # A bare commit SHA was used previously, but GitHub stops serving it once
+  # foundation advances (its server won't fetch a non-tip SHA) — clean installs
+  # then failed with "Include Failed (skipping): amplifier-foundation". A tag
+  # would be reproducible, but foundation's release tags (v2.1.x) do NOT ship
+  # bundles/anchors — only @main carries it — so @main is the only fetchable
+  # source, and it matches how the shared registry resolves "anchors".
+  # anchors' own internal includes/modules already float @main too, so this is
+  # no less reproducible than before. Reproducible pinning is a foundation
+  # follow-up (tag the anchors bundle in a release).
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 
 providers:
   # anchors is provider-agnostic by design; this app hard-fails boot at zero

@@ -596,7 +596,7 @@ async def test_resolve_config_applies_compaction_to_prepared_default_bundle(
     Uses a local bundle declaring ``session.context`` directly (no ``source:``
     on the module spec, so ``Bundle.prepare()`` never adds it to
     ``modules_to_activate`` / never touches the network) rather than the
-    repo-root ``bundle.md`` \u2014 that file's ``includes:`` is a SHA-pinned
+    repo-root ``bundle.md`` \u2014 that file's ``includes:`` is a ref-pinned
     ``git+https://`` fetch of Foundation's anchors bundle, and resolving it
     live would break this file's documented offline-only convention (see
     module docstring) and depends on network reachability this suite must
@@ -689,7 +689,8 @@ tools over speculating. This surface renders a supported Markdown subset:
 
 def test_packaged_anchors_pointer_resolves_and_matches_the_wrapper_pin() -> None:
     """`bundle.active: anchors` (a valid app-cli default) must resolve in
-    newtui too — a packaged pointer at the same pinned foundation SHA."""
+    newtui too — a packaged pointer at the same pinned foundation ref (a
+    release tag or SHA; the two must stay in lockstep)."""
     import re
 
     paths = bundle_search_paths(Path("/nonexistent-proj"), Path("/nonexistent-home"))
@@ -697,9 +698,15 @@ def test_packaged_anchors_pointer_resolves_and_matches_the_wrapper_pin() -> None
     assert uri is not None and uri.endswith("anchors.md")
     newtui_uri = discover_bundle("newtui", paths)
     assert newtui_uri is not None
-    pin = re.search(r"amplifier-foundation@([0-9a-f]{40})", Path(newtui_uri).read_text())
+    pin = re.search(
+        r"amplifier-foundation@([^\s#]+)#subdirectory=bundles/anchors",
+        Path(newtui_uri).read_text(),
+    )
     assert pin is not None
-    assert f"amplifier-foundation@{pin.group(1)}" in Path(uri).read_text()
+    assert (
+        f"amplifier-foundation@{pin.group(1)}#subdirectory=bundles/anchors"
+        in Path(uri).read_text()
+    )
 
 
 def test_settings_bundle_falls_back_to_default_with_notice(tmp_path: Path) -> None:
