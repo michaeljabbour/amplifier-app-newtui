@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from filelock import FileLock
+
 
 def keys_file(amplifier_home: Path | None = None) -> Path:
     return (amplifier_home or (Path.home() / ".amplifier")) / "keys.env"
@@ -186,6 +188,31 @@ def stored_key_names(path: Path) -> set[str]:
     return set(read_keys(path))
 
 
+def keys_lock_path(path: Path) -> Path:
+    """The advisory-lock file guarding *path* (``keys.env`` → ``keys.env.lock``)."""
+    return path.with_name(path.name + ".lock")
+
+
+# A crashed or slow writer must never wedge another terminal forever, so the
+# advisory lock is bounded: if it can't be taken within this window a
+# ``filelock.Timeout`` surfaces instead of a silent deadlock.
+_KEYS_LOCK_TIMEOUT = 10.0
+
+
+def _keys_lock(path: Path) -> FileLock:
+    """An advisory lock serialising the read-modify-write of the key store.
+
+    Two ordinary concurrent CLI invocations (two terminals, or a script
+    racing a human) both do read-modify-write on ``keys.env``; without a
+    lock that is last-writer-wins and a freshly-saved key can be silently
+    dropped. The lock file sits next to the store; ``filelock`` gives a
+    cross-platform (macOS + Linux) advisory lock, the bounded timeout rules
+    out deadlock, and the context-manager release frees it even when the
+    write raises. Mirrors ``KeyManager.save_key``'s ``FileLock`` guard.
+    """
+    return FileLock(str(keys_lock_path(path)), timeout=_KEYS_LOCK_TIMEOUT)
+
+
 def write_key(path: Path, name: str, value: str, *, update_environ: bool = True) -> None:
     """Set ``name=value`` in the keys file (line-preserving), then ``chmod 600``.
 
@@ -193,27 +220,31 @@ def write_key(path: Path, name: str, value: str, *, update_environ: bool = True)
     keys preserved); a new key is appended. Also updates ``os.environ`` so
     the value is live in-process (KeyManager parity)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = []
-    if path.is_file():
-        lines = path.read_text(encoding="utf-8").splitlines()
-    replaced = False
-    for index, raw in enumerate(lines):
-        stripped = raw.strip()
-        if stripped.startswith("#") or "=" not in stripped:
-            continue
-        if stripped.split("=", 1)[0].strip() == name:
-            lines[index] = f"{name}={value}"
-            replaced = True
-            break
-    if not replaced:
-        lines.append(f"{name}={value}")
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    tmp.replace(path)
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass  # best-effort on filesystems without POSIX perms
+    # Advisory lock the whole read-modify-write: two concurrent writers must
+    # serialise or the second silently drops the first's freshly-saved key
+    # (last-writer-wins). ``with`` releases the lock even if the write raises.
+    with _keys_lock(path):
+        lines: list[str] = []
+        if path.is_file():
+            lines = path.read_text(encoding="utf-8").splitlines()
+        replaced = False
+        for index, raw in enumerate(lines):
+            stripped = raw.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            if stripped.split("=", 1)[0].strip() == name:
+                lines[index] = f"{name}={value}"
+                replaced = True
+                break
+        if not replaced:
+            lines.append(f"{name}={value}")
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp.replace(path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass  # best-effort on filesystems without POSIX perms
     if update_environ:
         os.environ[name] = value
 
@@ -667,6 +698,7 @@ __all__ = [
     "has_configured_provider",
     "discover_providers",
     "keys_file",
+    "keys_lock_path",
     "load_provider_info",
     "onboarding_choices",
     "provider_config_entry",
