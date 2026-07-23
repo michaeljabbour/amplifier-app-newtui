@@ -148,15 +148,42 @@ not settings entries, so a broader allowed directory or approval cannot override
 | `TEXTUAL_DISABLE_KITTY_KEY` | force the shift+enter advertisement off (fallback hints) |
 | `TERM`, `TMUX`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `XTERM_VERSION`, `KITTY_WINDOW_ID`, `WEZTERM_PANE`, `GHOSTTY_RESOURCES_DIR`, `WT_SESSION` | terminal capability probe — affects only which key *hints* are advertised (bindings are unchanged) |
 | `WAYLAND_DISPLAY`, `DISPLAY` | clipboard backend selection on Linux (wl-copy vs xclip) |
+| `AMPLIFIER_NOTIFY` | Attention-notification ladder selector. `false`/`0`/`no`/`off` silences every rung; `bell` caps at the audible terminal bell; unset / `true` / `1` / `on` / `desktop` opens the full ladder (bell + an OSC 777 desktop notification when the window is unfocused) |
+| `AMPLIFIER_TERMINAL_NOTIFICATIONS` | Desktop (OSC 777) rung gate. `off`/`0`/`false`/`never`/`none` silences the desktop notification anywhere; `force`/`on`/`1`/`true`/`always` enables it on any terminal (bypasses the render allowlist). Unset uses the built-in allowlist below |
 
-No `AMPLIFIER_*` environment variables are read by the app's own code. Mounted bundle
-modules may read their own — e.g. `tool-team-pulse` reads `AMPLIFIER_TEAM_PULSE_URL` /
-`AMPLIFIER_TEAM_PULSE_KEY`, and `hooks-notify-push` sends push notifications to the
-ntfy.sh topic named by `AMPLIFIER_NTFY_TOPIC` (the hook mounts but stays inert when
-the variable is unset). When the `context-intelligence-logging`
+The app's own code reads only the two attention-notification variables above
+(`AMPLIFIER_NOTIFY`, `AMPLIFIER_TERMINAL_NOTIFICATIONS`); every other `AMPLIFIER_*`
+variable belongs to a mounted bundle module — e.g. `tool-team-pulse` reads
+`AMPLIFIER_TEAM_PULSE_URL` / `AMPLIFIER_TEAM_PULSE_KEY`, and `hooks-notify-push` sends
+push notifications to the ntfy.sh topic named by `AMPLIFIER_NTFY_TOPIC` (the hook mounts
+but stays inert when the variable is unset). When the `context-intelligence-logging`
 behavior is composed, its `hook-context-intelligence` also reads the
 `AMPLIFIER_CONTEXT_INTELLIGENCE_SERVER_URL` / `_API_KEY` / `_WORKSPACE` env vars as a fallback
 for the `telemetry` settings above.
+
+## Attention notifications
+
+When the assistant needs you — a turn finishes after a long run, or a decision is deferred
+to the needs-you queue — the app climbs a three-rung ladder instead of writing raw escapes
+to the TTY (which would corrupt the full-screen Textual screen the way the suppressed
+`hooks-notify` did):
+
+1. **Bell** — Textual's driver-safe `App.bell`. Always the first rung; works on every
+   terminal. Rings when a decision is deferred (always) or a turn finishes after ~10s.
+2. **Desktop (OSC 777)** — an out-of-band `\x1b]777;notify;<title>;<body>` escape the
+   terminal renders as a native OS notification, written through the same sanctioned
+   driver path as the terminal title (never raw stdout). The ladder climbs here **only
+   when the terminal window is unfocused** (you looked away), the terminal is on the
+   render allowlist, and `AMPLIFIER_NOTIFY` was not capped at `bell`.
+3. **Push** — off-machine ntfy push, owned by the mounted `hooks-notify-push` module
+   (`AMPLIFIER_NTFY_TOPIC`), for when you are away from the machine entirely.
+
+`AMPLIFIER_NOTIFY` gates the whole ladder (see the table above); `AMPLIFIER_NOTIFY=false`
+is the historical kill switch and silences every rung. The desktop rung's terminal
+**allowlist** — terminals known to render OSC notifications rather than print them as
+garbage — is kitty (via `TERM`/`KITTY_WINDOW_ID`) and ghostty / iTerm2 / WezTerm / Warp
+(via `TERM_PROGRAM`). `AMPLIFIER_TERMINAL_NOTIFICATIONS=force` opts any other terminal in;
+`=off` opts any terminal out.
 
 ## Quirks worth knowing
 

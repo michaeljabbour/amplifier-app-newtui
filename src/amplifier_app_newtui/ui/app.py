@@ -53,7 +53,7 @@ from ..model.blocks import (
 from ..model.lanes import LaneRegistry
 from ..model.modes import DEFAULT_MODE, ModeProfile, cycle_mode, get_mode
 from ..model.turn import OutcomeLedger
-from . import app_support, keymap
+from . import app_support, keymap, notifications
 from .approval_bar import ApprovalBar
 from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
 from .command_context import AppCommandContext
@@ -90,6 +90,18 @@ from .transcript import (
     ShowEvidence,
     TranscriptView,
 )
+
+
+_NOTIFY_TITLE = "Amplifier"
+"""Notification title for every desktop rung (kept short: OSC 777 title
+field is bounded to 80 chars in ``ui/notifications``)."""
+
+_NOTIFY_BODY = {
+    "turn_finished": "Turn complete",
+    "decision_deferred": "A decision needs you",
+}
+"""Default OSC 777 body per attention reason; a deferral passes its own
+message through instead (see :meth:`NewTuiApp._notify_attention`)."""
 
 
 class NewTuiApp(App[None]):
@@ -166,6 +178,11 @@ class NewTuiApp(App[None]):
             session_cost_start=adapter.session_cost_start,
         )
         self.turn_active = False
+        # Terminal-window focus (Textual AppFocus/AppBlur, the mode-1004
+        # focus report): assumed focused until a blur says otherwise, so
+        # the desktop rung of the notification ladder only escalates when
+        # the user has demonstrably looked away (issue #47).
+        self._terminal_focused = True
         self.fork_pending = False  # a confirmed fork is in flight (interrupt-then-fork)
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
         self._splash: BootSplash | None = None  # boot splash overlay (wordmark)
@@ -249,6 +266,46 @@ class NewTuiApp(App[None]):
         self._last_selection_copied = text
         self.copy_to_clipboard(text)
         self.show_notice(f"copied on select · {len(text)} chars")
+
+    def on_app_focus(self, event: events.AppFocus) -> None:
+        # The terminal window regained focus: the user is watching, so the
+        # ladder drops back to the audible bell alone (no desktop toast).
+        self._terminal_focused = True
+
+    def on_app_blur(self, event: events.AppBlur) -> None:
+        # The terminal window lost focus: a finished turn or deferred
+        # decision now earns the OSC 777 desktop rung (if the terminal
+        # renders it and AMPLIFIER_NOTIFY permits).
+        self._terminal_focused = False
+
+    def _notify_attention(
+        self,
+        reason: notifications.Reason,
+        elapsed_s: float = 0.0,
+        *,
+        detail: str = "",
+    ) -> None:
+        """Fire the attention-notification ladder (issue #47).
+
+        The suppressed hooks-notify wrote OSC-777 + BEL straight to the TTY
+        (which corrupts the full-screen TUI); its signal is re-expressed
+        here as a ladder. Rung 1 is Textual's driver-safe ``App.bell``; rung
+        2 is an OSC 777 desktop notification written through the same
+        sanctioned driver path the terminal title uses, only when the window
+        is unfocused on a capable terminal. Rung 3 (off-machine push) is the
+        mounted ``hooks-notify-push`` module's job. ``AMPLIFIER_NOTIFY``
+        gates the whole ladder; ``notification_rungs`` owns the policy.
+        """
+        rungs = notifications.notification_rungs(
+            reason, elapsed_s, focused=self._terminal_focused
+        )
+        if "bell" in rungs:
+            self.bell()
+        if "desktop" in rungs:
+            body = detail.strip() or _NOTIFY_BODY[reason]
+            notifications.write_desktop_notification(
+                self._driver, _NOTIFY_TITLE, body
+            )
 
     def on_unmount(self) -> None:
         # A quit during a running turn must not leave a frozen spinner in the
@@ -560,8 +617,7 @@ class NewTuiApp(App[None]):
             0.0 if self._turn_started_at is None else time.monotonic() - self._turn_started_at
         )
         self._turn_started_at = None
-        if app_support.attention_bell_needed("turn_finished", elapsed):
-            self.bell()
+        self._notify_attention("turn_finished", elapsed)
         self.refresh_status()
 
     def lanes_changed(self) -> None:
@@ -619,9 +675,8 @@ class NewTuiApp(App[None]):
             self.adapter.needs_you.defer(
                 question, reason, choices=choices, highlight=highlight, action=action
             )
-        # A deferred decision blocks on the human: always worth the bell.
-        if app_support.attention_bell_needed("decision_deferred"):
-            self.bell()
+        # A deferred decision blocks on the human: always worth notifying.
+        self._notify_attention("decision_deferred", detail=message)
         self._refresh_footer()
 
     def stream_opened(self, block_type: str) -> None:
