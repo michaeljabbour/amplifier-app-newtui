@@ -55,11 +55,7 @@ def model_listing_spans(listing: ModelListing) -> tuple[Segment, ...]:
     else:
         spans.append(Segment(text="  current  ", style_token="dim"))
         spans.append(Segment(text=f"{current}\n", style_token="green"))
-        spans.append(
-            Segment(
-                text="  (provider advertises no model list)\n", style_token="dimmer"
-            )
-        )
+        spans.append(Segment(text="  (provider advertises no model list)\n", style_token="dimmer"))
     return tuple(spans)
 
 
@@ -204,8 +200,7 @@ def mcp_spans(servers: dict[str, str], live_tools: tuple[str, ...]) -> tuple[Seg
     """``/mcp``: configured servers (mcp.json) + live-connected MCP tools."""
     spans = _header(
         "MCP",
-        f"{len(servers)} server(s) · {len(live_tools)} tool(s) connected"
-        " · /mcp add|remove",
+        f"{len(servers)} server(s) · {len(live_tools)} tool(s) connected · /mcp add|remove",
     )
     if servers:
         width = max(len(n) for n in servers)
@@ -214,7 +209,10 @@ def mcp_spans(servers: dict[str, str], live_tools: tuple[str, ...]) -> tuple[Seg
             spans.append(Segment(text=f"{summary}\n", style_token="dim"))
     else:
         spans.append(
-            Segment(text="  no servers in mcp.json · /mcp add <name> <cmd> [args…]\n", style_token="dimmer")
+            Segment(
+                text="  no servers in mcp.json · /mcp add <name> <cmd> [args…]\n",
+                style_token="dimmer",
+            )
         )
     if live_tools:
         spans.append(Segment(text=f"  connected: {', '.join(live_tools)}\n", style_token="dimmer"))
@@ -238,9 +236,7 @@ def diff_spans(patch: str | None, *, staged: bool) -> tuple[Segment, ...]:
             ),
         )
     if not patch.strip():
-        return (
-            Segment(text=f"  working tree clean · no {scope}changes\n", style_token="dim"),
-        )
+        return (Segment(text=f"  working tree clean · no {scope}changes\n", style_token="dim"),)
     lines = patch.splitlines()
     truncated = len(lines) > _DIFF_MAX_LINES
     spans: list[Segment] = []
@@ -267,8 +263,7 @@ def diff_spans(patch: str | None, *, staged: bool) -> tuple[Segment, ...]:
     if truncated:
         spans.append(
             Segment(
-                text=f"\n  … +{len(lines) - _DIFF_MAX_LINES} more lines"
-                " · /diff shows the head\n",
+                text=f"\n  … +{len(lines) - _DIFF_MAX_LINES} more lines · /diff shows the head\n",
                 style_token="dimmer",
             )
         )

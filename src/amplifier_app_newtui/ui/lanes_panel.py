@@ -100,9 +100,7 @@ def format_lane_lines(
     display = list(labels) if labels is not None else [lane.name for lane in lanes]
     badges = [
         f"▸ {queued_counts[index]} queued"
-        if queued_counts is not None
-        and index < len(queued_counts)
-        and queued_counts[index] > 0
+        if queued_counts is not None and index < len(queued_counts) and queued_counts[index] > 0
         else ""
         for index in range(len(lanes))
     ]
@@ -122,7 +120,9 @@ def format_lane_lines(
     def compose(acts: list[str], act_w: int, *, show_tokens: bool) -> tuple[str, ...]:
         lines = []
         for i, lane in enumerate(lanes):
-            line = f"  {lane.glyph} {names[i]:<{name_w}} · {acts[i]:<{act_w}} · {elapsed[i]:<{el_w}}"
+            line = (
+                f"  {lane.glyph} {names[i]:<{name_w}} · {acts[i]:<{act_w}} · {elapsed[i]:<{el_w}}"
+            )
             if show_tokens:
                 line += f" · {tokens[i]:<{tok_w}}"
             line += f" · {costs[i]}"
@@ -176,9 +176,7 @@ class _LaneRow(Static):
     }
     """
 
-    def __init__(
-        self, record: LaneRecord, line: str, index: int, *, motion_frame: int = 0
-    ) -> None:
+    def __init__(self, record: LaneRecord, line: str, index: int, *, motion_frame: int = 0) -> None:
         super().__init__(id=f"lane-row-{index}")
         self.record = record
         self.line = line
@@ -187,24 +185,16 @@ class _LaneRow(Static):
 
     def render(self) -> Text:
         tokens = self.app.theme_variables
-        text = Text(
-            self.line, style=Style(color=tokens.get(self.record.lane.color_token))
-        )
+        text = Text(self.line, style=Style(color=tokens.get(self.record.lane.color_token)))
         lane = self.record.lane
         if lane.state != "done" and lane.name:
             name_start = self.line.find(lane.name)
-            for offset, token, bold in shimmer_band(
-                len(lane.name), self.motion_frame
-            ):
+            for offset, token, bold in shimmer_band(len(lane.name), self.motion_frame):
                 start = name_start + offset
-                text.stylize(
-                    Style(color=tokens.get(token), bold=bold), start, start + 1
-                )
+                text.stylize(Style(color=tokens.get(token), bold=bold), start, start + 1)
         return text
 
-    def update_record(
-        self, record: LaneRecord, line: str, *, motion_frame: int
-    ) -> None:
+    def update_record(self, record: LaneRecord, line: str, *, motion_frame: int) -> None:
         """Refresh telemetry in place so motion is not reset by row remounts."""
 
         self.record = record
@@ -315,9 +305,7 @@ class LanesPanel(Vertical):
             labels=lane_labels(self._records),
             # Pre-layout (width 0) → no budget; rows refit on_resize.
             width=width if width > 0 else None,
-            queued_counts=[
-                self._queued.get(record.session_id, 0) for record in self._records
-            ],
+            queued_counts=[self._queued.get(record.session_id, 0) for record in self._records],
         )
 
     @property
@@ -376,9 +364,7 @@ class LanesPanel(Vertical):
         """Post :class:`FocusLane` for the highlighted lane."""
         record = self.selected_record
         if record is not None:
-            self.post_message(
-                self.FocusLane(record.lane.name, session_id=record.session_id)
-            )
+            self.post_message(self.FocusLane(record.lane.name, session_id=record.session_id))
 
     # -- key actions ----------------------------------------------------
 
@@ -442,9 +428,7 @@ class LanesPanel(Vertical):
             lines = self.lane_lines
             rows: list[Static] = [_LanesHeader()]
             rows.extend(
-                _LaneRow(
-                    record, lines[index], index, motion_frame=self._motion_frame
-                )
+                _LaneRow(record, lines[index], index, motion_frame=self._motion_frame)
                 for index, record in enumerate(self._records)
             )
             await self.mount(*rows)
@@ -457,9 +441,7 @@ class LanesPanel(Vertical):
             row.set_class(row.index == self._selected, "-selected")
 
     def _sync_motion(self) -> None:
-        active = bool(self.display) and any(
-            record.lane.state != "done" for record in self._records
-        )
+        active = bool(self.display) and any(record.lane.state != "done" for record in self._records)
         if active and self.is_mounted and self._motion_timer is None:
             self._motion_timer = self.set_interval(
                 LANE_MOTION_INTERVAL_SECONDS, self._advance_motion

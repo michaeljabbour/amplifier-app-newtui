@@ -396,9 +396,7 @@ class CommandRegistry:
 
     def contributions(self, source: CommandSource) -> tuple[CommandSpec, ...]:
         """All commands registered under *source*, in registration order."""
-        return tuple(
-            spec for spec in self._specs if self._sources[spec.name] == source
-        )
+        return tuple(spec for spec in self._specs if self._sources[spec.name] == source)
 
     def subscribe(self, listener: Callable[[], None]) -> None:
         """Call *listener* after every successful register/unregister
@@ -448,9 +446,7 @@ class CommandRegistry:
     # --- keybinds ------------------------------------------------------
     def keybound(self) -> dict[str, CommandSpec]:
         """Keymap action id → command, for wiring key chords to handlers."""
-        return {
-            spec.key_action: spec for spec in self._specs if spec.key_action is not None
-        }
+        return {spec.key_action: spec for spec in self._specs if spec.key_action is not None}
 
     # --- execution -----------------------------------------------------
     def run(self, name: str, ctx: CommandContext, args: str = "") -> None:

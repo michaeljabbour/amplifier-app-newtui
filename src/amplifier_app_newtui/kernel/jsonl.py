@@ -87,9 +87,7 @@ class JsonlRecords:
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
-    def session_started(
-        self, *, session_id: str, bundle: str, model: str
-    ) -> SessionStarted:
+    def session_started(self, *, session_id: str, bundle: str, model: str) -> SessionStarted:
         return SessionStarted(
             **self._envelope(),
             session_id=session_id,

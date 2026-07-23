@@ -149,7 +149,6 @@ SESSION_OPS: tuple[SessionOp[Any], ...] = (
 
 
 class RuntimeAdapter:
-
     """Base adapter: owns the event queue and shared interaction queues.
 
     The app calls :meth:`attach` before :meth:`start`; ``start`` must
@@ -188,9 +187,7 @@ class RuntimeAdapter:
         summaries, turn rules — DESIGN-SPEC §3/§11); empty means the
         prose ``restored_history`` fallback renders instead."""
         self.startup_notices: tuple[str, ...] = ()
-        self.compaction = CompactionConfig(
-            auto_compact=True, compact_threshold=0.8
-        )
+        self.compaction = CompactionConfig(auto_compact=True, compact_threshold=0.8)
         self._config_state: SessionConfigState = default_config_state()
         """Live ``/config`` state — shared by demo and real (invariant 4);
         real sessions reseed it from the mount plan at ``start()``."""
@@ -288,7 +285,6 @@ class RuntimeAdapter:
     async def mcp_tools(self) -> tuple[str, ...]:
         return await self._run_op(_MCP_TOOLS)
 
-
     async def rename_session(self, name: str) -> tuple[bool, str]:
         del name
         return (False, "renaming needs a real session")
@@ -300,9 +296,7 @@ class RuntimeAdapter:
         del name
         return (False, "branching needs a real session")
 
-    async def directory_entries(
-        self, kind: DirectoryKind
-    ) -> tuple[DirectoryEntry, ...]:
+    async def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
         del kind
         return ()
 
@@ -335,9 +329,7 @@ class RuntimeAdapter:
         """Frozen, thread-hop-safe snapshot of the live config state."""
         return ConfigSnapshotView.of(self._config_state)
 
-    async def config_toggle(
-        self, category: str, name: str, enable: bool
-    ) -> tuple[bool, str]:
+    async def config_toggle(self, category: str, name: str, enable: bool) -> tuple[bool, str]:
         """Enable/disable a config item in the session scope."""
         return self._config_state.toggle(category, name, enable=enable)
 
@@ -353,13 +345,9 @@ class RuntimeAdapter:
         """Persist the session config changes to a settings scope file."""
         from ..kernel.config_ops import save_config
 
-        return save_config(
-            self._config_state, scope=scope, project_dir=self._config_project_dir
-        )
+        return save_config(self._config_state, scope=scope, project_dir=self._config_project_dir)
 
-    def defer_approval(
-        self, ticket_id: str, prompt: str, options: tuple[str, ...]
-    ) -> None:
+    def defer_approval(self, ticket_id: str, prompt: str, options: tuple[str, ...]) -> None:
         """Park a live approval ticket into the needs-you queue WITHOUT
         answering it (ctrl-y on the approval bar).
 
@@ -545,8 +533,6 @@ class RealRuntimeAdapter(RuntimeAdapter):
         except Exception:
             logger.debug("runtime cleanup failed during teardown", exc_info=True)
 
-
-
     def _boot_progress(self, action: str, detail: str) -> None:
         # Fires on the runtime thread during start(); painting hops to
         # the app loop (boot can spend minutes in module prepare).
@@ -613,7 +599,6 @@ class RealRuntimeAdapter(RuntimeAdapter):
             self.model_name = self._runtime.model_name
         return result
 
-
     async def rename_session(self, name: str) -> tuple[bool, str]:
         if self._runtime is None:
             return (False, "session still starting")
@@ -633,9 +618,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
             return (False, "session still starting")
         return await self._in_runtime(self._runtime.branch_session(name))
 
-    async def directory_entries(
-        self, kind: DirectoryKind
-    ) -> tuple[DirectoryEntry, ...]:
+    async def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
         if self._runtime is None:
             return ()
 
@@ -649,9 +632,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
     ) -> tuple[bool, str]:
         if self._runtime is None:
             return (False, "session still starting")
-        return await self._in_runtime(
-            self._runtime.update_session_directory(kind, operation, path)
-        )
+        return await self._in_runtime(self._runtime.update_session_directory(kind, operation, path))
 
     async def fork(self, checkpoint_id: str, ledger: Any) -> None:
         """Real fork: foundation in-memory fork + ``context.set_messages()``."""
@@ -673,9 +654,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
 
         self._runtime_loop.call_soon_threadsafe(_answer)
 
-    def defer_approval(
-        self, ticket_id: str, prompt: str, options: tuple[str, ...]
-    ) -> None:
+    def defer_approval(self, ticket_id: str, prompt: str, options: tuple[str, ...]) -> None:
         """ctrl-y park through the kernel broker (its ``defer`` owns the
         ticket's structured detail, parks the shared needs-you item, and
         fires the decision Notification the UI already handles). The
@@ -772,4 +751,3 @@ class RealRuntimeAdapter(RuntimeAdapter):
 
 
 __all__ = ["SESSION_OPS", "RealRuntimeAdapter", "RuntimeAdapter", "SessionOp"]
-

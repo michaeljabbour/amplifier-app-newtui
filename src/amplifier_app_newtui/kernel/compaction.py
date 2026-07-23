@@ -62,9 +62,7 @@ class CompactionRuntimeBinding:
             max_tokens=config.max_tokens,
             auto_compact=config.auto_compact,
             compact_threshold=config.compact_threshold,
-            accounting=(
-                "provider-observed" if self._observer is not None else "estimated"
-            ),
+            accounting=("provider-observed" if self._observer is not None else "estimated"),
         )
 
     def apply(self) -> CompactionConfig:
@@ -149,9 +147,7 @@ def apply_compaction_settings(
     """
 
     requested = settings.get("context")
-    if not isinstance(requested, dict) or not any(
-        key in requested for key in _SETTING_KEYS
-    ):
+    if not isinstance(requested, dict) or not any(key in requested for key in _SETTING_KEYS):
         return mount_plan
     context = _context_mount(mount_plan)
     if isinstance(context, dict) and context.get("module") != "context-simple":
@@ -194,9 +190,7 @@ def compaction_config(mount_plan: dict[str, Any]) -> CompactionConfig:
     return CompactionConfig(
         max_tokens=int(max_tokens),
         auto_compact=auto_compact,
-        compact_threshold=(
-            float(compact_threshold) if compact_threshold is not None else None
-        ),
+        compact_threshold=(float(compact_threshold) if compact_threshold is not None else None),
     )
 
 

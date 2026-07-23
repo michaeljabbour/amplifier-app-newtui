@@ -114,7 +114,9 @@ _TEST_COMMAND_MARKERS = (
 )
 
 
-def classify_tool(tool_name: str, tool_input: Mapping[str, object] | None = None) -> CapabilityClass:
+def classify_tool(
+    tool_name: str, tool_input: Mapping[str, object] | None = None
+) -> CapabilityClass:
     """Classify one tool call into a :class:`CapabilityClass`.
 
     Order: explicit table → exec-command test sniffing → name-substring
@@ -167,9 +169,7 @@ _MODE_POLICY: dict[str, dict[CapabilityClass, Decision]] = {
 
 # Auto is a strict superset of build's auto set (read+test) plus write —
 # amplifier's natural wide scope. NET/SPEND/EXEC stay classifier-gated.
-_AUTO_STATIC_ALLOW = frozenset(
-    {CapabilityClass.READ, CapabilityClass.WRITE, CapabilityClass.TEST}
-)
+_AUTO_STATIC_ALLOW = frozenset({CapabilityClass.READ, CapabilityClass.WRITE, CapabilityClass.TEST})
 
 
 def resolve(

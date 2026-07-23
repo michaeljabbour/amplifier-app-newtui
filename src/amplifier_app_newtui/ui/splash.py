@@ -115,8 +115,7 @@ def hold_frame(art: tuple[str, ...], frame: int) -> tuple[Line, ...]:
     and copy stay stable while packages install — same rule as motion.py.
     """
     band: dict[int, tuple[StyleToken, bool]] = {
-        index: (token, bold)
-        for index, token, bold in shimmer_band(len(art[0]), frame)
+        index: (token, bold) for index, token, bold in shimmer_band(len(art[0]), frame)
     }
     lines: list[Line] = []
     for text in art:
@@ -133,14 +132,10 @@ def hold_frame(art: tuple[str, ...], frame: int) -> tuple[Line, ...]:
 def decay_grid(art: tuple[str, ...], seed: int = DISSOLVE_SEED) -> DecayGrid:
     """Per-cell dissolve start frames (fixed seed → deterministic order)."""
     rng = random.Random(seed)
-    return tuple(
-        tuple(rng.randint(0, DISSOLVE_SPREAD_FRAMES) for _ in line) for line in art
-    )
+    return tuple(tuple(rng.randint(0, DISSOLVE_SPREAD_FRAMES) for _ in line) for line in art)
 
 
-def dissolve_frame(
-    art: tuple[str, ...], grid: DecayGrid, frame: int
-) -> tuple[Line, ...] | None:
+def dissolve_frame(art: tuple[str, ...], grid: DecayGrid, frame: int) -> tuple[Line, ...] | None:
     """Melt-out: each cell decays ``char → · → space`` on its own schedule.
 
     Returns ``None`` once every cell has cleared (remove the widget).
@@ -256,9 +251,7 @@ class BootSplash(Static):
     def _paint(self) -> None:
         rows: list[Line] = list(self._lines)
         if self._status and self._phase != "dissolve" and self._art is not None:
-            glyph = GLYPH_SPINNER_FRAMES[
-                (self._tick // SPINNER_TICKS) % len(GLYPH_SPINNER_FRAMES)
-            ]
+            glyph = GLYPH_SPINNER_FRAMES[(self._tick // SPINNER_TICKS) % len(GLYPH_SPINNER_FRAMES)]
             rows.append(())
             rows.append(status_line(len(self._art[0]), self._status, glyph))
         # Rich Text, not content markup: the wordmark is full of backslashes,
@@ -266,9 +259,7 @@ class BootSplash(Static):
         # every frame) makes markup swallow its own close tag — a literal
         # ``[/]`` painted on screen. to_rich_text renders glyphs verbatim.
         variables = self.app.theme_variables
-        self.update(
-            Text("\n").join(to_rich_text(row, variables) for row in rows)
-        )
+        self.update(Text("\n").join(to_rich_text(row, variables) for row in rows))
 
 
 __all__ = [

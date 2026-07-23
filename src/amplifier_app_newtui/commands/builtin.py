@@ -190,12 +190,8 @@ def _cmd_denied_dirs(ctx: CommandContext, args: str) -> None:
 
 def _cmd_doctor(ctx: CommandContext, args: str) -> None:
     del args
-    mcp_stats = tuple(
-        stat for stat in ctx.mcp_server_stats() if isinstance(stat, McpServerStats)
-    )
-    tallies = tuple(
-        tally for tally in ctx.approval_tallies() if isinstance(tally, ApprovalTally)
-    )
+    mcp_stats = tuple(stat for stat in ctx.mcp_server_stats() if isinstance(stat, McpServerStats))
+    tallies = tuple(tally for tally in ctx.approval_tallies() if isinstance(tally, ApprovalTally))
     report = run_checks(mcp_stats=mcp_stats, approval_tallies=tallies)
     ctx.post_block(build_doctor_block(ctx.next_block_id(), report))
 
@@ -243,15 +239,9 @@ def _cmd_theme(ctx: CommandContext, args: str) -> None:
 
 def _cmd_improve(ctx: CommandContext, args: str) -> None:
     del args
-    tallies = tuple(
-        tally for tally in ctx.approval_tallies() if isinstance(tally, ApprovalTally)
-    )
-    overrides = tuple(
-        row for row in ctx.overridden_denials() if isinstance(row, OverriddenDenial)
-    )
-    proposals = improve_proposals(
-        tallies=tallies, overrides=overrides, ledger=ctx.ledger
-    )
+    tallies = tuple(tally for tally in ctx.approval_tallies() if isinstance(tally, ApprovalTally))
+    overrides = tuple(row for row in ctx.overridden_denials() if isinstance(row, OverriddenDenial))
+    proposals = improve_proposals(tallies=tallies, overrides=overrides, ledger=ctx.ledger)
     ctx.post_block(build_improve_block(ctx.next_block_id(), proposals))
 
 

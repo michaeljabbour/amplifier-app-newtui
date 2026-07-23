@@ -24,9 +24,7 @@ _SHIMMER_BAND: tuple[tuple[int, StyleToken, bool], ...] = (
 """A soft five-cell ``shadow -> light -> peak -> light -> shadow`` band."""
 
 
-def shimmer_band(
-    length: int, frame: int
-) -> tuple[tuple[int, StyleToken, bool], ...]:
+def shimmer_band(length: int, frame: int) -> tuple[tuple[int, StyleToken, bool], ...]:
     """Return visible ``(index, theme-token, bold)`` cells for one frame.
 
     Indices outside the label are clipped. During the quiet gap the result is

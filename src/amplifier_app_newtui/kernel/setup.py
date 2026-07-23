@@ -359,7 +359,11 @@ def write_provider_config(
     module = entry.get("module")
     kept: list[Any] = []
     for provider in providers:
-        if isinstance(provider, dict) and provider.get("module") == module and not provider.get("id"):
+        if (
+            isinstance(provider, dict)
+            and provider.get("module") == module
+            and not provider.get("id")
+        ):
             continue  # replace the same-module entry
         if (
             isinstance(provider, dict)
@@ -451,7 +455,9 @@ def _entry_priority(entry: dict[str, Any]) -> int:
     return 100
 
 
-def _scope_providers(paths: Any, scope: Literal["global", "project", "local"]) -> list[dict[str, Any]]:
+def _scope_providers(
+    paths: Any, scope: Literal["global", "project", "local"]
+) -> list[dict[str, Any]]:
     """The raw ``config.providers`` list stored at one scope."""
     from .bundle_admin import read_scope, scope_file
 
@@ -647,6 +653,7 @@ def remove_provider(
         write_scope(path, data)
         removed = True
     return target if removed else None
+
 
 __all__ = [
     "PROVIDER_CREDENTIAL_VARS",

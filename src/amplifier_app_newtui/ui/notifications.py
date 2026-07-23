@@ -70,9 +70,7 @@ allowlisted terminals; ``force`` enables them anywhere."""
 
 _TERMINAL_OFF_VALUES = frozenset({"off", "0", "false", "never", "none"})
 _TERMINAL_FORCE_VALUES = frozenset({"force", "on", "1", "true", "always"})
-_OSC_NOTIFY_TERM_PROGRAMS = frozenset(
-    {"ghostty", "iterm.app", "wezterm", "warpterminal"}
-)
+_OSC_NOTIFY_TERM_PROGRAMS = frozenset({"ghostty", "iterm.app", "wezterm", "warpterminal"})
 """``TERM_PROGRAM`` values (lowercased) of terminals known to render OSC
 notifications. Other terminals may print the escape as garbage, so they are
 excluded unless ``AMPLIFIER_TERMINAL_NOTIFICATIONS=force`` opts them in."""

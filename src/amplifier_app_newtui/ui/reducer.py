@@ -543,9 +543,7 @@ class TranscriptReducer:
         # Lane presentation state (per-lane live tail, focused-lane
         # transcripts, pending delegate briefs) lives in its own unit; the
         # turn reducer routes diverted child events onto lanes and drives it.
-        self._lane = LaneReducer(
-            host, allocator=allocator, lanes=lanes, tail_clock=tail_clock
-        )
+        self._lane = LaneReducer(host, allocator=allocator, lanes=lanes, tail_clock=tail_clock)
 
     # -- public state -------------------------------------------------------
 
@@ -633,9 +631,7 @@ class TranscriptReducer:
                 # live Esc leaves. ts stays in the log's clock domain.
                 self._turn.cancelled = True
                 self.handle(
-                    ev.PromptComplete(
-                        session_id=self._turn.session_id, ts=self._turn.last_ts
-                    )
+                    ev.PromptComplete(session_id=self._turn.session_id, ts=self._turn.last_ts)
                 )
         finally:
             self._host = live_host
@@ -1607,9 +1603,7 @@ class TranscriptReducer:
     def _agent_completed(self, event: ev.AgentCompleted) -> None:
         result = event.result or ("" if event.success else "failed")
         record = self.lanes.get(event.sub_session_id)
-        self._lane.clear_tail(
-            record.session_id if record is not None else event.sub_session_id
-        )
+        self._lane.clear_tail(record.session_id if record is not None else event.sub_session_id)
         if record is not None:
             # Focus-transcript close-out (mockup focusLane state recap):
             # ``✳ `` dimmer + dim italic state line, never clickable.

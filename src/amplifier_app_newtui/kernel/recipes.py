@@ -272,8 +272,7 @@ class RecipeApprovalBridge:
             # The next gate already re-emitted recipe:approval, raising a
             # fresh ticket — nothing more to do here.
             self._notify(
-                f"recipe '{recipe}' resumed and paused at stage "
-                f"'{output.get('stage_name', '')}'"
+                f"recipe '{recipe}' resumed and paused at stage '{output.get('stage_name', '')}'"
             )
         else:
             self._notify(f"recipe '{recipe}' approved and resumed — status: {status or 'done'}")

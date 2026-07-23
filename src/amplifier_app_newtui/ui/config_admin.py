@@ -55,16 +55,12 @@ async def manage(host: ConfigAdminHost, args: str) -> None:
 
     if inv.kind == "item":
         view = await host.adapter.config_view()
-        item = next(
-            (i for i in view.items_in(inv.category) if i.name == inv.name), None
-        )
+        item = next((i for i in view.items_in(inv.category) if i.name == inv.name), None)
         _post(host, config_item_spans(item, category=inv.category, name=inv.name))
         return
 
     if inv.kind == "toggle":
-        ok, message = await host.adapter.config_toggle(
-            inv.category, inv.name, inv.enable
-        )
+        ok, message = await host.adapter.config_toggle(inv.category, inv.name, inv.enable)
         host.show_notice(message)
         if ok:
             view = await host.adapter.config_view()

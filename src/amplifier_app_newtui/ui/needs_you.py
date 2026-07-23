@@ -99,17 +99,13 @@ class _ChoiceChip(Static):
     """
 
     def __init__(self, entry: NeedsYouEntry, choice: NeedsYouChoice, index: int) -> None:
-        super().__init__(
-            Text(chip_text(choice)), id=f"chip-{entry.decision_id}-{index}"
-        )
+        super().__init__(Text(chip_text(choice)), id=f"chip-{entry.decision_id}-{index}")
         self.entry = entry
         self.choice = choice
 
     def on_click(self, event: events.Click) -> None:
         event.stop()  # the row would otherwise re-fire its first choice
-        self.post_message(
-            NeedsYouList.DecisionTaken(self.entry.decision_id, self.choice.answer)
-        )
+        self.post_message(NeedsYouList.DecisionTaken(self.entry.decision_id, self.choice.answer))
 
 
 class _DecisionText(Static):
@@ -130,9 +126,7 @@ class _DecisionText(Static):
     def render(self) -> Text:
         tokens = self.app.theme_variables
         text = Text()
-        text.append(
-            decision_number_text(self.number), style=Style(color=tokens.get("orange"))
-        )
+        text.append(decision_number_text(self.number), style=Style(color=tokens.get("orange")))
         question = self.entry.question
         highlight = self.entry.highlight
         if highlight and highlight in question:
@@ -201,9 +195,7 @@ class _DecisionRow(Horizontal):
         event.stop()
         if self.entry.choices:
             self.post_message(
-                NeedsYouList.DecisionTaken(
-                    self.entry.decision_id, self.entry.choices[0].answer
-                )
+                NeedsYouList.DecisionTaken(self.entry.decision_id, self.entry.choices[0].answer)
             )
 
 
@@ -271,8 +263,7 @@ class NeedsYouList(Vertical):
             return
         rows: list[Static | Horizontal] = [_NeedsYouHeader(len(self._block.items))]
         rows.extend(
-            _DecisionRow(entry, number)
-            for number, entry in enumerate(self._block.items, start=1)
+            _DecisionRow(entry, number) for number, entry in enumerate(self._block.items, start=1)
         )
         await self.mount(*rows)
 

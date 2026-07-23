@@ -341,11 +341,7 @@ def _open_fence(source: str) -> str | None:
     for line in source.splitlines():
         stripped = line.strip()
         marker = (
-            "```"
-            if stripped.startswith("```")
-            else "~~~"
-            if stripped.startswith("~~~")
-            else None
+            "```" if stripped.startswith("```") else "~~~" if stripped.startswith("~~~") else None
         )
         if marker is None:
             continue
@@ -445,9 +441,7 @@ class LiveTail(Static):
     @property
     def source(self) -> str:
         """The full accumulated raw text (holdback never applies here)."""
-        if len(self._source_chunks) > 1 or (
-            self._source_chunks and not self._source_cache
-        ):
+        if len(self._source_chunks) > 1 or (self._source_chunks and not self._source_cache):
             self._source_cache = "".join(self._source_chunks)
             self._source_chunks = [self._source_cache] if self._source_cache else []
         return self._source_cache
@@ -531,9 +525,7 @@ class LiveTail(Static):
         self._lane_mode = False
         self.update("")
 
-    def attach_evidence(
-        self, answer: Answer, links: tuple[EvidenceLink, ...]
-    ) -> Answer:
+    def attach_evidence(self, answer: Answer, links: tuple[EvidenceLink, ...]) -> Answer:
         """Convenience: the consolidated Answer with evidence refs attached."""
         return answer.model_copy(update={"evidence_refs": links})
 

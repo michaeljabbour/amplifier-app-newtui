@@ -198,7 +198,6 @@ def malformed_settings_notice(malformed: tuple[Path, ...]) -> str | None:
     )
 
 
-
 def map_provider_ids_to_instance_ids(mount_plan: dict[str, Any]) -> None:
     """Copy each provider's settings ``id`` to the kernel's ``instance_id``.
 
@@ -778,7 +777,6 @@ class ResolvedConfig:
     buried in a silent ``logger.warning`` (doctor also flags it at rest)."""
 
 
-
 async def resolve_config(
     bundle: str | None = None,
     *,
@@ -815,7 +813,6 @@ async def resolve_config(
         SettingsPaths.default(project_dir, amplifier_home)
     )
     settings_notice = malformed_settings_notice(malformed_settings)
-
 
     # 2. Bundle discovery.
     search_paths = bundle_search_paths(project_dir, amplifier_home)
@@ -879,7 +876,6 @@ async def resolve_config(
     )
 
 
-
 def get_project_slug(project_dir: Path | None = None) -> str:
     """Deterministic project slug from the project directory path.
 
@@ -918,7 +914,6 @@ __all__ = [
     "load_merged_settings_reporting",
     "malformed_settings_notice",
     "merge_settings",
-
     "merge_tool_configs",
     "map_provider_ids_to_instance_ids",
     "overlay_uris",

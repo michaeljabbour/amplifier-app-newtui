@@ -49,9 +49,7 @@ class GitDiffSnapshot:
         before = {item.path: item for item in previous.files}
         after = {item.path: item for item in self.files}
         paths = {
-            path
-            for path in before.keys() | after.keys()
-            if before.get(path) != after.get(path)
+            path for path in before.keys() | after.keys() if before.get(path) != after.get(path)
         }
         additions = 0
         deletions = 0
@@ -121,9 +119,7 @@ async def capture_git_patch(
     return output.decode("utf-8", "replace")
 
 
-async def _git_output(
-    cwd: Path, args: tuple[str, ...], timeout_seconds: float
-) -> bytes | None:
+async def _git_output(cwd: Path, args: tuple[str, ...], timeout_seconds: float) -> bytes | None:
     process: asyncio.subprocess.Process | None = None
     try:
         process = await asyncio.create_subprocess_exec(

@@ -78,9 +78,7 @@ def _ensure_routing_bundle_cached(amplifier_home: Path) -> None:
         logger.warning("Could not fetch routing-matrix bundle: %s", exc)
 
 
-def discover_matrix_files(
-    amplifier_home: Path | None = None, *, fetch: bool = False
-) -> list[Path]:
+def discover_matrix_files(amplifier_home: Path | None = None, *, fetch: bool = False) -> list[Path]:
     """Discover routing-matrix YAML files (bundle cache + user dir), sorted.
 
     Looks in ``<home>/cache/amplifier-bundle-routing-matrix-*/routing/*.yaml``
@@ -91,14 +89,10 @@ def discover_matrix_files(
     files: list[Path] = []
 
     cache_base = home / "cache"
-    bundle_dirs = (
-        sorted(cache_base.glob(_ROUTING_BUNDLE_GLOB)) if cache_base.is_dir() else []
-    )
+    bundle_dirs = sorted(cache_base.glob(_ROUTING_BUNDLE_GLOB)) if cache_base.is_dir() else []
     if not bundle_dirs and fetch:
         _ensure_routing_bundle_cached(home)
-        bundle_dirs = (
-            sorted(cache_base.glob(_ROUTING_BUNDLE_GLOB)) if cache_base.is_dir() else []
-        )
+        bundle_dirs = sorted(cache_base.glob(_ROUTING_BUNDLE_GLOB)) if cache_base.is_dir() else []
     for bundle_dir in bundle_dirs:
         routing_dir = bundle_dir / "routing"
         if routing_dir.is_dir():
@@ -166,9 +160,7 @@ def _roles(matrix_data: dict[str, Any]) -> dict[str, Any]:
     return roles if isinstance(roles, dict) else {}
 
 
-def check_compatibility(
-    matrix_data: dict[str, Any], provider_types: set[str]
-) -> tuple[int, int]:
+def check_compatibility(matrix_data: dict[str, Any], provider_types: set[str]) -> tuple[int, int]:
     """Count roles with at least one configured provider: ``(covered, total)``."""
     roles = _roles(matrix_data)
     covered = 0
@@ -178,10 +170,7 @@ def check_compatibility(
         candidates = role_config.get("candidates")
         if not isinstance(candidates, list):
             continue
-        if any(
-            isinstance(c, dict) and c.get("provider") in provider_types
-            for c in candidates
-        ):
+        if any(isinstance(c, dict) and c.get("provider") in provider_types for c in candidates):
             covered += 1
     return covered, len(roles)
 
@@ -201,9 +190,7 @@ def resolve_matrix(
     for role_name, role_config in _roles(matrix_data).items():
         model: str | None = None
         provider: str | None = None
-        candidates = (
-            role_config.get("candidates") if isinstance(role_config, dict) else None
-        )
+        candidates = role_config.get("candidates") if isinstance(role_config, dict) else None
         if isinstance(candidates, list):
             for candidate in candidates:
                 if not isinstance(candidate, dict):
@@ -268,9 +255,7 @@ def list_matrices(
 ) -> tuple[MatrixEntry, ...]:
     """Discovered matrices with active/compatibility flags, name-sorted."""
     settings = load_merged_settings(settings_paths(project_dir, amplifier_home))
-    matrices = load_all_matrices(
-        discover_matrix_files(amplifier_home, fetch=fetch)
-    )
+    matrices = load_all_matrices(discover_matrix_files(amplifier_home, fetch=fetch))
     active = active_matrix(settings)
     provider_types = configured_provider_types(settings)
     entries: list[MatrixEntry] = []

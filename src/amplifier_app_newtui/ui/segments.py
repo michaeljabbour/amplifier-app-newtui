@@ -87,9 +87,7 @@ def lines_plain(lines: Iterable[Iterable[Segment]]) -> str:
     return "\n".join(line_plain(line) for line in lines)
 
 
-def to_rich_text(
-    line: Iterable[Segment], variables: Mapping[str, str] | None = None
-) -> Text:
+def to_rich_text(line: Iterable[Segment], variables: Mapping[str, str] | None = None) -> Text:
     """A line as ``rich.text.Text``.
 
     ``variables`` maps token name → resolved color (pass
@@ -103,9 +101,7 @@ def to_rich_text(
             continue
         color = variables.get(segment.style_token) if variables else None
         bgcolor = (
-            variables.get(segment.bg_token)
-            if variables and segment.bg_token is not None
-            else None
+            variables.get(segment.bg_token) if variables and segment.bg_token is not None else None
         )
         text.append(
             segment.text,

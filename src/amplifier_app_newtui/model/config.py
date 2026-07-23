@@ -166,9 +166,7 @@ def parse_config_command(args: str) -> ConfigInvocation:
 
     if head == "set":
         if len(parts) < 3:
-            return ConfigInvocation(
-                kind="error", message="usage: /config set <path> <value>"
-            )
+            return ConfigInvocation(kind="error", message="usage: /config set <path> <value>")
         return ConfigInvocation(kind="set", path=parts[1], value=parts[2])
 
     if head in CONFIG_CATEGORIES:
@@ -397,9 +395,7 @@ def _entry_detail(entry: Any) -> str:
     return ""
 
 
-def state_from_mount_plan(
-    mount_plan: dict[str, Any], *, bundle: str = ""
-) -> SessionConfigState:
+def state_from_mount_plan(mount_plan: dict[str, Any], *, bundle: str = "") -> SessionConfigState:
     """Build a :class:`SessionConfigState` from a resolved mount plan.
 
     Reads the plan's ``providers`` / ``tools`` / ``hooks`` / ``agents``
@@ -493,9 +489,7 @@ class ConfigSnapshotView:
         return cls(
             bundle=state.bundle,
             items=state.items(),
-            overrides=tuple(
-                (path, repr(value)) for path, value in state.overrides.items()
-            ),
+            overrides=tuple((path, repr(value)) for path, value in state.overrides.items()),
             changes=state.diff(),
         )
 
