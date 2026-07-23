@@ -148,9 +148,7 @@ class RewindStrip(Horizontal):
         current = self.current
         return rewind_line(current) if current is not None else ""
 
-    def show_checkpoints(
-        self, checkpoints: Sequence[Checkpoint], index: int | None = None
-    ) -> None:
+    def show_checkpoints(self, checkpoints: Sequence[Checkpoint], index: int | None = None) -> None:
         """Open the picker on *checkpoints* (newest selected by default).
 
         An empty checkpoint list keeps the strip hidden — the app shows

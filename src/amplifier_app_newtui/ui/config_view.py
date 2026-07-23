@@ -88,31 +88,19 @@ def config_show_spans(
     if category is None:
         spans.extend(_overrides_block(view))
     if not rendered_any:
-        spans.append(
-            Segment(text=f"    no {category} configured\n", style_token="dimmer")
-        )
+        spans.append(Segment(text=f"    no {category} configured\n", style_token="dimmer"))
     return tuple(spans)
 
 
-def config_item_spans(
-    item: ConfigItem | None, *, category: str, name: str
-) -> tuple[Segment, ...]:
+def config_item_spans(item: ConfigItem | None, *, category: str, name: str) -> tuple[Segment, ...]:
     """``/config <category> <name>`` -- one item's detail (or a not-found line)."""
     if item is None:
-        return (
-            Segment(
-                text=f"  no {category} item named '{name}'\n", style_token="dimmer"
-            ),
-        )
+        return (Segment(text=f"  no {category} item named '{name}'\n", style_token="dimmer"),)
     spans = _header("Config", f"{category} \u00b7 {name}")
     spans.extend(_item_line(item))
     if not item.read_only:
         verb = "disable" if item.enabled else "enable"
-        spans.append(
-            Segment(
-                text=f"    /config {category} {verb} {name}\n", style_token="dimmer"
-            )
-        )
+        spans.append(Segment(text=f"    /config {category} {verb} {name}\n", style_token="dimmer"))
     return tuple(spans)
 
 

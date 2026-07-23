@@ -63,9 +63,7 @@ MODE_PROFILES: dict[ModeId, ModeProfile] = {
     "chat": ModeProfile(
         id="chat", color_token="dim", trust_str="ask all · auto read", accent="rule"
     ),
-    "plan": ModeProfile(
-        id="plan", color_token="blue", trust_str="read-only", accent="blue"
-    ),
+    "plan": ModeProfile(id="plan", color_token="blue", trust_str="read-only", accent="blue"),
     "brainstorm": ModeProfile(
         id="brainstorm", color_token="teal", trust_str="no tools", accent="teal"
     ),

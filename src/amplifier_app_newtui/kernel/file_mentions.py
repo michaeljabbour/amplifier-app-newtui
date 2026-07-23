@@ -49,8 +49,7 @@ def discover_workspace_files(
             directories[:] = sorted(
                 name
                 for name in directories
-                if name not in IGNORED_DIRECTORIES
-                and not (Path(current) / name).is_symlink()
+                if name not in IGNORED_DIRECTORIES and not (Path(current) / name).is_symlink()
             )
             for filename in sorted(filenames):
                 path = Path(current) / filename
@@ -67,9 +66,7 @@ def discover_workspace_files(
     return tuple(found)
 
 
-def filter_file_mentions(
-    paths: Sequence[str], query: str, *, limit: int = 8
-) -> tuple[str, ...]:
+def filter_file_mentions(paths: Sequence[str], query: str, *, limit: int = 8) -> tuple[str, ...]:
     """Rank file paths for a case-insensitive composer query.
 
     Basename prefix matches lead, then path prefix, basename substring, and

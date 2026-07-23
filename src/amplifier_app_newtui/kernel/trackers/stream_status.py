@@ -99,9 +99,7 @@ class StreamStatusTracker:
     @property
     def estimated_tokens(self) -> int:
         """Rough live token count before provider usage arrives (~4 chars/tok)."""
-        characters = sum(
-            len(text) for kind, text, _ in self._blocks.values() if kind == "text"
-        )
+        characters = sum(len(text) for kind, text, _ in self._blocks.values() if kind == "text")
         return max(0, (characters + 3) // 4)
 
     def add_listener(self, listener: Listener) -> Callable[[], None]:

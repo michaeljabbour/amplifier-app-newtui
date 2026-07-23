@@ -309,7 +309,9 @@ wrap at ``min(width, READING_MEASURE)`` so a wide terminal doesn't stretch
 paragraphs into unreadably long lines; code and table rows keep full width
 (they are emitted verbatim, never re-wrapped) so alignment survives."""
 
-_ANSWER_MARKER_RE = re.compile(rf"^\s*(?:•|{GLYPH_CHECKBOX_CHECKED}|{GLYPH_CHECKBOX_EMPTY}|\d+[.)])\s+$")
+_ANSWER_MARKER_RE = re.compile(
+    rf"^\s*(?:•|{GLYPH_CHECKBOX_CHECKED}|{GLYPH_CHECKBOX_EMPTY}|\d+[.)])\s+$"
+)
 """A list marker segment (``• `` / ``✓ `` / ``☐ `` / ``1. `` / indented) at
 the head of a logical answer line — its cell width becomes the hanging
 indent for continuation lines."""

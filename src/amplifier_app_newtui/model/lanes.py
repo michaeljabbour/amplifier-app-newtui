@@ -188,9 +188,7 @@ class LaneRegistry:
                 fresh = existing.model_copy(
                     update={
                         "started_at": now,
-                        "lane": LaneState.for_state(
-                            name=name, state=state, activity=activity
-                        ),
+                        "lane": LaneState.for_state(name=name, state=state, activity=activity),
                     }
                 )
                 self._records[session_id] = fresh
@@ -346,9 +344,7 @@ class LaneRegistry:
         for child in self.children_of(parent_id):
             expected = parent.depth + 1
             if child.depth != expected:
-                self._records[child.session_id] = child.model_copy(
-                    update={"depth": expected}
-                )
+                self._records[child.session_id] = child.model_copy(update={"depth": expected})
                 self._patch_child_depths(child.session_id)
 
     def _resolve_id(self, session_id: str, *, parent_id: str | None = None) -> str | None:
@@ -365,9 +361,7 @@ class LaneRegistry:
         ]
         return matches[0] if len(matches) == 1 else None
 
-    def _rekey(
-        self, old_id: str, new_id: str, *, parent_id: str | None
-    ) -> LaneRecord:
+    def _rekey(self, old_id: str, new_id: str, *, parent_id: str | None) -> LaneRecord:
         record = self._records.pop(old_id)
         rebound = record.model_copy(
             update={

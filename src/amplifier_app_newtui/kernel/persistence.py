@@ -137,11 +137,7 @@ class SessionStore:
     ) -> None:
         if base_dir is None:
             base_dir = (
-                Path.home()
-                / ".amplifier"
-                / "projects"
-                / get_project_slug(project_dir)
-                / "sessions"
+                Path.home() / ".amplifier" / "projects" / get_project_slug(project_dir) / "sessions"
             )
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -151,7 +147,6 @@ class SessionStore:
         is lost. The runtime surfaces it as a user-facing Notification,
         mirroring ``_load_metadata``'s ``recovered`` marker (which was the
         only side of this pair that spoke up)."""
-
 
     # -- paths -------------------------------------------------------------
 
@@ -280,7 +275,6 @@ class SessionStore:
             )
         return []
 
-
     def _load_metadata(self, session_dir: Path) -> dict[str, Any]:
         main = session_dir / METADATA_FILENAME
         backup = session_dir / (METADATA_FILENAME + ".backup")
@@ -371,9 +365,7 @@ class SessionStore:
         partial_id = partial_id.strip()
         if not partial_id:
             raise ValueError("Session ID cannot be empty")
-        if self.exists(partial_id) and (
-            not top_level_only or is_top_level_session(partial_id)
-        ):
+        if self.exists(partial_id) and (not top_level_only or is_top_level_session(partial_id)):
             return partial_id
         matches = [
             sid

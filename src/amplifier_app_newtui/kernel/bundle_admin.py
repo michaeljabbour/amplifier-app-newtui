@@ -270,14 +270,10 @@ def list_bundles(
     )
     for name in list_available_bundles(search):
         location = discover_bundle(name, search) or ""
-        entries[name] = BundleEntry(
-            name=name, active=name == active, source="local", uri=location
-        )
+        entries[name] = BundleEntry(name=name, active=name == active, source="local", uri=location)
     for name, uri in added_bundles(settings).items():
         if name not in entries:
-            entries[name] = BundleEntry(
-                name=name, active=name == active, source="added", uri=uri
-            )
+            entries[name] = BundleEntry(name=name, active=name == active, source="added", uri=uri)
     return tuple(sorted(entries.values(), key=lambda entry: entry.name))
 
 
@@ -319,9 +315,7 @@ async def load_bundle_info(uri: str) -> BundleInfo | None:
     from .config import bundle_search_paths, discover_bundle
 
     paths = settings_paths(None, None)
-    search = bundle_search_paths(
-        paths.project_settings.parent.parent, _amplifier_home(None)
-    )
+    search = bundle_search_paths(paths.project_settings.parent.parent, _amplifier_home(None))
     target = discover_bundle(uri, search) or uri
     try:
         bundle = await load_bundle(target, auto_include=False)

@@ -49,17 +49,13 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # AWS access key IDs (AKIA/ASIA/… + 16 base32 chars), incl. the AWS docs
     # example key AKIAIOSFODNN7EXAMPLE.
     (
-        re.compile(
-            r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|A3T[A-Z0-9])[A-Z0-9]{16}\b"
-        ),
+        re.compile(r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|A3T[A-Z0-9])[A-Z0-9]{16}\b"),
         REDACTION_PLACEHOLDER,
     ),
     # AWS secret access keys are 40 base64 chars — too generic to match on
     # shape alone, so only when introduced by their canonical key name.
     (
-        re.compile(
-            r"(?i)(aws_secret_access_key\s*[:=]\s*)['\"]?[A-Za-z0-9/+=]{40}['\"]?"
-        ),
+        re.compile(r"(?i)(aws_secret_access_key\s*[:=]\s*)['\"]?[A-Za-z0-9/+=]{40}['\"]?"),
         r"\1" + REDACTION_PLACEHOLDER,
     ),
     # GitHub tokens (PAT/OAuth/app/refresh + fine-grained pat).

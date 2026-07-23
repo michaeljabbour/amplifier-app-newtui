@@ -194,9 +194,7 @@ class SessionSpawner:
                 "error": reason,
             }
 
-        child_id = sub_session_id or self._id_generator(
-            str(parent_session.session_id), agent_name
-        )
+        child_id = sub_session_id or self._id_generator(str(parent_session.session_id), agent_name)
         overlay = _agent_overlay(agent_configs, agent_name)
         config = _merged_config(parent_session, overlay)
         _apply_inheritance_filter(config, "tools", tool_inheritance, overlay.get("tools"))
@@ -211,15 +209,11 @@ class SessionSpawner:
         # any prefs the routing hook wrote onto the agent config. Best-effort:
         # a single-provider setup or missing resolver leaves the child on the
         # parent provider (apply_* skips unmounted providers). Never raises.
-        config = await _apply_routing(
-            config, parent_coordinator, provider_preferences, model_role
-        )
+        config = await _apply_routing(config, parent_coordinator, provider_preferences, model_role)
         approval_system = self._approval_system or getattr(
             parent_coordinator, "approval_system", None
         )
-        display_system = self._display_system or getattr(
-            parent_coordinator, "display_system", None
-        )
+        display_system = self._display_system or getattr(parent_coordinator, "display_system", None)
         _remember(self._briefs, agent_name, _brief(instruction))
         child = self._session_factory(
             config=config,
@@ -396,8 +390,7 @@ def _apply_inheritance_filter(
     if not isinstance(entries, list) or not entries:
         return
     explicit = {
-        _module_id(entry)
-        for entry in (agent_declared if isinstance(agent_declared, list) else ())
+        _module_id(entry) for entry in (agent_declared if isinstance(agent_declared, list) else ())
     }
     inherit = inheritance.get(f"inherit_{section}")
     exclude = inheritance.get(f"exclude_{section}") or ()
@@ -630,9 +623,7 @@ async def _apply_routing(
             apply_provider_preferences_with_resolution,
         )
 
-        return await apply_provider_preferences_with_resolution(
-            config, coerced, parent_coordinator
-        )
+        return await apply_provider_preferences_with_resolution(config, coerced, parent_coordinator)
     except Exception:  # noqa: BLE001 — routing is best-effort; never break spawn
         logger.debug("routing application failed for spawn", exc_info=True)
         return config

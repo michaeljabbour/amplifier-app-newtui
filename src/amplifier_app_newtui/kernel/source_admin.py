@@ -189,9 +189,7 @@ def _prune_sources(data: dict[str, Any]) -> None:
         data.pop("sources", None)
 
 
-def cleanup_provider_config_source(
-    paths: SettingsPaths, module_id: str, scope: Scope
-) -> bool:
+def cleanup_provider_config_source(paths: SettingsPaths, module_id: str, scope: Scope) -> bool:
     """Drop a local ``source`` from a ``config.providers`` entry for *module_id*.
 
     When a module source override is removed, a provider entry that still

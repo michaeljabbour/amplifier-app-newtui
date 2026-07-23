@@ -102,7 +102,9 @@ async def check_bundles(
                 BundleUpdate(name, target, summary, bool(getattr(status, "has_updates", False)))
             )
         except Exception as error:  # noqa: BLE001 — never abort the whole check
-            results.append(BundleUpdate(name, target, f"check failed: {error}", False, error=str(error)))
+            results.append(
+                BundleUpdate(name, target, f"check failed: {error}", False, error=str(error))
+            )
     return results
 
 
@@ -133,9 +135,7 @@ def uv_cache_clean() -> bool:
     import subprocess
 
     try:
-        subprocess.run(
-            ["uv", "cache", "clean"], check=False, capture_output=True, timeout=120
-        )
+        subprocess.run(["uv", "cache", "clean"], check=False, capture_output=True, timeout=120)
         return True
     except Exception:  # noqa: BLE001 — best-effort
         return False

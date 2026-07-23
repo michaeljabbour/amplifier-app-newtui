@@ -92,7 +92,6 @@ class ApprovalTicket:
 
 
 class ApprovalBroker:
-
     """FIFO approval request broker (kernel ApprovalSystem implementation).
 
     The inline approval bar answers :attr:`head`. UI listeners fire on
@@ -133,7 +132,6 @@ class ApprovalBroker:
         """The ticket the inline approval bar is answering (the oldest
         pending ticket)."""
         return self._tickets[0] if self._tickets else None
-
 
     def add_listener(self, listener: Listener) -> Callable[[], None]:
         self._listeners.append(listener)
@@ -210,7 +208,6 @@ class ApprovalBroker:
         if not ticket.future.done():
             ticket.future.set_result(choice)
 
-
     # -- internals -----------------------------------------------------------
 
     def _pop_staged(self, prompt: str) -> ApprovalDetail:
@@ -262,8 +259,7 @@ def presented_options(options: Iterable[str]) -> tuple[str, ...]:
     extras = tuple(
         option
         for option in options
-        if option not in STANDARD_OPTIONS
-        and option.strip().casefold() not in {"allow", "deny"}
+        if option not in STANDARD_OPTIONS and option.strip().casefold() not in {"allow", "deny"}
     )
     return STANDARD_OPTIONS + extras
 

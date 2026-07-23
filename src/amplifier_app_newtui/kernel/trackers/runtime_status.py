@@ -130,9 +130,7 @@ class RuntimeStatusTracker:
         """Re-seed restored spend on resume (ui-events.jsonl replay)."""
         if prior_cost <= 0:
             return
-        self._session = self._session.model_copy(
-            update={"cost": self._session.cost + prior_cost}
-        )
+        self._session = self._session.model_copy(update={"cost": self._session.cost + prior_cost})
         self._notify()
 
     def add_listener(self, listener: Listener) -> Callable[[], None]:

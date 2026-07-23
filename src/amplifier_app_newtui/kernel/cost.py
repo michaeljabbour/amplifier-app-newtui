@@ -374,10 +374,7 @@ def sum_prior_cost(events_path: Path, pricing: PricingTable | None = None) -> De
                         pending = None
                     continue
 
-                final_block = (
-                    block.total_blocks <= 0
-                    or block.block_index == block.total_blocks - 1
-                )
+                final_block = block.total_blocks <= 0 or block.block_index == block.total_blocks - 1
                 if block.usage:
                     usage = pending or usage_from_content_block_end(block)
                     if final_block and usage is not None:

@@ -31,9 +31,7 @@ class DisplaySystem:
     def nesting(self) -> int:
         return self._nesting
 
-    def show_message(
-        self, message: str, level: str = "info", source: str = ""
-    ) -> None:
+    def show_message(self, message: str, level: str = "info", source: str = "") -> None:
         self._emit(
             Notification(
                 session_id=self._session_id,

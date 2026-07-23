@@ -119,9 +119,7 @@ def lane_focus_blocks(lane: DemoLane, allocator: BlockIdAllocator) -> list[Trans
         if row.kind == "narration":
             blocks.append(Narration(id=allocator.next_id(), text=row.text))
         elif row.kind == "tool":
-            blocks.append(
-                ToolLine(id=allocator.next_id(), summary=row.text, status="completed")
-            )
+            blocks.append(ToolLine(id=allocator.next_id(), summary=row.text, status="completed"))
         elif row.kind == "command":
             blocks.append(LiveCommand(id=allocator.next_id(), command=row.text))
         else:  # answer
@@ -151,8 +149,7 @@ def lane_focus_blocks(lane: DemoLane, allocator: BlockIdAllocator) -> list[Trans
 
 def demo_evidence_links() -> tuple[EvidenceLink, ...]:
     return tuple(
-        EvidenceLink(claim_quote=claim.quote, tool_ref=claim.source)
-        for claim in DEMO_EVIDENCE
+        EvidenceLink(claim_quote=claim.quote, tool_ref=claim.source) for claim in DEMO_EVIDENCE
     )
 
 

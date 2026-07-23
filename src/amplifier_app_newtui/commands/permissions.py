@@ -181,9 +181,7 @@ class PermissionSurface:
                     decision=override if override is not None else default.decision,
                     default_decision=default.decision,
                     overridden=override is not None,
-                    classifier_gated=(
-                        default.classifier_gated if override is None else False
-                    ),
+                    classifier_gated=(default.classifier_gated if override is None else False),
                 )
             )
         return tuple(rows)
@@ -225,9 +223,7 @@ class PermissionSurface:
         """
         command = ""
         if tool_input:
-            command = str(
-                tool_input.get("command", "") or tool_input.get("cmd", "")
-            ).strip()
+            command = str(tool_input.get("command", "") or tool_input.get("cmd", "")).strip()
         capability = classify_tool(tool_name, tool_input)
         for pattern in self._blocks:
             if _matches(pattern, tool_name, command):

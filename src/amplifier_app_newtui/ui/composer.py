@@ -81,9 +81,7 @@ def _cursor_location(text: str, offset: int) -> tuple[int, int]:
     return (prefix.count("\n"), len(prefix.rsplit("\n", 1)[-1]))
 
 
-def active_file_mention(
-    text: str, location: tuple[int, int]
-) -> tuple[str, int, int] | None:
+def active_file_mention(text: str, location: tuple[int, int]) -> tuple[str, int, int] | None:
     """Return ``(query, start, end)`` for the mention under the cursor."""
     end = _cursor_offset(text, location)
     match = _FILE_MENTION_RE.search(text[:end])
@@ -167,9 +165,7 @@ class ComposerInput(TextArea):
         if composer.mention_open and event.key in ("up", "down"):
             event.stop()
             event.prevent_default()
-            composer.post_message(
-                FileMentionIntent("move", delta=-1 if event.key == "up" else 1)
-            )
+            composer.post_message(FileMentionIntent("move", delta=-1 if event.key == "up" else 1))
         elif composer.mention_open and event.key in ("enter", "tab"):
             event.stop()
             event.prevent_default()

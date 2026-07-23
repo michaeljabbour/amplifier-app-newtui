@@ -542,7 +542,6 @@ class RealRuntime:
         may be garbage-collected mid-flight, silently stopping the work
         (mirrors ``recipes`` ``self._tasks`` + ``add_done_callback``)."""
 
-
     def _progress(self, action: str = "", detail: str = "", *rest: object) -> None:
         del rest
         self._report_progress(str(action), str(detail))
@@ -611,9 +610,7 @@ class RealRuntime:
             # A settings.yaml scope was malformed and skipped — surface it
             # loudly rather than silently dropping the whole scope (the
             # analogous bundle fallback above already speaks up).
-            self.bridge.emit(
-                Notification(message=resolved.settings_notice, level="warning")
-            )
+            self.bridge.emit(Notification(message=resolved.settings_notice, level="warning"))
         self._resolved = resolved
 
         self.compaction = compaction_config(resolved.mount_plan)
@@ -748,9 +745,11 @@ class RealRuntime:
         # of hanging invisibly (contract details: kernel/recipes.py).
         recipes_bridge = RecipeApprovalBridge(
             broker=self.broker,
-            tools=lambda: self._initialized.coordinator.get("tools")
-            if self._initialized is not None
-            else None,
+            tools=lambda: (
+                self._initialized.coordinator.get("tools")
+                if self._initialized is not None
+                else None
+            ),
             emit=self.bridge.emit,
             is_executing=lambda: self._executing,
         )
@@ -797,9 +796,7 @@ class RealRuntime:
             # inject_context -- a second inject_context on provider:request
             # would merge with the steering bridge's persistent steer under
             # one ephemeral flag and break rewind turn accounting.
-            surface_hint = SurfaceHintInjector(
-                initialized.session_id, self.surface, context
-            )
+            surface_hint = SurfaceHintInjector(initialized.session_id, self.surface, context)
             initialized.unregister_handles.append(surface_hint.register_hooks(hooks))
             injector = ClipboardImageInjector(context)
             unregister = hooks.register(
@@ -1170,9 +1167,7 @@ class RealRuntime:
         if expansion.skipped:
             names = ", ".join(mention for mention, _ in expansion.skipped)
             self.bridge.emit(
-                Notification(
-                    message=f"@mention expansion skipped (size bounds): {names}"
-                )
+                Notification(message=f"@mention expansion skipped (size bounds): {names}")
             )
         return expansion.text
 

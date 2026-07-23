@@ -296,16 +296,12 @@ class NewTuiApp(App[None]):
         mounted ``hooks-notify-push`` module's job. ``AMPLIFIER_NOTIFY``
         gates the whole ladder; ``notification_rungs`` owns the policy.
         """
-        rungs = notifications.notification_rungs(
-            reason, elapsed_s, focused=self._terminal_focused
-        )
+        rungs = notifications.notification_rungs(reason, elapsed_s, focused=self._terminal_focused)
         if "bell" in rungs:
             self.bell()
         if "desktop" in rungs:
             body = detail.strip() or _NOTIFY_BODY[reason]
-            notifications.write_desktop_notification(
-                self._driver, _NOTIFY_TITLE, body
-            )
+            notifications.write_desktop_notification(self._driver, _NOTIFY_TITLE, body)
 
     def on_unmount(self) -> None:
         # A quit during a running turn must not leave a frozen spinner in the
@@ -593,9 +589,7 @@ class NewTuiApp(App[None]):
         # its seconds counter — usage events alone froze it during long
         # provider calls (supervisor feedback, spec §3/§11).
         if self._working_timer is None:
-            self._working_timer = self.set_interval(
-                1.0, lambda: self.reducer.tick(time.time())
-            )
+            self._working_timer = self.set_interval(1.0, lambda: self.reducer.tick(time.time()))
         self.refresh_status()
 
     def turn_finished(self) -> None:
@@ -613,9 +607,7 @@ class NewTuiApp(App[None]):
         # Attention signal for the suppressed hooks-notify (raw OSC/BEL would
         # corrupt Textual): ring the driver-safe bell after long turns only —
         # policy + rationale in app_support.attention_bell_needed.
-        elapsed = (
-            0.0 if self._turn_started_at is None else time.monotonic() - self._turn_started_at
-        )
+        elapsed = 0.0 if self._turn_started_at is None else time.monotonic() - self._turn_started_at
         self._turn_started_at = None
         self._notify_attention("turn_finished", elapsed)
         self.refresh_status()
@@ -889,9 +881,7 @@ class NewTuiApp(App[None]):
         self.palette.apply_filter(message.filter)
         self._refresh_footer()
 
-    def on_composer_palette_filter_cleared(
-        self, message: Composer.PaletteFilterCleared
-    ) -> None:
+    def on_composer_palette_filter_cleared(self, message: Composer.PaletteFilterCleared) -> None:
         message.stop()
         self.palette.apply_filter(None)
         self._refresh_footer()
@@ -1084,11 +1074,7 @@ class NewTuiApp(App[None]):
         # already-open block instead.
         ids = self.transcript.block_ids
         last = self.transcript.get_block(ids[-1]) if ids else None
-        if (
-            last is not None
-            and last.kind == "evidence"
-            and last.links == tuple(message.links)
-        ):
+        if last is not None and last.kind == "evidence" and last.links == tuple(message.links):
             existing = self.transcript.get_widget(last.id)
             if existing is not None:
                 existing.focus()
@@ -1154,9 +1140,7 @@ class NewTuiApp(App[None]):
         if widget is self.transcript or self.transcript in widget.ancestors:
             self._restore_keyboard()
 
-    def on_footer_bar_waiting_badge_clicked(
-        self, message: FooterBar.WaitingBadgeClicked
-    ) -> None:
+    def on_footer_bar_waiting_badge_clicked(self, message: FooterBar.WaitingBadgeClicked) -> None:
         message.stop()
         self.action_show_needs_you()
 
@@ -1270,9 +1254,7 @@ class NewTuiApp(App[None]):
     # -- command-context surface ------------------------------------------------------------
 
     def echo_user_line(self, text: str) -> None:
-        self.append_block(
-            UserLine(id=self.allocator.next_id(), text=text, mode=self._mode.id)
-        )
+        self.append_block(UserLine(id=self.allocator.next_id(), text=text, mode=self._mode.id))
 
     def context_usage(self) -> ContextUsage:
         window = self.adapter.compaction.max_tokens

@@ -89,9 +89,7 @@ class DoctorReport(BaseModel):
         """Failing checks as numbered orange findings, in check order."""
         return tuple(
             DoctorFinding(number=index + 1, text=check.message)
-            for index, check in enumerate(
-                [check for check in self.checks if not check.ok]
-            )
+            for index, check in enumerate([check for check in self.checks if not check.ok])
         )
 
     @property
@@ -122,9 +120,7 @@ def check_install(package: str = PACKAGE_NAME) -> CheckResult:
 def check_path(executable: str = EXECUTABLE_NAME) -> CheckResult:
     """The console script is reachable on PATH."""
     if shutil.which(executable) is None:
-        return CheckResult(
-            name="path", ok=False, message=f"{executable} not on PATH"
-        )
+        return CheckResult(name="path", ok=False, message=f"{executable} not on PATH")
     return CheckResult(name="path", ok=True, message="PATH clean")
 
 
@@ -182,19 +178,14 @@ def check_repeated_approvals(
 ) -> CheckResult:
     """Repeated identical read-only approvals are an allowlist candidate."""
     repeated = sum(
-        tally.asked
-        for tally in tallies
-        if tally.capability == "read" and tally.always_approved
+        tally.asked for tally in tallies if tally.capability == "read" and tally.always_approved
     )
     if repeated < threshold:
         return CheckResult(name="approvals", ok=True, message="no repeated approvals")
     return CheckResult(
         name="approvals",
         ok=False,
-        message=(
-            f"{repeated} identical read-only approvals this week "
-            "· candidate allowlist"
-        ),
+        message=(f"{repeated} identical read-only approvals this week · candidate allowlist"),
     )
 
 
