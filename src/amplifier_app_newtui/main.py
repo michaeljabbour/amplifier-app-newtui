@@ -56,11 +56,30 @@ async def _run_once(
     bundle: str | None,
     output_format: Literal["text", "json", "json-trace", "jsonl"],
     *,
+    mode: str | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    resume_id: str | None = None,
     jsonl_output: IO[str] | None = None,
 ) -> int:
     from .kernel.runtime import RealRuntime
 
-    runtime = RealRuntime(bundle=bundle)
+    # Per-invocation overrides are threaded through the kernel seam and stay
+    # ephemeral: --model/--provider mutate only the resolved in-memory plan,
+    # --mode seeds the runtime posture, --resume replays a stored session's
+    # context. Only non-default kwargs are passed so the untouched call remains
+    # ``RealRuntime(bundle=bundle)``.
+    runtime_kwargs: dict[str, Any] = {"bundle": bundle}
+    if resume_id is not None:
+        runtime_kwargs["resume_id"] = resume_id
+    if model is not None:
+        runtime_kwargs["model_override"] = model
+    if provider is not None:
+        runtime_kwargs["provider_override"] = provider
+    if mode is not None:
+        mode_value = mode
+        runtime_kwargs["mode"] = lambda: mode_value
+    runtime = RealRuntime(**runtime_kwargs)
     json_mode = output_format in ("json", "json-trace", "jsonl")
     started = monotonic()
     response = ""
@@ -272,14 +291,82 @@ def main(ctx: click.Context, demo: bool, bundle: str | None) -> None:
 @click.argument("prompt", required=False)
 @click.option("--bundle", default=None, help="Bundle name or URI.")
 @click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model override for THIS invocation only (requires --provider; not persisted).",
+)
+@click.option(
+    "--provider",
+    "-p",
+    default=None,
+    help="Provider override for THIS invocation only (not persisted to settings).",
+)
+@click.option(
+    "--mode",
+    "mode",
+    default=None,
+    help="Interaction mode to start in (chat, plan, brainstorm, build, auto).",
+)
+@click.option(
+    "--resume",
+    "resume",
+    default=None,
+    metavar="SESSION_ID",
+    help="Seed this one-shot from an existing session's stored context.",
+)
+@click.option(
     "--output-format",
     type=click.Choice(("text", "json", "json-trace", "jsonl")),
     default="text",
     show_default=True,
     help="Response format; JSON modes reserve stdout for machine-readable output.",
 )
-def run(prompt: str | None, bundle: str | None, output_format: str) -> None:
-    """Execute PROMPT (or piped stdin) in one real session."""
+def run(
+    prompt: str | None,
+    bundle: str | None,
+    model: str | None,
+    provider: str | None,
+    mode: str | None,
+    resume: str | None,
+    output_format: str,
+) -> None:
+    """Execute PROMPT (or piped stdin) in one real session.
+
+    ``--model``/``--provider`` override the resolved plan for THIS invocation
+    only (never written to a settings scope); ``--mode`` seeds the interaction
+    posture; ``--resume`` seeds the run from a stored session's context.
+    """
+    from .model.modes import MODE_PROFILES
+
+    # --model without --provider is ambiguous (which provider hosts it?) --
+    # match the reference CLI and refuse early (amplifier-app-cli run.py).
+    if model is not None and provider is None:
+        click.echo(
+            "Error: --model requires --provider (name the provider that hosts the model)",
+            err=True,
+        )
+        raise SystemExit(1)
+    # --mode must name a real interaction mode; unknown ids fail loud rather
+    # than silently falling back to the default posture.
+    if mode is not None and mode not in MODE_PROFILES:
+        valid = ", ".join(MODE_PROFILES)
+        click.echo(f"Error: unknown mode '{mode}' · valid modes: {valid}", err=True)
+        raise SystemExit(1)
+    # --resume resolves a (possibly partial) id to one stored session up front,
+    # so an unknown/ambiguous id errors clearly before any boot work begins.
+    resume_id: str | None = None
+    if resume is not None:
+        from .kernel import session_manager
+
+        try:
+            resume_id = session_manager.resolve(_session_store(), resume)
+        except FileNotFoundError:
+            click.echo(f"no session found matching '{resume}'", err=True)
+            raise SystemExit(1) from None
+        except ValueError as error:
+            click.echo(str(error), err=True)
+            raise SystemExit(1) from None
     resolved_prompt = _resolve_run_prompt(prompt)
     raise SystemExit(
         asyncio.run(
@@ -287,6 +374,10 @@ def run(prompt: str | None, bundle: str | None, output_format: str) -> None:
                 resolved_prompt,
                 bundle,
                 cast(Literal["text", "json", "json-trace", "jsonl"], output_format),
+                mode=mode,
+                model=model,
+                provider=provider,
+                resume_id=resume_id,
             )
         )
     )

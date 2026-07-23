@@ -481,6 +481,103 @@ def apply_module_overrides(mount_plan: dict[str, Any], settings: dict[str, Any])
     return mount_plan
 
 
+class ProviderNotConfiguredError(ValueError):
+    """A ``--provider`` override named a provider no configured entry matches.
+
+    Distinct from :class:`BundleNotFoundError`: the bundle resolved fine, but
+    the per-invocation provider override cannot be honored. The CLI surfaces the
+    message and exits nonzero instead of dumping a traceback.
+    """
+
+
+def _match_provider_index(providers: list[Any], provider: str) -> int | None:
+    """Locate *provider* in *providers* (reference ``run.py`` two-pass search).
+
+    First pass matches an explicit ``id`` / ``instance_id`` (multi-instance
+    setups); the second matches the module id with the ``provider-`` prefix
+    convention (``-p anthropic`` -> ``provider-anthropic``). Returns the list
+    index, or ``None`` when nothing matches.
+    """
+    module_id = provider if provider.startswith("provider-") else f"provider-{provider}"
+    for index, entry in enumerate(providers):
+        if isinstance(entry, dict) and provider in (entry.get("id"), entry.get("instance_id")):
+            return index
+    for index, entry in enumerate(providers):
+        if isinstance(entry, dict) and entry.get("module") in (provider, module_id):
+            return index
+    return None
+
+
+def _provider_labels(providers: list[Any]) -> list[str]:
+    """Human-facing provider labels for a ``--provider`` error message."""
+    labels: list[str] = []
+    for entry in providers:
+        if not isinstance(entry, dict):
+            continue
+        label = (
+            entry.get("id")
+            or entry.get("instance_id")
+            or str(entry.get("module", "")).replace("provider-", "")
+        )
+        if label and str(label) not in labels:
+            labels.append(str(label))
+    return labels
+
+
+def apply_run_overrides(
+    mount_plan: dict[str, Any],
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Apply per-invocation ``--provider`` / ``--model`` overrides IN PLACE.
+
+    Ephemeral to a single ``run`` invocation: unlike
+    :func:`apply_module_overrides` (which folds in the *persisted* settings
+    scopes), this touches only the in-memory ``mount_plan`` and never writes a
+    settings file. Mirrors amplifier-app-cli ``run`` override handling
+    (``commands/run.py``): the named provider is promoted to highest priority
+    (front of ``providers``) and, when *model* is given, its
+    ``config.default_model`` is set for THIS boot only.
+
+    An unknown ``--provider`` raises :class:`ProviderNotConfiguredError` naming
+    the configured providers. A bare ``--model`` (no provider) retargets the
+    priority provider -- the CLI already refuses ``--model`` without
+    ``--provider``, so this is only the defensive kernel-side fallback.
+
+    Mutates ``providers`` in place (never a copy) so the plan the session mounts
+    and the plan child sessions inherit stay one object (RESEARCH-BRIEF risk #9).
+    """
+    if provider is None and model is None:
+        return mount_plan
+    providers = mount_plan.get("providers")
+    if not isinstance(providers, list) or not providers:
+        raise ProviderNotConfiguredError(
+            "no providers are configured — run `amplifier-newtui init` before "
+            "overriding --provider/--model"
+        )
+    if provider is not None:
+        matched = _match_provider_index(providers, provider)
+        if matched is None:
+            available = ", ".join(_provider_labels(providers)) or "none"
+            raise ProviderNotConfiguredError(
+                f"provider '{provider}' is not configured · available: {available}"
+            )
+        if matched != 0:
+            # Promote to highest priority (front) for THIS boot, keeping the
+            # rest of a multi-provider setup intact (reference parity).
+            providers.insert(0, providers.pop(matched))
+    if model is not None:
+        entry = providers[0]
+        if isinstance(entry, dict):
+            config = entry.get("config")
+            if not isinstance(config, dict):
+                config = {}
+                entry["config"] = config
+            config["default_model"] = model
+    return mount_plan
+
+
 _ENV_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?\}")
 """``${VAR}`` / ``${VAR:default}`` placeholders in config string values."""
 
@@ -931,6 +1028,8 @@ async def resolve_config(
     amplifier_home: Path | None = None,
     install_deps: bool = True,
     progress: Callable[[str, str], None] | None = None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
 ) -> ResolvedConfig:
     """The single configuration golden path (see module docstring).
 
@@ -1002,6 +1101,9 @@ async def resolve_config(
     #    then ${VAR} placeholder expansion (reference: amplifier-app-cli
     #    expands the effective bundle config before session creation).
     mount_plan = apply_module_overrides(prepared.mount_plan, settings)
+    # Per-invocation ``run --provider/--model`` overrides — ephemeral to THIS
+    # boot (they mutate the in-memory plan, never a settings scope file).
+    apply_run_overrides(mount_plan, provider=provider_override, model=model_override)
     apply_compaction_settings(mount_plan, settings)
     ensure_project_write_path(mount_plan, project_dir)
     # settings ``id`` → kernel ``instance_id`` so a provider mounts under
@@ -1050,9 +1152,11 @@ __all__ = [
     "BundleNotFoundError",
     "ResolvedConfig",
     "SettingsPaths",
+    "ProviderNotConfiguredError",
     "active_bundle_name",
     "added_bundle_uris",
     "apply_module_overrides",
+    "apply_run_overrides",
     "build_bundle_include_resolver",
     "build_source_resolver",
     "bundle_search_paths",
