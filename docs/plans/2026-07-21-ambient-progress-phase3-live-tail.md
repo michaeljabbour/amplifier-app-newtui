@@ -1,5 +1,9 @@
 # Ambient Progress — Phase 3: Lane Live Tail + Spec Documentation
 
+> **Status: ✅ Implemented** (PR #13, `476c493`; real focused-lane transcripts
+> deepened in PR #17, `b62da3e`) — lane tail registry/widget/reducer, ctrl+o
+> cycling, snapshot + reducer tests. Historical record.
+
 > **For execution:** Use /execute-plan mode or the subagent-driven-development recipe.
 
 **Source design:** `docs/plans/2026-07-21-ambient-progress-design.md` (D4 + Phase 3 section — read it first).

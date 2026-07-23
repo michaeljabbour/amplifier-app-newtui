@@ -1,5 +1,13 @@
 # Anchors Migration Implementation Plan
 
+> **Status: ✅ Implemented** (landed via `d44d963` and follow-ups through PR #19).
+> One intentional deviation: Task 4's design (suppress `hooks-logging`, app owns
+> `events.jsonl`) was reversed by PR #19 — `hooks-logging` mounts natively and owns
+> `events.jsonl`; the app log moved to `ui-events.jsonl` and `hooks-notify` is
+> suppressed instead. Bundle overlays also grew beyond the planned set (now also
+> `tool-skills`, `hooks-notify-push`, `hook-redaction`). Historical record; the
+> implemented state is documented in ARCHITECTURE.md.
+
 > **Execution:** Use the subagent-driven-development workflow to implement this plan.
 > **For execution:** `/execute-plan`
 
