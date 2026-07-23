@@ -11,10 +11,19 @@ decisions never halt the turn. A deferred approval resolves to its
 default (deny) at timeout, lands in the DenialLog AND stays retro-
 answerable here — answering later injects a next-turn user instruction
 (the mockup's ``Applying decision: …`` flow).
+
+Thread-safety: both queues are mutated from TWO event loops — the UI
+loop (composer enqueue / answer) and the runtime thread's loop (steer
+consume at step boundary, kernel-side defer). Each queue guards its
+``_pending`` / ``_items`` list and id counter with a ``threading.Lock``.
+Change notification runs OUTSIDE the lock so a listener that re-reads the
+queue (a common UI pattern) can never deadlock against the mutation that
+woke it.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from time import monotonic
 from typing import Literal
@@ -59,6 +68,10 @@ class _ListenerMixin:
 
     def __init__(self) -> None:
         self._listeners: list[Listener] = []
+        self._lock = threading.Lock()
+        """Guards the queue's mutable list + id counter across the UI loop
+        and the runtime-thread loop. Held only around list mutation and
+        snapshotting — never while ``_notify`` runs listener callbacks."""
 
     def add_listener(self, listener: Listener) -> Callable[[], None]:
         """Register a change callback; returns its removal function."""
@@ -91,16 +104,19 @@ class SteeringQueue(_ListenerMixin):
 
     @property
     def pending(self) -> tuple[QueuedMessage, ...]:
-        return tuple(self._pending)
+        with self._lock:
+            return tuple(self._pending)
 
     @property
     def pending_steers(self) -> tuple[QueuedMessage, ...]:
-        return tuple(m for m in self._pending if m.kind == "steer")
+        with self._lock:
+            return tuple(m for m in self._pending if m.kind == "steer")
 
     @property
     def pending_next_turn(self) -> tuple[QueuedMessage, ...]:
         """Queued full next-turn messages (the footer ``qN`` count)."""
-        return tuple(m for m in self._pending if m.kind == "next_turn")
+        with self._lock:
+            return tuple(m for m in self._pending if m.kind == "next_turn")
 
     def enqueue(
         self, text: object, *, kind: Literal["steer", "next_turn"] = "steer"
@@ -115,45 +131,54 @@ class SteeringQueue(_ListenerMixin):
         clean = _clean_multiline(text)
         if not clean.strip():
             raise ValueError("queued text cannot be empty")
-        if kind == "next_turn":
-            self._pending = [m for m in self._pending if m.kind != "next_turn"]
-        if len(self._pending) >= MAX_QUEUE_ITEMS:
-            raise ValueError("steering queue limit reached")
-        message = QueuedMessage(
-            message_id=f"q-{self._next_id}",
-            text=clean,
-            kind=kind,
-            created_at=self._clock(),
-        )
-        self._next_id += 1
-        self._pending.append(message)
+        with self._lock:
+            if kind == "next_turn":
+                self._pending = [m for m in self._pending if m.kind != "next_turn"]
+            if len(self._pending) >= MAX_QUEUE_ITEMS:
+                raise ValueError("steering queue limit reached")
+            message = QueuedMessage(
+                message_id=f"q-{self._next_id}",
+                text=clean,
+                kind=kind,
+                created_at=self._clock(),
+            )
+            self._next_id += 1
+            self._pending.append(message)
         self._notify()
         return message
 
     def consume_next_steer(self) -> QueuedMessage | None:
         """Pop the oldest steer (called once per ``provider:request``)."""
-        for index, message in enumerate(self._pending):
-            if message.kind == "steer":
-                popped = self._pending.pop(index)
-                self._notify()
-                return popped
-        return None
+        popped: QueuedMessage | None = None
+        with self._lock:
+            for index, message in enumerate(self._pending):
+                if message.kind == "steer":
+                    popped = self._pending.pop(index)
+                    break
+        if popped is not None:
+            self._notify()
+        return popped
 
     def consume_next_turn_message(self) -> QueuedMessage | None:
         """Pop the oldest queued next-turn message (called at turn end)."""
-        for index, message in enumerate(self._pending):
-            if message.kind == "next_turn":
-                popped = self._pending.pop(index)
-                self._notify()
-                return popped
-        return None
+        popped: QueuedMessage | None = None
+        with self._lock:
+            for index, message in enumerate(self._pending):
+                if message.kind == "next_turn":
+                    popped = self._pending.pop(index)
+                    break
+        if popped is not None:
+            self._notify()
+        return popped
 
     def drain_steers(self) -> tuple[QueuedMessage, ...]:
         """Remove and return all leftover steers (turn ended before they
         applied) — the app discards them at turn end (mockup §5)."""
-        leftover = tuple(m for m in self._pending if m.kind == "steer")
+        with self._lock:
+            leftover = tuple(m for m in self._pending if m.kind == "steer")
+            if leftover:
+                self._pending = [m for m in self._pending if m.kind != "steer"]
         if leftover:
-            self._pending = [m for m in self._pending if m.kind != "steer"]
             self._notify()
         return leftover
 
@@ -220,11 +245,13 @@ class NeedsYouQueue(_ListenerMixin):
 
     @property
     def items(self) -> tuple[NeedsYouItem, ...]:
-        return tuple(self._items)
+        with self._lock:
+            return tuple(self._items)
 
     @property
     def pending(self) -> tuple[NeedsYouItem, ...]:
-        return tuple(item for item in self._items if item.status == "pending")
+        with self._lock:
+            return tuple(item for item in self._items if item.status == "pending")
 
     @property
     def pending_count(self) -> int:
@@ -233,7 +260,8 @@ class NeedsYouQueue(_ListenerMixin):
 
     @property
     def answered(self) -> tuple[NeedsYouItem, ...]:
-        return tuple(item for item in self._items if item.status == "answered")
+        with self._lock:
+            return tuple(item for item in self._items if item.status == "answered")
 
     def defer(
         self,
@@ -245,23 +273,24 @@ class NeedsYouQueue(_ListenerMixin):
         action: object = "",
     ) -> NeedsYouItem:
         """Park a decision for later; raises ``ValueError`` when full/empty."""
-        active = [i for i in self._items if i.status in {"pending", "answered"}]
-        if len(active) >= self._MAX_DECISIONS:
-            raise ValueError("deferred decision limit reached")
-        clean_question = _clean_line(question, 4_096)
-        if not clean_question:
-            raise ValueError("decision question cannot be empty")
-        item = NeedsYouItem(
-            decision_id=f"decision-{self._next_id}",
-            question=clean_question,
-            reason=_clean_line(reason, 4_096),
-            choices=tuple(_clean_line(c, 200) for c in choices if _clean_line(c, 200)),
-            highlight=_clean_line(highlight, 200),
-            action=_clean_line(action, 4_096),
-            created_at=self._clock(),
-        )
-        self._next_id += 1
-        self._items.append(item)
+        with self._lock:
+            active = [i for i in self._items if i.status in {"pending", "answered"}]
+            if len(active) >= self._MAX_DECISIONS:
+                raise ValueError("deferred decision limit reached")
+            clean_question = _clean_line(question, 4_096)
+            if not clean_question:
+                raise ValueError("decision question cannot be empty")
+            item = NeedsYouItem(
+                decision_id=f"decision-{self._next_id}",
+                question=clean_question,
+                reason=_clean_line(reason, 4_096),
+                choices=tuple(_clean_line(c, 200) for c in choices if _clean_line(c, 200)),
+                highlight=_clean_line(highlight, 200),
+                action=_clean_line(action, 4_096),
+                created_at=self._clock(),
+            )
+            self._next_id += 1
+            self._items.append(item)
         self._notify()
         for listener in tuple(self._defer_listeners):
             listener(item)
@@ -281,11 +310,12 @@ class NeedsYouQueue(_ListenerMixin):
         """Mark all answered decisions consumed (their answers were
         injected as next-turn instructions); returns what was consumed."""
         consumed: list[NeedsYouItem] = []
-        for index, item in enumerate(self._items):
-            if item.status == "answered":
-                updated = item.model_copy(update={"status": "consumed"})
-                self._items[index] = updated
-                consumed.append(updated)
+        with self._lock:
+            for index, item in enumerate(self._items):
+                if item.status == "answered":
+                    updated = item.model_copy(update={"status": "consumed"})
+                    self._items[index] = updated
+                    consumed.append(updated)
         if consumed:
             self._notify()
         return tuple(consumed)
@@ -293,16 +323,20 @@ class NeedsYouQueue(_ListenerMixin):
     def _transition(
         self, decision_id: str, status: NeedsYouStatus, answer: str
     ) -> NeedsYouItem:
-        for index, item in enumerate(self._items):
-            if item.decision_id != decision_id:
-                continue
-            if item.status != "pending":
-                raise ValueError(f"decision is already {item.status}")
-            updated = item.model_copy(update={"status": status, "answer": answer})
-            self._items[index] = updated
-            self._notify()
-            return updated
-        raise KeyError(f"unknown decision: {decision_id}")
+        updated: NeedsYouItem | None = None
+        with self._lock:
+            for index, item in enumerate(self._items):
+                if item.decision_id != decision_id:
+                    continue
+                if item.status != "pending":
+                    raise ValueError(f"decision is already {item.status}")
+                updated = item.model_copy(update={"status": status, "answer": answer})
+                self._items[index] = updated
+                break
+            else:
+                raise KeyError(f"unknown decision: {decision_id}")
+        self._notify()
+        return updated
 
 
 __all__ = [

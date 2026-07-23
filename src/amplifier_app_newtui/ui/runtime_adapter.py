@@ -15,6 +15,7 @@ import — ``--demo`` boot never touches amplifier-foundation);
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from decimal import Decimal
@@ -44,6 +45,9 @@ from ..model.trust import (
 
 if TYPE_CHECKING:
     from .reducer import LaneSeed, TurnSpecLike
+
+logger = logging.getLogger(__name__)
+
 
 
 class RuntimeAdapter:
@@ -379,10 +383,22 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self._runtime = runtime
         _resolve(lambda: started.set_result(None))
         await self._stop.wait()  # keep the loop alive for proxied calls
+        await self._safe_cleanup(runtime)
+
+    async def _safe_cleanup(self, runtime: Any) -> None:
+        """Tear the runtime down on exit — best-effort, but never silent.
+
+        This was the codebase's only bare ``except: pass``; a cleanup crash
+        here would otherwise vanish without a trace. Teardown failures are
+        non-fatal (we are exiting) so it logs at debug, but WITH the
+        traceback so the failure stays recoverable.
+        """
         try:
             await runtime.cleanup()
         except Exception:
-            pass  # best-effort teardown on exit
+            logger.debug("runtime cleanup failed during teardown", exc_info=True)
+
+
 
     def _boot_progress(self, action: str, detail: str) -> None:
         # Fires on the runtime thread during start(); painting hops to

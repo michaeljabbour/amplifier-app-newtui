@@ -15,8 +15,8 @@ Pilot flow over the base adapter feeding the real event path.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
+
 
 import pytest
 
@@ -24,10 +24,9 @@ from amplifier_app_newtui.kernel import events as ev
 from amplifier_app_newtui.kernel.approval import (
     ALLOW_ONCE,
     STANDARD_OPTIONS,
-    ApprovalBroker,
-    ApprovalDetail,
     deferral_highlight,
 )
+
 from amplifier_app_newtui.kernel.governance_hook import GovernanceHook
 from amplifier_app_newtui.kernel.runtime import RealRuntime
 from amplifier_app_newtui.model.blocks import BlockIdAllocator
@@ -65,59 +64,9 @@ def test_deferral_highlight_degrades_to_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Broker defer — the ticket's native detail travels onto the item
-# ---------------------------------------------------------------------------
-
-
-async def _settle() -> None:
-    await asyncio.sleep(0)
-
-
-@pytest.mark.asyncio
-async def test_broker_defer_carries_ticket_detail_and_joins_denial_log() -> None:
-    needs_you = NeedsYouQueue()
-    denial_log = DenialLog()
-    broker = ApprovalBroker(needs_you=needs_you, denial_log=denial_log)
-    prompt = f"Allow {PUSH}?"
-    broker.stage_detail(
-        prompt,
-        ApprovalDetail(command=PUSH, rule="ask net", capability="net"),
-    )
-    task = asyncio.ensure_future(broker.request_approval(prompt, [], timeout=0.05))
-    await _settle()
-    head = broker.head
-    assert head is not None
-    item = broker.defer(head.ticket_id)
-
-    assert item.question == prompt
-    assert item.reason == "ask net"
-    assert item.choices == STANDARD_OPTIONS
-    assert item.highlight == PUSH
-    assert item.action == PUSH
-
-    # Timeout-to-deny records the SAME action key: the retro-answer's
-    # override joins this denial for /improve trust-slot evidence.
-    assert await task == "Deny"
-    assert denial_log.records[-1].action == item.action
-
-
-@pytest.mark.asyncio
-async def test_broker_defer_without_detail_falls_back_to_prompt_action() -> None:
-    needs_you = NeedsYouQueue()
-    broker = ApprovalBroker(needs_you=needs_you, denial_log=DenialLog())
-    task = asyncio.ensure_future(broker.request_approval("Allow thing?", [], timeout=5.0))
-    await _settle()
-    ticket = broker.pending[0]
-    item = broker.defer(ticket.ticket_id)
-    assert item.action == "Allow thing?"  # _record_timeout's fallback key
-    assert item.highlight == ""
-    broker.answer(ticket.ticket_id, ALLOW_ONCE)
-    assert await task == ALLOW_ONCE
-
-
-# ---------------------------------------------------------------------------
 # Governance classifier deferral — highlight from action/target
 # ---------------------------------------------------------------------------
+
 
 
 @pytest.mark.asyncio

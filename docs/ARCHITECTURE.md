@@ -528,12 +528,12 @@ semantics remain one path.
 `ApprovalBroker` implements the kernel `request_approval` contract as a FIFO of structured
 `ApprovalDetail` tickets. The inline `ApprovalBar` (which replaces the composer, and owns
 the keyboard — arrows/tab select, enter confirms, esc denies) answers the head; timeout
-resolves to the default (deny) and lands in the `DenialLog`. The broker also exposes
-`defer()`, which parks a ticket into the `NeedsYouQueue` where it remains retro-answerable —
-answering later injects a next-turn user instruction. Note the current wiring: deferrals are
-driven by governance (classifier denials park needs-you items via `decision_deferred`
-notifications), not by a direct keybinding — `ctrl+y` opens the needs-you *list* and is
-inactive while the approval bar is up. A `min_timeout` floor exists because the kernel's
+resolves to the default (deny) and lands in the `DenialLog`. Deferrals into the
+`NeedsYouQueue` (where an item stays retro-answerable — answering later injects a next-turn
+user instruction) are driven by governance: classifier denials park needs-you items via
+`decision_deferred` notifications, not by a direct keybinding — `ctrl+y` opens the needs-you
+*list* and is inactive while the approval bar is up. A `min_timeout` floor exists because the kernel's
+
 300-second default was silently denying while users were still reading.
 
 ### 7.4 Steering, queueing, and turn identity

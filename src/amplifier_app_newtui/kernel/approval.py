@@ -17,11 +17,11 @@ Fail-closed invariants (Rust string-matches "Allow"-family options):
 - Presented options ALWAYS contain the verbatim strings ``Allow once`` /
   ``Allow always`` / ``Deny``.
 - Timeouts resolve to the ticket's default (deny unless stated otherwise).
-- ``defer(ticket_id)`` parks the head ticket into the NeedsYouQueue
-  (deny-and-continue, ADR-0007 resolution 5): the future keeps waiting; at
-  timeout it resolves to the default (deny), the denial lands in the
-  DenialLog AND the needs-you item stays pending — retro-answerable, so a
-  later answer becomes a next-turn instruction ("Applying decision: …").
+- Deferrals are parked directly into the ``NeedsYouQueue`` by governance
+  (classifier denials → ``NeedsYouQueue.defer``), NOT by the broker: a
+  deny-and-continue ticket times out to its default here while the
+  needs-you item stays retro-answerable (ADR-0007 resolution 5).
+
 
 "Allow always" persistence is NOT handled here (user directive:
 permissions are managed natively) — the asker (hooks-approval) receives
@@ -39,7 +39,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..model.queues import NeedsYouItem, NeedsYouQueue
+from ..model.queues import NeedsYouQueue
+
 from ..model.trust import CapabilityClass, DenialLog
 
 ALLOW_ONCE = "Allow once"
@@ -88,16 +89,15 @@ class ApprovalTicket:
     timeout: float
     default: ApprovalDefault
     created_at: float
-    deferred: bool = False
-    decision_id: str = ""
-    """NeedsYouQueue decision id once deferred; empty otherwise."""
 
 
 class ApprovalBroker:
+
     """FIFO approval request broker (kernel ApprovalSystem implementation).
 
-    The inline approval bar answers :attr:`head`; ctrl-y calls
-    :meth:`defer` on it. UI listeners fire on every queue change.
+    The inline approval bar answers :attr:`head`. UI listeners fire on
+    every queue change.
+
     """
 
     def __init__(
@@ -130,12 +130,10 @@ class ApprovalBroker:
 
     @property
     def head(self) -> ApprovalTicket | None:
-        """The ticket the inline approval bar is answering (first
-        non-deferred pending ticket)."""
-        for ticket in self._tickets:
-            if not ticket.deferred:
-                return ticket
-        return None
+        """The ticket the inline approval bar is answering (the oldest
+        pending ticket)."""
+        return self._tickets[0] if self._tickets else None
+
 
     def add_listener(self, listener: Listener) -> Callable[[], None]:
         self._listeners.append(listener)
@@ -162,8 +160,9 @@ class ApprovalBroker:
         timeout: float = 300.0,
         default: ApprovalDefault = "deny",
     ) -> str:
-        """Ask the human; resolves via :meth:`answer`, :meth:`defer` +
-        needs-you, or timeout-to-default. Never raises to the kernel."""
+        """Ask the human; resolves via :meth:`answer` or timeout-to-
+        default. Never raises to the kernel."""
+
         timeout = max(timeout, self._min_timeout)
         detail = self._pop_staged(prompt)
         # NO local "Allow always" bookkeeping (user directive): the asker
@@ -202,8 +201,6 @@ class ApprovalBroker:
     def answer(self, ticket_id: str, choice: str) -> None:
         """Resolve one pending ticket with the human's *choice*.
 
-        A deferred ticket answered before its timeout is applied live, so
-        its needs-you item is dismissed (nothing left to retro-apply).
         Raises ``KeyError`` for unknown/already-resolved tickets and
         ``ValueError`` for a choice not among the presented options.
         """
@@ -212,39 +209,7 @@ class ApprovalBroker:
             raise ValueError(f"choice {choice!r} is not one of {ticket.options}")
         if not ticket.future.done():
             ticket.future.set_result(choice)
-        if ticket.deferred and ticket.decision_id and self._needs_you is not None:
-            try:
-                self._needs_you.dismiss(ticket.decision_id)
-            except (KeyError, ValueError):
-                pass
 
-    def defer(self, ticket_id: str) -> NeedsYouItem:
-        """Park a pending ticket into the NeedsYouQueue (ctrl-y).
-
-        The turn is NOT held: the ticket keeps its future and times out to
-        its default (deny) — landing in the DenialLog — while the
-        needs-you item stays pending and retro-answerable.
-        """
-        if self._needs_you is None:
-            raise RuntimeError("broker has no NeedsYouQueue to defer into")
-        ticket = self._find(ticket_id)
-        if ticket.deferred:
-            raise ValueError(f"ticket {ticket_id} is already deferred")
-        item = self._needs_you.defer(
-            ticket.prompt,
-            ticket.detail.rule or "deferred approval",
-            choices=ticket.options,
-            highlight=deferral_highlight(
-                ticket.prompt, ticket.detail.cwd, ticket.detail.command
-            ),
-            # MUST equal _record_timeout's DenialLog key: a retro-answer's
-            # override joins the timeout denial for /improve trust slots.
-            action=ticket.detail.command or ticket.prompt,
-        )
-        ticket.deferred = True
-        ticket.decision_id = item.decision_id
-        self._notify()
-        return item
 
     # -- internals -----------------------------------------------------------
 

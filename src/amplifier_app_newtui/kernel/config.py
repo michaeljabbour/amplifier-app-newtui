@@ -148,13 +148,20 @@ class SettingsPaths:
         return (self.global_settings, self.project_settings, self.local_settings)
 
 
-def load_merged_settings(paths: SettingsPaths) -> dict[str, Any]:
-    """Load and deep-merge all three settings scopes.
+def load_merged_settings_reporting(
+    paths: SettingsPaths,
+) -> tuple[dict[str, Any], tuple[Path, ...]]:
+    """Load and deep-merge the three settings scopes, reporting skips.
 
-    Missing or malformed files are skipped silently — settings must never
-    prevent startup (matching amplifier-app-cli ``AppSettings`` behavior).
+    Returns ``(merged, malformed_paths)``. A malformed file is skipped so
+    settings never prevent startup (amplifier-app-cli ``AppSettings``
+    parity), but the skipped path is reported so the caller can surface a
+    user-facing notice — the whole scope's settings are being ignored, and
+    a silent ``logger.warning`` is the wrong place to bury that (the
+    analogous bundle fallback notifies loudly).
     """
     merged: dict[str, Any] = {}
+    malformed: list[Path] = []
     for path in paths.in_merge_order():
         if not path.is_file():
             continue
@@ -162,10 +169,34 @@ def load_merged_settings(paths: SettingsPaths) -> dict[str, Any]:
             content = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError):
             logger.warning("Skipping malformed settings file: %s", path)
+            malformed.append(path)
             continue
         if isinstance(content, dict):
             merged = merge_settings(merged, content)
+    return merged, tuple(malformed)
+
+
+def load_merged_settings(paths: SettingsPaths) -> dict[str, Any]:
+    """Load and deep-merge all three settings scopes.
+
+    Missing or malformed files are skipped — settings must never prevent
+    startup. This thin wrapper drops the malformed-path report; callers on
+    the boot path use :func:`load_merged_settings_reporting` to surface it.
+    """
+    merged, _malformed = load_merged_settings_reporting(paths)
     return merged
+
+
+def malformed_settings_notice(malformed: tuple[Path, ...]) -> str | None:
+    """Build the user-facing notice for skipped settings scopes, or ``None``."""
+    if not malformed:
+        return None
+    names = ", ".join(path.name for path in malformed)
+    return (
+        f"Skipped malformed settings file(s): {names} — defaults applied "
+        "for those scopes (run doctor for the parse error)."
+    )
+
 
 
 def map_provider_ids_to_instance_ids(mount_plan: dict[str, Any]) -> None:
@@ -741,6 +772,11 @@ class ResolvedConfig:
     fallback_notice: str | None = None
     """Set when a settings-configured bundle failed discovery and the app
     default was booted instead — the runtime surfaces it as a Notification."""
+    settings_notice: str | None = None
+    """Set when a settings.yaml scope was malformed and skipped — the
+    runtime surfaces it as a Notification, so a whole ignored scope is not
+    buried in a silent ``logger.warning`` (doctor also flags it at rest)."""
+
 
 
 async def resolve_config(
@@ -772,8 +808,14 @@ async def resolve_config(
     #    reference CLI (else keys.env-only providers fail to mount).
     load_keys_env(amplifier_home)
 
-    # 1. Settings: three-scope deep merge.
-    settings = load_merged_settings(SettingsPaths.default(project_dir, amplifier_home))
+    # 1. Settings: three-scope deep merge. A malformed scope is skipped
+    #    (settings must never block startup) but reported so the boot can
+    #    say so out loud instead of silently dropping the whole scope.
+    settings, malformed_settings = load_merged_settings_reporting(
+        SettingsPaths.default(project_dir, amplifier_home)
+    )
+    settings_notice = malformed_settings_notice(malformed_settings)
+
 
     # 2. Bundle discovery.
     search_paths = bundle_search_paths(project_dir, amplifier_home)
@@ -833,7 +875,9 @@ async def resolve_config(
         overlays=overlays,
         project_dir=project_dir,
         fallback_notice=fallback_notice,
+        settings_notice=settings_notice,
     )
+
 
 
 def get_project_slug(project_dir: Path | None = None) -> str:
@@ -871,7 +915,10 @@ __all__ = [
     "list_available_bundles",
     "load_keys_env",
     "load_merged_settings",
+    "load_merged_settings_reporting",
+    "malformed_settings_notice",
     "merge_settings",
+
     "merge_tool_configs",
     "map_provider_ids_to_instance_ids",
     "overlay_uris",
