@@ -253,6 +253,23 @@ def active_bundle_name(settings: dict[str, Any]) -> str | None:
     return None
 
 
+def added_bundle_uris(settings: dict[str, Any]) -> dict[str, str]:
+    """The ``bundle.added`` name->URI registry from merged settings.
+
+    ``bundle add <name> <uri>`` writes ``bundle.added.<name> = uri`` (see
+    ``kernel/bundle_admin.add_bundle``); this reader is the single home the
+    boot path and the ``bundle_admin`` CLI both consult, so a registered name
+    resolves to the URI it was registered with. Any non-dict / junk shape
+    yields ``{}``; empty values are dropped."""
+    bundle_section = settings.get("bundle")
+    if not isinstance(bundle_section, dict):
+        return {}
+    added = bundle_section.get("added")
+    if not isinstance(added, dict):
+        return {}
+    return {str(name): str(uri) for name, uri in added.items()}
+
+
 def overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
     """App/behavior bundles (``bundle.app``) composed onto every session."""
     bundle_section = settings.get("bundle")
@@ -780,12 +797,52 @@ def discover_bundle(name: str, search_paths: tuple[Path, ...] | list[Path]) -> s
     return None
 
 
+def resolve_bundle_name(
+    name: str,
+    settings: dict[str, Any],
+    search_paths: tuple[Path, ...] | list[Path],
+) -> str | None:
+    """Resolve a bundle *name* to a loadable URI, consulting ``bundle.added``.
+
+    Precedence (first hit wins):
+
+    1. **Local / packaged discovery** (:func:`discover_bundle`) — a URI, a
+       filesystem path, or a bare name found in the project/user/packaged
+       search paths. This keeps the builtin :data:`DEFAULT_BUNDLE` and any
+       on-disk project bundle authoritative and matches ``list_bundles``,
+       where a local bundle overrides a same-named ``bundle.added`` entry.
+    2. **The ``bundle.added`` registry** (:func:`added_bundle_uris`) — what
+       ``bundle add <name> <uri>`` persisted. Without this step a
+       ``bundle use <added-name>`` (which writes ``bundle.active: <name>``)
+       resolves to nothing at boot and the caller silently falls back to the
+       default; consulting it here is the fix for that redirect being ignored.
+       A registered value is itself run back through :func:`discover_bundle`
+       so a URI, a local path, or a bare name all load uniformly.
+
+    Returns ``None`` when neither resolves, so the default-bundle fallback path
+    is left unchanged when no added bundle matches.
+    """
+    uri = discover_bundle(name, search_paths)
+    if uri is not None:
+        return uri
+    registered = added_bundle_uris(settings).get(name)
+    if registered:
+        return discover_bundle(registered, search_paths) or registered
+    return None
+
+
 def resolve_bundle_source(
     bundle: str | None,
     settings: dict[str, Any],
     search_paths: tuple[Path, ...] | list[Path],
 ) -> tuple[str, str, str | None]:
     """Resolve which bundle to boot: explicit arg → settings → default.
+
+    The chosen name is resolved through :func:`resolve_bundle_name`, so a
+    ``bundle.added`` registration (``bundle add <name> <uri>``) is honored —
+    ``bundle use <added-name>`` loads that bundle instead of silently falling
+    back to the default (issue #105). Local/packaged bundles keep precedence
+    over a same-named added entry.
 
     An explicit *bundle* argument that can't resolve raises — the caller
     asked for it by name. A settings-configured bundle that can't resolve
@@ -794,7 +851,7 @@ def resolve_bundle_source(
     (field report: ``bundle.active: anchors`` → "session failed to start").
     """
     name = bundle or active_bundle_name(settings) or DEFAULT_BUNDLE
-    uri = discover_bundle(name, search_paths)
+    uri = resolve_bundle_name(name, settings, search_paths)
     notice: str | None = None
     if uri is None and bundle is None and name != DEFAULT_BUNDLE:
         notice = (
@@ -802,7 +859,7 @@ def resolve_bundle_source(
             f"(amplifier-newtui bundle list shows options)"
         )
         name = DEFAULT_BUNDLE
-        uri = discover_bundle(name, search_paths)
+        uri = resolve_bundle_name(name, settings, search_paths)
     if uri is None:
         available = ", ".join(list_available_bundles(search_paths)) or "none"
         raise BundleNotFoundError(
@@ -994,6 +1051,7 @@ __all__ = [
     "ResolvedConfig",
     "SettingsPaths",
     "active_bundle_name",
+    "added_bundle_uris",
     "apply_module_overrides",
     "build_bundle_include_resolver",
     "build_source_resolver",
@@ -1022,6 +1080,7 @@ __all__ = [
     "routing_enabled",
     "ROUTING_MATRIX_BUNDLE_URI",
     "packaged_bundles_dir",
+    "resolve_bundle_name",
     "resolve_bundle_source",
     "resolve_config",
 ]
