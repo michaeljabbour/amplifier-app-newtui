@@ -18,7 +18,6 @@ The real runtime flows through the same paths with generic fallbacks.
 from __future__ import annotations
 
 import re
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -40,7 +39,6 @@ from ..model.blocks import (
     PlanItemState,
     Recap,
     Segment,
-    SessionBanner,
     TodoItem,
     TodoStatus,
     ToolLine,
@@ -50,10 +48,14 @@ from ..model.blocks import (
     WorkingStatus,
 )
 from ..model.evidence import EvidenceLink
-from ..model.lanes import LaneRecord, LaneRegistry, LaneStateName
+from ..model.lanes import LaneRegistry, LaneStateName
 from ..model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
+from .lane_reducer import (
+    LANE_TAIL_NOTIFY_SECONDS as LANE_TAIL_NOTIFY_SECONDS,
+    LaneReducer,
+    _LANE_TRANSCRIPT_MAX_BLOCKS as _LANE_TRANSCRIPT_MAX_BLOCKS,
+)
 from .live_tail import answer_spans
-from .needs_you import focused_lane_banner
 
 _RECAP_RE = re.compile(r"^Goal:\s*(?P<goal>.+?)\.\s*Next:\s*(?P<next>.+?)\.?\s*$", re.DOTALL)
 _IDEA_RE = re.compile(r"^(\d+)\s+(.*)$", re.DOTALL)
@@ -62,35 +64,6 @@ _MODE_NOTICE_RE = re.compile(r"^mode (\w+)")
 _PLAN_STATES = frozenset({"pending", "active", "done"})
 
 _CHARS_PER_TOKEN = 4
-
-LANE_TAIL_NOTIFY_SECONDS = 0.05
-"""Lane-tail repaint floor — mirrors ``_DELTA_NOTIFY_SECONDS`` in
-``kernel/trackers/stream_status.py``. The per-lane buffer accumulates
-between paints, so throttling drops paints — never text."""
-
-_LANE_TAIL_MAX_CHARS = 2_000
-"""Per-lane tail buffer cap; the widget paints only the last 3 lines."""
-
-_LANE_TRANSCRIPT_MAX_BLOCKS = 400
-"""Per-lane focus-transcript cap; oldest activity rows drop first."""
-
-_LANE_TRANSCRIPT_MAX_LANES = 32
-"""Stored focus transcripts; the oldest lane's is evicted past this."""
-
-_LANE_SEED_ROWS = 2
-"""Rows the per-lane cap never trims (banner + delegated brief)."""
-
-
-def _display_short(session_id: str) -> str:
-    """First 6 usable chars of a session id for the focused-lane banner.
-
-    Governance redaction can rewrite ids on the live bus
-    (``[REDACTED:PII]…`` — found live); bracketed tokens are stripped so
-    a mangled id neither leaks into the banner nor reads as markup.
-    """
-    cleaned = re.sub(r"\[[^\]]*\]", "", session_id)
-    cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ch == "-")
-    return cleaned[:6]
 
 
 def _plan_state(value: object) -> PlanItemState:
@@ -566,20 +539,13 @@ class TranscriptReducer:
         self._fanout_start_ts: float = 0.0
         self._fanout_duration_s: float = 0.0
         self._delegate_plan_final: tuple[TodoItem, ...] | None = None
-        # -- lane live tail (DESIGN-SPEC §8, design doc D4) ------------------
-        self._tail_clock = tail_clock or time.monotonic
-        self._lane_tails: dict[str, str] = {}
-        self._lane_tail_last = 0.0
-        self._lane_tail_shown: str | None = None
-        self._root_streaming = False
-        # -- focused-lane transcripts (DESIGN-SPEC §8) -----------------------
-        # Real sessions have no scripted lane logs (that is the demo
-        # adapter's ``lane_blocks``); the child events already diverted
-        # from the root transcript accumulate here instead, keyed by
-        # canonical lane session id, so lane focus can replay a
-        # subagent's own work.
-        self._lane_transcripts: dict[str, list[TranscriptBlock]] = {}
-        self._pending_briefs: dict[str, str] = {}
+        # -- agent lanes: live tail + focus transcripts (LaneReducer) -------
+        # Lane presentation state (per-lane live tail, focused-lane
+        # transcripts, pending delegate briefs) lives in its own unit; the
+        # turn reducer routes diverted child events onto lanes and drives it.
+        self._lane = LaneReducer(
+            host, allocator=allocator, lanes=lanes, tail_clock=tail_clock
+        )
 
     # -- public state -------------------------------------------------------
 
@@ -716,18 +682,18 @@ class TranscriptReducer:
             case ev.PromptSubmit():
                 self._start_turn(event)
             case ev.StreamBlockStart():
-                self._root_streaming = True
-                self._clear_lane_tail()
+                self._lane.root_streaming = True
+                self._lane.clear_tail()
                 self._host.stream_opened(event.block_type)
                 if event.block_type == "thinking":
                     self.set_activity("thinking")
             case ev.StreamBlockDelta():
                 self._host.stream_delta(event.text)
             case ev.StreamBlockEnd():
-                self._root_streaming = False
+                self._lane.root_streaming = False
                 self._host.stream_closed()
             case ev.StreamAborted():
-                self._root_streaming = False
+                self._lane.root_streaming = False
                 self._host.stream_closed()
                 self._host.show_notice(f"stream aborted · {event.error_message}".rstrip(" ·"))
             case ev.ContentBlockEnd():
@@ -836,7 +802,7 @@ class TranscriptReducer:
                 ok = success is not False and status not in {"denied", "error", "failed"}
                 if ok and self._turn is not None:
                     self._record_change(self._turn, record.lane.name, tool, tool_input)
-                self._append_lane_block(
+                self._lane.append_block(
                     record,
                     ToolLine(
                         id=self._ids.next_id(),
@@ -847,7 +813,7 @@ class TranscriptReducer:
                 )
                 activity = "reviewing tool result"
             case ev.ToolError():
-                self._append_lane_block(
+                self._lane.append_block(
                     record,
                     ToolLine(
                         id=self._ids.next_id(),
@@ -862,14 +828,14 @@ class TranscriptReducer:
                 activity = "thinking" if event.block_type == "thinking" else "writing response"
             case ev.StreamBlockDelta():
                 activity = "thinking" if event.block_type == "thinking" else "writing response"
-                self._lane_tail_delta(record, event)
+                self._lane.tail_delta(record, event)
             case ev.StreamBlockEnd():
                 activity = "reviewing response"
             case ev.ContentBlockEnd():
                 if event.block_type == "text":
                     text = str(event.block.get("text", ""))
                     if text:
-                        self._append_lane_block(
+                        self._lane.append_block(
                             record,
                             Answer(
                                 id=self._ids.next_id(),
@@ -889,149 +855,26 @@ class TranscriptReducer:
             return
         self._host.lanes_changed()
 
-    # -- focused-lane transcripts (DESIGN-SPEC §8) ---------------------------
-
-    def _seed_lane_transcript(self, event: ev.AgentSpawned) -> None:
-        """(Re)start a lane's focus transcript at spawn.
-
-        A known sub-session re-spawning is a replayed turn reusing its
-        ids (the ``lanes.register`` reopen rule) — its transcript resets
-        with it. Opens with the focused-lane banner and, when the parent
-        delegate call carried one, the delegated brief as a ``delegated``
-        user line (the demo's ``lane_focus_blocks`` shape).
-        """
-        record = self.lanes.get(event.sub_session_id)
-        key = record.session_id if record is not None else event.sub_session_id
-        # The envelope session_id IS the parent for agent_spawned and sits
-        # on the redaction module's structural allowlist; the payload's
-        # parent_session_id may arrive scrubbed.
-        parent = event.session_id or event.parent_session_id
-        blocks: list[TranscriptBlock] = [
-            SessionBanner(
-                id=self._ids.next_id(),
-                headline="",
-                focus_note=focused_lane_banner(event.agent, _display_short(parent)),
-            )
-        ]
-        brief = self._pending_briefs.pop(event.agent, "")
-        if brief:
-            blocks.append(UserLine(id=self._ids.next_id(), text=brief, mode="delegated"))
-        while key not in self._lane_transcripts and (
-            len(self._lane_transcripts) >= _LANE_TRANSCRIPT_MAX_LANES
-        ):
-            del self._lane_transcripts[next(iter(self._lane_transcripts))]
-        self._lane_transcripts[key] = blocks
-
-    def _append_lane_block(self, record: LaneRecord, block: TranscriptBlock) -> None:
-        """Append one block to a lane's focus transcript, bounded.
-
-        Lanes restored without a spawn event get a banner-only seed so
-        their activity still accumulates somewhere focusable.
-        """
-        blocks = self._lane_transcripts.get(record.session_id)
-        if blocks is None:
-            seeded: list[TranscriptBlock] = [
-                SessionBanner(
-                    id=self._ids.next_id(),
-                    headline="",
-                    focus_note=focused_lane_banner(
-                        record.lane.name, _display_short(record.parent_id or "")
-                    ),
-                )
-            ]
-            while len(self._lane_transcripts) >= _LANE_TRANSCRIPT_MAX_LANES:
-                del self._lane_transcripts[next(iter(self._lane_transcripts))]
-            blocks = self._lane_transcripts[record.session_id] = seeded
-        blocks.append(block)
-        if len(blocks) > _LANE_TRANSCRIPT_MAX_BLOCKS:
-            del blocks[min(_LANE_SEED_ROWS, len(blocks) - 1)]
+    # -- agent lanes: focus transcripts + live tail (LaneReducer) ------------
 
     def lane_transcript(self, key: str) -> list[TranscriptBlock] | None:
         """A lane's accumulated focus transcript, by session id or name.
 
         The real-runtime counterpart of the demo adapter's
         ``lane_blocks`` — ``None`` (not ``[]``) when nothing is known so
-        the caller's no-transcript notice stays meaningful.
+        the caller's no-transcript notice stays meaningful. Owned by the
+        LaneReducer; kept here as the reducer's public lane surface.
         """
-        record = self.lanes.get(key)
-        if record is not None:
-            key = record.session_id
-        blocks = self._lane_transcripts.get(key)
-        if blocks is None:
-            for candidate in self.lanes.lanes:
-                if candidate.lane.name == key:
-                    blocks = self._lane_transcripts.get(candidate.session_id)
-                    break
-        return list(blocks) if blocks else None
-
-    # -- lane live tail (DESIGN-SPEC §8, design doc D4) ---------------------
-
-    def _lane_tail_delta(self, record: LaneRecord, event: ev.StreamBlockDelta) -> None:
-        """Buffer a child text delta; repaint the focused lane's tail.
-
-        Accumulate-then-notify (the ``StreamStatusTracker._on_delta``
-        shape): the host is repainted with the whole buffer at most every
-        ``LANE_TAIL_NOTIFY_SECONDS``, so throttling drops paints, never
-        text. The root stream always preempts; thinking blocks stay dark.
-        """
-        if event.block_type not in ("", "text"):
-            return
-        if event.text:
-            buffered = self._lane_tails.get(record.session_id, "") + event.text
-            self._lane_tails[record.session_id] = buffered[-_LANE_TAIL_MAX_CHARS:]
-        self.lanes.note_stream_activity(record.session_id)
-        if self._root_streaming:
-            return  # root always preempts (D4)
-        focused = self.lanes.tail_lane
-        if focused is None or focused.session_id != record.session_id:
-            return
-        now = self._tail_clock()
-        # 1e-9 slack: a clock landing exactly on the 0.05s boundary must
-        # paint (float subtraction alone under-reports the elapsed time).
-        if self._lane_tail_shown == record.session_id and (
-            now - self._lane_tail_last < LANE_TAIL_NOTIFY_SECONDS - 1e-9
-        ):
-            return
-        self._lane_tail_last = now
-        self._lane_tail_shown = record.session_id
-        self._host.lane_tail_updated(self._lane_tails.get(record.session_id, ""))
-
-    def _clear_lane_tail(self, session_id: str | None = None) -> None:
-        """Drop lane-tail state: one lane's buffer, or everything.
-
-        Ephemeral by design — tail text never becomes a transcript block
-        (durable content arrives via Channel B; see app.py stream_closed).
-        """
-        if session_id is None:
-            self._lane_tails.clear()
-        else:
-            self._lane_tails.pop(session_id, None)
-        if self._lane_tail_shown is not None and (
-            session_id is None or self._lane_tail_shown == session_id
-        ):
-            self._lane_tail_shown = None
-            self._host.lane_tail_cleared()
+        return self._lane.transcript(key)
 
     def repaint_lane_tail(self) -> None:
         """Paint the focused lane's buffered tail right now (ctrl+o).
 
         Cycling the pin must not wait for the new lane's next delta —
-        otherwise the tail keeps showing the previous lane's text. Skips
-        the throttle (a keypress, not a delta storm); clears instead when
-        the pinned lane has nothing buffered yet.
+        otherwise the tail keeps showing the previous lane's text. Owned
+        by the LaneReducer; kept here as the reducer's public lane surface.
         """
-        if self._root_streaming:
-            return
-        focused = self.lanes.tail_lane
-        buffered = "" if focused is None else self._lane_tails.get(focused.session_id, "")
-        if focused is None or not buffered:
-            if self._lane_tail_shown is not None:
-                self._lane_tail_shown = None
-                self._host.lane_tail_cleared()
-            return
-        self._lane_tail_last = self._tail_clock()
-        self._lane_tail_shown = focused.session_id
-        self._host.lane_tail_updated(buffered)
+        self._lane.repaint_tail()
 
     def _record_change(
         self, turn: _Turn, actor: str, tool: str, tool_input: dict[str, Any]
@@ -1127,8 +970,8 @@ class TranscriptReducer:
         turn = self._turn
         if turn is None:
             return
-        self._clear_lane_tail()
-        self._root_streaming = False
+        self._lane.clear_tail()
+        self._lane.root_streaming = False
         # A cancelled turn strands running delegates: settle them as ⊘ so the
         # durable summary never claims work that was interrupted (edge-case
         # table, ambient-progress design).
@@ -1404,7 +1247,7 @@ class TranscriptReducer:
                 or ""
             )
             if agent and brief:
-                self._pending_briefs[agent] = brief
+                self._lane.remember_brief(agent, brief)
         # No durable per-tool line: the in-flight op shows as the active
         # branch in the live tree beneath the pulse, and rolls into the
         # burst digest on completion (DESIGN-SPEC §3).
@@ -1743,7 +1586,7 @@ class TranscriptReducer:
                 cost=seed.cost,
                 tokens=seed.tokens,
             )
-        self._seed_lane_transcript(event)
+        self._lane.seed_transcript(event)
         now = event.ts
         if not self._delegate_rows:
             self._fanout_start_ts = now
@@ -1759,7 +1602,7 @@ class TranscriptReducer:
     def _agent_completed(self, event: ev.AgentCompleted) -> None:
         result = event.result or ("" if event.success else "failed")
         record = self.lanes.get(event.sub_session_id)
-        self._clear_lane_tail(
+        self._lane.clear_tail(
             record.session_id if record is not None else event.sub_session_id
         )
         if record is not None:
@@ -1770,7 +1613,7 @@ class TranscriptReducer:
                 if event.success
                 else ("failed" if result in ("", "failed") else f"failed · {result}")
             )
-            self._append_lane_block(
+            self._lane.append_block(
                 record,
                 Answer(
                     id=self._ids.next_id(),
