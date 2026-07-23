@@ -84,9 +84,40 @@ dot -Tsvg docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui
 | real lifecycle | `tests/test_runtime_offline.py` | genuine foundation lifecycle with fake modules mounted via `file://` bundles |
 | renderer | `tests/test_golden_widths.py` | golden width matrix |
 | performance | `tests/test_perf_spike.py` | renderer + live-tail budgets and the hybrid infinite-history 5k frame budget are enforced |
+| real-PTY capability (opt-in) | `tests/forge/test_capability_*.py` (`-m forge`) | drives the shipped binary through a real PTY via the forge daemon — demo lane always-on, real lane credential-gated (see below) |
 
 Everything runs offline. If your test needs credentials or network, it's designed wrong —
 look at `test_runtime_offline.py` for how to fake the provider side.
+
+## Forge capability tier (opt-in, out of the default gate)
+
+`tests/forge/` drives the **real** shipped `amplifier-newtui` binary through a real PTY via
+the `amplifier-skill-forge` terminal daemon — the one seam every other test fakes (real
+event stream, real governance hook, real terminal). It is marked `@pytest.mark.forge` and
+**excluded from the default gate** (`addopts = -m "not forge"` in `pyproject.toml`), so
+`uv run pytest -q` and CI are wholly unaffected: only this tier needs a PTY + the forge
+daemon.
+
+```sh
+uv run pytest -q -m forge tests/forge/     # run the tier (-m forge overrides the default filter)
+scripts/forge_capability.sh                # same, after a `forge doctor` health check
+```
+
+Two credential-adaptive lanes:
+
+- **Demo lane** (`test_capability_demo.py`, always on) — launches `amplifier-newtui --demo`
+  at a fixed 120×40 and asserts boot→composer, `/status` + `/model` + palette, a full demo
+  turn (streaming, plan panel, footer cost), and the agents fan-out (lanes, ctrl+o tail
+  focus, delegate summary). Deterministic (virtual clock, fixed costs); screen-observed.
+- **Real lane** (`test_capability_real.py`, credential-gated) — boots the real runtime and
+  asserts real bundle-prepare boot + resume cost re-seed against the durable
+  `ui-events.jsonl` ledger (ADR-0007 §9). It **skips cleanly** when no provider credentials
+  are configured, and — because it drives a real, paid session — also skips unless you opt
+  in with `AMPLIFIER_FORGE_REAL=1`.
+
+The forge helper is resolved from `$FORGE` or `~/.claude/skills/amplifier-skill-forge`; the
+whole tier **skips** (never fails) when forge or its daemon is unavailable. Every wait is a
+bounded `forge wait` / ledger poll — **no `sleep`s** — so the tier is flake-resistant.
 
 ## Customizing / swapping the bundle
 

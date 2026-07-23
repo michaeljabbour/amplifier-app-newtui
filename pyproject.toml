@@ -49,8 +49,14 @@ amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundatio
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--import-mode=importlib"
+# The forge capability tier (tests/forge/, issue #49) is opt-in: it needs a
+# real PTY + the forge daemon, so it is excluded from the default gate and CI.
+# Run it with: uv run pytest -q -m forge tests/forge/
+addopts = "--import-mode=importlib -m 'not forge'"
 asyncio_mode = "strict"
+markers = [
+    "forge: real-PTY capability tier via amplifier-skill-forge (opt-in; needs a PTY + forge daemon; excluded from the default gate)",
+]
 
 [tool.pyright]
 include = ["src", "tests", "sdk/python/src"]
