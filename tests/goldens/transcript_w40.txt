@@ -94,3 +94,18 @@
 [$fg]  — the inner loop was[/]
 [$fg]  belt-and-suspenders. Principle: one[/]
 [$fg]  owner per concern.[/]
+
+=== answer (rendering polish) ===
+[$fg]Rendering polish lands [/][italic $fg]italic[/][$fg] runs, real[/]
+[$teal][link=https://example.com/guide]docs[/link][/][$dimmer][link=https://example.com/guide] (https://example.com/guide)[/link][/][$fg] links[/]
+[$fg]and bare [/][$teal][link=https://amplifier.dev]https://amplifier.dev[/link][/][$fg] URLs as[/]
+[$fg]OSC 8 hyperlinks — this line is[/]
+[$fg]deliberately long so a wide terminal[/]
+[$fg]wraps it at the reading measure instead[/]
+[$fg]of stretching the paragraph across the[/]
+[$fg]whole width.[/]
+
+[$green]✓ [/][$fg]italic, checkboxes, links[/]
+[$dim]☐ [/][$fg]syntax highlighting (a non-goal)[/]
+
+[$teal]  print('click a fence to copy it')[/]

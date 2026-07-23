@@ -32,8 +32,9 @@
 [$dimmer]✳ [/][italic $dim]Goal: durable session store. Next: open PR against main.[/]
 
 === answer ===
-[$fg]This repo is the [/][bold $bright]command-line app for Amplifier[/][$fg]. If amplifier-core is the engine, this is the dashboard and steering[/]
-[$fg]wheel: the [/][$teal]amplifier[/][$fg] command starts sessions, configures providers, loads bundles, and renders this UI.[/]
+[$fg]This repo is the [/][bold $bright]command-line app for Amplifier[/][$fg]. If amplifier-core is the engine, this is the[/]
+[$fg]dashboard and steering wheel: the [/][$teal]amplifier[/][$fg] command starts sessions, configures providers, loads[/]
+[$fg]bundles, and renders this UI.[/]
 
 === steer_echo ===
 [$teal]  ↳ [/][$teal]steer queued: "focus on the store tests first" [/][$dimmer]· applies at next step boundary[/]
@@ -85,4 +86,15 @@
 === answer (insight callout) ===
 [$fg]Trimmed the retry wrapper.[/]
 
-[$blue]▌ [/][$fg]★ [/][bold $bright]Insight:[/][$fg] the caller already retries — the inner loop was belt-and-suspenders. Principle: one owner per concern.[/]
+[$blue]▌ [/][$fg]★ [/][bold $bright]Insight:[/][$fg] the caller already retries — the inner loop was belt-and-suspenders. Principle: one[/]
+[$fg]  owner per concern.[/]
+
+=== answer (rendering polish) ===
+[$fg]Rendering polish lands [/][italic $fg]italic[/][$fg] runs, real [/][$teal][link=https://example.com/guide]docs[/link][/][$dimmer][link=https://example.com/guide] (https://example.com/guide)[/link][/][$fg] links and bare[/]
+[$teal][link=https://amplifier.dev]https://amplifier.dev[/link][/][$fg] URLs as OSC 8 hyperlinks — this line is deliberately long so a wide terminal[/]
+[$fg]wraps it at the reading measure instead of stretching the paragraph across the whole width.[/]
+
+[$green]✓ [/][$fg]italic, checkboxes, links[/]
+[$dim]☐ [/][$fg]syntax highlighting (a non-goal)[/]
+
+[$teal]  print('click a fence to copy it')[/]

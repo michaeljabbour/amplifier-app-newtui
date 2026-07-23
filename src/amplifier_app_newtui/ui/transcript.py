@@ -62,7 +62,7 @@ from .keymap import KEYMAP
 from .motion import SHIMMER_INTERVAL_SECONDS
 from .needs_you import NeedsYouList
 from .segments import segment_markup
-from .transcript_render import render_block, render_block_markup
+from .transcript_render import fence_text_at_row, render_block, render_block_markup
 
 REFLOW_DEBOUNCE_SECONDS = 0.075
 """Trailing debounce for resize reflow (per ADR-0007 / codex precedent)."""
@@ -105,6 +105,16 @@ class OpenRewind(Message):
     def __init__(self, checkpoint_id: str) -> None:
         super().__init__()
         self.checkpoint_id = checkpoint_id
+
+
+class CopyCodeFence(Message):
+    """A fenced code block inside an answer was clicked → copy just that
+    fence to the clipboard (``/copy`` still grabs the whole answer)."""
+
+    def __init__(self, block_id: str, text: str) -> None:
+        super().__init__()
+        self.block_id = block_id
+        self.text = text
 
 
 class ToolLineToggled(Message):
@@ -338,7 +348,23 @@ class BlockWidget(Static):
         self.repaint_block()
 
     def on_click(self, event: events.Click) -> None:
+        if self._block.kind == "answer":
+            text = self._fence_click_text(event)
+            if text is not None:
+                # Clicking directly on a fenced code block copies just that
+                # fence; any other spot on the answer falls through to the
+                # normal activate (evidence, spec §10).
+                self.post_message(CopyCodeFence(self._block.id, text))
+                return
         self._activate()
+
+    def _fence_click_text(self, event: events.Click) -> str | None:
+        """Dedented source of the code fence under the click, or ``None``."""
+        offset = event.get_content_offset(self)
+        if offset is None:
+            return None
+        width = self._painted_width or self.size.width or FALLBACK_WIDTH
+        return fence_text_at_row(render_block(self._block, width), offset.y)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Gate kind-specific bindings: evidence chords fire only on a
@@ -1096,6 +1122,7 @@ __all__ = [
     "SPINNER_INTERVAL_SECONDS",
     "BlockWidget",
     "CloseEvidence",
+    "CopyCodeFence",
     "DelegateSummaryToggled",
     "ExpandEvidenceClaim",
     "HistoryArchive",
@@ -1107,6 +1134,7 @@ __all__ = [
     "TranscriptView",
     "TranscriptWidget",
     "build_block_widget",
+    "fence_text_at_row",
     "render_block",
     "render_block_markup",
 ]

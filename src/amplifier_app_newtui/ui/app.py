@@ -81,6 +81,7 @@ from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_the
 from .transcript import (
     BlockWidget,
     CloseEvidence,
+    CopyCodeFence,
     DelegateSummaryToggled,
     ExpandEvidenceClaim,
     LaneFocusChanged,
@@ -966,6 +967,14 @@ class NewTuiApp(App[None]):
             None,
         )
         self.open_rewind_strip(index)
+
+    def on_copy_code_fence(self, message: CopyCodeFence) -> None:
+        # Clicking a fenced code block copies just that fence (/copy still
+        # grabs the whole answer). A transcript click must not strand focus
+        # on the scroll container.
+        self._restore_keyboard()
+        self.copy_to_clipboard(message.text)
+        self.show_notice(f"copied code · {len(message.text)} chars")
 
     def on_show_evidence(self, message: ShowEvidence) -> None:
         # A click on the answer block must not strand focus on the

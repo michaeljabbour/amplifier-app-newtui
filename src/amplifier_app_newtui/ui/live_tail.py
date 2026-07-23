@@ -29,7 +29,13 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Static
 
-from ..model.blocks import GLYPH_QUOTE_GUTTER, Answer, Segment
+from ..model.blocks import (
+    GLYPH_CHECKBOX_CHECKED,
+    GLYPH_CHECKBOX_EMPTY,
+    GLYPH_QUOTE_GUTTER,
+    Answer,
+    Segment,
+)
 from ..model.evidence import EvidenceLink
 from .segments import segment_markup
 
@@ -43,11 +49,20 @@ ASYNC_RENDER_THRESHOLD = 100_000
 """Long streams parse off-thread so markdown can never stall the UI loop."""
 
 _ANSWER_SPAN_RE = re.compile(
-    r"(\*\*.+?\*\*|`[^`\n]+`|\[[^\]\n]+\]\((?:https?|file)://[^)\s]+\))", re.DOTALL
+    r"("
+    r"\*\*.+?\*\*"  # **bold**
+    r"|\*(?![*\s])[^*\n]+?(?<![*\s])\*"  # *italic* — no space adjacent to a marker, never **
+    r"|`[^`\n]+`"  # `inline code`
+    r"|\[[^\]\n]+\]\((?:https?|file)://[^)\s]+\)"  # [text](url)
+    r"|(?:https?|file)://[^\s)]*[^\s).,;:!?]"  # bare url (trailing sentence punctuation excluded)
+    r")",
+    re.DOTALL,
 )
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\(((?:https?|file)://[^)\s]+)\)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_CHECKBOX_RE = re.compile(r"\[([ xX])\]\s+")
+"""A GitHub task-list marker at the head of a bullet body: ``[x] `` / ``[ ] ``."""
 _NUMBERED_RE = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:\-|]+\|?\s*$")
 _QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
@@ -62,8 +77,10 @@ wrapped cells destroy column alignment (user screenshot, /about run)."""
 
 
 def _inline(text: str) -> list[Segment]:
-    """Inline emphasis: ``**…**`` bright bold, `` `…` `` teal code,
-    ``[text](url)`` teal text + dimmer url, everything else fg (§3)."""
+    """Inline emphasis: ``**…**`` bright bold, ``*…*`` italic, `` `…` ``
+    teal code, ``[text](url)`` teal text + dimmer url, bare ``https://``
+    URLs teal — links carry an OSC 8 target so they click through — and
+    everything else fg (§3)."""
     spans: list[Segment] = []
     position = 0
     for match in _ANSWER_SPAN_RE.finditer(text):
@@ -72,13 +89,19 @@ def _inline(text: str) -> list[Segment]:
         token = match.group(0)
         if token.startswith("**"):
             spans.append(Segment(text=token[2:-2], style_token="bright", bold=True))
+        elif token.startswith("*"):
+            spans.append(Segment(text=token[1:-1], style_token="fg", italic=True))
         elif token.startswith("`"):
             spans.append(Segment(text=token[1:-1], style_token="teal"))
+        elif token.startswith(("http://", "https://", "file://")):
+            # Bare URL: collapse the raw text into one real hyperlink.
+            spans.append(Segment(text=token, style_token="teal", link=token))
         else:
             link = _LINK_RE.fullmatch(token)
             assert link is not None  # the alternation guarantees the shape
-            spans.append(Segment(text=link.group(1), style_token="teal"))
-            spans.append(Segment(text=f" ({link.group(2)})", style_token="dimmer"))
+            url = link.group(2)
+            spans.append(Segment(text=link.group(1), style_token="teal", link=url))
+            spans.append(Segment(text=f" ({url})", style_token="dimmer", link=url))
         position = match.end()
     if position < len(text):
         spans.append(Segment(text=text[position:]))
@@ -239,8 +262,23 @@ def answer_spans(source: str) -> tuple[Segment, ...]:
                 _ensure_blank(spans)
                 in_list = True
             in_quote = False
-            spans.append(Segment(text=f"{bullet.group(1)}• ", style_token="dim"))
-            spans.extend(_inline(bullet.group(2)))
+            indent, body = bullet.group(1), bullet.group(2)
+            if checkbox := _CHECKBOX_RE.match(body):
+                # ``- [x]`` / ``- [ ]`` render as a task-list glyph (green
+                # done / dim pending), not the raw ``• [x]`` the bullet path
+                # would otherwise leak.
+                checked = checkbox.group(1).lower() == "x"
+                glyph = GLYPH_CHECKBOX_CHECKED if checked else GLYPH_CHECKBOX_EMPTY
+                spans.append(
+                    Segment(
+                        text=f"{indent}{glyph} ",
+                        style_token="green" if checked else "dim",
+                    )
+                )
+                spans.extend(_inline(body[checkbox.end() :]))
+            else:
+                spans.append(Segment(text=f"{indent}• ", style_token="dim"))
+                spans.extend(_inline(body))
             spans.append(Segment(text="\n"))
             index += 1
             continue
