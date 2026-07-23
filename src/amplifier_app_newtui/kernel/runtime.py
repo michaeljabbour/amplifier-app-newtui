@@ -58,6 +58,7 @@ from .directory_permissions import (
     write_boundary_setting,
 )
 from .governance_hook import GovernanceHook
+from .mention_expansion import MentionBudget, expand_mentions
 from . import session_ops
 from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
@@ -444,6 +445,8 @@ class RealRuntime:
             min_timeout=3600.0,
         )
         self.cost = CostTracker()
+        self._mention_budget = MentionBudget()
+        """Per-turn @mention expansion budget (issue #48; kernel/mention_expansion)."""
         self._bundle = bundle
         self._resume_id = resume_id
         self._mode = mode
@@ -912,7 +915,8 @@ class RealRuntime:
             self.bridge.emit(PromptSubmit(session_id=self._initialized.session_id, prompt=text))
             self.turn_yield.start_turn()
             starting_diff = await self._capture_diff()
-            response = await self._initialized.session.execute(text)
+            prompt_for_model = await self._expand_mentions(text)
+            response = await self._initialized.session.execute(prompt_for_model)
         finally:
             self._executing = False
             if self._image_injector is not None:
@@ -965,6 +969,54 @@ class RealRuntime:
         from .file_mentions import discover_workspace_files
 
         return await asyncio.to_thread(discover_workspace_files, self._turn_cwd())
+
+    def _mention_resolver(self) -> Any | None:
+        """The session's foundation-registered ``@mention`` resolver.
+
+        ``PreparedBundle.create_session`` registers a ``BaseMentionResolver``
+        (base_path = session cwd, all composed bundle namespaces) under the
+        ``mention_resolver`` capability -- the same capability the donor's
+        ``_process_runtime_mentions`` reads. Absent (or a broken registry)
+        simply means expansion no-ops, like a session with no mentions.
+        """
+        if self._initialized is None:
+            return None
+        try:
+            return self._initialized.coordinator.get_capability("mention_resolver")
+        except Exception:  # noqa: BLE001 -- capability registry variance
+            return None
+
+    async def _expand_mentions(self, text: str) -> str:
+        """Inline resolved ``@mention`` content ahead of *text* (issue #48).
+
+        Reference: amplifier-app-cli ``main.py:_process_runtime_mentions``.
+        The raw *text* (mentions intact) is what the user echo shows; only
+        the model-bound copy carries the prepended ``<context_file>`` blocks.
+        Best-effort -- a resolver failure returns the text unexpanded rather
+        than dropping the turn. Mentions dropped by the size budget surface
+        as one Notification.
+        """
+        resolver = self._mention_resolver()
+        if resolver is None:
+            return text
+        try:
+            expansion = await expand_mentions(
+                text,
+                resolver=resolver,
+                relative_to=self._turn_cwd(),
+                budget=self._mention_budget,
+            )
+        except Exception:  # noqa: BLE001 -- expansion must never kill a turn
+            logger.debug("mention expansion failed", exc_info=True)
+            return text
+        if expansion.skipped:
+            names = ", ".join(mention for mention, _ in expansion.skipped)
+            self.bridge.emit(
+                Notification(
+                    message=f"@mention expansion skipped (size bounds): {names}"
+                )
+            )
+        return expansion.text
 
     async def _capture_diff(self) -> GitDiffSnapshot:
         try:
