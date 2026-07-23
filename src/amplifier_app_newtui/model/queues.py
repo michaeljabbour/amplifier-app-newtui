@@ -24,7 +24,7 @@ woke it.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from time import monotonic
 from typing import Literal
 
@@ -43,6 +43,13 @@ def _clean_multiline(value: object, limit: int = MAX_ITEM_CHARS) -> str:
 
 def _clean_line(value: object, limit: int = MAX_ITEM_CHARS) -> str:
     return " ".join(_clean_multiline(value, limit).split())
+
+
+def _clean_keys(keys: Iterable[object], *, limit: int = 200, cap: int = 100) -> tuple[str, ...]:
+    """Sanitize + de-dupe dependency keys (order-preserving), bounded ``cap``."""
+    return tuple(
+        dict.fromkeys(clean for raw in tuple(keys)[:cap] if (clean := _clean_line(raw, limit)))
+    )
 
 
 class QueuedMessage(BaseModel):
@@ -282,6 +289,11 @@ class NeedsYouItem(BaseModel):
     action: str = ""
     """The denied action this decision defers (joins override records to
     the DenialLog for /improve trust-slot evidence)."""
+    dependencies: tuple[str, ...] = ()
+    """Keys a later tool call may DEPEND ON while this decision is parked:
+    the denied action itself and any declared orchestration ids. A dependent
+    step matching one of these is denied-and-continued until the decision is
+    answered (kernel/governance_hook.py ``_blocked_dependencies``)."""
     status: NeedsYouStatus = "pending"
     answer: str = ""
     created_at: float = 0.0
@@ -339,6 +351,29 @@ class NeedsYouQueue(_ListenerMixin):
         with self._lock:
             return tuple(item for item in self._items if item.status == "answered")
 
+    def blocking_decisions(self, dependencies: Iterable[object]) -> tuple[NeedsYouItem, ...]:
+        """Parked (``pending``) decisions that block any of *dependencies*.
+
+        A tool call ``depends on`` a decision when they share a dependency
+        key. Only ``pending`` decisions block: answering one lets its
+        dependents proceed (DESIGN-SPEC §7 — a deferred decision never halts
+        *unrelated* work, but a step that literally needs the parked answer
+        waits for it). Empty / unmatched keys never block.
+        """
+        keys = {key for raw in dependencies if (key := _clean_line(raw, 200))}
+        if not keys:
+            return ()
+        with self._lock:
+            return tuple(
+                item
+                for item in self._items
+                if item.status == "pending" and keys.intersection(item.dependencies)
+            )
+
+    def dependency_blocked(self, dependency: object) -> bool:
+        """Whether an unanswered parked decision blocks *dependency*."""
+        return bool(self.blocking_decisions((dependency,)))
+
     def defer(
         self,
         question: object,
@@ -347,8 +382,15 @@ class NeedsYouQueue(_ListenerMixin):
         choices: tuple[str, ...] = (),
         highlight: object = "",
         action: object = "",
+        dependencies: tuple[str, ...] = (),
     ) -> NeedsYouItem:
-        """Park a decision for later; raises ``ValueError`` when full/empty."""
+        """Park a decision for later; raises ``ValueError`` when full/empty.
+
+        ``dependencies`` are the keys a later tool call may DEPEND ON while
+        this decision is parked (the denied action, declared orchestration
+        ids). :meth:`blocking_decisions` matches them so a dependent step is
+        denied-and-continued until the human answers.
+        """
         with self._lock:
             active = [i for i in self._items if i.status in {"pending", "answered"}]
             if len(active) >= self._MAX_DECISIONS:
@@ -363,6 +405,7 @@ class NeedsYouQueue(_ListenerMixin):
                 choices=tuple(_clean_line(c, 200) for c in choices if _clean_line(c, 200)),
                 highlight=_clean_line(highlight, 200),
                 action=_clean_line(action, 4_096),
+                dependencies=_clean_keys(dependencies),
                 created_at=self._clock(),
             )
             self._next_id += 1
