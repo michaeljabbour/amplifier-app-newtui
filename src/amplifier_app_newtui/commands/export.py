@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..model.blocks import Answer, ToolLine, TranscriptBlock, UserLine
+from ..model.redaction import scrub_text
 
 
 def _render_block(block: TranscriptBlock) -> str | None:
@@ -35,7 +36,9 @@ def render_transcript_markdown(blocks: Iterable[TranscriptBlock]) -> str:
     sections = [text for text in map(_render_block, blocks) if text is not None]
     if not sections:
         return ""
-    return "\n\n".join(sections) + "\n"
+    # Scrub secret-shaped values at the sink so every block kind is covered
+    # (issue #23) with the same rules the transcript/copy/metadata sinks use.
+    return scrub_text("\n\n".join(sections) + "\n")
 
 
 def export_filename(session_short: str, now: datetime) -> str:

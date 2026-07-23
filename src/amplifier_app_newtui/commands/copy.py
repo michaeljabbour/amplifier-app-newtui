@@ -11,13 +11,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..model.blocks import Answer, TranscriptBlock
+from ..model.redaction import scrub_text
 
 
 def last_answer_text(blocks: Sequence[TranscriptBlock]) -> str | None:
     """Span-joined text of the last real answer; ``None`` if there is none."""
     for block in reversed(blocks):
         if isinstance(block, Answer) and block.clickable:
-            return "".join(segment.text for segment in block.spans)
+            # Scrub before the text leaves for the clipboard (issue #23),
+            # shared rules with the transcript/export/metadata sinks.
+            return scrub_text("".join(segment.text for segment in block.spans))
     return None
 
 

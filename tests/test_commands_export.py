@@ -102,3 +102,48 @@ def test_write_export_creates_root_and_returns_path(tmp_path: Path) -> None:
     path = write_export(blocks, "a1b2c3", NOW, root)
     assert path == root / "a1b2c3-20260101-123456.md"
     assert path.read_text(encoding="utf-8") == "> hello\n"
+
+
+# --------------------------------------------------------------------------
+# secret scrubbing at the export sink (issue #23)
+# --------------------------------------------------------------------------
+
+_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+
+
+def test_export_redacts_aws_key_in_answer() -> None:
+    blocks = (
+        Answer(id="b1", spans=(Segment(text=f"your key is {_AWS_KEY} keep it"),)),
+    )
+    out = render_transcript_markdown(blocks)
+    assert _AWS_KEY not in out
+    assert out == "your key is [REDACTED] keep it\n"
+
+
+def test_export_redacts_bearer_token_in_tool_body() -> None:
+    blocks = (
+        ToolLine(
+            id="b1",
+            summary="curl the API",
+            body=("Authorization: Bearer sk-live-abcdef123456",),
+            status="completed",
+        ),
+    )
+    out = render_transcript_markdown(blocks)
+    assert "sk-live-abcdef123456" not in out
+    assert "Bearer [REDACTED]" in out
+
+
+def test_export_redacts_secret_in_user_line() -> None:
+    blocks = (UserLine(id="b1", text=f"here: {_AWS_KEY}"),)
+    out = render_transcript_markdown(blocks)
+    assert _AWS_KEY not in out
+    assert out == "> here: [REDACTED]\n"
+
+
+def test_write_export_persists_redacted_markdown(tmp_path: Path) -> None:
+    blocks = (Answer(id="b1", spans=(Segment(text=f"key {_AWS_KEY}"),)),)
+    path = write_export(blocks, "a1b2c3", NOW, tmp_path / "exports")
+    written = path.read_text(encoding="utf-8")
+    assert _AWS_KEY not in written
+    assert written == "key [REDACTED]\n"
