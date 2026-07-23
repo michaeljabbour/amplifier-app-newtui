@@ -65,9 +65,7 @@ _UNION_TOOL_CONFIG_FIELDS = frozenset(
 """Tool permission lists extend across scopes instead of replacing each other."""
 
 
-def merge_tool_configs(
-    base: dict[str, Any], overlay: dict[str, Any]
-) -> dict[str, Any]:
+def merge_tool_configs(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     """Merge one tool config with stable union semantics for path policy.
 
     Amplifier's directory settings are additive capabilities: adding a project-
@@ -236,6 +234,51 @@ def overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(uri) for uri in app_bundles if uri)
 
 
+ROUTING_MATRIX_BUNDLE_URI = "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main"
+"""The curated routing-matrix bundle (donor parity: amplifier-app-cli's
+``WELL_KNOWN_BUNDLES['routing-matrix']['remote']``). Its ``bundle.md``
+includes ``behaviors/routing.yaml``, which mounts ``hooks-routing`` (with a
+pinned ``source``), a routing-instructions context file, and the routing
+skills. Composed as an overlay only when routing is opted in."""
+
+_ROUTING_BUNDLE_MARKER = "amplifier-bundle-routing-matrix"
+"""Substring identifying the routing-matrix bundle in any overlay URI
+(remote git URL, subdirectory variant, or local dev-checkout path)."""
+
+
+def routing_enabled(settings: dict[str, Any]) -> bool:
+    """Whether the user opted into model routing (mount ``hooks-routing``).
+
+    Routing is opt-in (anchors parity: ``hooks-routing`` is not mounted by
+    the base bundle). ``routing.enabled`` is the explicit switch and always
+    wins; absent an explicit boolean, naming a matrix (``routing.matrix``)
+    opts in — picking a matrix is an unambiguous request for routing. Any
+    other shape ⇒ off. Never raises."""
+    routing = settings.get("routing")
+    if not isinstance(routing, dict):
+        return False
+    enabled = routing.get("enabled")
+    if isinstance(enabled, bool):
+        return enabled
+    matrix = routing.get("matrix")
+    return isinstance(matrix, str) and bool(matrix)
+
+
+def composed_overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
+    """All overlay bundle URIs composed onto the session, in compose order.
+
+    User ``bundle.app`` overlays come first; the routing-matrix bundle is
+    appended last when routing is opted in (:func:`routing_enabled`) so the
+    settings→hook bridge (:func:`inject_routing_config`) has a mounted
+    ``hooks-routing`` to patch. Deduped by bundle identity: a user who
+    already lists the routing-matrix bundle in ``bundle.app`` never composes
+    it twice."""
+    overlays = list(overlay_uris(settings))
+    if routing_enabled(settings) and not any(_ROUTING_BUNDLE_MARKER in uri for uri in overlays):
+        overlays.append(ROUTING_MATRIX_BUNDLE_URI)
+    return tuple(overlays)
+
+
 def build_source_resolver(settings: dict[str, Any]) -> Callable[[str, str], str]:
     """Module-source override resolver for ``Bundle.prepare()``.
 
@@ -262,9 +305,7 @@ def build_source_resolver(settings: dict[str, Any]) -> Callable[[str, str], str]
     return resolve
 
 
-def apply_module_overrides(
-    mount_plan: dict[str, Any], settings: dict[str, Any]
-) -> dict[str, Any]:
+def apply_module_overrides(mount_plan: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
     """Merge settings ``config.providers`` / ``modules.tools`` /
     ``overrides.<id>.config`` into *mount_plan* **in place**.
 
@@ -288,9 +329,7 @@ def apply_module_overrides(
                     override_config = generic.get(str(entry.get("module")))
                     if override_config:
                         merge = merge_tool_configs if section == "tools" else deep_merge
-                        entry["config"] = merge(
-                            entry.get("config") or {}, override_config
-                        )
+                        entry["config"] = merge(entry.get("config") or {}, override_config)
 
     # config.providers — provider entries merged by identity (id | module).
     provider_overrides = (settings.get("config") or {}).get("providers")
@@ -333,9 +372,7 @@ def expand_env_placeholders(config: dict[str, Any]) -> dict[str, Any]:
     def _is_unset_placeholder(value: str) -> bool:
         match = _ENV_PATTERN.fullmatch(value)
         return (
-            match is not None
-            and match.group(2) is None
-            and os.environ.get(match.group(1)) is None
+            match is not None and match.group(2) is None and os.environ.get(match.group(1)) is None
         )
 
     def _walk(value: Any) -> Any:
@@ -343,9 +380,7 @@ def expand_env_placeholders(config: dict[str, Any]) -> dict[str, Any]:
             return _ENV_PATTERN.sub(_replace_match, value)
         if isinstance(value, dict):
             for key in [
-                k
-                for k, v in value.items()
-                if isinstance(v, str) and _is_unset_placeholder(v)
+                k for k, v in value.items() if isinstance(v, str) and _is_unset_placeholder(v)
             ]:
                 del value[key]
             for key in value:
@@ -364,9 +399,7 @@ def _entry_key(entry: dict[str, Any]) -> str:
     return str(entry.get("id") or entry.get("instance_id") or entry.get("module") or "")
 
 
-def _merge_module_entries(
-    mount_plan: dict[str, Any], section: str, overlay: list[Any]
-) -> None:
+def _merge_module_entries(mount_plan: dict[str, Any], section: str, overlay: list[Any]) -> None:
     """Merge *overlay* module entries into ``mount_plan[section]`` by identity."""
     entries = mount_plan.setdefault(section, [])
     index_by_key = {
@@ -380,9 +413,7 @@ def _merge_module_entries(
             existing = entries[index_by_key[key]]
             merged = {**existing, **item}
             merge = merge_tool_configs if section == "tools" else deep_merge
-            merged["config"] = merge(
-                existing.get("config") or {}, item.get("config") or {}
-            )
+            merged["config"] = merge(existing.get("config") or {}, item.get("config") or {})
             entries[index_by_key[key]] = merged
         else:
             entries.append(item)
@@ -565,9 +596,7 @@ def inject_mode_search_paths(mount_plan: dict[str, Any], modes_dir: Path) -> Non
             paths.append(target)
 
 
-def ensure_project_write_path(
-    mount_plan: dict[str, Any], project_dir: Path
-) -> None:
+def ensure_project_write_path(mount_plan: dict[str, Any], project_dir: Path) -> None:
     """Keep the session project writable when users add extra directories.
 
     ``tool-filesystem`` defaults to the session working directory only while
@@ -757,7 +786,7 @@ async def resolve_config(
         progress("loading", bundle_name)
     root = await load_bundle(uri)
 
-    overlays = overlay_uris(settings)
+    overlays = composed_overlay_uris(settings)
     if overlays:
         if progress:
             progress("composing", f"{len(overlays)} overlay bundle(s)")
@@ -846,6 +875,9 @@ __all__ = [
     "merge_tool_configs",
     "map_provider_ids_to_instance_ids",
     "overlay_uris",
+    "composed_overlay_uris",
+    "routing_enabled",
+    "ROUTING_MATRIX_BUNDLE_URI",
     "packaged_bundles_dir",
     "resolve_bundle_source",
     "resolve_config",
