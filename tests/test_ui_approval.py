@@ -24,6 +24,7 @@ class ApprovalApp(App[None]):
         register_themes(self)
         self.theme = theme_id(DEFAULT_THEME)
         self.resolved: list[ApprovalBar.Resolved] = []
+        self.deferred: list[ApprovalBar.Deferred] = []
 
     def compose(self) -> ComposeResult:
         yield ApprovalBar(TICKET, PROMPT, id="approval")
@@ -33,6 +34,9 @@ class ApprovalApp(App[None]):
 
     def on_approval_bar_resolved(self, message: ApprovalBar.Resolved) -> None:
         self.resolved.append(message)
+
+    def on_approval_bar_deferred(self, message: ApprovalBar.Deferred) -> None:
+        self.deferred.append(message)
 
 
 def test_default_options_are_verbatim_fail_closed_strings() -> None:
@@ -177,3 +181,32 @@ async def test_options_stay_on_one_row_at_wide_width() -> None:
         bar = app.query_one("#approval", ApprovalBar)
         assert not bar.has_class("-wrapped")
         assert bar.size.height == 1
+
+
+@pytest.mark.asyncio
+async def test_ctrl_y_parks_ticket_without_resolving() -> None:
+    """ctrl-y posts Deferred(ticket_id) — the park path (ADR-0007
+    approvals) — and must NOT resolve the ticket (no answer chosen)."""
+    app = ApprovalApp()
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        assert len(app.deferred) == 1
+        assert app.deferred[0].ticket_id == TICKET
+        # A park is not a decision: no Resolved message is emitted.
+        assert app.resolved == []
+
+
+@pytest.mark.asyncio
+async def test_ctrl_y_park_leaves_selection_untouched() -> None:
+    """Parking does not move the selection or answer — the bar just
+    hands the ticket to the needs-you queue."""
+    app = ApprovalApp()
+    async with app.run_test() as pilot:
+        bar = app.query_one("#approval", ApprovalBar)
+        await pilot.press("right")  # select "Allow always"
+        assert bar.selected == 1
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        assert bar.selected == 1
+        assert app.deferred and app.resolved == []

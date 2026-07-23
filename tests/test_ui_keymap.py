@@ -142,3 +142,20 @@ def test_cycle_tail_is_bound_to_ctrl_o_everywhere_but_approval() -> None:
     binding = next(b for b in KEYMAP if b.action == "cycle_tail")
     assert binding.keys == ("ctrl+o",)
     assert binding.contexts == NO_APPROVAL
+
+
+def test_approval_defer_parks_on_ctrl_y_in_approval_context_only() -> None:
+    """Issue #41: ctrl-y parks the live ticket into the needs-you queue.
+
+    The chord lives in the approval context only — globally ctrl-y is
+    show_needs_you (NO_APPROVAL), and the bar owns the keyboard while
+    open, so the same key means "defer THIS ticket" there. validate()
+    accepts the split because no single (key, context) is double-claimed.
+    """
+    defer = next(b for b in KEYMAP if b.action == "approval_defer")
+    assert defer.keys == ("ctrl+y",)
+    assert defer.contexts == frozenset({"approval"})
+    show = next(b for b in KEYMAP if b.action == "show_needs_you")
+    assert show.keys == ("ctrl+y",)
+    assert "approval" not in show.contexts
+    validate()  # the ctrl-y split does not trip the conflict guard

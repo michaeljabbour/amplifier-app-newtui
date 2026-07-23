@@ -110,6 +110,24 @@ def test_base_sync_hooks_neutral() -> None:
     assert adapter.answer_approval("t1", "allow") is None  # no-op
 
 
+def test_base_defer_approval_parks_into_needs_you_without_resolving() -> None:
+    """ctrl-y park (issue #41): the base/demo runtime has no broker, so a
+    deferred live ticket is parked directly in the needs-you queue —
+    retro-answerable, its choices preserved, no answer recorded."""
+    adapter = RuntimeAdapter()
+    assert adapter.needs_you.pending_count == 0
+    options = ("Allow once", "Allow always", "Deny")
+    adapter.defer_approval("t1", "Run `pytest -q`?", options)
+    assert adapter.needs_you.pending_count == 1
+    item = adapter.needs_you.pending[0]
+    assert item.question == "Run `pytest -q`?"
+    assert item.choices == options
+    assert item.status == "pending"  # parked, not answered
+    # Empty/whitespace prompts never park a ghost decision.
+    adapter.defer_approval("t2", "   ", options)
+    assert adapter.needs_you.pending_count == 1
+
+
 # ---------------------------------------------------------------------------
 # T3 — submit_queued delegates to submit
 # ---------------------------------------------------------------------------
