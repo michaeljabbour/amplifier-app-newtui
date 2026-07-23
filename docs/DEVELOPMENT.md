@@ -25,6 +25,37 @@ snapshot tests uninstrumented — coverage tracing blows the frame budget on CI 
 If those pass locally, CI passes. PR titles are linted for Conventional Commits format
 (`.github/workflows/pr-title.yml`) — squash-merge titles become the permanent history.
 
+## Type checking
+
+`pyright src/` runs in **`basic`** mode (`[tool.pyright]` in `pyproject.toml`) and is a hard
+gate at **0 errors**. Strict mode has been trialed and rejected — and re-verified here.
+
+**Strict trial (2026-07, current tree).** A throwaway strict config over `src/`
+(`typeCheckingMode = "strict"`, deleted right after the run so the shipped config stays
+`basic`) reports **798 errors across 99 files, 0 warnings**. The distribution is the verdict:
+
+| count | rule | what it is |
+| ----: | ---- | ---------- |
+| 270 | `reportUnknownMemberType` | attribute access on an untyped third-party value |
+| 252 | `reportUnknownVariableType` | value inferred from an untyped return |
+| 173 | `reportUnknownArgumentType` | an untyped value passed onward |
+| 48 | `reportArgumentType` | a genuine arg-type mismatch worth a look |
+| 17 | `reportMissingTypeStubs` | a dependency ships no stubs |
+| 38 | *(all other rules)* | parameter / lambda / private-usage / unnecessary-cast … |
+
+**Verdict: stay `basic`.** ~695 of 798 (≈87%) are the `Unknown*` trio — they originate at
+the untyped boundaries of `amplifier-core`, Textual, and rich, then propagate through
+otherwise well-annotated code. Adopting strict would mean ~700 boundary casts/annotations
+whose only job is to launder third-party `Unknown`s, for almost no defect-catching upside;
+`basic` already flags the real mismatches (`reportArgumentType`, 48) without that noise. This
+re-verifies the earlier trial (~666 on an older tree) — the number tracks tree growth, not
+new type debt.
+
+**What would flip the verdict:** when the hot dependencies ship complete type stubs (or we
+wrap them behind a thin typed boundary layer), the `Unknown*` trio collapses and the residue
+(~100 real findings) becomes a tractable, worthwhile strict adoption. Re-run the throwaway
+trial then — don't flip `typeCheckingMode` until that number is small.
+
 ## The rules the code holds itself to
 
 These are the [ADR-0007](decisions/ADR-0007-newtui-ground-up-architecture.md) invariants

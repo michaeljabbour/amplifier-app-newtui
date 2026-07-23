@@ -205,7 +205,7 @@ class RuntimeStatusTracker:
         if self._cost_fn is not None:
             try:
                 cost = self._cost_fn(usage)
-            except Exception:
+            except Exception:  # noqa: BLE001 — best-effort cost calc: a bad cost fn must not drop the usage update
                 logger.debug("Cost function failed", exc_info=True)
         self._turn = self._turn.adding(usage, cost)
         self._session = self._session.adding(usage, cost)
@@ -215,7 +215,7 @@ class RuntimeStatusTracker:
         for listener in tuple(self._listeners):
             try:
                 listener()
-            except Exception:
+            except Exception:  # noqa: BLE001 — crash-isolate listener callbacks: one bad listener must not stop notification
                 logger.debug("Runtime status listener failed", exc_info=True)
 
 

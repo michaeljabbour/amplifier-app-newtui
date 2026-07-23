@@ -110,7 +110,7 @@ def real_lane_skip_reason() -> str | None:
 
         providers = setup.configured_providers()
         stored_keys = setup.setup_status().stored_keys
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # noqa: BLE001 — defensive: unreadable provider config becomes a skip reason  # pragma: no cover
         return f"provider configuration unreadable: {exc!r}"
     if not providers or not stored_keys:
         return "no provider credentials configured (real lane skips per acceptance)"

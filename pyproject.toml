@@ -70,3 +70,10 @@ typeCheckingMode = "basic"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Enforce the codebase's blind-except convention (issue #29). ``BLE`` is
+# added on top of ruff's default E/F rules; every broad catch that
+# survives is a reviewed, justified ``# noqa: BLE001`` (crash-isolation,
+# best-effort cleanup, fail-closed, or a display/boot resilience boundary).
+extend-select = ["BLE"]

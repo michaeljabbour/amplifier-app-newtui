@@ -17,6 +17,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .formatting import format_tokens_k
+
 
 class _FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -30,16 +32,6 @@ def _format_elapsed(seconds: float) -> str:
     ``75s``, never ``1m 15s``.
     """
     return f"{int(seconds)}s"
-
-
-def _format_tokens(tokens: int) -> str:
-    """``0.0k`` / ``3.2k`` / ``1200.0k`` token formatting per the mockup.
-
-    Mockup always renders ``(toks/1000).toFixed(1) + "k"`` — sub-1k
-    counts included (``↓ 0.0k tok`` at turn start, ``0.6k`` at 608)
-    and never switches to m-units, so 1.2M tokens reads ``1200.0k``.
-    """
-    return f"{tokens / 1_000:.1f}k"
 
 
 class TurnTelemetry(_FrozenModel):
@@ -61,7 +53,7 @@ class TurnTelemetry(_FrozenModel):
 
     def suffix(self) -> str:
         """Live plan-header suffix: ``(Ns · ↓ X.Xk tok)``."""
-        parts = [_format_elapsed(self.secs), f"↓ {_format_tokens(self.tokens_down)} tok"]
+        parts = [_format_elapsed(self.secs), f"↓ {format_tokens_k(self.tokens_down)} tok"]
         return f"({' · '.join(parts)})"
 
     def label(self) -> str:
@@ -70,7 +62,7 @@ class TurnTelemetry(_FrozenModel):
         ``~$`` when any of the turn's usage was unpriceable (the figure
         is a floor, not the real spend).
         """
-        token_part = f"{_format_tokens(self.tokens_down)} tok"
+        token_part = f"{format_tokens_k(self.tokens_down)} tok"
         if self.cached_pct is not None:
             token_part += f", {self.cached_pct}% cached"
         marker = "~" if self.estimated else ""

@@ -347,7 +347,7 @@ class NewTuiApp(App[None]):
             await self.adapter.start(lambda: app_support.announce_ready(self))
             self.file_mentions.set_files(await self.adapter.workspace_files())
             self._register_skill_commands(await self.adapter.list_skills())
-        except Exception as error:  # boot failed — show why, don't crash out
+        except Exception as error:  # noqa: BLE001 — boot failure is shown to the user, not crashed out
             # (CancelledError/KeyboardInterrupt stay uncaught: a real
             # shutdown mid-boot must not read as "session failed to start".)
             app_support.announce_boot_failure(self, error)

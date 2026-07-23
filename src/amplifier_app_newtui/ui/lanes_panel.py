@@ -31,7 +31,7 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from ..model.lanes import LaneRecord, LaneState, lane_labels
-from ..model.turn import _format_tokens
+from ..model.formatting import format_tokens_k
 from .live_tail import lane_tail_markup
 from .motion import SHIMMER_INTERVAL_SECONDS, shimmer_band
 
@@ -111,7 +111,7 @@ def format_lane_lines(
     ]
     activities = [lane.activity for lane in lanes]
     elapsed = [lane_elapsed(lane.elapsed) for lane in lanes]
-    tokens = [f"↓ {_format_tokens(lane.tokens)} tokens" for lane in lanes]
+    tokens = [f"↓ {format_tokens_k(lane.tokens)} tokens" for lane in lanes]
     costs = [f"${lane.cost:.2f}" for lane in lanes]
     name_w = max(len(name) for name in names)
     el_w = max(len(text) for text in elapsed)
