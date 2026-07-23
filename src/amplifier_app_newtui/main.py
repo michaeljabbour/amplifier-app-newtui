@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 import sys
 from time import monotonic
-from typing import IO, Literal, cast
+from typing import IO, Any, Literal, cast
 
 import click
 
@@ -370,6 +370,250 @@ def resume(session_id: str | None, bundle: str | None, limit: int) -> None:
             click.echo(str(error), err=True)
             raise SystemExit(1) from None
     raise SystemExit(asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=resolved)))
+
+
+# --------------------------------------------------------------------------
+# tool group -- list + invoke a mounted bundle tool from the command line
+# --------------------------------------------------------------------------
+
+
+def _parse_tool_args(
+    pairs: tuple[str, ...], json_args: str | None
+) -> tuple[dict[str, object], str | None]:
+    """Resolve CLI tool arguments to a dict (amplifier-app-cli key=value convention).
+
+    Each ``key=value`` VALUE is JSON-decoded when it can be (so ``limit=5`` is an
+    int and ``data='{"k": 1}'`` is an object) and kept as a plain string
+    otherwise. ``--json`` passes the whole argument object at once and is
+    mutually exclusive with positional pairs. Returns ``(args, error)`` -- a
+    non-None error is a usage message, never a raised exception.
+    """
+    if json_args is not None:
+        if pairs:
+            return {}, "pass arguments as key=value pairs OR --json, not both"
+        try:
+            data = json.loads(json_args)
+        except json.JSONDecodeError as error:
+            return {}, f"--json is not valid JSON: {error}"
+        if not isinstance(data, dict):
+            return {}, '--json must be a JSON object, e.g. \'{"file_path": "README.md"}\''
+        return {str(key): value for key, value in data.items()}, None
+    args: dict[str, object] = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        if not sep or not key:
+            return {}, f"invalid argument '{pair}' -- expected key=value (or use --json)"
+        try:
+            args[key] = json.loads(value)
+        except json.JSONDecodeError:
+            args[key] = value
+    return args, None
+
+
+def _emit_tool_error(error: Exception, output_format: str, *, tool_name: str | None = None) -> int:
+    """Render a boot/teardown failure; return the CLI exit code (1)."""
+    if output_format == "json":
+        payload: dict[str, object] = {
+            "status": "error",
+            "error": str(error),
+            "error_type": type(error).__name__,
+        }
+        if tool_name is not None:
+            payload["tool"] = tool_name
+        click.echo(json.dumps(payload, ensure_ascii=False))
+    else:
+        click.echo(f"Error: {error}", err=True)
+    return 1
+
+
+def _format_tool_output(output: object) -> str:
+    """A tool result as scriptable text: strings verbatim, else indented JSON."""
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    return json.dumps(output, indent=2, ensure_ascii=False, default=str)
+
+
+async def _tool_list(bundle: str | None, output_format: str) -> int:
+    """Boot a real session, enumerate its mounted tools, tear it down."""
+    from .kernel.runtime import RealRuntime
+
+    runtime = RealRuntime(bundle=bundle)
+    error: Exception | None = None
+    tools: tuple[Any, ...] = ()
+    # Boot/module diagnostics print to stdout; keep stdout for the listing.
+    with redirect_stdout(sys.stderr):
+        try:
+            await runtime.start()
+            tools = await runtime.describe_tools()
+        except Exception as caught:  # noqa: BLE001 -- structured CLI error, never a traceback
+            error = caught
+        finally:
+            try:
+                await runtime.cleanup()
+            except Exception as caught:  # noqa: BLE001 -- best-effort teardown keeps the first error
+                if error is None:
+                    error = caught
+    if error is not None:
+        return _emit_tool_error(error, output_format)
+    if output_format == "json":
+        click.echo(
+            json.dumps(
+                {
+                    "status": "success",
+                    "bundle": runtime.bundle_name,
+                    "tools": [
+                        {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "invokable": tool.invokable,
+                        }
+                        for tool in tools
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if not tools:
+        click.echo("no tools mounted")
+        return 0
+    for tool in tools:
+        summary = f"  \u00b7  {tool.description}" if tool.description else ""
+        marker = "" if tool.invokable else "  (not invokable)"
+        click.echo(f"{tool.name}{summary}{marker}")
+    click.echo("invoke with `amplifier-newtui tool invoke <name> key=value ...`", err=True)
+    return 0
+
+
+async def _tool_invoke(
+    bundle: str | None,
+    name: str,
+    args: dict[str, object],
+    allow_writes: bool,
+    output_format: str,
+) -> int:
+    """Boot a real session, invoke *name* through the trust gate, tear it down."""
+    from .kernel.runtime import RealRuntime
+
+    runtime = RealRuntime(bundle=bundle)
+    error: Exception | None = None
+    result: Any = None
+    with redirect_stdout(sys.stderr):
+        try:
+            await runtime.start()
+            result = await runtime.invoke_tool(name, args, allow_writes=allow_writes)
+        except Exception as caught:  # noqa: BLE001 -- structured CLI error, never a traceback
+            error = caught
+        finally:
+            try:
+                await runtime.cleanup()
+            except Exception as caught:  # noqa: BLE001 -- best-effort teardown keeps the first error
+                if error is None:
+                    error = caught
+    if error is not None:
+        return _emit_tool_error(error, output_format, tool_name=name)
+    if result.ok:
+        if output_format == "json":
+            click.echo(
+                json.dumps(
+                    {"status": "success", "tool": name, "result": result.output},
+                    ensure_ascii=False,
+                    default=str,
+                )
+            )
+        else:
+            click.echo(_format_tool_output(result.output))
+        return 0
+    if output_format == "json":
+        failure: dict[str, object] = {"status": "error", "tool": name, "error": result.error}
+        if result.blocked:
+            failure["blocked"] = True
+            failure["capability"] = result.capability
+        click.echo(json.dumps(failure, ensure_ascii=False))
+    else:
+        label = "Blocked" if result.blocked else "Error"
+        detail = (
+            f" (capability: {result.capability})" if result.blocked and result.capability else ""
+        )
+        click.echo(f"{label}: {result.error}{detail}", err=True)
+    return 1
+
+
+@main.group("tool")
+def tool() -> None:
+    """Invoke a mounted bundle tool from the command line (list, invoke)."""
+
+
+@tool.command("list")
+@click.option("--bundle", default=None, help="Bundle name or URI (default: settings/bundled).")
+@click.option(
+    "--output-format",
+    type=click.Choice(("text", "json")),
+    default="text",
+    show_default=True,
+    help="Listing format; json reserves stdout for one machine-readable document.",
+)
+def tool_list(bundle: str | None, output_format: str) -> None:
+    """List the tools the active bundle mounts (name, one-line summary)."""
+    raise SystemExit(asyncio.run(_tool_list(bundle, output_format)))
+
+
+@tool.command("invoke")
+@click.argument("name")
+@click.argument("args", nargs=-1)
+@click.option("--bundle", default=None, help="Bundle name or URI (default: settings/bundled).")
+@click.option(
+    "--json",
+    "json_args",
+    default=None,
+    help='Pass ALL arguments as one JSON object (e.g. --json \'{"file_path": "x"}\').',
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Permit in-project write tools; exec/network/spend and out-of-project writes stay blocked.",
+)
+@click.option(
+    "--output-format",
+    type=click.Choice(("text", "json")),
+    default="text",
+    show_default=True,
+    help="Result format; json reserves stdout for one machine-readable document.",
+)
+def tool_invoke(
+    name: str,
+    args: tuple[str, ...],
+    bundle: str | None,
+    json_args: str | None,
+    yes: bool,
+    output_format: str,
+) -> None:
+    """Invoke tool NAME with ARGS and print its result.
+
+    ARGS are key=value pairs; each VALUE is parsed as JSON when it can be
+    (numbers, booleans, arrays, objects) and kept as a plain string otherwise:
+
+    \b
+        amplifier-newtui tool invoke read_file file_path=README.md
+        amplifier-newtui tool invoke some_tool data='{"k": "v"}' limit=5
+
+    Or pass the whole argument object at once with --json:
+
+    \b
+        amplifier-newtui tool invoke read_file --json '{"file_path": "README.md"}'
+
+    Governance: a one-shot CLI cannot answer an interactive approval, so it runs
+    a SAFE posture -- read/test tools run; write/exec/network/spend are refused.
+    --yes opts into in-project writes (still boundary-checked). For anything the
+    CLI refuses, run it in the interactive TUI where the approval gate applies.
+    """
+    tool_args, parse_error = _parse_tool_args(args, json_args)
+    if parse_error is not None:
+        raise click.UsageError(parse_error)
+    raise SystemExit(asyncio.run(_tool_invoke(bundle, name, tool_args, yes, output_format)))
 
 
 # --------------------------------------------------------------------------
