@@ -178,6 +178,26 @@ def _truncate(text: str, width: int = _OP_LABEL_MAX) -> str:
     return text if len(text) <= width else f"{text[: width - 1]}…"
 
 
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_MD_INLINE_RE = re.compile(r"(\*\*|__|~~|`+|\*|_(?=\w)|(?<=\w)_)")
+_MD_BLOCK_PREFIX_RE = re.compile(r"^\s*(#{1,6}|[-*+>]|\d+[.)])\s+")
+
+
+def _lane_result_summary(result: str, width: int = _OP_LABEL_MAX) -> str:
+    """Distil a delegate's (often Markdown) result into a clean one-line lane
+    summary: take the first non-empty line, drop a leading heading/list/quote
+    marker and inline emphasis, collapse whitespace, prefer the first sentence
+    when long, and truncate. Keeps the lane row readable instead of pasting raw
+    Markdown (``## Foo **bar**…``) into it."""
+    first = next((ln for ln in result.splitlines() if ln.strip()), "")
+    first = _MD_BLOCK_PREFIX_RE.sub("", first)
+    first = _MD_LINK_RE.sub(r"\1", first)
+    first = _MD_INLINE_RE.sub("", first).strip()
+    if len(first) > width:
+        first = first.split(". ", 1)[0]
+    return _truncate(first, width)
+
+
 def _op_label(tool: str, tool_input: dict[str, Any]) -> str:
     """Compact one-liner for the live activity tree."""
     if tool in ("bash", "shell"):
@@ -1623,7 +1643,7 @@ class TranscriptReducer:
                     clickable=False,
                 ),
             )
-        self.lanes.complete(event.sub_session_id, result=result)
+        self.lanes.complete(event.sub_session_id, result=_lane_result_summary(result))
         row = self._delegate_rows.get(event.sub_session_id)
         if row is not None:
             end_ts = event.ts  # same clock domain as spawned_ts — no fallback
