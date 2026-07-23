@@ -30,7 +30,7 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Static
 
-from ..model.lanes import LaneRecord, LaneState
+from ..model.lanes import LaneRecord, LaneState, lane_labels
 from ..model.turn import _format_tokens
 from .motion import SHIMMER_INTERVAL_SECONDS, shimmer_band
 
@@ -71,6 +71,7 @@ def format_lane_lines(
     lanes: Sequence[LaneState],
     tailed_index: int | None = None,
     *,
+    labels: Sequence[str] | None = None,
     width: int | None = None,
 ) -> tuple[str, ...]:
     """Aligned lane lines per Claude Code's live agent panel:
@@ -88,9 +89,12 @@ def format_lane_lines(
     """
     if not lanes:
         return ()
+    # ``labels`` disambiguates same-named agent lanes (LaneRegistry order);
+    # absent, the raw agent name is the label (unique-name fast path).
+    display = list(labels) if labels is not None else [lane.name for lane in lanes]
     names = [
-        f"{lane.name} ▸" if index == tailed_index else lane.name
-        for index, lane in enumerate(lanes)
+        f"{display[index]} ▸" if index == tailed_index else display[index]
+        for index in range(len(lanes))
     ]
     activities = [lane.activity for lane in lanes]
     elapsed = [lane_elapsed(lane.elapsed) for lane in lanes]
@@ -291,6 +295,7 @@ class LanesPanel(Vertical):
         return format_lane_lines(
             tuple(record.lane for record in self._records),
             tailed_index,
+            labels=lane_labels(self._records),
             # Pre-layout (width 0) → no budget; rows refit on_resize.
             width=width if width > 0 else None,
         )
@@ -454,4 +459,5 @@ __all__ = [
     "LanesPanel",
     "format_lane_lines",
     "lane_elapsed",
+    "lane_labels",
 ]

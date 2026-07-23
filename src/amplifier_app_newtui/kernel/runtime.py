@@ -965,7 +965,17 @@ class RealRuntime:
         try:
             # Turn-open first: the user's echo + working line paint NOW, not
             # after the pre-prompt hook work inside ``session.execute``.
-            self.bridge.emit(PromptSubmit(session_id=self._initialized.session_id, prompt=text))
+            # Stamp the live app posture so the durable ui-events.jsonl log
+            # (and thus resume replay) records which mode this turn ran under
+            # — historical mode badges (BACKLOG parity). ``self._mode`` is the
+            # app-supplied posture callable (lambda -> mode id).
+            self.bridge.emit(
+                PromptSubmit(
+                    session_id=self._initialized.session_id,
+                    prompt=text,
+                    mode=self._mode(),
+                )
+            )
             self.turn_yield.start_turn()
             starting_diff = await self._capture_diff()
             response = await self._initialized.session.execute(text)

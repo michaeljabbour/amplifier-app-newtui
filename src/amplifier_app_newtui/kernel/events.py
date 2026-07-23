@@ -181,10 +181,19 @@ class OrchestratorComplete(_Envelope):
 
 class PromptSubmit(_Envelope):
     """A user prompt entered the engine (``prompt:submit``) — the turn
-    boundary where the app stamps its monotonic turn_id."""
+    boundary where the app stamps its monotonic turn_id.
+
+    ``mode`` records the app posture (``chat``/``plan``/``brainstorm``/
+    ``build``/``auto``) active when the prompt was submitted, so the
+    durable ui-events.jsonl log preserves which posture a historical turn
+    ran under. On resume replay the reducer stamps this onto the user
+    line's ``[mode]`` badge instead of the current live posture. Empty on
+    legacy logs (pre-stamp) — the reducer then falls back to live mode.
+    """
 
     kind: Literal["prompt_submit"] = "prompt_submit"
     prompt: str = ""
+    mode: str = ""
 
 
 class PromptComplete(_Envelope):
@@ -758,7 +767,9 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
             )
         # -- Turn lifecycle --------------------------------------------------
         case "prompt:submit":
-            return PromptSubmit(**env, prompt=_str(payload, "prompt", "text"))
+            return PromptSubmit(
+                **env, prompt=_str(payload, "prompt", "text"), mode=_str(payload, "mode")
+            )
         case "prompt:complete":
             return PromptComplete(**env, response=_str(payload, "response"))
         case "execution:start":
