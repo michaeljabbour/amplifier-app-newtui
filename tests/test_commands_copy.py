@@ -83,9 +83,7 @@ def test_copy_redacts_aws_key_in_last_answer() -> None:
 
 
 def test_copy_redacts_bearer_token() -> None:
-    blocks = (
-        Answer(id="b1", spans=(Segment(text="Authorization: Bearer abc123def456ghi"),)),
-    )
+    blocks = (Answer(id="b1", spans=(Segment(text="Authorization: Bearer abc123def456ghi"),)),)
     text = last_answer_text(blocks)
     assert text is not None
     assert "abc123def456ghi" not in text

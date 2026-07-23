@@ -149,9 +149,7 @@ def test_collector_ignores_narration_and_non_text() -> None:
     narration = "Applying steer: keep the journal"
     collector.observe(_answer(narration, demo_role="narration"))
     assert collector.links_for(narration) == ()
-    collector.observe(
-        ContentBlockEnd(session_id=SID, block_type="thinking", block={"text": "hmm"})
-    )
+    collector.observe(ContentBlockEnd(session_id=SID, block_type="thinking", block={"text": "hmm"}))
     assert collector.links_for("hmm") == ()
 
 

@@ -29,7 +29,11 @@ from .test_ui_reducer_delegates import SID, _env, make_reducer
 
 def _lane(name: str, state: str = "running") -> LaneState:
     return LaneState.for_state(
-        name=name, state=state, activity="working", elapsed=41, cost=Decimal("0.09")  # type: ignore[arg-type]
+        name=name,
+        state=state,
+        activity="working",
+        elapsed=41,
+        cost=Decimal("0.09"),  # type: ignore[arg-type]
     )
 
 
@@ -61,9 +65,7 @@ def test_delivery_echo_lands_in_the_lanes_focus_transcript() -> None:
     reducer, _host = make_reducer()
     reducer.handle(ev.PromptSubmit(**_env(0.0), prompt="fan out"))
     reducer.handle(
-        ev.AgentSpawned(
-            **_env(1.0), agent="researcher", sub_session_id="s1", parent_session_id=SID
-        )
+        ev.AgentSpawned(**_env(1.0), agent="researcher", sub_session_id="s1", parent_session_id=SID)
     )
     # The runtime's _lane_steer_applied emits exactly this child-stamped
     # narration when it delivers a lane steer at the child's step boundary.
@@ -76,9 +78,7 @@ def test_delivery_echo_lands_in_the_lanes_focus_transcript() -> None:
     )
     blocks = reducer.lane_transcript("s1")
     assert blocks is not None
-    prose = "\n".join(
-        "".join(s.text for s in b.spans) for b in blocks if isinstance(b, Answer)
-    )
+    prose = "\n".join("".join(s.text for s in b.spans) for b in blocks if isinstance(b, Answer))
     assert "Applying steer: focus on the tests" in prose
 
 
@@ -105,9 +105,7 @@ async def test_focused_lane_steer_queues_badge_and_chat_line() -> None:
 
         await type_text(pilot, "focus on the parser")
         await pilot.press("enter")
-        assert await wait_for(
-            pilot, lambda: app.adapter.lane_steering.queued_count("child-1") == 1
-        )
+        assert await wait_for(pilot, lambda: app.adapter.lane_steering.queued_count("child-1") == 1)
         assert "researcher" in app.notice_slot.current
         # Badge is painted on the lane row.
         app.lanes_panel.show_panel(focus=False)
@@ -117,9 +115,7 @@ async def test_focused_lane_steer_queues_badge_and_chat_line() -> None:
         # The "queued for lane" line is in the parent chat (restored on esc).
         await app.transcript.restore_main()
         chat = [
-            "".join(s.text for s in b.spans)
-            for b in app.transcript.blocks
-            if isinstance(b, Answer)
+            "".join(s.text for s in b.spans) for b in app.transcript.blocks if isinstance(b, Answer)
         ]
         assert any("queued for lane researcher" in line for line in chat)
 

@@ -34,7 +34,9 @@ def test_legacy_terminals_fall_back() -> None:
 
 def test_multiplexers_and_explicit_disable_fall_back() -> None:
     # tmux/screen passthrough is not dependable even under a capable outer terminal
-    assert not probe_kitty_protocol({"TERM": "tmux-256color", "TMUX": "/tmp/t,1,0", "KITTY_WINDOW_ID": "1"})
+    assert not probe_kitty_protocol(
+        {"TERM": "tmux-256color", "TMUX": "/tmp/t,1,0", "KITTY_WINDOW_ID": "1"}
+    )
     assert not probe_kitty_protocol({"TERM": "screen-256color"})
     # honoring Textual's own kill switch: it won't request the protocol at all
     assert not probe_kitty_protocol({"TERM": "xterm-kitty", "TEXTUAL_DISABLE_KITTY_KEY": "1"})

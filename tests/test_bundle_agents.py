@@ -100,9 +100,7 @@ def test_wrapper_overlays_only_tui_specific_tools() -> None:
 
 def test_wrapper_tool_skills_keeps_foundation_set_and_adds_user_dir() -> None:
     tools = _frontmatter().get("tools") or []
-    skills_mounts = [
-        t for t in tools if isinstance(t, dict) and t.get("module") == "tool-skills"
-    ]
+    skills_mounts = [t for t in tools if isinstance(t, dict) and t.get("module") == "tool-skills"]
     assert len(skills_mounts) == 1
     sources = skills_mounts[0].get("config", {}).get("skills", [])
     assert any("amplifier-foundation" in s and "skills" in s for s in sources)

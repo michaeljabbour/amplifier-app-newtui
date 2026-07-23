@@ -75,7 +75,8 @@ async def test_unregistered_verb_is_unknown_again() -> None:
         await pilot.press("enter")
         assert await wait_for(
             pilot,
-            lambda: app.notice_slot.current
-            == "unknown command: /pipeline-status · / lists commands",
+            lambda: (
+                app.notice_slot.current == "unknown command: /pipeline-status · / lists commands"
+            ),
         )
         assert not app.turn_active

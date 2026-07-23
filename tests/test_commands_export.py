@@ -112,9 +112,7 @@ _AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 
 
 def test_export_redacts_aws_key_in_answer() -> None:
-    blocks = (
-        Answer(id="b1", spans=(Segment(text=f"your key is {_AWS_KEY} keep it"),)),
-    )
+    blocks = (Answer(id="b1", spans=(Segment(text=f"your key is {_AWS_KEY} keep it"),)),)
     out = render_transcript_markdown(blocks)
     assert _AWS_KEY not in out
     assert out == "your key is [REDACTED] keep it\n"

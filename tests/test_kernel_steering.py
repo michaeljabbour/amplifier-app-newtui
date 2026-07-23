@@ -30,9 +30,7 @@ class FakeHooks:
         self.registered: list[tuple[str, int, str]] = []
         self.unregistered: list[str] = []
 
-    def register(
-        self, event: str, handler: Any, *, priority: int = 0, name: str = ""
-    ) -> Any:
+    def register(self, event: str, handler: Any, *, priority: int = 0, name: str = "") -> Any:
         self.registered.append((event, priority, name))
         return lambda: self.unregistered.append(name)
 
@@ -63,9 +61,7 @@ async def test_root_session_only() -> None:
     steering = SteeringQueue()
     steering.enqueue("steer me")
     bridge = StepBoundaryBridge(ROOT, steering)
-    result = await bridge.handle_event(
-        "provider:request", {"session_id": "sess-child_worker"}
-    )
+    result = await bridge.handle_event("provider:request", {"session_id": "sess-child_worker"})
     assert result.action == "continue"
     assert len(steering.pending_steers) == 1  # untouched for the child
 
@@ -168,9 +164,7 @@ def test_register_hooks_priority_950() -> None:
     hooks = FakeHooks()
     bridge = StepBoundaryBridge(ROOT, SteeringQueue())
     unregister = bridge.register_hooks(hooks)
-    assert hooks.registered == [
-        ("provider:request", 950, "newtui-step-boundary-steering")
-    ]
+    assert hooks.registered == [("provider:request", 950, "newtui-step-boundary-steering")]
     unregister()
     assert hooks.unregistered == ["newtui-step-boundary-steering"]
 

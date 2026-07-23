@@ -140,9 +140,7 @@ async def test_fork_from_orphaned_tools_completed(tmp_path: Path) -> None:
         {"role": "user", "content": "turn 1"},
         {
             "role": "assistant",
-            "content": [
-                {"type": "tool_use", "id": "tc1", "name": "bash", "input": {"cmd": "ls"}}
-            ],
+            "content": [{"type": "tool_use", "id": "tc1", "name": "bash", "input": {"cmd": "ls"}}],
         },
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tc1"}]},
         {"role": "user", "content": "turn 2"},
@@ -151,9 +149,7 @@ async def test_fork_from_orphaned_tools_completed(tmp_path: Path) -> None:
     (session_dir / "transcript.jsonl").write_text(
         "\n".join(json.dumps(m) for m in messages) + "\n", encoding="utf-8"
     )
-    (session_dir / "metadata.json").write_text(
-        json.dumps({"session_id": "p"}), encoding="utf-8"
-    )
+    (session_dir / "metadata.json").write_text(json.dumps({"session_id": "p"}), encoding="utf-8")
     ledger = make_ledger([1, 2])
     controller = RewindController(ledger, session_dir=session_dir)
 
@@ -214,10 +210,12 @@ async def test_fork_in_memory_sets_messages_then_trims() -> None:
     assert outcome.in_memory
     assert outcome.session_dir is None
     assert outcome.forked_from_turn == 1
-    assert restored == [[
-        {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "answer 1"},
-    ]]
+    assert restored == [
+        [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "answer 1"},
+        ]
+    ]
     assert ledger.turn_count == 1
 
 
@@ -230,9 +228,7 @@ async def test_fork_in_memory_context_failure_leaves_ledger() -> None:
         raise RuntimeError("context rejected restore")
 
     with pytest.raises(RewindError, match="context restore"):
-        await controller.fork_in_memory(
-            "t1", messages=live_messages(2), set_messages=set_messages
-        )
+        await controller.fork_in_memory("t1", messages=live_messages(2), set_messages=set_messages)
     assert ledger.turn_count == 2  # confirm-then-trim: no trim on failure
 
 
@@ -346,9 +342,7 @@ async def test_injected_fork_fn_receives_contract_arguments(tmp_path: Path) -> N
         return FakeResult()
 
     ledger = make_ledger([1, 2])
-    controller = RewindController(
-        ledger, session_dir=tmp_path / "parent", fork_fn=fake_fork
-    )
+    controller = RewindController(ledger, session_dir=tmp_path / "parent", fork_fn=fake_fork)
     outcome = await controller.fork_from("t2")
 
     assert calls == {

@@ -15,6 +15,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --frozen
       - run: uv run ruff check .
+      - run: uv run ruff format --check .
       - run: uv run pyright src/
       # Coverage tracing slows rendering enough to blow the 16ms frame budget
       # and perturb snapshot timing on CI runners, so the perf and snapshot

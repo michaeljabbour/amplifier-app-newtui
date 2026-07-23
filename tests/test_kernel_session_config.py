@@ -704,8 +704,7 @@ def test_packaged_anchors_pointer_resolves_and_matches_the_wrapper_pin() -> None
     )
     assert pin is not None
     assert (
-        f"amplifier-foundation@{pin.group(1)}#subdirectory=bundles/anchors"
-        in Path(uri).read_text()
+        f"amplifier-foundation@{pin.group(1)}#subdirectory=bundles/anchors" in Path(uri).read_text()
     )
 
 

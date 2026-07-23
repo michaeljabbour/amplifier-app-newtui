@@ -127,9 +127,13 @@ def test_write_provider_config_prepends_and_demotes(tmp_path: Path) -> None:
         paths, "global", setup.provider_config_entry("provider-openai", key_var="OPENAI_API_KEY")
     )
     setup.write_provider_config(
-        paths, "global", setup.provider_config_entry("provider-anthropic", key_var="ANTHROPIC_API_KEY")
+        paths,
+        "global",
+        setup.provider_config_entry("provider-anthropic", key_var="ANTHROPIC_API_KEY"),
     )
-    providers = bundle_admin.read_scope(bundle_admin.scope_file(paths, "global"))["config"]["providers"]
+    providers = bundle_admin.read_scope(bundle_admin.scope_file(paths, "global"))["config"][
+        "providers"
+    ]
     assert providers[0]["module"] == "provider-anthropic"  # newest is active
     assert providers[0]["config"]["priority"] == 1
     assert providers[1]["module"] == "provider-openai"
@@ -137,7 +141,13 @@ def test_write_provider_config_prepends_and_demotes(tmp_path: Path) -> None:
 
 
 def test_detect_provider_from_env(monkeypatch) -> None:
-    for v in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GITHUB_TOKEN"):
+    for v in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GITHUB_TOKEN",
+    ):
         monkeypatch.delenv(v, raising=False)
     assert setup.detect_provider_from_env() is None
     monkeypatch.setenv("OPENAI_API_KEY", "sk")

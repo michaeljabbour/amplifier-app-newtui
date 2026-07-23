@@ -66,10 +66,7 @@ async def test_approval_bar_replaces_composer_arrows_and_confirm() -> None:
         assert app.composer.display is False
         assert app.notice_slot.current == APPROVAL_NOTICE
         assert app.footer_bar.state.context == "approval"
-        assert (
-            footer_right_text(app.footer_bar.state)
-            == "arrows select · enter confirm · esc deny"
-        )
+        assert footer_right_text(app.footer_bar.state) == "arrows select · enter confirm · esc deny"
 
         # Selected option prefixed "› "; arrows/tab cycle the selection.
         assert bar.option_texts() == ("› Allow once", "Allow always", "Deny")
@@ -257,7 +254,8 @@ async def test_auto_mode_deferred_decision_ctrl_y_needs_you_flow() -> None:
         # The applied decision is a narration line: bright "● " marker +
         # the verbatim mockup text (design-v3-cohesive.html:289).
         applied = [
-            b for b in blocks_of(app, "narration")
+            b
+            for b in blocks_of(app, "narration")
             if b.text == DEMO_DEFERRED_DECISION.applied_narration
         ]
         assert len(applied) == 1
@@ -338,8 +336,7 @@ async def test_needs_you_chip_stays_visible_and_clickable_after_late_wrap(size) 
         assert adapter.needs_you.pending_count == 0
         assert app.footer_bar.state.waiting == 0
         assert any(
-            b.text == DEMO_DEFERRED_DECISION.applied_narration
-            for b in blocks_of(app, "narration")
+            b.text == DEMO_DEFERRED_DECISION.applied_narration for b in blocks_of(app, "narration")
         )
 
 
@@ -359,9 +356,7 @@ async def test_tail_anchor_holds_through_wrapped_answer_growth() -> None:
             view.append(Narration(id=f"pad-{index}", text=f"pad line {index}"))
         await pilot.pause()
         long_line = "wrap me " * 60  # ~480 cells → 8+ rows at width 60
-        view.append(
-            Answer(id="long-answer", spans=(Segment(text=long_line, style_token="fg"),))
-        )
+        view.append(Answer(id="long-answer", spans=(Segment(text=long_line, style_token="fg"),)))
         await pilot.pause()
         await pilot.pause()
         assert view.follow is True

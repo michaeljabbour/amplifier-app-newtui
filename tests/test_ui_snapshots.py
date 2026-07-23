@@ -87,10 +87,7 @@ def test_plan_panel_bottom_strip_snapshot(monkeypatch) -> None:
 
 
 _TAIL_SNAPSHOT = (
-    Path(__file__).parent
-    / "__snapshots__"
-    / "test_ui_snapshots"
-    / "test_lane_tail_snapshot.raw"
+    Path(__file__).parent / "__snapshots__" / "test_ui_snapshots" / "test_lane_tail_snapshot.raw"
 )
 
 

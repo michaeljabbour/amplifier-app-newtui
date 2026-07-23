@@ -23,9 +23,7 @@ class FakeHooks:
         self.registered: list[str] = []
         self.unregistered: list[str] = []
 
-    def register(
-        self, event: str, handler: Any, *, priority: int = 0, name: str = ""
-    ) -> Any:
+    def register(self, event: str, handler: Any, *, priority: int = 0, name: str = "") -> Any:
         self.registered.append(event)
         return lambda: self.unregistered.append(event)
 
@@ -259,9 +257,7 @@ async def test_recursion_depth_enforced_default_two() -> None:
 async def test_execute_failure_returns_error_and_still_unwinds() -> None:
     tracker = RecordingTracker()
     display = FakeDisplay()
-    spawner, created = make_spawner(
-        trackers=[tracker], display_system=display, fail_execute=True
-    )
+    spawner, created = make_spawner(trackers=[tracker], display_system=display, fail_execute=True)
     parent = make_parent()
     result = await spawner.spawn("scout", "explode", parent)
     assert result["status"] == "error"

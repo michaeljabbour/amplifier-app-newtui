@@ -219,6 +219,8 @@ async def test_append_frame_budget_with_5k_history() -> None:
         f"median frame {median * 1000:.2f}ms at 5k blocks exceeds "
         f"{FRAME_BUDGET_SECONDS * 1000:.0f}ms budget"
     )
+
+
 # --------------------------------------------------------------------------
 # The hybrid mechanism, asserted deterministically (not just via timing)
 # --------------------------------------------------------------------------

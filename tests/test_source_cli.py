@@ -30,9 +30,7 @@ def test_source_group_lists_subcommands() -> None:
 
 def test_source_add_autodetects_module_by_prefix(tmp_path: Path, monkeypatch) -> None:
     paths = _redirect(monkeypatch, tmp_path)
-    result = CliRunner().invoke(
-        main, ["source", "add", "provider-anthropic", "/dev/prov"]
-    )
+    result = CliRunner().invoke(main, ["source", "add", "provider-anthropic", "/dev/prov"])
     assert result.exit_code == 0
     assert "module source provider-anthropic" in result.output
     data = bundle_admin.read_scope(paths.global_settings)
@@ -53,9 +51,7 @@ def test_source_add_force_bundle_and_scope(tmp_path: Path, monkeypatch) -> None:
 
 def test_source_add_rejects_conflicting_flags(tmp_path: Path, monkeypatch) -> None:
     _redirect(monkeypatch, tmp_path)
-    result = CliRunner().invoke(
-        main, ["source", "add", "x", "/y", "--module", "--bundle"]
-    )
+    result = CliRunner().invoke(main, ["source", "add", "x", "/y", "--module", "--bundle"])
     assert result.exit_code == 1
     assert "both --module and --bundle" in result.output
 

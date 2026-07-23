@@ -72,9 +72,7 @@ def test_add_and_remove_bundle_source(tmp_path: Path) -> None:
     data = bundle_admin.read_scope(paths.project_settings)
     assert data["sources"]["bundles"] == {"foundation": "~/dev/foundation"}
 
-    removed_module, removed_bundle = source_admin.remove_source(
-        paths, "foundation", "project"
-    )
+    removed_module, removed_bundle = source_admin.remove_source(paths, "foundation", "project")
     assert (removed_module, removed_bundle) == (False, True)
 
 
@@ -126,7 +124,11 @@ def test_cleanup_provider_config_keeps_git_source(tmp_path: Path) -> None:
     path = bundle_admin.scope_file(paths, "global")
     bundle_admin.write_scope(
         path,
-        {"config": {"providers": [{"module": "provider-anthropic", "source": "git+https://x/y.git"}]}},
+        {
+            "config": {
+                "providers": [{"module": "provider-anthropic", "source": "git+https://x/y.git"}]
+            }
+        },
     )
     assert not source_admin.cleanup_provider_config_source(paths, "provider-anthropic", "global")
     entry = bundle_admin.read_scope(path)["config"]["providers"][0]

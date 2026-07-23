@@ -157,9 +157,7 @@ def test_replay_closes_a_dangling_turn_as_interrupted() -> None:
     assert reducer.running is False
     rule = next(b for b in host.blocks if b.kind == "turn_rule")
     assert "interrupted" in rule.label
-    recap_texts = [
-        "".join(s.text for s in b.spans) for b in host.blocks if b.kind == "answer"
-    ]
+    recap_texts = ["".join(s.text for s in b.spans) for b in host.blocks if b.kind == "answer"]
     assert any("Interrupted." in text for text in recap_texts)
 
 
@@ -218,9 +216,7 @@ def test_replay_rebuilds_delegate_summary_lane_transcript_and_plan() -> None:
         ev.AgentSpawned(
             **_env(2.5), agent="researcher", sub_session_id="sub1", parent_session_id=SID
         ),
-        ev.ContentBlockEnd(
-            **child, block_type="text", block={"type": "text", "text": "found it"}
-        ),
+        ev.ContentBlockEnd(**child, block_type="text", block={"type": "text", "text": "found it"}),
         ev.AgentCompleted(
             **_env(4.0),
             agent="researcher",
@@ -241,9 +237,7 @@ def test_replay_rebuilds_delegate_summary_lane_transcript_and_plan() -> None:
 
     lane_blocks = reducer.lane_transcript("sub1")
     assert lane_blocks is not None
-    lane_texts = [
-        "".join(s.text for s in b.spans) for b in lane_blocks if b.kind == "answer"
-    ]
+    lane_texts = ["".join(s.text for s in b.spans) for b in lane_blocks if b.kind == "answer"]
     assert any("found it" in text for text in lane_texts)
     assert host.plan_changes  # restored ambient plan state (spec §2/D3)
     assert all(record.lane.state == "done" for record in reducer.lanes.lanes)
@@ -254,9 +248,7 @@ def test_replay_settles_lanes_the_log_never_completed() -> None:
     reducer, _host = make_reducer()
     events: list[ev.UIEvent] = [
         ev.PromptSubmit(**_env(0.0), prompt="fan out"),
-        ev.AgentSpawned(
-            **_env(1.0), agent="coder", sub_session_id="sub9", parent_session_id=SID
-        ),
+        ev.AgentSpawned(**_env(1.0), agent="coder", sub_session_id="sub9", parent_session_id=SID),
     ]
     assert reducer.replay(events, turn_base=1) is True
     assert all(record.lane.state == "done" for record in reducer.lanes.lanes)
@@ -266,10 +258,7 @@ def test_replay_reconciles_cost_to_the_kernel_baseline() -> None:
     """restore_session_cost stays the single cost authority on resume —
     replay's own accumulation is presentation-level and never adds on top."""
     reducer, _host = make_reducer()
-    assert (
-        reducer.replay(_one_turn_events(), turn_base=1, session_cost=Decimal("1.23"))
-        is True
-    )
+    assert reducer.replay(_one_turn_events(), turn_base=1, session_cost=Decimal("1.23")) is True
     assert reducer.session_cost == Decimal("1.23")
 
 

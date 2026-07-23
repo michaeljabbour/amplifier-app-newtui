@@ -31,7 +31,9 @@ class Cmd:
 
 # The mockup's command table, verbatim (DESIGN-SPEC §6 minimum set).
 COMMANDS = (
-    Cmd("During", "/mode", "cycle or jump posture: chat, plan, brainstorm, build, auto", "built-in"),
+    Cmd(
+        "During", "/mode", "cycle or jump posture: chat, plan, brainstorm, build, auto", "built-in"
+    ),
     Cmd("During", "/plan", "read-only planning; hands the plan to build", "built-in"),
     Cmd("During", "/brainstorm", "no tools, divergent output; /plan to converge", "built-in"),
     Cmd("During", "/context", "context usage grid + suggestions", "built-in"),

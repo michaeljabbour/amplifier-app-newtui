@@ -161,11 +161,7 @@ def test_stream_then_durable_close_never_replays_raw_final_markdown() -> None:
     response = "## Result\n\n**Done.**"
     reducer.handle(ev.PromptSubmit(session_id="root", prompt="do it", ts=1.0))
     reducer.handle(ev.StreamBlockStart(session_id="root", block_type="text", ts=2.0))
-    reducer.handle(
-        ev.StreamBlockDelta(
-            session_id="root", block_type="text", text=response, ts=2.1
-        )
-    )
+    reducer.handle(ev.StreamBlockDelta(session_id="root", block_type="text", text=response, ts=2.1))
     reducer.handle(ev.StreamBlockEnd(session_id="root", block_type="text", ts=2.2))
     reducer.handle(
         ev.ContentBlockEnd(
@@ -318,8 +314,7 @@ def test_context_compaction_is_visible_and_persistent() -> None:
     narration = host.blocks[-1]
     assert narration.kind == "narration"
     assert narration.text == (
-        "Context compacted · 120,000 → 60,000 tokens"
-        " · 42 → 23 messages · strategy 3"
+        "Context compacted · 120,000 → 60,000 tokens · 42 → 23 messages · strategy 3"
     )
     assert host.notices[-1] == narration.text
 
@@ -360,7 +355,9 @@ def test_real_turn_failed_tests_render_tests_cross() -> None:
     reducer, host = make_reducer()
     reducer.handle(ev.PromptSubmit(prompt="fix the flake", ts=1.0))
     reducer.handle(
-        ev.PromptComplete(response="tried", files_changed=1, diffstat="+4/−1", tests_ok=False, ts=5.0)
+        ev.PromptComplete(
+            response="tried", files_changed=1, diffstat="+4/−1", tests_ok=False, ts=5.0
+        )
     )
     assert last_rule(host).label.endswith("1 file · +4/−1 · tests ✗")
 
@@ -517,9 +514,7 @@ def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
         )
     )
     working = next(b for b in host.blocks if b.kind == "working_status")
-    rendered = "\n".join(
-        "".join(s.text for s in line) for line in render_block(working, 200)
-    )
+    rendered = "\n".join("".join(s.text for s in line) for line in render_block(working, 200))
     assert "$ uv run pytest -q" in rendered  # in the tree
     assert working.activity_lines and working.activity_lines[-1].running
     assert "1 agent" not in rendered.splitlines()[0]  # not inline on the pulse
@@ -547,9 +542,7 @@ def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
     )
     working = next(b for b in host.blocks if b.kind == "working_status")
     assert working.activity_lines == ()  # burst flushed — tree cleared
-    digest = next(
-        b for b in host.blocks if b.kind == "tool_line" and b.summary.startswith("Ran")
-    )
+    digest = next(b for b in host.blocks if b.kind == "tool_line" and b.summary.startswith("Ran"))
     assert digest.summary == "Ran 1 shell command"
 
 

@@ -35,8 +35,6 @@ def test_denied_dirs_uses_same_settings_shape(tmp_path: Path, monkeypatch) -> No
     paths = bundle_admin.settings_paths(tmp_path / "project", tmp_path / "home")
     monkeypatch.setattr(bundle_admin, "settings_paths", lambda *args, **kwargs: paths)
     target = tmp_path / "project" / ".git"
-    result = CliRunner().invoke(
-        main, ["denied-dirs", "add", str(target), "--local"]
-    )
+    result = CliRunner().invoke(main, ["denied-dirs", "add", str(target), "--local"])
     assert result.exit_code == 0
     assert configured_entries(paths, "denied")[0].scope == "local"

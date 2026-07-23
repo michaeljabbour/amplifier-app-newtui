@@ -101,7 +101,10 @@ def test_resolve_write_boundary_degrades_open_when_no_enforcer() -> None:
     assert boundary == "guarded"
     assert notice == WRITE_BOUNDARY_DEGRADE_NOTICE
     # An empty/absent plan degrades identically.
-    assert resolve_write_boundary({"permissions": {}}, {}) == ("guarded", WRITE_BOUNDARY_DEGRADE_NOTICE)
+    assert resolve_write_boundary({"permissions": {}}, {}) == (
+        "guarded",
+        WRITE_BOUNDARY_DEGRADE_NOTICE,
+    )
 
 
 def test_resolve_write_boundary_explicit_guarded_is_honored_silently() -> None:
@@ -277,9 +280,7 @@ def test_embedded_scan_does_not_flag_harmless_mention_or_glob_filter(tmp_path: P
     # A bare mention with no path separator is not a target.
     assert policy.shell_outside_target("echo '.git is a directory'") is None
     # A glob filter naming a protected dir to EXCLUDE it stays exempt.
-    assert (
-        policy.shell_outside_target("find . -name '*.py' -not -path './.git/*' | head") is None
-    )
+    assert policy.shell_outside_target("find . -name '*.py' -not -path './.git/*' | head") is None
 
 
 def test_embedded_outside_path_still_roams_when_open(tmp_path: Path) -> None:

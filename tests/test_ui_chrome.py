@@ -39,9 +39,7 @@ def test_idle_title_exact_format() -> None:
     bar.set_reactive(TitleBar.state_text, "ready")
     bar.set_reactive(TitleBar.bundle, "dev-bundle")
     bar.set_reactive(TitleBar.session_short, "a1b2c3")
-    assert bar.title_text() == (
-        "amplifier-app-newtui — Amplifier — ready — dev-bundle — a1b2c3"
-    )
+    assert bar.title_text() == ("amplifier-app-newtui — Amplifier — ready — dev-bundle — a1b2c3")
 
 
 def test_empty_identity_fragments_are_skipped() -> None:
@@ -175,13 +173,9 @@ async def test_notice_is_single_slot_and_replaces() -> None:
     async with app.run_test() as pilot:
         slot = app.query_one("#notice", NoticeSlot)
         slot.show_notice("first")
-        slot.show_notice(
-            "steer queued · shift+enter queues a full next-turn message"
-        )
+        slot.show_notice("steer queued · shift+enter queues a full next-turn message")
         await pilot.pause(0.01)  # stay well inside the test slot's 0.05s TTL
-        assert slot.current == (
-            "steer queued · shift+enter queues a full next-turn message"
-        )
+        assert slot.current == ("steer queued · shift+enter queues a full next-turn message")
 
 
 @pytest.mark.asyncio
@@ -190,9 +184,7 @@ async def test_notice_per_call_duration_overrides_default() -> None:
     app = ChromeApp()
     async with app.run_test() as pilot:
         slot = app.query_one("#notice", NoticeSlot)
-        slot.show_notice(
-            "approval required · choose below the transcript", duration=0.4
-        )
+        slot.show_notice("approval required · choose below the transcript", duration=0.4)
         await pilot.pause(0.2)  # past the 0.05s default, before the override
         assert slot.current == "approval required · choose below the transcript"
         await pilot.pause(0.4)

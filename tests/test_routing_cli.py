@@ -22,7 +22,12 @@ def _seed_matrix(home: Path, name: str, roles: dict) -> None:
     routing_dir.mkdir(parents=True, exist_ok=True)
     (routing_dir / f"{name}.yaml").write_text(
         yaml.safe_dump(
-            {"name": name, "description": f"{name} matrix", "updated": "2026-05-12", "roles": roles},
+            {
+                "name": name,
+                "description": f"{name} matrix",
+                "updated": "2026-05-12",
+                "roles": roles,
+            },
             sort_keys=False,
         ),
         encoding="utf-8",
@@ -55,7 +60,10 @@ def test_routing_list_renders_and_marks_active(tmp_path: Path, monkeypatch) -> N
     _seed_matrix(tmp_path / "home", "economy", _roles())
     bundle_admin.write_scope(
         paths.global_settings,
-        {"routing": {"matrix": "economy"}, "config": {"providers": [{"module": "provider-anthropic"}]}},
+        {
+            "routing": {"matrix": "economy"},
+            "config": {"providers": [{"module": "provider-anthropic"}]},
+        },
     )
     result = CliRunner().invoke(main, ["routing", "list"])
     assert result.exit_code == 0

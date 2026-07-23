@@ -44,8 +44,7 @@ async def test_unknown_slash_shows_notice_and_never_submits_a_turn() -> None:
         await pilot.press("enter")
         assert await wait_for(
             pilot,
-            lambda: app.notice_slot.current
-            == "unknown command: /frobnicate · / lists commands",
+            lambda: app.notice_slot.current == "unknown command: /frobnicate · / lists commands",
         )
         # No chat turn: no user line appended, composer idle.
         assert len(blocks_of(app, "user_line")) == user_lines
@@ -94,9 +93,7 @@ async def test_skill_full_name_invokes_too() -> None:
     app = NewTuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
-        assert await wait_for(
-            pilot, lambda: app._commands.get("/cranky-old-sam") is not None
-        )
+        assert await wait_for(pilot, lambda: app._commands.get("/cranky-old-sam") is not None)
 
         await type_text(pilot, "/cranky-old-sam")
         await pilot.press("enter")

@@ -25,7 +25,12 @@ MOCKUP_TABLE = [
     ("During", "/brainstorm", "no tools, divergent output; /plan to converge", "built-in"),
     ("During", "/context", "context usage grid + suggestions", "built-in"),
     # Live session config editor (amplifier-app-cli /config parity).
-    ("During", "/config", "live config: show \u00b7 toggle \u00b7 set \u00b7 diff \u00b7 save", "built-in"),
+    (
+        "During",
+        "/config",
+        "live config: show \u00b7 toggle \u00b7 set \u00b7 diff \u00b7 save",
+        "built-in",
+    ),
     # Beyond the mockup table: in-session ops over the live coordinator
     # (amplifier-app-cli parity).
     ("During", "/status", "session status: model, mode, messages, cost", "built-in"),
@@ -316,25 +321,19 @@ def test_doctor_posts_doctor_block_with_findings(fake_command_context) -> None:
         McpServerStats(name="alpha", last_used_days_ago=45, tokens_per_session=2_100),
         McpServerStats(name="beta", last_used_days_ago=None, tokens_per_session=2_000),
     )
-    ctx.tallies = (
-        ApprovalTally(action="read docs/", approved=14, asked=14, capability="read"),
-    )
+    ctx.tallies = (ApprovalTally(action="read docs/", approved=14, asked=14, capability="read"),)
     registry.run("/doctor", ctx)
     (block,) = ctx.blocks
     assert isinstance(block, DoctorBlock)
     texts = [finding.text for finding in block.findings]
     assert "2 MCP servers unused in 30 days · cost 4.1k tok/session" in texts
-    assert (
-        "14 identical read-only approvals this week · candidate allowlist" in texts
-    )
+    assert "14 identical read-only approvals this week · candidate allowlist" in texts
 
 
 def test_improve_posts_proposals_and_never_mutates(fake_command_context) -> None:
     registry = build_registry()
     ctx = fake_command_context
-    ctx.tallies = (
-        ApprovalTally(action="uv run pytest", approved=22, asked=22, capability="test"),
-    )
+    ctx.tallies = (ApprovalTally(action="uv run pytest", approved=22, asked=22, capability="test"),)
     ctx.overrides = (OverriddenDenial(action="push-to-fork", denied=3, overridden=3),)
     registry.run("/improve", ctx)
     (block,) = ctx.blocks

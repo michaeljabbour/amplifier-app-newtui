@@ -37,9 +37,7 @@ async def _start_gated_turn(pilot, app: NewTuiApp) -> None:
     await set_mode(pilot, app, "chat")
     await type_text(pilot, "hi")
     await pilot.press("enter")
-    assert await wait_for(
-        pilot, lambda: app.turn_active and blocks_of(app, "narration")
-    )
+    assert await wait_for(pilot, lambda: app.turn_active and blocks_of(app, "narration"))
 
 
 @pytest.mark.asyncio
@@ -61,9 +59,7 @@ async def test_enter_mid_turn_steers_echo_and_applies_at_step_boundary() -> None
         echoes = blocks_of(app, "steer_echo")
         assert len(echoes) == 1 and echoes[0].text == "focus on the tests"
         line = "".join(s.text for s in render_block(echoes[0], 200)[0])
-        assert line == (
-            '  ↳ steer queued: "focus on the tests" · applies at next step boundary'
-        )
+        assert line == ('  ↳ steer queued: "focus on the tests" · applies at next step boundary')
         assert app.notice_slot.current == STEER_NOTICE
         assert app.footer_bar.state.queued == 0  # steers are not the qN badge
 
@@ -75,8 +71,7 @@ async def test_enter_mid_turn_steers_echo_and_applies_at_step_boundary() -> None
         assert await wait_for(
             pilot,
             lambda: any(
-                b.text == "Applying steer: focus on the tests"
-                for b in blocks_of(app, "narration")
+                b.text == "Applying steer: focus on the tests" for b in blocks_of(app, "narration")
             ),
         )
         # Consumed steer removed: echo gone, queue empty.
@@ -152,9 +147,7 @@ async def test_shift_enter_mid_turn_queues_strip_q1_and_auto_drains() -> None:
         assert not adapter.steering.pending
         # The drained message is echoed verbatim as the user line (mockup
         # drainQueue: ``this.userLine(next)``) before the scripted turn runs.
-        assert any(
-            b.text == "actually, this instead" for b in blocks_of(app, "user_line")
-        )
+        assert any(b.text == "actually, this instead" for b in blocks_of(app, "user_line"))
 
 
 @pytest.mark.asyncio

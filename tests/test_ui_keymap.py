@@ -70,10 +70,7 @@ def test_esc_chain_priority_order_per_spec() -> None:
 
 def test_footer_hints_exact_spec_strings() -> None:
     assert FOOTER_HINTS["approval"] == "arrows select · enter confirm · esc deny"
-    assert (
-        FOOTER_HINTS["lane_focus"]
-        == "esc back to parent · transcript is the subagent's own"
-    )
+    assert FOOTER_HINTS["lane_focus"] == "esc back to parent · transcript is the subagent's own"
     assert FOOTER_HINTS["palette"] == "↑↓ select · enter run · esc close"
     assert FOOTER_HINTS["mention"] == "↑↓ select · enter/tab insert · esc close"
     assert FOOTER_HINTS["running"] == "esc interrupt · enter steer · shift+enter queue"
@@ -82,8 +79,7 @@ def test_footer_hints_exact_spec_strings() -> None:
 
 def test_composer_placeholder_exact() -> None:
     assert COMPOSER_PLACEHOLDER == (
-        "Message Amplifier…  "
-        "( ↑ history · ctrl+j newline · enter send · / commands )"
+        "Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )"
     )
 
 
@@ -101,9 +97,7 @@ def test_validate_rejects_conflicts() -> None:
 
 
 def test_validate_rejects_missing_label() -> None:
-    bad = (
-        Binding(action="x", keys=("ctrl+q",), label="", contexts=frozenset({"idle"})),
-    )
+    bad = (Binding(action="x", keys=("ctrl+q",), label="", contexts=frozenset({"idle"})),)
     with pytest.raises(ValueError, match="display label"):
         validate(bad)
 

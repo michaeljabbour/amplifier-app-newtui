@@ -54,9 +54,7 @@ def test_sweep_reveals_left_to_right_and_finishes() -> None:
     first = sweep_frame(WORDMARK, 0)
     assert first is not None
     # Frame 0: nothing revealed yet — only the bright noise edge.
-    assert all(
-        all(segment.style_token == "bright" for segment in line) for line in first
-    )
+    assert all(all(segment.style_token == "bright" for segment in line) for line in first)
     mid = sweep_frame(WORDMARK, 5)
     assert mid is not None
     reveal = 5 * splash.SWEEP_COLS_PER_FRAME
@@ -199,9 +197,7 @@ async def test_boot_progress_from_contextless_callback_still_animates() -> None:
     adapter = RuntimeAdapter()  # its instant ready() fires before we boot; harmless
     app = NewTuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
-        contextvars.Context().run(
-            app.boot_progress, "installing", "amplifier-foundation"
-        )
+        contextvars.Context().run(app.boot_progress, "installing", "amplifier-foundation")
         assert await _wait_for(pilot, lambda: bool(_splash_widgets(app)))
         widget = _splash_widgets(app)[0]
         # Frames only advance if the timer task survived — the regression

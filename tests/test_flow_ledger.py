@@ -42,9 +42,7 @@ async def test_ctrl_l_prints_session_ledger() -> None:
         assert ledger.cache_hit_pct == 91
         # Exact scrollback strings (spec §10).
         assert _line(ledger, 0) == "· Session ledger  e07d · anchors"
-        assert _line(ledger, 1) == (
-            "  1 turns · $0.57 · 0 shipped · 1 answer-only · cache hit 91%"
-        )
+        assert _line(ledger, 1) == ("  1 turns · $0.57 · 0 shipped · 1 answer-only · cache hit 91%")
         # Mockup cmdLedger ends with this exact notice.
         assert app.notice_slot.current == "ledger printed to scrollback"
 
@@ -54,9 +52,7 @@ async def test_clicking_final_answer_prints_evidence_block() -> None:
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
-        answer = next(
-            b for b in blocks_of(app, "answer") if getattr(b, "evidence_refs", ())
-        )
+        answer = next(b for b in blocks_of(app, "answer") if getattr(b, "evidence_refs", ()))
         widget = app.query_one(f"#block-{answer.id}")
         widget.scroll_visible(animate=False)
         await pilot.pause()
@@ -66,18 +62,13 @@ async def test_clicking_final_answer_prints_evidence_block() -> None:
         evidence = blocks_of(app, "evidence")[-1]
         assert len(evidence.links) == len(DEMO_EVIDENCE) == 2
         # Exact header + first numbered claim (spec §10).
-        assert _line(evidence, 0) == (
-            "· Evidence  1/2 · ←/→ select · enter expand · esc close"
-        )
+        assert _line(evidence, 0) == ("· Evidence  1/2 · ←/→ select · enter expand · esc close")
         assert _line(evidence, 1) == (
-            '  ¹ "dashboard and steering wheel"'
-            " → Ran 2 shell commands (pyproject entry points)"
+            '  ¹ "dashboard and steering wheel" → Ran 2 shell commands (pyproject entry points)'
         )
         assert _line(evidence, 2).startswith('  ² "loads bundles" → ')
         # Mockup revealEvidence ends with this exact notice.
-        assert app.notice_slot.current == (
-            "evidence revealed · every claim traces to a tool call"
-        )
+        assert app.notice_slot.current == ("evidence revealed · every claim traces to a tool call")
 
 
 @pytest.mark.asyncio
@@ -87,9 +78,7 @@ async def test_evidence_block_keys_select_expand_and_close() -> None:
     app = NewTuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
-        answer = next(
-            b for b in blocks_of(app, "answer") if getattr(b, "evidence_refs", ())
-        )
+        answer = next(b for b in blocks_of(app, "answer") if getattr(b, "evidence_refs", ()))
         widget = app.query_one(f"#block-{answer.id}")
         widget.scroll_visible(animate=False)
         await pilot.pause()

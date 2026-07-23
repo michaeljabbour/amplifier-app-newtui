@@ -282,8 +282,10 @@ async def test_trailing_space_keeps_palette_open_with_trimmed_filter() -> None:
         # substring filter: "/mode" matches /mode, /modes and /model
         assert await wait_for(
             pilot,
-            lambda: tuple(c.name for c in app.palette.filtered_commands)
-            == ("/mode", "/modes", "/model"),
+            lambda: (
+                tuple(c.name for c in app.palette.filtered_commands)
+                == ("/mode", "/modes", "/model")
+            ),
         )
         assert app.palette.is_open
         assert app.palette.filter_text == "/mode"

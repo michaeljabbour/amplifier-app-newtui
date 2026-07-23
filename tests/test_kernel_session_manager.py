@@ -21,8 +21,14 @@ def store(tmp_path: Path) -> SessionStore:
     return SessionStore(base_dir=tmp_path / "sessions")
 
 
-def _seed(store: SessionStore, session_id: str, *, name: str = "", bundle: str = "newtui",
-          messages: int = 0) -> None:
+def _seed(
+    store: SessionStore,
+    session_id: str,
+    *,
+    name: str = "",
+    bundle: str = "newtui",
+    messages: int = 0,
+) -> None:
     transcript = [{"role": "user", "content": f"m{i}"} for i in range(messages)]
     metadata = {"session_id": session_id, "bundle": bundle}
     if name:

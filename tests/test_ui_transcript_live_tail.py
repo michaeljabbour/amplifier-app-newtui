@@ -319,9 +319,7 @@ async def test_long_stream_render_keeps_event_loop_responsive() -> None:
     async with app.run_test(size=(80, 24)) as pilot:
         tail = _tail(app)
         tail.open_stream()
-        payload = "A **bold** line with `code`.\n" * (
-            ASYNC_RENDER_THRESHOLD // 20
-        )
+        payload = "A **bold** line with `code`.\n" * (ASYNC_RENDER_THRESHOLD // 20)
         started = time.perf_counter()
         tail.feed(payload)
         assert time.perf_counter() - started < 0.05

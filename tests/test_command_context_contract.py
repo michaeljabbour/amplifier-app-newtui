@@ -21,18 +21,14 @@ from amplifier_app_newtui.ui.command_context import AppCommandContext
 from .conftest import FakeCommandContext
 
 PROTOCOL_MEMBERS: dict[str, Any] = {
-    name: member
-    for name, member in vars(CommandContext).items()
-    if not name.startswith("_")
+    name: member for name, member in vars(CommandContext).items() if not name.startswith("_")
 }
 
 
 def _params(fn: Any) -> tuple[tuple[str, Any, Any], ...]:
     """Parameter (name, kind, default) triples — annotations deliberately
     ignored; the fake omits some and that is not drift."""
-    return tuple(
-        (p.name, p.kind, p.default) for p in inspect.signature(fn).parameters.values()
-    )
+    return tuple((p.name, p.kind, p.default) for p in inspect.signature(fn).parameters.values())
 
 
 def test_protocol_surface_is_nonempty() -> None:

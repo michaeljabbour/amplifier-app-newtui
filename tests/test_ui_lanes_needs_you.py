@@ -82,8 +82,7 @@ def test_focused_lane_banner_exact_string() -> None:
     prefix, tail = focused_lane_banner_parts("coder", "e07de0")
     assert prefix == "focused: coder "
     assert tail == (
-        "· subagent of e07de0 · own context window"
-        " · results report back to parent · esc back"
+        "· subagent of e07de0 · own context window · results report back to parent · esc back"
     )
 
 

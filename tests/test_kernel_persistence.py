@@ -371,9 +371,7 @@ async def test_incremental_saver_preserves_existing_metadata(store: SessionStore
 def test_saved_files_are_valid_jsonl(store: SessionStore) -> None:
     store.save("s1", [{"role": "user", "content": "hi"}], {"a": 1})
     for line in (
-        (store.session_dir("s1") / TRANSCRIPT_FILENAME)
-        .read_text(encoding="utf-8")
-        .splitlines()
+        (store.session_dir("s1") / TRANSCRIPT_FILENAME).read_text(encoding="utf-8").splitlines()
     ):
         json.loads(line)
 

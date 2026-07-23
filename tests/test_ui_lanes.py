@@ -158,9 +158,7 @@ async def test_live_telemetry_patches_rows_without_remounting_motion() -> None:
         from amplifier_app_newtui.ui.lanes_panel import _LaneRow  # test-only
 
         row = panel.query_one(_LaneRow)
-        updated = _record(
-            "s1", "researcher", "working", "reading README.md", 42, "0.10", 120000
-        )
+        updated = _record("s1", "researcher", "working", "reading README.md", 42, "0.10", 120000)
         panel.update_lanes((updated,))
         await pilot.pause()
         assert panel.query_one(_LaneRow) is row
@@ -336,9 +334,7 @@ def test_format_lane_lines_disambiguates_same_named_lanes() -> None:
         _record("sub-bbbb", "test-writer", "working", "writing tests", 20, "0.06", 2000),
         _record("s3", "reviewer", "done", "done \u00b7 ok", 5, "0.01", 300),
     )
-    lines = format_lane_lines(
-        tuple(r.lane for r in records), labels=lane_labels(records)
-    )
+    lines = format_lane_lines(tuple(r.lane for r in records), labels=lane_labels(records))
     assert lines == (
         "  \u25d0 test-writer #aaaa \u00b7 writing tests \u00b7 10s \u00b7 \u2193 1.0k tokens \u00b7 $0.05",
         "  \u25a0 test-writer #bbbb \u00b7 writing tests \u00b7 20s \u00b7 \u2193 2.0k tokens \u00b7 $0.06",
