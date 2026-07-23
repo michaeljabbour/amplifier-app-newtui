@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -32,6 +33,7 @@ from amplifier_app_newtui.kernel.compaction import CompactionConfig
 from amplifier_app_newtui.kernel.events import Notification, PromptSubmit
 from amplifier_app_newtui.kernel.rewind import RewindError
 from amplifier_app_newtui.kernel.session_ops import ModelListing, StatusInfo
+from amplifier_app_newtui.model.config import default_config_state
 from amplifier_app_newtui.model.trust import CapabilityClass, TrustDecision
 from amplifier_app_newtui.ui.runtime_adapter import RealRuntimeAdapter, _AppLoopQueue
 
@@ -154,6 +156,7 @@ class FakeRealRuntime:
         self.started_loop: asyncio.AbstractEventLoop | None = None
         self.cleanup_called = threading.Event()
         self.next_model_name: str | None = None
+        self.project_dir = Path("/fake/project")
 
     def record(self, name: str, args: tuple[Any, ...]) -> None:
         self.calls.append((name, args, threading.get_ident()))
@@ -180,6 +183,12 @@ class FakeRealRuntime:
         # Sync on the real runtime — the adapter wraps it in a coroutine.
         self.record("directory_entries", (kind,))
         return SENTINELS["directory_entries"]
+
+    def config_state(self) -> object:
+        # Sync seed read at start() (like agent_brief); a real plan-derived
+        # SessionConfigState. The adapter stores it for /config ops.
+        self.record("config_state", ())
+        return default_config_state(self.bundle_name)
 
 
 def _make_proxy(name: str) -> Callable[..., Any]:

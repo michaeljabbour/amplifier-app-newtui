@@ -248,6 +248,10 @@ class CommandContext(Protocol):
         """``/mcp``: list / add / remove MCP servers (mcp.json)."""
         ...
 
+    def manage_config(self, args: str) -> None:
+        """``/config``: show/toggle/set/diff/save live session config."""
+        ...
+
 
 CommandHandler = Callable[[CommandContext, str], None]
 """Handler signature: ``(ctx, args)`` where ``args`` is the text after the

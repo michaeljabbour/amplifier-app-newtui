@@ -590,6 +590,11 @@ class NewTuiApp(App[None]):
 
         self.run_worker(manage(self, kind, args), exclusive=False)
 
+    def manage_config(self, args: str) -> None:
+        from .config_admin import manage
+
+        self.run_worker(manage(self, args), exclusive=False)
+
     async def _manage_mcp(self, args: str) -> None:
         from ..kernel import mcp_config
 

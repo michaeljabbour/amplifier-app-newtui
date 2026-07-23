@@ -31,6 +31,7 @@ ALL_COMMANDS = (
     "/plan",
     "/brainstorm",
     "/context",
+    "/config",
     "/status",
     "/model",
     "/effort",
