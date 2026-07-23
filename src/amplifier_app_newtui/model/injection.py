@@ -179,7 +179,7 @@ def scan_for_injection(text: object) -> InjectionReport:
                 )
                 if len(findings) >= _MAX_FINDINGS:
                     return InjectionReport(flagged=True, findings=tuple(findings))
-        except Exception:  # fail-safe: one bad pattern/input never propagates
+        except Exception:  # noqa: BLE001 — fail-safe: one bad pattern/input must never break detection
             continue
     return InjectionReport(flagged=bool(findings), findings=tuple(findings))
 
@@ -192,7 +192,7 @@ def _coerce(text: object) -> str:
             content = bytes(text).decode("utf-8", "replace")
         else:
             content = str(text)
-    except Exception:  # a hostile __str__ must not break detection
+    except Exception:  # noqa: BLE001 — a hostile __str__ must not break detection
         return ""
     return content[:_MAX_SCAN_CHARS]
 
