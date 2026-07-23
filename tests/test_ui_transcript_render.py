@@ -52,8 +52,11 @@ from amplifier_app_newtui.ui.segments import (
     segment_style,
     to_rich_text,
 )
+from amplifier_app_newtui.ui.live_tail import answer_spans
 from amplifier_app_newtui.ui.transcript_render import (
+    READING_MEASURE,
     TOOL_EXPAND_HINT,
+    fence_text_at_row,
     render_block,
     render_block_markup,
 )
@@ -791,3 +794,42 @@ def test_todo_tool_reroutes_to_plan_changed_never_the_transcript() -> None:
     # never in the transcript, never in the activity digest
     assert not [b for b in host.blocks if b.kind == "todo"]
     assert not [b for b in host.blocks if b.kind == "tool_line"]
+
+
+# -- rendering polish (issue #34) ---------------------------------------------
+
+
+def test_render_answer_caps_prose_at_reading_measure() -> None:
+    """Prose word-wraps at min(width, READING_MEASURE): a wide terminal
+    never stretches a paragraph past the reading measure, but a narrow one
+    still wraps at its own width."""
+    block = Answer(id="a", spans=answer_spans("word " * 60))
+
+    wide = render_block(block, 200)
+    widest = max(cell_len(line_plain(line)) for line in wide if line)
+    assert widest <= READING_MEASURE
+    assert len(wide) > 1  # the cap actually forced a wrap
+
+    narrow = render_block(block, 60)
+    assert max(cell_len(line_plain(line)) for line in narrow if line) <= 60
+
+
+def test_render_answer_code_and_tables_keep_full_width() -> None:
+    """Code fences and table rows are emitted verbatim — never re-wrapped —
+    so a long line survives past the reading measure (alignment intact)."""
+    long_code = "x" * 130
+    block = Answer(id="a", spans=answer_spans(f"```\n{long_code}\n```"))
+    lines = render_block(block, 200)
+    assert any(line_plain(line) == f"  {long_code}" for line in lines)
+
+
+def test_fence_text_at_row_extracts_dedented_fence() -> None:
+    """A click on any fence row yields the whole fence, dedented, markers
+    dropped; non-fence rows and out-of-range indices yield None."""
+    src = "Intro line.\n\n```python\nprint('hi')\nx = 1\n```\n\nOutro."
+    lines = render_block(Answer(id="a", spans=answer_spans(src)), 80)
+    fenced = {fence_text_at_row(lines, i) for i in range(len(lines))}
+    assert "print('hi')\nx = 1" in fenced
+    assert fence_text_at_row(lines, 0) is None  # the intro prose line
+    assert fence_text_at_row(lines, -1) is None
+    assert fence_text_at_row(lines, len(lines)) is None

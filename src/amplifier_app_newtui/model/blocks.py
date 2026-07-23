@@ -52,6 +52,11 @@ GLYPH_REWIND_RIGHT = "›"
 GLYPH_ERROR = "✖"
 GLYPH_CHEVRON_COLLAPSED = "▸"
 GLYPH_CHEVRON_EXPANDED = "▾"
+GLYPH_CHECKBOX_CHECKED = "✓"
+GLYPH_CHECKBOX_EMPTY = "☐"
+"""Markdown task-list glyphs for ``- [x]`` / ``- [ ]`` items in answers.
+Lighter cousins of PlanBlock's ``✔``/``□`` (they *rhyme*, not collide):
+checked reads green, empty reads dim — the same done/pending grammar."""
 GLYPH_QUOTE_GUTTER = "▌ "
 """Blockquote left gutter in answers — the TUI-native frame for the
 insight/machete callouts hooks-inline-blocks teaches the model to emit
@@ -95,6 +100,10 @@ class Segment(_FrozenModel):
     bold: bool = False
     italic: bool = False
     bg_token: StyleToken | None = None
+    link: str | None = None
+    """Target URL for an OSC 8 terminal hyperlink. When set, the segment
+    paints as a real clickable link (Markdown ``[text](url)`` and bare
+    ``https://`` URLs in answers); ``None`` for ordinary text."""
 
 
 class BlockIdAllocator:

@@ -233,6 +233,26 @@ shape the hooks-inline-blocks module teaches the model to emit. Pins the
 ``▌`` gutter + hanging-indent wrap (the TUI-native callout rendering)."""
 
 
+_POLISH_ANSWER_SOURCE = (
+    "Rendering polish lands *italic* runs, real [docs](https://example.com/guide) "
+    "links and bare https://amplifier.dev URLs as OSC 8 hyperlinks — this line is "
+    "deliberately long so a wide terminal wraps it at the reading measure instead "
+    "of stretching the paragraph across the whole width.\n"
+    "\n"
+    "- [x] italic, checkboxes, links\n"
+    "- [ ] syntax highlighting (a non-goal)\n"
+    "\n"
+    "```python\n"
+    "print('click a fence to copy it')\n"
+    "```"
+)
+"""One answer exercising every inline rendering-polish item at once:
+``*italic*``, ``- [x]``/``- [ ]`` task-list glyphs, a Markdown ``[text](url)``
+link and a bare URL (both carry ``link=`` → OSC 8), a long prose line that
+wraps at the 100-cell reading measure only where the width exceeds it (the
+w120 golden), and a fenced code block (the click-to-copy target)."""
+
+
 def variant_blocks() -> tuple[tuple[str, TranscriptBlock], ...]:
     """State variants of expandable kinds — same golden rigor, labeled headers."""
     collapsed = next(b for b in canonical_blocks() if b.kind == "delegate_summary")
@@ -241,6 +261,10 @@ def variant_blocks() -> tuple[tuple[str, TranscriptBlock], ...]:
         (
             "answer (insight callout)",
             Answer(id="g21", spans=answer_spans(_CALLOUT_ANSWER_SOURCE)),
+        ),
+        (
+            "answer (rendering polish)",
+            Answer(id="g22", spans=answer_spans(_POLISH_ANSWER_SOURCE)),
         ),
     )
 

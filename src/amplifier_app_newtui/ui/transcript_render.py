@@ -21,6 +21,8 @@ from rich.cells import cell_len
 
 from ..model.blocks import (
     GLYPH_BLOCKED,
+    GLYPH_CHECKBOX_CHECKED,
+    GLYPH_CHECKBOX_EMPTY,
     GLYPH_CHEVRON_COLLAPSED,
     GLYPH_CHEVRON_EXPANDED,
     GLYPH_ERROR,
@@ -301,16 +303,23 @@ def _render_recap(block: Recap, width: int) -> tuple[Line, ...]:
     )
 
 
-_ANSWER_MARKER_RE = re.compile(r"^\s*(?:•|\d+[.)])\s+$")
-"""A list marker segment (``• `` / ``1. `` / indented) at the head of a
-logical answer line — its cell width becomes the hanging indent."""
+READING_MEASURE = 100
+"""Prose wrap cap in cells (a comfortable reading measure). Answers word-
+wrap at ``min(width, READING_MEASURE)`` so a wide terminal doesn't stretch
+paragraphs into unreadably long lines; code and table rows keep full width
+(they are emitted verbatim, never re-wrapped) so alignment survives."""
+
+_ANSWER_MARKER_RE = re.compile(rf"^\s*(?:•|{GLYPH_CHECKBOX_CHECKED}|{GLYPH_CHECKBOX_EMPTY}|\d+[.)])\s+$")
+"""A list marker segment (``• `` / ``✓ `` / ``☐ `` / ``1. `` / indented) at
+the head of a logical answer line — its cell width becomes the hanging
+indent for continuation lines."""
 
 
 def _answer_marker_hang(first: Segment) -> int:
     """Cell width of a leading list marker or blockquote gutter, or 0 if
     the line is neither (continuation lines wrap under the body, not the
     marker)."""
-    if first.style_token == "dim" and _ANSWER_MARKER_RE.match(first.text):
+    if first.style_token in ("dim", "green") and _ANSWER_MARKER_RE.match(first.text):
         return cell_len(first.text)
     if first.style_token == "blue" and first.text == GLYPH_QUOTE_GUTTER:
         return cell_len(GLYPH_QUOTE_GUTTER)
@@ -390,12 +399,16 @@ def _wrap_line(segs: Sequence[Segment], width: int, hang: int) -> tuple[Line, ..
 
 
 def _render_answer(block: Answer, width: int) -> tuple[Line, ...]:
-    """Long answers read like a document: word-wrapped to the full transcript
-    width (no reading-column cap) with hanging indents on list continuations.
+    """Long answers read like a document: prose word-wraps at a comfortable
+    reading measure (``min(width, READING_MEASURE)``) with hanging indents on
+    list continuations, so a wide terminal never stretches a paragraph into
+    an unreadably long line.
 
-    Code and table lines pass through verbatim; every other logical line is
-    greedy-wrapped, list items keeping their body aligned under the marker.
+    Code and table lines pass through verbatim at full width; every other
+    logical line is greedy-wrapped, list items keeping their body aligned
+    under the marker.
     """
+    prose_width = min(width, READING_MEASURE)
     out: list[Line] = []
     for line in _split_lines(block.spans):
         if not line:
@@ -408,13 +421,44 @@ def _render_answer(block: Answer, width: int) -> tuple[Line, ...]:
         if _answer_line_is_verbatim(line):
             out.append(line)
             continue
-        out.extend(_wrap_line(line, width, _answer_marker_hang(line[0])))
+        out.extend(_wrap_line(line, prose_width, _answer_marker_hang(line[0])))
     # Drop a leading/trailing blank the collapsing may leave.
     while out and not out[0]:
         out.pop(0)
     while out and not out[-1]:
         out.pop()
     return tuple(out)
+
+
+def _is_fence_line(line: Line) -> bool:
+    """A verbatim fenced-code line in a rendered answer: a lone teal run
+    indented two spaces (``answer_spans`` emits code that way). Inline code
+    is teal too but never opens a line with the 2-space code indent, and
+    table rows carry ``│``/``┼`` box glyphs — so neither is mistaken here."""
+    return bool(line) and line[0].style_token == "teal" and line[0].text.startswith("  ")
+
+
+def fence_text_at_row(lines: Sequence[Line], row: int) -> str | None:
+    """The dedented source of the fenced code block covering *row*, or
+    ``None`` when *row* is not inside a fence.
+
+    Pure and click-independent: the answer widget maps a click's content-y
+    to a rendered row and copies exactly this fence (the whole answer is
+    what ``/copy`` grabs \u2014 this is the finer-grained affordance).
+    """
+    if row < 0 or row >= len(lines) or not _is_fence_line(lines[row]):
+        return None
+    start = row
+    while start > 0 and _is_fence_line(lines[start - 1]):
+        start -= 1
+    end = row
+    while end + 1 < len(lines) and _is_fence_line(lines[end + 1]):
+        end += 1
+    out: list[str] = []
+    for index in range(start, end + 1):
+        text = "".join(seg.text for seg in lines[index])
+        out.append(text[2:] if text.startswith("  ") else text)
+    return "\n".join(out)
 
 
 def _render_steer_echo(block: SteerEcho, width: int) -> tuple[Line, ...]:

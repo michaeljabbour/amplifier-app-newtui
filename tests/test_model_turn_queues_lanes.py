@@ -43,6 +43,14 @@ def test_telemetry_elapsed_stays_raw_seconds_past_a_minute() -> None:
     assert long_turn.label() == "3725s · 3.2k tok · $0.50"
 
 
+def test_telemetry_elapsed_is_integer_seconds_not_a_float() -> None:
+    # Issue #34: the mockup shows `8s`, never `8.0s` — fractional wall-clock
+    # seconds always render as a truncated integer in every telemetry surface.
+    telemetry = TurnTelemetry(secs=8.7, tokens_down=3200, cached_pct=91, cost=Decimal("0.17"))
+    assert telemetry.suffix() == "(8s · ↓ 3.2k tok)"
+    assert telemetry.label() == "8s · 3.2k tok, 91% cached · $0.17"
+
+
 def test_outcome_labels_match_spec_examples() -> None:
     assert TurnOutcome(kind="answer").outcome_label() == "answer"
     assert TurnOutcome(kind="interrupted").outcome_label() == "· interrupted"

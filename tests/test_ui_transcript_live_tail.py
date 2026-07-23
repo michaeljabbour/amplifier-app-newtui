@@ -98,6 +98,63 @@ def test_answer_spans_blockquote_run_reads_as_its_own_paragraph() -> None:
     )
 
 
+def test_answer_spans_italic_emphasis() -> None:
+    """``*italic*`` maps to the italic flag alongside ``**bold**`` and
+    `` `code` `` without colliding with either; a star adjacent to
+    whitespace stays literal (arithmetic, globs)."""
+    assert answer_spans("plain *emph* and **bold** and `code`") == (
+        Segment(text="plain "),
+        Segment(text="emph", italic=True),
+        Segment(text=" and "),
+        Segment(text="bold", style_token="bright", bold=True),
+        Segment(text=" and "),
+        Segment(text="code", style_token="teal"),
+    )
+    # A star with whitespace on the inside is not emphasis (2 * 3 * 4).
+    assert answer_spans("2 * 3 * 4") == (Segment(text="2 * 3 * 4"),)
+
+
+def test_answer_spans_task_list_checkboxes() -> None:
+    """``- [x]`` / ``- [ ]`` render as task-list glyphs (green done / dim
+    pending) rather than leaking a raw ``• [x]``; a plain bullet is
+    unaffected."""
+    assert answer_spans("- [x] shipped\n- [ ] todo\n- plain") == (
+        Segment(text="✓ ", style_token="green"),
+        Segment(text="shipped"),
+        Segment(text="\n"),
+        Segment(text="☐ ", style_token="dim"),
+        Segment(text="todo"),
+        Segment(text="\n"),
+        Segment(text="• ", style_token="dim"),
+        Segment(text="plain"),
+    )
+
+
+def test_answer_spans_markdown_link_carries_osc8_target() -> None:
+    """A Markdown link keeps its teal text + dim ``(url)`` but both runs now
+    carry a ``link`` target so the terminal paints a real OSC 8 hyperlink."""
+    assert answer_spans("see [docs](https://example.com/g) now") == (
+        Segment(text="see "),
+        Segment(text="docs", style_token="teal", link="https://example.com/g"),
+        Segment(
+            text=" (https://example.com/g)",
+            style_token="dimmer",
+            link="https://example.com/g",
+        ),
+        Segment(text=" now"),
+    )
+
+
+def test_answer_spans_bare_url_collapses_to_hyperlink() -> None:
+    """A bare URL collapses into one teal OSC 8 hyperlink; trailing sentence
+    punctuation stays outside the link target."""
+    assert answer_spans("visit https://amplifier.dev. thanks") == (
+        Segment(text="visit "),
+        Segment(text="https://amplifier.dev", style_token="teal", link="https://amplifier.dev"),
+        Segment(text=". thanks"),
+    )
+
+
 def test_visible_length_holds_back_trailing_table() -> None:
     # Trailing table run (with streaming-newline artifact) is withheld.
     assert visible_length(["Results:", "| a | b |", "| 1 | 2 |"]) == 1

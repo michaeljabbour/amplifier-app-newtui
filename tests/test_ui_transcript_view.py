@@ -31,11 +31,13 @@ from amplifier_app_newtui.model.blocks import (
     UserLine,
 )
 from amplifier_app_newtui.model.evidence import EvidenceLink
+from amplifier_app_newtui.ui.live_tail import answer_spans
 from amplifier_app_newtui.ui.needs_you import NeedsYouList
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 from amplifier_app_newtui.ui.transcript import (
     BlockWidget,
     CloseEvidence,
+    CopyCodeFence,
     ExpandEvidenceClaim,
     HISTORY_COMPACT_TRIGGER,
     HISTORY_WIDGET_LIMIT,
@@ -45,6 +47,8 @@ from amplifier_app_newtui.ui.transcript import (
     ShowEvidence,
     ToolLineToggled,
     TranscriptView,
+    fence_text_at_row,
+    render_block,
 )
 
 
@@ -61,9 +65,13 @@ class Harness(App[None]):
         self.expanded_claims: list[ExpandEvidenceClaim] = []
         self.closed_evidence: list[CloseEvidence] = []
         self.decisions: list[NeedsYouList.DecisionTaken] = []
+        self.fence_copies: list[CopyCodeFence] = []
 
     def on_mount(self) -> None:
         self.theme = theme_id(DEFAULT_THEME)
+
+    def on_copy_code_fence(self, message: CopyCodeFence) -> None:
+        self.fence_copies.append(message)
 
     def compose(self) -> ComposeResult:
         yield TranscriptView(id="transcript")
@@ -192,6 +200,30 @@ async def test_answer_click_posts_show_evidence() -> None:
         assert len(app.evidence) == 1
         assert app.evidence[0].block_id == "b3"
         assert app.evidence[0].links == links
+
+
+@pytest.mark.asyncio
+async def test_clicking_a_code_fence_copies_just_that_fence() -> None:
+    """A click on a fenced code row posts CopyCodeFence with the dedented
+    fence source (finer-grained than /copy's whole-answer grab); a click
+    anywhere else on the answer still opens evidence."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        src = "Intro line.\n\n```python\nprint('hi')\nx = 1\n```"
+        links = (EvidenceLink(claim_quote="c", tool_ref="r"),)
+        widget = view.append(Answer(id="b7", spans=answer_spans(src), evidence_refs=links))
+        await pilot.pause()
+        lines = render_block(widget.block, widget.size.width)
+        fence_row = next(i for i in range(len(lines)) if fence_text_at_row(lines, i))
+        await pilot.click(widget, offset=(3, fence_row))
+        await pilot.pause()
+        assert [message.text for message in app.fence_copies] == ["print('hi')\nx = 1"]
+        assert app.evidence == []  # a fence click never opens evidence
+        # A click on the intro (row 0) is not a fence — evidence still opens.
+        await pilot.click(widget, offset=(2, 0))
+        await pilot.pause()
+        assert [message.block_id for message in app.evidence] == ["b7"]
 
 
 @pytest.mark.asyncio

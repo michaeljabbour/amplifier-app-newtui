@@ -53,10 +53,18 @@ def segment_style(segment: Segment) -> str:
 
 
 def segment_markup(segment: Segment) -> str:
-    """One segment as Textual content markup (text escaped, style by token)."""
+    """One segment as Textual content markup (text escaped, style by token).
+
+    A segment carrying a ``link`` nests a ``[link=…]`` tag so the terminal
+    paints a real OSC 8 hyperlink (Textual emits the escape); the URL is
+    kept clean of ``]`` at the source so it never breaks the markup.
+    """
     if not segment.text:
         return ""
-    return f"[{segment_style(segment)}]{escape(segment.text)}[/]"
+    body = escape(segment.text)
+    if segment.link:
+        body = f"[link={segment.link}]{body}[/link]"
+    return f"[{segment_style(segment)}]{body}[/]"
 
 
 def line_markup(line: Iterable[Segment]) -> str:
@@ -106,6 +114,7 @@ def to_rich_text(
                 bgcolor=bgcolor,
                 bold=segment.bold or None,
                 italic=segment.italic or None,
+                link=segment.link,
             ),
         )
     return text
