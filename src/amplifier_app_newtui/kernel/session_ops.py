@@ -265,6 +265,111 @@ async def list_tools(coordinator: Any) -> tuple[str, ...]:
     return tuple(sorted(str(name) for name in tools))
 
 
+@dataclass(frozen=True)
+class ToolDescriptor:
+    """One mounted tool's CLI-facing summary (``tool list`` row)."""
+
+    name: str
+    description: str = ""
+    invokable: bool = True
+    """False only when the mounted object exposes no ``execute`` -- a
+    listable-but-not-callable entry, surfaced honestly rather than hidden."""
+
+
+def _tool_summary(instance: Any) -> str:
+    """First-line summary of a tool (``description`` attr, else docstring).
+
+    Mirrors amplifier-app-cli ``commands/tool.py`` (``description`` first,
+    docstring first line as the fallback), collapsed to a single line so the
+    ``tool list`` rows stay compact.
+    """
+    for source in (getattr(instance, "description", None), getattr(instance, "__doc__", None)):
+        if isinstance(source, str) and source.strip():
+            return " ".join(source.strip().splitlines()[0].split())
+    return ""
+
+
+async def describe_tools(coordinator: Any) -> tuple[ToolDescriptor, ...]:
+    """Mounted tools as ``(name, description, invokable)`` rows for ``tool list``.
+
+    The richer sibling of :func:`list_tools`: same ``coordinator.get("tools")``
+    surface, but carrying each tool's one-line summary and whether it exposes an
+    ``execute`` method -- exactly what the scriptable CLI ``tool list`` prints.
+    """
+    try:
+        tools = coordinator.get("tools")
+    except Exception:  # noqa: BLE001 -- duck-typed coordinator: a broken mount lists nothing
+        return ()
+    if not isinstance(tools, dict):
+        return ()
+    return tuple(
+        sorted(
+            (
+                ToolDescriptor(
+                    name=str(name),
+                    description=_tool_summary(instance),
+                    invokable=callable(getattr(instance, "execute", None)),
+                )
+                for name, instance in tools.items()
+            ),
+            key=lambda descriptor: descriptor.name,
+        )
+    )
+
+
+@dataclass(frozen=True)
+class ToolInvocation:
+    """Normalized outcome of invoking one mounted tool from the CLI.
+
+    ``found`` distinguishes an unknown tool (clear error + nonzero exit) from a
+    tool that ran and failed; ``blocked`` marks a governance refusal (a one-shot
+    CLI cannot honor an interactive approval) so the caller can say WHY it was
+    blocked rather than conflating it with an execution error.
+    """
+
+    found: bool
+    ok: bool
+    output: Any = None
+    error: str = ""
+    blocked: bool = False
+    capability: str = ""
+
+
+async def invoke_tool(coordinator: Any, name: str, args: dict[str, Any]) -> ToolInvocation:
+    """Invoke the mounted tool *name* with *args* via its ``execute`` surface.
+
+    Same invocation contract the in-session ops already speak (``load_skill`` /
+    ``set_native_mode`` call ``tool.execute({...})`` and read ``.success`` /
+    ``.output`` / ``.error`` off the returned ``ToolResult``); a tool that
+    returns a bare value instead is surfaced as-is. Never raises into the CLI: a
+    missing tool, a non-callable mount, or an ``execute`` exception all come back
+    as a structured :class:`ToolInvocation`.
+    """
+    tool = _tool(coordinator, name)
+    if tool is None:
+        return ToolInvocation(found=False, ok=False, error=f"no tool named '{name}' is mounted")
+    execute = getattr(tool, "execute", None)
+    if not callable(execute):
+        return ToolInvocation(
+            found=True, ok=False, error=f"tool '{name}' cannot be invoked (no execute method)"
+        )
+    try:
+        result = await _maybe_await(execute(args))
+    except Exception as error:  # noqa: BLE001 -- a tool crash is a CLI error record, never a traceback
+        return ToolInvocation(found=True, ok=False, error=str(error) or type(error).__name__)
+    if hasattr(result, "success"):
+        ok = bool(getattr(result, "success"))
+        raw_error = getattr(result, "error", None)
+        message = raw_error.get("message") if isinstance(raw_error, dict) else raw_error
+        return ToolInvocation(
+            found=True,
+            ok=ok,
+            output=getattr(result, "output", None),
+            error="" if ok else (str(message) if message else "tool reported failure"),
+        )
+    return ToolInvocation(found=True, ok=True, output=result)
+
+
 async def list_agents(coordinator: Any) -> tuple[str, ...]:
     """Names of the agents the bundle mounted for delegation.
 
@@ -413,6 +518,8 @@ __all__ = [
     "EFFORT_LEVELS",
     "ModelListing",
     "SkillInfo",
+    "ToolDescriptor",
+    "ToolInvocation",
     "StatusInfo",
     "clear_context",
     "compact_context",
@@ -421,6 +528,8 @@ __all__ = [
     "list_mcp_tools",
     "list_models",
     "list_skills",
+    "describe_tools",
+    "invoke_tool",
     "list_tools",
     "load_skill",
     "normalize_effort",

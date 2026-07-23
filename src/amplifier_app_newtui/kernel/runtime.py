@@ -69,7 +69,7 @@ from .directory_permissions import (
 )
 from .governance_hook import GovernanceHook
 from .mention_expansion import MentionBudget, expand_mentions
-from . import session_manager, session_ops
+from . import session_manager, session_ops, tool_cli
 from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
 from .queue_bridge import CONSUMED_EVENTS, QueueBridge
@@ -1337,6 +1337,40 @@ class RealRuntime:
     async def list_tools(self) -> tuple[str, ...]:
         coord = self._coordinator()
         return await session_ops.list_tools(coord) if coord is not None else ()
+
+    async def describe_tools(self) -> tuple[session_ops.ToolDescriptor, ...]:
+        coord = self._coordinator()
+        return await session_ops.describe_tools(coord) if coord is not None else ()
+
+    async def invoke_tool(
+        self, name: str, args: dict[str, Any], *, allow_writes: bool = False
+    ) -> session_ops.ToolInvocation:
+        """Invoke a mounted tool from the CLI, honoring the trust gate.
+
+        A one-shot CLI cannot answer an interactive approval, so the same
+        posture the TUI would apply is resolved up front (kernel/tool_cli):
+        reads/tests run, mutations are refused unless *allow_writes* opts into
+        in-project writes (still boundary-checked against this session's
+        directory policy). A missing tool comes back ``found=False`` (clear
+        error + nonzero exit) rather than a governance block, so the
+        unknown-tool path stays unambiguous.
+        """
+        coord = self._coordinator()
+        if coord is None:
+            return session_ops.ToolInvocation(found=False, ok=False, error="session still starting")
+        names = await session_ops.list_tools(coord)
+        if name not in names:
+            return session_ops.ToolInvocation(
+                found=False, ok=False, error=f"no tool named '{name}' is mounted"
+            )
+        gate = tool_cli.gate_invocation(
+            name, args, allow_writes=allow_writes, directory_policy=self.directory_policy
+        )
+        if not gate.allowed:
+            return session_ops.ToolInvocation(
+                found=True, ok=False, error=gate.reason, blocked=True, capability=gate.capability
+            )
+        return await session_ops.invoke_tool(coord, name, args)
 
     async def list_agents(self) -> tuple[str, ...]:
         coord = self._coordinator()
