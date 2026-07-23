@@ -27,6 +27,7 @@ fallback (ported from amplifier-app-cli ``authorization_stage.py``
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePath
@@ -183,6 +184,131 @@ class OfflineAutoClassifier:
             for word in self._WORDS.findall(value)
             if word not in self._STOP_WORDS and len(word) > 2
         )
+
+
+class ProviderStageEvaluator(Protocol):
+    """Async, verdict-only *second-stage* evaluator (opt-in, reasoning-blind).
+
+    The optional provider-backed deliberative stage app-cli grew
+    (``ui/safety_classifier.py`` ``TwoStageActionClassifier``), expressed for
+    newtui's seam. Sees ONLY the structured action metadata -- ``action``,
+    ``capability``, ``target`` -- never assistant reasoning, tool output, or the
+    free-text user messages that could talk it into *allowing*. Returns a
+    reasoning-blind :data:`Verdict`; :class:`TwoStageAutoClassifier` ANDs it
+    against the offline floor, so a provider verdict can only make the outcome
+    MORE restrictive (tighten an offline allow into a deny) or confirm it -- it
+    can never open a gate the offline stage would hold.
+    """
+
+    async def evaluate(
+        self,
+        *,
+        action: str,
+        capability: CapabilityClass,
+        target: str,
+    ) -> Verdict: ...
+
+
+class TwoStageAutoClassifier:
+    """Offline floor + optional provider-backed second stage (opt-in).
+
+    Implements :class:`AutoClassifier`, so it drops into the existing
+    ``GovernanceHook(classifier=...)`` seam with no change to the hook. Two
+    stages, offline authoritative:
+
+    - **Stage 1 (authority, fail-closed):** the deterministic, reasoning-blind
+      :class:`OfflineAutoClassifier` (or any injected offline classifier). It
+      alone owns the injection-shape / destructive / boundary denials.
+    - **Stage 2 (opt-in, additive):** a :class:`ProviderStageEvaluator` that
+      runs ONLY after an offline ALLOW and may only make the verdict MORE
+      restrictive. A provider deny TIGHTENS the offline allow into a deny; a
+      provider allow merely CONFIRMS it (byte-identical to the offline verdict).
+
+    The provider is never consulted on an offline DENY -- a deny is already
+    maximally restrictive and nothing may downgrade it -- so the final verdict
+    is exactly ``offline_allowed AND provider_allowed``. The provider can never
+    turn a deny into an allow.
+
+    **Fail-safe to the offline floor (never fail-open):** a provider that
+    errors, times out (bounded :attr:`timeout_s`), is unavailable, or returns
+    junk degrades to the offline verdict. Because the provider is consulted only
+    after an offline *allow*, degrading reproduces that offline allow exactly --
+    it can never auto-allow something the offline stage would have gated.
+
+    **Default OFF:** constructed with no evaluator, ``classify`` is byte-for-byte
+    the offline verdict, so the governance default (a bare offline classifier)
+    is unchanged. The provider stage is reached only when a caller opts in by
+    passing an evaluator.
+    """
+
+    _DEFAULT_TIMEOUT_S = 5.0
+
+    def __init__(
+        self,
+        evaluator: ProviderStageEvaluator | None = None,
+        *,
+        offline: AutoClassifier | None = None,
+        timeout_s: float = _DEFAULT_TIMEOUT_S,
+    ) -> None:
+        self._offline: AutoClassifier = offline or OfflineAutoClassifier()
+        self._evaluator = evaluator
+        self._timeout_s = timeout_s if timeout_s > 0 else self._DEFAULT_TIMEOUT_S
+
+    async def classify(
+        self,
+        *,
+        action: str,
+        capability: CapabilityClass,
+        target: str,
+        user_messages: tuple[str, ...],
+    ) -> Verdict:
+        offline_allowed, offline_reason = await self._offline.classify(
+            action=action,
+            capability=capability,
+            target=target,
+            user_messages=user_messages,
+        )
+        # Opt-in second stage that can ONLY tighten: skip it entirely when no
+        # evaluator is mounted OR the offline floor already denied (a deny is
+        # already maximally restrictive; the provider must never open it).
+        if self._evaluator is None or not offline_allowed:
+            return (offline_allowed, offline_reason)
+        verdict = await self._consult(action=action, capability=capability, target=target)
+        if verdict is None:
+            # Provider errored / timed out / unavailable / junk -> degrade to
+            # the offline floor (which allowed): fail-safe, never fail-open.
+            return (offline_allowed, offline_reason)
+        provider_allowed, provider_reason = verdict
+        if provider_allowed:
+            return (offline_allowed, offline_reason)  # confirmed the offline allow
+        return (False, f"provider stage tightened · {provider_reason}".strip())
+
+    async def _consult(
+        self,
+        *,
+        action: str,
+        capability: CapabilityClass,
+        target: str,
+    ) -> Verdict | None:
+        """Consult the provider under a bounded timeout; None = degrade to offline.
+
+        Any failure -- exception, timeout, or a return value that is not a
+        well-formed ``(allowed, reason)`` verdict -- returns None so the caller
+        falls back to the offline floor. Catching :class:`Exception` (not
+        :class:`BaseException`) deliberately lets cooperative cancellation
+        (:class:`asyncio.CancelledError`) propagate rather than be swallowed.
+        """
+        evaluator = self._evaluator
+        if evaluator is None:  # pragma: no cover - guarded by the caller
+            return None
+        try:
+            verdict = await asyncio.wait_for(
+                evaluator.evaluate(action=action, capability=capability, target=target),
+                self._timeout_s,
+            )
+        except Exception:  # noqa: BLE001 — fail-safe: any provider failure degrades to the offline floor, never opens a gate
+            return None
+        return verdict if _is_verdict(verdict) else None
 
 
 class GovernanceHook:
@@ -575,6 +701,20 @@ def _tool_output(data: Mapping[str, Any]) -> object:
     return ""
 
 
+def _is_verdict(value: object) -> bool:
+    """True only for a well-formed ``(allowed: bool, reason: str)`` verdict.
+
+    A provider evaluator that returns anything else is treated as junk and
+    degrades to the offline floor (fail-safe) rather than being trusted.
+    """
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and isinstance(value[0], bool)
+        and isinstance(value[1], str)
+    )
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -587,5 +727,7 @@ __all__ = [
     "AutoClassifier",
     "GovernanceHook",
     "OfflineAutoClassifier",
+    "ProviderStageEvaluator",
+    "TwoStageAutoClassifier",
     "Verdict",
 ]
