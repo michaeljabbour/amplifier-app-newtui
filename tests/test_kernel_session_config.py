@@ -509,6 +509,65 @@ async def test_resolve_config_golden_path_offline(
     assert any(p.get("module") == "provider-anthropic" for p in providers)
 
 
+# A local bundle that already mounts a *sourceless* hooks-routing hook. No
+# ``source:`` ⇒ Bundle.prepare() never adds it to modules_to_activate and
+# never touches the network, so this exercises the settings→hook bridge that
+# resolve_config runs unconditionally (inject_routing_config) fully offline.
+ROUTING_LOCAL_BUNDLE = """---
+bundle:
+  name: routing-local
+  version: 0.0.1
+  description: offline bundle that already mounts a sourceless hooks-routing
+
+hooks:
+  - module: hooks-routing
+    config:
+      default_matrix: balanced
+---
+
+Test instruction body.
+"""
+
+
+@pytest.mark.asyncio
+async def test_resolve_config_bridges_routing_settings_into_mounted_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The golden path patches a mounted hooks-routing from settings.routing.
+
+    ``routing.enabled: false`` keeps this offline (no routing-matrix overlay
+    fetch) while ``routing.matrix`` / ``routing.overrides`` still drive the
+    bridge — proving inject_routing_config runs inside resolve_config and
+    lands on the hook the bundle mounted.
+    """
+    project = tmp_path / "proj"
+    home = tmp_path / "home"
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    _write(project / ".amplifier" / "bundles" / "routing-local.md", ROUTING_LOCAL_BUNDLE)
+    _write(
+        project / ".amplifier" / "settings.yaml",
+        "routing:\n"
+        "  enabled: false\n"
+        "  matrix: anthropic\n"
+        "  overrides:\n"
+        "    coding:\n"
+        "      candidates: []\n",
+    )
+    (home / "routing").mkdir(parents=True)
+
+    resolved = await resolve_config(
+        "routing-local", project_dir=project, amplifier_home=home, install_deps=False
+    )
+
+    # No overlay was composed — enabled:false suppressed the network fetch.
+    assert resolved.overlays == ()
+    hooks = resolved.mount_plan.get("hooks") or []
+    routing = next(h for h in hooks if h.get("module") == "hooks-routing")
+    assert routing["config"]["default_matrix"] == "anthropic"  # settings won
+    assert routing["config"]["overrides"] == {"coding": {"candidates": []}}
+    assert str(home / "routing") in routing["config"]["custom_routing_dirs"]
+
+
 CONTEXT_SIMPLE_BUNDLE = """---
 bundle:
   name: context-simple-default
@@ -650,9 +709,7 @@ def test_settings_bundle_falls_back_to_default_with_notice(tmp_path: Path) -> No
     from amplifier_app_newtui.kernel.config import resolve_bundle_source
 
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
-    name, uri, notice = resolve_bundle_source(
-        None, {"bundle": {"active": "missing-bundle"}}, paths
-    )
+    name, uri, notice = resolve_bundle_source(None, {"bundle": {"active": "missing-bundle"}}, paths)
     assert name == DEFAULT_BUNDLE
     assert uri.endswith("newtui.md")
     assert notice is not None and "missing-bundle" in notice and DEFAULT_BUNDLE in notice
