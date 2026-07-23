@@ -14,7 +14,9 @@ from amplifier_app_newtui.kernel import setup
 from amplifier_app_newtui.main import main
 
 _CHOICES = (
-    setup.ProviderChoice("provider-anthropic", "Anthropic", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"),
+    setup.ProviderChoice(
+        "provider-anthropic", "Anthropic", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"
+    ),
     setup.ProviderChoice("provider-openai", "OpenAI", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
 )
 
@@ -51,9 +53,7 @@ def test_init_help_lists_options() -> None:
 
 def test_init_writes_key_non_interactive(tmp_path: Path, monkeypatch) -> None:
     path, written = _stub(monkeypatch, tmp_path)
-    result = CliRunner().invoke(
-        main, ["init", "-p", "anthropic", "--api-key", "sk-test", "-y"]
-    )
+    result = CliRunner().invoke(main, ["init", "-p", "anthropic", "--api-key", "sk-test", "-y"])
     assert result.exit_code == 0
     assert setup.read_keys(path) == {"ANTHROPIC_API_KEY": "sk-test"}
     assert "wrote ANTHROPIC_API_KEY" in result.output

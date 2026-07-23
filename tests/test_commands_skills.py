@@ -21,9 +21,7 @@ def _skill(name: str, description: str = "", shortcut: str = "") -> SimpleNamesp
 
 def test_registers_skill_and_shortcut_rows() -> None:
     registry = build_registry()
-    added = register_skill_commands(
-        registry, (_skill("cranky-old-sam", "crusty review", "cosam"),)
-    )
+    added = register_skill_commands(registry, (_skill("cranky-old-sam", "crusty review", "cosam"),))
     assert [spec.name for spec in added] == ["/cranky-old-sam", "/cosam"]
     spec = registry.get("/cranky-old-sam")
     assert spec is not None and spec.tag == "skill"
@@ -35,9 +33,7 @@ def test_registers_skill_and_shortcut_rows() -> None:
 
 def test_parse_and_run_resolves_name_and_shortcut(fake_command_context) -> None:
     registry = build_registry()
-    register_skill_commands(
-        registry, (_skill("cranky-old-sam", "crusty review", "cosam"),)
-    )
+    register_skill_commands(registry, (_skill("cranky-old-sam", "crusty review", "cosam"),))
     assert registry.parse_and_run(fake_command_context, "/cranky-old-sam")
     assert registry.parse_and_run(fake_command_context, "/cosam")
     # Both routes invoke the skill exactly like ``/skill <name>`` does.
@@ -96,9 +92,7 @@ def test_skill_rows_are_skill_sourced_contributions() -> None:
     # 'skill'-sourced contributions, unregisterable as a group, distinct
     # from the seeded built-ins.
     registry = build_registry()
-    added = register_skill_commands(
-        registry, (_skill("cranky-old-sam", "crusty review", "cosam"),)
-    )
+    added = register_skill_commands(registry, (_skill("cranky-old-sam", "crusty review", "cosam"),))
     assert registry.contributions("skill") == added
     assert registry.source_of("/cosam") == "skill"
     assert registry.source_of("/mode") == "builtin"

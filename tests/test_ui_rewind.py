@@ -18,8 +18,20 @@ from amplifier_app_newtui.ui.rewind_strip import (
 from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 CHECKPOINTS = (
-    Checkpoint(id="t1", turn_id=1, message_index=4, cost_at=Decimal("0.18"), label="store refactor · shipped"),
-    Checkpoint(id="t2", turn_id=2, message_index=9, cost_at=Decimal("0.47"), label="auto run · shipped locally"),
+    Checkpoint(
+        id="t1",
+        turn_id=1,
+        message_index=4,
+        cost_at=Decimal("0.18"),
+        label="store refactor · shipped",
+    ),
+    Checkpoint(
+        id="t2",
+        turn_id=2,
+        message_index=9,
+        cost_at=Decimal("0.47"),
+        label="auto run · shipped locally",
+    ),
     Checkpoint(id="t3", turn_id=3, message_index=13, cost_at=Decimal("1.12"), label="plan ready"),
 )
 

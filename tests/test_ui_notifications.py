@@ -68,9 +68,7 @@ def test_notify_ceiling_off_bell_and_desktop() -> None:
 def test_attention_needed_defers_always_and_turns_after_threshold() -> None:
     assert attention_needed("decision_deferred", 0.0, environ={})
     assert not attention_needed("turn_finished", 0.0, environ={})
-    assert not attention_needed(
-        "turn_finished", ATTENTION_MIN_TURN_SECONDS - 0.1, environ={}
-    )
+    assert not attention_needed("turn_finished", ATTENTION_MIN_TURN_SECONDS - 0.1, environ={})
     assert attention_needed("turn_finished", ATTENTION_MIN_TURN_SECONDS, environ={})
 
 
@@ -112,7 +110,9 @@ def test_ladder_silent_when_no_attention_or_disabled() -> None:
     assert notification_rungs("turn_finished", 1.0, focused=False, environ=_KITTY) == ()
     assert (
         notification_rungs(
-            "decision_deferred", 0.0, focused=False,
+            "decision_deferred",
+            0.0,
+            focused=False,
             environ={**_KITTY, "AMPLIFIER_NOTIFY": "off"},
         )
         == ()
@@ -121,15 +121,14 @@ def test_ladder_silent_when_no_attention_or_disabled() -> None:
 
 def test_ladder_bell_only_when_focused() -> None:
     # Focused: the user is watching, a soft bell is enough (no desktop toast).
-    assert notification_rungs(
-        "decision_deferred", 0.0, focused=True, environ=_KITTY
-    ) == ("bell",)
+    assert notification_rungs("decision_deferred", 0.0, focused=True, environ=_KITTY) == ("bell",)
 
 
 def test_ladder_climbs_to_desktop_when_unfocused_on_capable_terminal() -> None:
-    assert notification_rungs(
-        "decision_deferred", 0.0, focused=False, environ=_KITTY
-    ) == ("bell", "desktop")
+    assert notification_rungs("decision_deferred", 0.0, focused=False, environ=_KITTY) == (
+        "bell",
+        "desktop",
+    )
     assert notification_rungs(
         "turn_finished", ATTENTION_MIN_TURN_SECONDS, focused=False, environ=_KITTY
     ) == ("bell", "desktop")
@@ -137,7 +136,9 @@ def test_ladder_climbs_to_desktop_when_unfocused_on_capable_terminal() -> None:
 
 def test_ladder_bell_cap_never_climbs_to_desktop() -> None:
     assert notification_rungs(
-        "decision_deferred", 0.0, focused=False,
+        "decision_deferred",
+        0.0,
+        focused=False,
         environ={**_KITTY, "AMPLIFIER_NOTIFY": "bell"},
     ) == ("bell",)
 
@@ -160,16 +161,14 @@ def test_osc777_sequence_strips_injection_and_bounds_fields() -> None:
     # A smuggled BEL/ESC + a second OSC must not survive into the payload:
     # the whole sequence carries exactly one ESC (its own opener) and one
     # BEL (its own terminator), so nothing can break out mid-notification.
-    seq = osc777_notification_sequence(
-        "Amp\x07\x1b work", "b" * 400 + "\nline\x1b\\rest"
-    )
+    seq = osc777_notification_sequence("Amp\x07\x1b work", "b" * 400 + "\nline\x1b\\rest")
     assert seq.startswith("\x1b]777;notify;")
     assert seq.endswith("\x07")
     assert seq.count("\x1b") == 1
     assert seq.count("\x07") == 1
-    title_field, _, body_field = seq.removeprefix("\x1b]777;notify;").removesuffix(
-        "\x07"
-    ).partition(";")
+    title_field, _, body_field = (
+        seq.removeprefix("\x1b]777;notify;").removesuffix("\x07").partition(";")
+    )
     assert "\n" not in body_field
     assert len(title_field) <= 80
     assert len(body_field) <= 240

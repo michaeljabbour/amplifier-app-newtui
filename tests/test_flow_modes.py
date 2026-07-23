@@ -100,6 +100,4 @@ async def test_plan_turn_read_only_block_and_handoff_to_build() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert app.mode_id == "build"
-        assert app.notice_slot.current == (
-            "mode build · auto read,test · ask write,net,spend"
-        )
+        assert app.notice_slot.current == ("mode build · auto read,test · ask write,net,spend")

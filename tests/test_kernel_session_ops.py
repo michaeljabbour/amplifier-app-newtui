@@ -49,9 +49,7 @@ class FakeCoordinator:
         self._mounts = mounts
         self.session_id = session_id
         self.config = config or {}
-        self.session_state: dict[str, object] = (
-            session_state if session_state is not None else {}
-        )
+        self.session_state: dict[str, object] = session_state if session_state is not None else {}
 
     def get(self, name):
         return self._mounts.get(name)
@@ -99,7 +97,9 @@ def test_set_model_picks_the_provider_that_advertises_the_model() -> None:
 
 
 def test_set_model_empty_and_no_provider_fail_cleanly() -> None:
-    assert asyncio.run(session_ops.set_model(_coord(providers={"a": FakeProvider()}), ""))[0] is False
+    assert (
+        asyncio.run(session_ops.set_model(_coord(providers={"a": FakeProvider()}), ""))[0] is False
+    )
     assert asyncio.run(session_ops.set_model(_coord(), "m2"))[0] is False
 
 
@@ -214,12 +214,19 @@ class FakeSkillsTool:
     async def execute(self, payload):
         self.calls.append(payload)
         if payload.get("list"):
-            return FakeResult(True, {"skills": [
-                {"name": "design-patterns", "description": "SOLID etc."},
-                {"name": "simplify", "description": "cut cruft"},
-            ]})
+            return FakeResult(
+                True,
+                {
+                    "skills": [
+                        {"name": "design-patterns", "description": "SOLID etc."},
+                        {"name": "simplify", "description": "cut cruft"},
+                    ]
+                },
+            )
         if payload.get("skill_name") == "design-patterns":
-            return FakeResult(True, {"content": "# design-patterns\n\nbody", "skill_name": "design-patterns"})
+            return FakeResult(
+                True, {"content": "# design-patterns\n\nbody", "skill_name": "design-patterns"}
+            )
         return FakeResult(False, error={"message": "Skill 'x' not found"})
 
 
@@ -244,9 +251,7 @@ class FakeCatalogSkillsTool(FakeSkillsTool):
     def get_effective_skills(self):
         return {
             "simplify": SimpleNamespace(description="cut cruft", shortcut=None),
-            "cranky-old-sam": SimpleNamespace(
-                description="crusty review", shortcut="cosam"
-            ),
+            "cranky-old-sam": SimpleNamespace(description="crusty review", shortcut="cosam"),
         }
 
 
@@ -282,11 +287,13 @@ def test_load_skill_not_found_and_empty_name() -> None:
 
 
 def test_list_mcp_tools_filters_prefix() -> None:
-    coord = _coord(tools={
-        "read": object(),
-        "mcp_postgres_query": object(),
-        "mcp_deepwiki_search": object(),
-    })
+    coord = _coord(
+        tools={
+            "read": object(),
+            "mcp_postgres_query": object(),
+            "mcp_deepwiki_search": object(),
+        }
+    )
     assert asyncio.run(session_ops.list_mcp_tools(coord)) == (
         "mcp_deepwiki_search",
         "mcp_postgres_query",

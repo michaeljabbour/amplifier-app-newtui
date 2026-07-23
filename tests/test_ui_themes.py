@@ -169,6 +169,4 @@ async def test_theme_switch_at_runtime_via_command() -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert app.theme == theme_id("carbon")
-        assert app.notice_slot.current == (
-            "unknown theme · neon · themes: slate, graphite, carbon"
-        )
+        assert app.notice_slot.current == ("unknown theme · neon · themes: slate, graphite, carbon")

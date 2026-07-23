@@ -134,9 +134,7 @@ class FooterApp(App[None]):
     def compose(self) -> ComposeResult:
         yield FooterBar(id="footer")
 
-    def on_footer_bar_waiting_badge_clicked(
-        self, message: FooterBar.WaitingBadgeClicked
-    ) -> None:
+    def on_footer_bar_waiting_badge_clicked(self, message: FooterBar.WaitingBadgeClicked) -> None:
         self.messages.append(message)
 
 
@@ -154,12 +152,8 @@ async def test_footer_renders_left_and_right_segments() -> None:
         bar = app.query_one("#footer", FooterBar)
         bar.update_state(FULL_STATE)
         await pilot.pause()
-        assert _plain(app.query_one("#footer-left", Static)) == footer_left_text(
-            FULL_STATE
-        )
-        assert _plain(app.query_one("#footer-right", Static)) == footer_right_text(
-            FULL_STATE
-        )
+        assert _plain(app.query_one("#footer-left", Static)) == footer_left_text(FULL_STATE)
+        assert _plain(app.query_one("#footer-right", Static)) == footer_right_text(FULL_STATE)
 
 
 @pytest.mark.asyncio

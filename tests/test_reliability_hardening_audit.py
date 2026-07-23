@@ -85,14 +85,12 @@ async def test_cleanup_failure_is_logged_not_silent(
         async def cleanup(self) -> None:
             raise RuntimeError("teardown boom")
 
-    with caplog.at_level(
-        logging.DEBUG, logger="amplifier_app_newtui.ui.runtime_adapter"
-    ):
+    with caplog.at_level(logging.DEBUG, logger="amplifier_app_newtui.ui.runtime_adapter"):
         await adapter._safe_cleanup(_BoomRuntime())
 
-    assert any(
-        "cleanup failed" in record.getMessage() for record in caplog.records
-    ), "cleanup crash must leave a debug-level trace, not vanish"
+    assert any("cleanup failed" in record.getMessage() for record in caplog.records), (
+        "cleanup crash must leave a debug-level trace, not vanish"
+    )
 
 
 # -- Item 3: queue races (one lock per queue) -------------------------------
@@ -176,9 +174,7 @@ def test_transcript_recovery_failed_on_corrupt_main_and_backup(tmp_path: Path) -
     store = SessionStore(base_dir=tmp_path / "sessions")
     session_dir = _session_dir(store, "s1")
     (session_dir / TRANSCRIPT_FILENAME).write_text("{ not json", encoding="utf-8")
-    (session_dir / (TRANSCRIPT_FILENAME + ".backup")).write_text(
-        "also broken", encoding="utf-8"
-    )
+    (session_dir / (TRANSCRIPT_FILENAME + ".backup")).write_text("also broken", encoding="utf-8")
 
     transcript, _metadata = store.load("s1")
 
@@ -231,9 +227,7 @@ def test_malformed_settings_scope_is_reported(tmp_path: Path) -> None:
     bad = tmp_path / "project.yaml"
     bad.write_text("key: [1, 2\n", encoding="utf-8")  # unterminated flow → parse error
     missing = tmp_path / "local.yaml"
-    paths = SettingsPaths(
-        global_settings=good, project_settings=bad, local_settings=missing
-    )
+    paths = SettingsPaths(global_settings=good, project_settings=bad, local_settings=missing)
 
     merged, malformed = load_merged_settings_reporting(paths)
 

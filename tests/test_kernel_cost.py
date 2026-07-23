@@ -258,7 +258,9 @@ def test_restore_from_legacy_only_session_dir(tmp_path: Path) -> None:
 
     store = SessionStore(base_dir=tmp_path / "sessions")
     store.session_dir("s1").mkdir(parents=True)
-    usage = ProviderResponseUsage(session_id="s1", model="claude-sonnet-4", cost_usd=Decimal("0.42"))
+    usage = ProviderResponseUsage(
+        session_id="s1", model="claude-sonnet-4", cost_usd=Decimal("0.42")
+    )
     (store.session_dir("s1") / LEGACY_EVENTS_FILENAME).write_text(
         '{"ts": "2026-07-21T00:00:00Z", "event": "provider:response", "data": {}}\n'
         + json.dumps(usage.model_dump(mode="json"))

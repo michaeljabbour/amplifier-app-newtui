@@ -46,9 +46,7 @@ class ComposerApp(App[None]):
     def on_composer_open_palette(self, message: Composer.OpenPalette) -> None:
         self.messages.append(message)
 
-    def on_composer_palette_filter_cleared(
-        self, message: Composer.PaletteFilterCleared
-    ) -> None:
+    def on_composer_palette_filter_cleared(self, message: Composer.PaletteFilterCleared) -> None:
         self.messages.append(message)
 
     def on_file_mention_intent(self, message: FileMentionIntent) -> None:
@@ -57,9 +55,7 @@ class ComposerApp(App[None]):
     def on_composer_esc_pressed(self, message: Composer.EscPressed) -> None:
         self.messages.append(message)
 
-    def on_composer_cycle_mode_requested(
-        self, message: Composer.CycleModeRequested
-    ) -> None:
+    def on_composer_cycle_mode_requested(self, message: Composer.CycleModeRequested) -> None:
         self.messages.append(message)
 
 
@@ -74,8 +70,7 @@ def test_placeholder_is_exact_spec_string() -> None:
     composer_input = ComposerInput()
     assert composer_input.placeholder == COMPOSER_PLACEHOLDER
     assert COMPOSER_PLACEHOLDER == (
-        "Message Amplifier…  "
-        "( ↑ history · ctrl+j newline · enter send · / commands )"
+        "Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )"
     )
 
 
@@ -195,11 +190,7 @@ async def test_file_mention_posts_filter_and_intercepts_navigation() -> None:
     async with app.run_test() as pilot:
         await pilot.press("@", "s", "r", "c")
         await pilot.pause()
-        filters = [
-            message
-            for message in _of(app, FileMentionIntent)
-            if message.action == "filter"
-        ]
+        filters = [message for message in _of(app, FileMentionIntent) if message.action == "filter"]
         assert [message.query for message in filters] == ["", "s", "sr", "src"]
 
         composer = app.query_one(Composer)
@@ -452,8 +443,20 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
         await pilot.pause(0.4)
 
         def ev(cls, x: int, y: int):
-            return cls(widget=None, x=x, y=y, delta_x=0, delta_y=0, button=1,
-                       shift=False, meta=False, ctrl=False, screen_x=x, screen_y=y, style="")
+            return cls(
+                widget=None,
+                x=x,
+                y=y,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=x,
+                screen_y=y,
+                style="",
+            )
 
         app.screen._forward_event(ev(MouseDown, 10, 8))
         await pilot.pause()
@@ -503,8 +506,20 @@ async def test_settled_drag_selection_copies_automatically() -> None:
         await pilot.pause(0.4)
 
         def ev(cls, x: int, y: int):
-            return cls(widget=None, x=x, y=y, delta_x=0, delta_y=0, button=1,
-                       shift=False, meta=False, ctrl=False, screen_x=x, screen_y=y, style="")
+            return cls(
+                widget=None,
+                x=x,
+                y=y,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=x,
+                screen_y=y,
+                style="",
+            )
 
         app.screen._forward_event(ev(MouseDown, 10, 8))
         await pilot.pause()

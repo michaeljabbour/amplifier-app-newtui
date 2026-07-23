@@ -56,7 +56,9 @@ def _stub(monkeypatch, statuses, *, cleaned=None, applied=None):
 
     monkeypatch.setattr(updater, "check_bundles", _check)
     monkeypatch.setattr(updater, "update_bundles", _apply)
-    monkeypatch.setattr(updater, "uv_cache_clean", lambda: (cleaned.append(True) if cleaned is not None else True))
+    monkeypatch.setattr(
+        updater, "uv_cache_clean", lambda: cleaned.append(True) if cleaned is not None else True
+    )
 
 
 def test_update_all_up_to_date(monkeypatch) -> None:

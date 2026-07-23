@@ -169,9 +169,7 @@ def test_denial_log_escalates_at_twenty_total() -> None:
     escalations: list[tuple[str, ...]] = []
     for i in range(20):
         log.record_non_denial()  # keep the consecutive streak at 1
-        record = log.record_denial(
-            capability=CapabilityClass.NET, action=f"fetch{i}", reason="r"
-        )
+        record = log.record_denial(capability=CapabilityClass.NET, action=f"fetch{i}", reason="r")
         escalations.append(record.escalation_reasons)
     assert escalations[-1] == ("20 total denials",)
     assert all(not reasons for reasons in escalations[:-1])

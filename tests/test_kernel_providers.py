@@ -61,10 +61,14 @@ def test_configured_providers_marks_primary_by_priority(tmp_path: Path) -> None:
 def test_configured_providers_local_scope_shadows_global(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     setup.write_provider_config(
-        paths, "global", setup.provider_config_entry("provider-anthropic", key_var="ANTHROPIC_API_KEY")
+        paths,
+        "global",
+        setup.provider_config_entry("provider-anthropic", key_var="ANTHROPIC_API_KEY"),
     )
     setup.write_provider_config(
-        paths, "local", setup.provider_config_entry("provider-anthropic", key_var="ANTHROPIC_API_KEY")
+        paths,
+        "local",
+        setup.provider_config_entry("provider-anthropic", key_var="ANTHROPIC_API_KEY"),
     )
     providers = setup.configured_providers(tmp_path / "proj", tmp_path / "home")
     assert len(providers) == 1  # merged by identity key

@@ -84,7 +84,12 @@ def _full_coord() -> FakeCoordinator:
         providers={"anthropic": FakeProvider("m1", ("m1", "m2", "m3"))},
         orchestrator=SimpleNamespace(config={"reasoning_effort": "high"}),
         context=FakeContext([{"role": "user"}, {"role": "assistant"}]),
-        tools={"read": object(), "write": object(), "mcp_srv_do": object(), "load_skill": FakeSkillsTool()},
+        tools={
+            "read": object(),
+            "write": object(),
+            "mcp_srv_do": object(),
+            "load_skill": FakeSkillsTool(),
+        },
         agents={"explorer": object()},
     )
 
@@ -111,7 +116,9 @@ NONE_GUARDS: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
 )
 
 
-@pytest.mark.parametrize(("method", "args", "expected"), NONE_GUARDS, ids=[c[0] for c in NONE_GUARDS])
+@pytest.mark.parametrize(
+    ("method", "args", "expected"), NONE_GUARDS, ids=[c[0] for c in NONE_GUARDS]
+)
 def test_wrapper_is_neutral_before_the_session_exists(
     method: str, args: tuple[Any, ...], expected: Any
 ) -> None:

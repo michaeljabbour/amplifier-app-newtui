@@ -74,4 +74,3 @@ async def test_interrupt_appends_marker_before_end_of_turn_save() -> None:
     assert context.messages == [marker]
     assert runtime._saver.saved_messages == [marker]
     assert restored_history(context.messages) == ()
-

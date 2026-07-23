@@ -152,9 +152,7 @@ def test_destination_secret_expands_from_env(monkeypatch) -> None:
     monkeypatch.setenv("CI_TEAM_KEY", "resolved-secret")
     plan = _plan_with_hook()
     settings = {
-        "telemetry": {
-            "destinations": {"team": {"url": "https://ci", "api_key": "${CI_TEAM_KEY}"}}
-        }
+        "telemetry": {"destinations": {"team": {"url": "https://ci", "api_key": "${CI_TEAM_KEY}"}}}
     }
     inject_telemetry_config(plan, settings)
     expand_env_placeholders(plan)

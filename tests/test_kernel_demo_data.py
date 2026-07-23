@@ -64,11 +64,21 @@ def test_label_helpers_match_mockup_formatting() -> None:
 
 def test_turn_order_and_checkpoint_ids() -> None:
     assert [t.key for t in DEMO_TURNS] == [
-        "seed", "build", "auto", "plan", "brainstorm", "agents",
+        "seed",
+        "build",
+        "auto",
+        "plan",
+        "brainstorm",
+        "agents",
     ]
     assert [t.checkpoint_id for t in DEMO_TURNS] == ["t1", "t2", "t3", "t4", "t5", "t6"]
     assert [t.mode for t in DEMO_TURNS] == [
-        "chat", "chat", "auto", "plan", "brainstorm", "build",
+        "chat",
+        "chat",
+        "auto",
+        "plan",
+        "brainstorm",
+        "build",
     ]
 
 
@@ -110,9 +120,7 @@ def test_recaps_and_notices_verbatim() -> None:
     assert by_key["auto"].recap == (
         "Goal: durable session store. Next: answer the deferred push decision (ctrl-y)."
     )
-    assert by_key["plan"].recap == (
-        "Plan ready. shift+tab to build hands it over for execution."
-    )
+    assert by_key["plan"].recap == ("Plan ready. shift+tab to build hands it over for execution.")
     assert by_key["brainstorm"].recap == "Converge with /plan when one of these sticks."
     assert by_key["build"].end_notice == "agents 1 done"
     assert by_key["auto"].end_notice is None
@@ -148,7 +156,9 @@ def test_lane_panel_lines_verbatim() -> None:
         "  ✔ tester     · done · tests ✔         · 55s    · ↓ 3.2k tokens   · $0.07",
     ]
     assert [(lane.glyph, lane.color_token) for lane in DEMO_LANES] == [
-        ("◐", "teal"), ("■", "fg"), ("✔", "dim"),
+        ("◐", "teal"),
+        ("■", "fg"),
+        ("✔", "dim"),
     ]
 
 
@@ -156,7 +166,9 @@ def test_lane_completion_times() -> None:
     # tree_spawn/tree_done retired with the transcript tree lines — the
     # delegate summary + lanes panel carry this data now.
     assert [(lane.name, lane.done_at_ms) for lane in DEMO_LANES] == [
-        ("researcher", 4_400), ("coder", 6_000), ("tester", 2_600),
+        ("researcher", 4_400),
+        ("coder", 6_000),
+        ("tester", 2_600),
     ]
 
 
@@ -167,8 +179,10 @@ def test_lane_focus_transcript_data() -> None:
     )
     assert researcher.state_recap == "running · 41s · $0.09"
     assert [(row.kind, row.text) for row in researcher.log] == [
-        ("narration", "Fetching the provider capability matrix and diffing it "
-                      "against runtime calls."),
+        (
+            "narration",
+            "Fetching the provider capability matrix and diffing it against runtime calls.",
+        ),
         ("tool", "Ran 3 web_fetch calls"),
         ("command", 'grep -rn "capabilities" providers/ | head -20'),
         ("narration", "Two undocumented streaming flags found; verifying against the SDK."),
@@ -212,6 +226,5 @@ def test_deferred_decision_verbatim() -> None:
     )
     assert DEMO_DEFERRED_DECISION.chip_label == "yes · push to fork"
     assert DEMO_DEFERRED_DECISION.applied_narration == (
-        "Applying decision: pushing to fork mj/waypoint. "
-        "Trust-slot suggestion queued for /improve."
+        "Applying decision: pushing to fork mj/waypoint. Trust-slot suggestion queued for /improve."
     )

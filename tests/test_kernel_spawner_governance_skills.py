@@ -41,7 +41,9 @@ class HookBus:
         bucket.sort(key=lambda item: -item[0])
 
         def unregister() -> None:
-            self.handlers[event] = [(p, h) for (p, h) in self.handlers.get(event, ()) if h is not handler]
+            self.handlers[event] = [
+                (p, h) for (p, h) in self.handlers.get(event, ()) if h is not handler
+            ]
 
         return unregister
 
@@ -190,7 +192,9 @@ async def test_gated_posture_blocks_same_action_in_lane_as_root() -> None:
     # Root: plan denies a write.
     root_hooks = HookBus()
     governance.register_hooks(root_hooks)
-    root_results = await root_hooks.emit("tool:pre", {"tool_name": "write_file", "tool_input": {"file_path": "/repo/a.py"}})
+    root_results = await root_hooks.emit(
+        "tool:pre", {"tool_name": "write_file", "tool_input": {"file_path": "/repo/a.py"}}
+    )
     assert _actions(root_results) == ["deny"]
 
     # Lane: the same posture reaches the child through the spawner.
@@ -268,7 +272,9 @@ async def test_runtime_skill_overlay_is_copied_not_shared() -> None:
     parent.coordinator.register_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY, overlay)
     await spawner.spawn("scout", "go", parent)
     overlay.append("skill-mutated-later")
-    assert created[0].coordinator.get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY) == ["skill-alpha"]
+    assert created[0].coordinator.get_capability(RUNTIME_SKILL_OVERLAY_CAPABILITY) == [
+        "skill-alpha"
+    ]
 
 
 @pytest.mark.asyncio

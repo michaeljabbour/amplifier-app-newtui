@@ -87,9 +87,7 @@ def spawn(reducer: TranscriptReducer, sub: str, name: str) -> None:
     )
 
 
-def delta(
-    reducer: TranscriptReducer, sub: str, text: str, *, block_type: str = "text"
-) -> None:
+def delta(reducer: TranscriptReducer, sub: str, text: str, *, block_type: str = "text") -> None:
     reducer.handle(
         ev.StreamBlockDelta(
             session_id=sub,
@@ -170,9 +168,7 @@ def test_root_stream_preempts_clears_and_suppresses_the_tail() -> None:
     delta(reducer, CHILD_A, " while root streams")  # buffered, never painted
     assert host.tail_updates == ["child text"]
     reducer.handle(
-        ev.StreamBlockEnd(
-            session_id=ROOT, request_id="req-root", block_index=0, block_type="text"
-        )
+        ev.StreamBlockEnd(session_id=ROOT, request_id="req-root", block_index=0, block_type="text")
     )
     clock.now += LANE_TAIL_NOTIFY_SECONDS
     delta(reducer, CHILD_A, ", resumes")

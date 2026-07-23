@@ -63,7 +63,7 @@ def resolve_forge() -> Path | None:
 
 
 def _control_byte(letter: str) -> str:
-    r""""o" -> "\x0f" (ctrl+o); "t" -> "\x14" (ctrl+t)."""
+    r""" "o" -> "\x0f" (ctrl+o); "t" -> "\x14" (ctrl+t)."""
     if len(letter) != 1 or not letter.isalpha():
         raise ValueError(f"expected a single letter, got {letter!r}")
     return chr(ord(letter.lower()) - ord("a") + 1)

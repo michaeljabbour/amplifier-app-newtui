@@ -17,6 +17,7 @@ Commands (stdlib only, never raises for the pipeline's tool nodes):
   sort                  rewrite file: new first, then implemented, then acknowledged
   add <issue> <slug>    append a new row (idempotent on issue)
 """
+
 from __future__ import annotations
 
 import sys

@@ -105,14 +105,42 @@ def test_seed_sequence() -> None:
 
 _BUILD_KINDS = (
     ["prompt_submit", "execution_start"]
-    + PLAN + TODO  # plan seeded: all pending
+    + PLAN
+    + TODO  # plan seeded: all pending
     # step 0
-    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+    + PLAN
+    + TODO
+    + TEXT
+    + U
+    + ["tool_pre"]
+    + U
+    + ["tool_post"]
+    + PLAN
+    + TODO
+    + U
     # step 1 — chat-mode pytest approval
-    + PLAN + TODO + TEXT + U + ["approval_required", "approval_granted"]
-    + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+    + PLAN
+    + TODO
+    + TEXT
+    + U
+    + ["approval_required", "approval_granted"]
+    + ["tool_pre"]
+    + U
+    + ["tool_post"]
+    + PLAN
+    + TODO
+    + U
     # step 2
-    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
+    + PLAN
+    + TODO
+    + TEXT
+    + U
+    + ["tool_pre"]
+    + U
+    + ["tool_post"]
+    + PLAN
+    + TODO
+    + U
     + TEXT  # answer
     + TEXT  # recap
     + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
@@ -218,11 +246,37 @@ def test_build_turn_deny_path() -> None:
     runtime, events = play("run_build_turn", approver=deny)
     expected = (
         ["prompt_submit", "execution_start"]
-        + PLAN + TODO
-        + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
-        + PLAN + TODO + TEXT + U + ["approval_required", "approval_denied"] + PLAN + TODO
-        + PLAN + TODO + TEXT + U + ["tool_pre"] + U + U + ["tool_post"] + PLAN + TODO
-        + TEXT + TEXT
+        + PLAN
+        + TODO
+        + PLAN
+        + TODO
+        + TEXT
+        + U
+        + ["tool_pre"]
+        + U
+        + ["tool_post"]
+        + PLAN
+        + TODO
+        + U
+        + PLAN
+        + TODO
+        + TEXT
+        + U
+        + ["approval_required", "approval_denied"]
+        + PLAN
+        + TODO
+        + PLAN
+        + TODO
+        + TEXT
+        + U
+        + ["tool_pre"]
+        + U
+        + U
+        + ["tool_post"]
+        + PLAN
+        + TODO
+        + TEXT
+        + TEXT
         + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
     )
     assert kinds(events) == expected
@@ -246,15 +300,42 @@ def test_build_turn_deny_path() -> None:
 
 _AUTO_KINDS = (
     ["notification", "prompt_submit", "execution_start"]
-    + PLAN + TODO
-    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
-    + PLAN + TODO + TEXT + U + ["tool_pre"] + U + ["tool_post"] + PLAN + TODO + U
-    + PLAN + TODO + TEXT + U
-    + ["tool_pre"] + U + ["tool_post", "approval_denied"] + U
+    + PLAN
+    + TODO
+    + PLAN
+    + TODO
+    + TEXT
+    + U
+    + ["tool_pre"]
+    + U
+    + ["tool_post"]
+    + PLAN
+    + TODO
+    + U
+    + PLAN
+    + TODO
+    + TEXT
+    + U
+    + ["tool_pre"]
+    + U
+    + ["tool_post"]
+    + PLAN
+    + TODO
+    + U
+    + PLAN
+    + TODO
+    + TEXT
+    + U
+    + ["tool_pre"]
+    + U
+    + ["tool_post", "approval_denied"]
+    + U
     + TEXT  # defer narration
     + ["notification"]  # decision deferred to needs-you
-    + PLAN + TODO
-    + TEXT + TEXT
+    + PLAN
+    + TODO
+    + TEXT
+    + TEXT
     + ["orchestrator_complete", "execution_end", "prompt_complete"]  # no end notice
 )
 
@@ -303,10 +384,18 @@ def test_plan_turn_sequence() -> None:
     assert kinds(events) == (
         ["notification", "prompt_submit", "execution_start"]
         + TEXT
-        + PLAN + PLAN + PLAN + PLAN
+        + PLAN
+        + PLAN
+        + PLAN
+        + PLAN
         + TEXT
-        + ["provider_response_usage", "orchestrator_complete", "execution_end",
-           "prompt_complete", "notification"]
+        + [
+            "provider_response_usage",
+            "orchestrator_complete",
+            "execution_end",
+            "prompt_complete",
+            "notification",
+        ]
     )
     assert runtime.clock == 3.6
     assert events[0].message == "mode plan · read-only"
@@ -333,9 +422,13 @@ def test_brainstorm_turn_sequence() -> None:
     runtime, events = play("run_brainstorm_turn")
     assert kinds(events) == (
         ["notification", "prompt_submit", "execution_start"]
-        + TEXT + TEXT + TEXT + TEXT + TEXT + TEXT
-        + ["provider_response_usage", "orchestrator_complete", "execution_end",
-           "prompt_complete"]
+        + TEXT
+        + TEXT
+        + TEXT
+        + TEXT
+        + TEXT
+        + TEXT
+        + ["provider_response_usage", "orchestrator_complete", "execution_end", "prompt_complete"]
     )
     assert runtime.clock == 3.0
     # No tools in brainstorm — spec §4 trust string is literal.
@@ -368,9 +461,18 @@ def test_agents_turn_sequence() -> None:
         + _child_stream(2)  # researcher: 2 narration rows
         + _child_stream(2)  # coder: 2 narration rows
         + _child_stream(1)  # tester: 1 answer row
-        + U + U + ["agent_completed"] + TODO  # tester at 2.6s
-        + U + U + ["agent_completed"] + TODO  # researcher at 4.4s
-        + U + U + ["agent_completed"] + TODO  # coder at 6.0s
+        + U
+        + U
+        + ["agent_completed"]
+        + TODO  # tester at 2.6s
+        + U
+        + U
+        + ["agent_completed"]
+        + TODO  # researcher at 4.4s
+        + U
+        + U
+        + ["agent_completed"]
+        + TODO  # coder at 6.0s
         + TEXT
         + ["orchestrator_complete", "execution_end", "prompt_complete", "notification"]
     )
@@ -430,8 +532,10 @@ def test_run_all_lifecycle_and_determinism() -> None:
     assert events[0].kind == "session_start"
     assert events[-1].kind == "session_end"
     prompts = [e.prompt for e in events if e.kind == "prompt_submit"]
-    assert prompts == [DEMO_TURN_BY_KEY[k].prompt for k in
-                       ("seed", "build", "auto", "plan", "brainstorm", "agents")]
+    assert prompts == [
+        DEMO_TURN_BY_KEY[k].prompt
+        for k in ("seed", "build", "auto", "plan", "brainstorm", "agents")
+    ]
     # Deterministic envelope: unique monotonic ids, monotonic virtual ts.
     ids = [e.event_id for e in events]
     assert len(set(ids)) == len(ids)

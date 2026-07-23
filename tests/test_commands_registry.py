@@ -60,9 +60,7 @@ def test_name_must_be_slash_trigger() -> None:
 
 
 def test_filter_rows_substring_semantics() -> None:
-    registry = CommandRegistry(
-        (_spec("/rewind", "Between"), _spec("/brainstorm"), _spec("/mode"))
-    )
+    registry = CommandRegistry((_spec("/rewind", "Between"), _spec("/brainstorm"), _spec("/mode")))
     # "/" and empty show everything, in registration order.
     assert registry.filter_rows("/") == registry.specs
     assert registry.filter_rows("") == registry.specs
@@ -170,9 +168,7 @@ def test_future_sources_register_without_registry_changes(fake_command_context) 
     # Acceptance: recipe/pipeline verbs must be registerable later with no
     # further registry changes — open source label, open display tag.
     registry = CommandRegistry((_spec("/mode"),))
-    assert registry.register(
-        _spec("/recipe-approve", "Parallel", tag="recipe"), source="recipe"
-    )
+    assert registry.register(_spec("/recipe-approve", "Parallel", tag="recipe"), source="recipe")
     assert registry.register(
         _spec("/pipeline-status", "Parallel", tag="pipeline"), source="pipeline"
     )

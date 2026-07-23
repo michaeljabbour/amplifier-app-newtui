@@ -94,9 +94,7 @@ class Harness(App[None]):
     def on_close_evidence(self, message: CloseEvidence) -> None:
         self.closed_evidence.append(message)
 
-    def on_needs_you_list_decision_taken(
-        self, message: NeedsYouList.DecisionTaken
-    ) -> None:
+    def on_needs_you_list_decision_taken(self, message: NeedsYouList.DecisionTaken) -> None:
         self.decisions.append(message)
 
 
@@ -407,9 +405,7 @@ async def test_working_status_widget_pulses_spinner() -> None:
         view = _view(app)
         widget = _mounted(
             view,
-            WorkingStatus(
-                id="b1", telemetry=TurnTelemetry(secs=1, tokens_down=100), agent_count=0
-            ),
+            WorkingStatus(id="b1", telemetry=TurnTelemetry(secs=1, tokens_down=100), agent_count=0),
         )
         await pilot.pause(SPINNER_INTERVAL_SECONDS + 0.2)  # > one 1s glyph interval
         assert widget._spinner_offset >= 1
@@ -477,9 +473,7 @@ async def test_archived_history_retains_answer_rewind_evidence_and_decisions() -
                 evidence_refs=(link,),
             )
         )
-        view.append(
-            TurnRule(id="old-turn", checkpoint_id="checkpoint-7", label="7s · answer")
-        )
+        view.append(TurnRule(id="old-turn", checkpoint_id="checkpoint-7", label="7s · answer"))
         view.append(EvidenceBlock(id="old-evidence", links=(link,)))
         view.append(
             NeedsYouBlock(

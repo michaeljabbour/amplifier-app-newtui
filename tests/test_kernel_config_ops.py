@@ -43,9 +43,7 @@ def test_save_writes_global_scope_under_configurator_key(tmp_path: Path) -> None
     state.toggle("tools", "bash", enable=False)
     state.set_value("session.reasoning_effort", "high")
 
-    ok, message = config_ops.save_config(
-        state, scope="global", project_dir=tmp_path, home=tmp_path
-    )
+    ok, message = config_ops.save_config(state, scope="global", project_dir=tmp_path, home=tmp_path)
     assert ok and "global scope" in message
     target = tmp_path / "settings.yaml"
     assert target.is_file()
@@ -61,9 +59,7 @@ def test_save_project_scope_targets_project_amplifier_dir(tmp_path: Path) -> Non
 
     state = SessionConfigState([ConfigItem("tools", "bash", True)], bundle="b")
     state.toggle("tools", "bash", enable=False)
-    ok, _ = config_ops.save_config(
-        state, scope="project", project_dir=tmp_path, home=tmp_path
-    )
+    ok, _ = config_ops.save_config(state, scope="project", project_dir=tmp_path, home=tmp_path)
     assert ok
     assert (tmp_path / ".amplifier" / "settings.yaml").is_file()
 
@@ -84,13 +80,9 @@ def test_save_preserves_unrelated_existing_settings(tmp_path: Path) -> None:
 
 def test_save_with_no_changes_drops_stale_configurator_block(tmp_path: Path) -> None:
     target = tmp_path / "settings.yaml"
-    target.write_text(
-        yaml.safe_dump({"configurator": {"disabled": {"tools": ["old"]}}})
-    )
+    target.write_text(yaml.safe_dump({"configurator": {"disabled": {"tools": ["old"]}}}))
     state = SessionConfigState(bundle="b")  # no session changes
-    ok, message = config_ops.save_config(
-        state, scope="global", project_dir=tmp_path, home=tmp_path
-    )
+    ok, message = config_ops.save_config(state, scope="global", project_dir=tmp_path, home=tmp_path)
     assert ok and "no session changes" in message
     data = yaml.safe_load(target.read_text()) or {} if target.exists() else {}
     assert "configurator" not in data

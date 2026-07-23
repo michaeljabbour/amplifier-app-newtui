@@ -32,9 +32,7 @@ COMPOSER_ANCHOR = "Message"
 COLS, ROWS = 120, 40
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Auto-mark everything under ``tests/forge/`` as ``forge``.
 
     Belt-and-suspenders so no capability test can ever leak into the
@@ -74,9 +72,7 @@ def newtui_binary() -> Path:
 
 
 @pytest.fixture
-def demo_session(
-    forge_client: ForgeClient, newtui_binary: Path
-) -> Iterator[ForgeSession]:
+def demo_session(forge_client: ForgeClient, newtui_binary: Path) -> Iterator[ForgeSession]:
     """A freshly booted ``amplifier-newtui --demo`` PTY at a fixed size.
 
     Function-scoped so each capability test gets a clean turn state (the

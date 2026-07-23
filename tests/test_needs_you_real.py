@@ -68,7 +68,6 @@ def test_deferral_highlight_degrades_to_empty() -> None:
 # ---------------------------------------------------------------------------
 
 
-
 @pytest.mark.asyncio
 async def test_classifier_deferral_carries_highlight_and_action() -> None:
     class AlwaysDeny:
@@ -161,8 +160,7 @@ def test_real_adapter_resolves_deferred_decision_by_id() -> None:
 def test_real_adapter_narration_names_the_action() -> None:
     adapter = RealRuntimeAdapter(bundle="x")
     assert (
-        adapter.decision_narration(ALLOW_ONCE, PUSH)
-        == f"Applying decision: {ALLOW_ONCE} · {PUSH}"
+        adapter.decision_narration(ALLOW_ONCE, PUSH) == f"Applying decision: {ALLOW_ONCE} · {PUSH}"
     )
     assert adapter.decision_narration(ALLOW_ONCE) == f"Applying decision: {ALLOW_ONCE}"
 

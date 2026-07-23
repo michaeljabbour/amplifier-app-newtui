@@ -147,9 +147,7 @@ def test_respawn_resets_the_lane_transcript() -> None:
     reducer, _host = make_reducer()
     _start_and_delegate(reducer, "researcher", "s1", "first brief")
     reducer.handle(
-        ev.ContentBlockEnd(
-            **_child_env("s1", 2.0), block_type="text", block={"text": "old work"}
-        )
+        ev.ContentBlockEnd(**_child_env("s1", 2.0), block_type="text", block={"text": "old work"})
     )
     # Replayed turn reuses the sub-session id (the lanes.register reopen
     # rule) — the focus transcript must restart with it.

@@ -226,9 +226,7 @@ async def test_lane_tail_streams_mid_fanout_then_clears() -> None:
         assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
         assert not app.lanes_panel.has_lane_tail  # root answer preempted, then turn ended
         # Ephemeral: child prose never became a transcript block.
-        assert not any(
-            "undocumented streaming flags" in text for text in line_texts(app)
-        )
+        assert not any("undocumented streaming flags" in text for text in line_texts(app))
 
 
 @pytest.mark.asyncio

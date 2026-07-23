@@ -62,9 +62,7 @@ def test_run_reads_stdin_and_prints_text(monkeypatch) -> None:
 
 def test_json_stdout_is_one_parseable_document(monkeypatch) -> None:
     monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FakeRuntime)
-    result = CliRunner().invoke(
-        main, ["run", "--output-format", "json"], input="piped prompt\n"
-    )
+    result = CliRunner().invoke(main, ["run", "--output-format", "json"], input="piped prompt\n")
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload == {
@@ -92,9 +90,7 @@ def test_json_trace_contains_normalized_events(monkeypatch) -> None:
 
 
 def test_jsonl_is_versioned_sequenced_and_streamed_live(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "amplifier_app_newtui.kernel.runtime.RealRuntime", StreamingRuntime
-    )
+    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", StreamingRuntime)
     StreamingRuntime.event_was_written = asyncio.Event()
 
     class LiveCapture:
@@ -105,10 +101,7 @@ def test_jsonl_is_versioned_sequenced_and_streamed_live(monkeypatch) -> None:
             self.lines.extend(line for line in value.splitlines() if line)
             if self.lines:
                 record = json.loads(self.lines[-1])
-                if (
-                    record["type"] == "runtime.event"
-                    and record["event"]["kind"] == "prompt_submit"
-                ):
+                if record["type"] == "runtime.event" and record["event"]["kind"] == "prompt_submit":
                     assert StreamingRuntime.event_was_written is not None
                     StreamingRuntime.event_was_written.set()
             return len(value)
@@ -138,9 +131,7 @@ def test_jsonl_is_versioned_sequenced_and_streamed_live(monkeypatch) -> None:
 
 def test_jsonl_cli_reserves_stdout_for_json_lines(monkeypatch) -> None:
     monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FakeRuntime)
-    result = CliRunner().invoke(
-        main, ["run", "prompt arg", "--output-format", "jsonl"]
-    )
+    result = CliRunner().invoke(main, ["run", "prompt arg", "--output-format", "jsonl"])
     assert result.exit_code == 0
     records = [json.loads(line) for line in result.stdout.splitlines()]
     assert records[0]["type"] == "session.started"
@@ -150,12 +141,8 @@ def test_jsonl_cli_reserves_stdout_for_json_lines(monkeypatch) -> None:
 
 
 def test_json_failure_is_still_one_parseable_document(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "amplifier_app_newtui.kernel.runtime.RealRuntime", FailingRuntime
-    )
-    result = CliRunner().invoke(
-        main, ["run", "prompt arg", "--output-format", "json"]
-    )
+    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FailingRuntime)
+    result = CliRunner().invoke(main, ["run", "prompt arg", "--output-format", "json"])
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
     assert payload["status"] == "error"
@@ -166,12 +153,8 @@ def test_json_failure_is_still_one_parseable_document(monkeypatch) -> None:
 
 
 def test_jsonl_failure_is_one_terminal_error_record(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "amplifier_app_newtui.kernel.runtime.RealRuntime", FailingRuntime
-    )
-    result = CliRunner().invoke(
-        main, ["run", "prompt arg", "--output-format", "jsonl"]
-    )
+    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FailingRuntime)
+    result = CliRunner().invoke(main, ["run", "prompt arg", "--output-format", "jsonl"])
     assert result.exit_code == 1
     records = [json.loads(line) for line in result.stdout.splitlines()]
     assert [record["type"] for record in records] == ["error"]

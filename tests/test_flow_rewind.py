@@ -186,9 +186,7 @@ async def test_checkpoint_cut_while_picker_open_is_navigable() -> None:
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)  # t1 cut
         app.submit_prompt(BRAINSTORM_PROMPT)  # no approvals: strip keeps focus
-        assert await wait_for(
-            pilot, lambda: app.turn_active and blocks_of(app, "narration")
-        )
+        assert await wait_for(pilot, lambda: app.turn_active and blocks_of(app, "narration"))
 
         # Open the picker mid-turn: only t1 exists, › clamps on it.
         await pilot.press("ctrl+r")
@@ -225,9 +223,7 @@ async def test_fork_during_running_turn_interrupts_then_forks() -> None:
 
         # Park the brainstorm turn mid-turn (no approvals in its script).
         app.submit_prompt(BRAINSTORM_PROMPT)
-        assert await wait_for(
-            pilot, lambda: app.turn_active and blocks_of(app, "narration")
-        )
+        assert await wait_for(pilot, lambda: app.turn_active and blocks_of(app, "narration"))
 
         # Opening the picker mid-turn is fine; confirming the fork triggers
         # interrupt-then-fork.
@@ -279,9 +275,7 @@ async def test_fork_mid_turn_defers_queued_message_until_after_fork() -> None:
 
         # Park the brainstorm turn mid-turn, queue a next-turn message.
         app.submit_prompt(BRAINSTORM_PROMPT)
-        assert await wait_for(
-            pilot, lambda: app.turn_active and blocks_of(app, "narration")
-        )
+        assert await wait_for(pilot, lambda: app.turn_active and blocks_of(app, "narration"))
         await type_text(pilot, "hi")
         await pilot.press("shift+enter")
         await pilot.pause()
@@ -297,17 +291,13 @@ async def test_fork_mid_turn_defers_queued_message_until_after_fork() -> None:
         assert await wait_for(pilot, lambda: not app.fork_pending)
 
         # The fork landed BEFORE the queued message was picked up …
-        fork_idx = next(
-            i for i, t in enumerate(seen) if t.startswith("forked from t1")
-        )
+        fork_idx = next(i for i, t in enumerate(seen) if t.startswith("forked from t1"))
         assert await wait_for(pilot, lambda: "queued message picked up" in seen)
         assert fork_idx < seen.index("queued message picked up")
 
         # … and the queued prompt runs as a REAL post-fork turn whose rule +
         # checkpoint survive (pre-fix it was executed-and-trimmed invisibly).
-        assert await wait_for(
-            pilot, lambda: not app.turn_active and rules(app) == 2
-        )
+        assert await wait_for(pilot, lambda: not app.turn_active and rules(app) == 2)
         checkpoints = [c.id for c in app.ledger.checkpoints]
         assert len(checkpoints) == 2 and checkpoints[0] == "t1"
         assert not app.adapter.steering.pending_next_turn
@@ -371,9 +361,7 @@ async def test_fork_trims_transcript_and_ledger_to_checkpoint() -> None:
         await pilot.pause()
         await pilot.press("left")  # select t1
         await pilot.press("enter")  # fork (backend confirms, then trims)
-        assert await wait_for(
-            pilot, lambda: [c.id for c in app.ledger.checkpoints] == ["t1"]
-        )
+        assert await wait_for(pilot, lambda: [c.id for c in app.ledger.checkpoints] == ["t1"])
 
         assert not app.rewind.display
         # Transcript trimmed after the t1 rule (confirm-then-trim).

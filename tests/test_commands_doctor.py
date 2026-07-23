@@ -89,10 +89,7 @@ def test_check_repeated_approvals() -> None:
     )
     result = check_repeated_approvals(tallies)
     assert not result.ok
-    assert (
-        result.message
-        == "14 identical read-only approvals this week · candidate allowlist"
-    )
+    assert result.message == "14 identical read-only approvals this week · candidate allowlist"
     # Below threshold, or not read-only, or not always approved → healthy.
     assert check_repeated_approvals(
         (ApprovalTally(action="read x", approved=2, asked=2, capability="read"),)
@@ -112,7 +109,9 @@ def test_report_headline_and_healthy_join() -> None:
             _ok("path", "PATH clean"),
             _ok("settings", "settings parse"),
             _finding("mcp", "2 MCP servers unused in 30 days · cost 4.1k tok/session"),
-            _finding("approvals", "14 identical read-only approvals this week · candidate allowlist"),
+            _finding(
+                "approvals", "14 identical read-only approvals this week · candidate allowlist"
+            ),
         )
     )
     assert report.headline() == "2 findings · nothing changed yet"
@@ -126,9 +125,7 @@ def test_single_finding_headline_singular() -> None:
 
 
 def test_build_doctor_block() -> None:
-    report = DoctorReport(
-        checks=(_ok("install", "install healthy"), _finding("mcp", "unused"))
-    )
+    report = DoctorReport(checks=(_ok("install", "install healthy"), _finding("mcp", "unused")))
     block = build_doctor_block("b3", report)
     assert block.kind == "doctor"
     assert block.headline == "1 finding · nothing changed yet"
@@ -171,9 +168,7 @@ def test_render_text_matches_mockup_row_shapes() -> None:
 def test_run_standalone_exit_codes(tmp_path: Path) -> None:
     printed: list[str] = []
     code = run_standalone(
-        mcp_stats=(
-            McpServerStats(name="dead", last_used_days_ago=None, tokens_per_session=500),
-        ),
+        mcp_stats=(McpServerStats(name="dead", last_used_days_ago=None, tokens_per_session=500),),
         settings_paths=(tmp_path / "settings.yaml",),
         package="amplifier-app-newtui",
         executable="python3",

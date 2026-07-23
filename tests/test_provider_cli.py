@@ -52,9 +52,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _add(provider_type: str, key: str) -> None:
-    result = CliRunner().invoke(
-        main, ["provider", "add", provider_type, "--api-key", key, "-y"]
-    )
+    result = CliRunner().invoke(main, ["provider", "add", provider_type, "--api-key", key, "-y"])
     assert result.exit_code == 0, result.output
 
 

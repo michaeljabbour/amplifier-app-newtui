@@ -40,8 +40,13 @@ def test_model_listing_no_provider() -> None:
 
 def test_status_spans_include_mode_and_cost() -> None:
     info = StatusInfo(
-        session_id="abcdef123", provider="anthropic", model="m1", effort="high",
-        messages=4, tools=7, agents=("explorer", "critic"),
+        session_id="abcdef123",
+        provider="anthropic",
+        model="m1",
+        effort="high",
+        messages=4,
+        tools=7,
+        agents=("explorer", "critic"),
     )
     text = _text(
         status_spans(
@@ -104,20 +109,28 @@ def test_diff_spans_staged_scope_wording() -> None:
 
 
 def test_skills_spans_roster_and_empty() -> None:
-    text = _text(skills_spans((
-        SkillInfo("design-patterns", "SOLID principles"),
-        SkillInfo("simplify", "cut cruft"),
-    )))
+    text = _text(
+        skills_spans(
+            (
+                SkillInfo("design-patterns", "SOLID principles"),
+                SkillInfo("simplify", "cut cruft"),
+            )
+        )
+    )
     assert "2 available" in text
     assert "design-patterns" in text and "SOLID" in text
     assert "no skills" in _text(skills_spans(()))
 
 
 def test_skills_spans_show_shortcut_aliases() -> None:
-    text = _text(skills_spans((
-        SkillInfo("cranky-old-sam", "crusty review", shortcut="cosam"),
-        SkillInfo("simplify", "cut cruft"),
-    )))
+    text = _text(
+        skills_spans(
+            (
+                SkillInfo("cranky-old-sam", "crusty review", shortcut="cosam"),
+                SkillInfo("simplify", "cut cruft"),
+            )
+        )
+    )
     assert "/cosam" in text  # the alias reads as its slash trigger
     assert "/simplify" not in text  # no fake alias for shortcut-less skills
 
@@ -143,7 +156,9 @@ def test_sessions_spans_empty() -> None:
 
 def test_sessions_spans_lists_rows_and_marks_current() -> None:
     rows = (
-        SessionSummary(session_id="abc12345ff", name="auth", bundle="newtui", messages=6, mtime=0.0),
+        SessionSummary(
+            session_id="abc12345ff", name="auth", bundle="newtui", messages=6, mtime=0.0
+        ),
         SessionSummary(session_id="def67890aa", name="", bundle="dev", messages=2, mtime=0.0),
     )
     spans = sessions_spans(rows, current="abc12345")

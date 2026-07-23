@@ -99,7 +99,9 @@ def test_check_compatibility_counts_covered_roles() -> None:
 
 
 def test_resolve_matrix_picks_first_configured_candidate() -> None:
-    rows = {r.role: (r.model, r.provider) for r in routing_admin.resolve_matrix(_balanced(), {"openai"})}
+    rows = {
+        r.role: (r.model, r.provider) for r in routing_admin.resolve_matrix(_balanced(), {"openai"})
+    }
     # anthropic not configured -> general falls through to openai/gpt-x.
     assert rows["general"] == ("gpt-x", "openai")
     assert rows["fast"] == ("gpt-mini", "openai")

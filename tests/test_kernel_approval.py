@@ -135,20 +135,16 @@ async def test_allow_always_passes_through_without_local_bookkeeping() -> None:
 # -- timeout -----------------------------------------------------------------------
 
 
-
 @pytest.mark.asyncio
 async def test_timeout_with_allow_default_returns_allow_once() -> None:
 
     broker, _, denial_log = make_broker()
-    choice = await broker.request_approval(
-        "Allow read?", [], timeout=0.01, default="allow"
-    )
+    choice = await broker.request_approval("Allow read?", [], timeout=0.01, default="allow")
     assert choice == ALLOW_ONCE
     assert denial_log.total_count == 0
 
 
 # -- staged detail -----------------------------------------------------------------
-
 
 
 @pytest.mark.asyncio

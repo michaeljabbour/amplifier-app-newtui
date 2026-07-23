@@ -30,9 +30,7 @@ def test_bundle_list_all_is_superset_of_default() -> None:
     # bundles exist, the default-only "Use --all" hint intentionally makes
     # its rendered output one line longer (the clean Linux CI environment).
     default_names = {entry.name for entry in bundle_admin.list_bundles()}
-    every_name = {
-        entry.name for entry in bundle_admin.list_bundles(all_bundles=True)
-    }
+    every_name = {entry.name for entry in bundle_admin.list_bundles(all_bundles=True)}
     assert default_names <= every_name
 
     runner = CliRunner()
@@ -60,7 +58,9 @@ def test_bundle_use_current_clear_roundtrip(tmp_path: Path, monkeypatch) -> None
 
     used = runner.invoke(main, ["bundle", "use", "git+https://x/b.git"])
     assert used.exit_code == 0
-    assert bundle_admin.read_scope(paths.global_settings)["bundle"]["active"] == "git+https://x/b.git"
+    assert (
+        bundle_admin.read_scope(paths.global_settings)["bundle"]["active"] == "git+https://x/b.git"
+    )
 
     cleared = runner.invoke(main, ["bundle", "clear"])
     assert cleared.exit_code == 0

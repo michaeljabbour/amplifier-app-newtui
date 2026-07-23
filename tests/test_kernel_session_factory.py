@@ -116,9 +116,7 @@ def healthy_setup(tmp_path: Path) -> tuple[FakeSession, ResolvedConfig]:
 
 def test_stamp_root_metadata_fills_and_guards(tmp_path: Path) -> None:
     config: dict[str, Any] = {"root_session_id": "parent-root"}
-    stamp_root_metadata(
-        config, session_id="child", bundle_name="b", project_dir=tmp_path
-    )
+    stamp_root_metadata(config, session_id="child", bundle_name="b", project_dir=tmp_path)
     assert config["root_session_id"] == "parent-root"  # guard: never overwritten
     assert config["application_host"] == APPLICATION_HOST
     assert config["bundle_name"] == "b"
@@ -142,9 +140,7 @@ def test_verify_mounts_all_healthy(tmp_path: Path) -> None:
 
 
 def test_verify_mounts_missing_provider_normalizes_names() -> None:
-    mount_plan = {
-        "providers": [{"module": "provider-anthropic"}, {"module": "provider-openai"}]
-    }
+    mount_plan = {"providers": [{"module": "provider-anthropic"}, {"module": "provider-openai"}]}
     coordinator = FakeCoordinator(providers={"anthropic": object()})
     report = verify_mounts(mount_plan, coordinator)
     assert report.missing_providers == ("openai",)

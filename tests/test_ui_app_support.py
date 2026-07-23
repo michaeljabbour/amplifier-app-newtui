@@ -20,9 +20,7 @@ def test_esc_sequence_accepts_the_boundary_once() -> None:
 def test_esc_sequence_expires_and_clears() -> None:
     sequence = EscSequence()
     sequence.arm_interrupt(10.0)
-    assert not sequence.consume_backtrack(
-        10.0 + ESC_BACKTRACK_WINDOW_SECONDS + 0.001
-    )
+    assert not sequence.consume_backtrack(10.0 + ESC_BACKTRACK_WINDOW_SECONDS + 0.001)
     assert sequence.interrupted_at is None
 
 
@@ -38,12 +36,8 @@ def test_attention_bell_rings_only_after_long_turns() -> None:
     """Turn end rings only when the turn ran long enough that the user has
     plausibly looked away; quick exchanges stay silent."""
     assert not attention_bell_needed("turn_finished", 0.0, environ={})
-    assert not attention_bell_needed(
-        "turn_finished", ATTENTION_MIN_TURN_SECONDS - 0.1, environ={}
-    )
-    assert attention_bell_needed(
-        "turn_finished", ATTENTION_MIN_TURN_SECONDS, environ={}
-    )
+    assert not attention_bell_needed("turn_finished", ATTENTION_MIN_TURN_SECONDS - 0.1, environ={})
+    assert attention_bell_needed("turn_finished", ATTENTION_MIN_TURN_SECONDS, environ={})
 
 
 def test_attention_bell_honors_amplifier_notify_env() -> None:
@@ -56,6 +50,4 @@ def test_attention_bell_honors_amplifier_notify_env() -> None:
         assert not attention_bell_needed(
             "turn_finished", 999.0, environ={"AMPLIFIER_NOTIFY": value}
         )
-    assert attention_bell_needed(
-        "decision_deferred", 0.0, environ={"AMPLIFIER_NOTIFY": "true"}
-    )
+    assert attention_bell_needed("decision_deferred", 0.0, environ={"AMPLIFIER_NOTIFY": "true"})

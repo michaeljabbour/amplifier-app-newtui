@@ -137,7 +137,9 @@ def test_resume_picker_selects_and_launches(
 ) -> None:
     launched: dict[str, object] = {}
 
-    async def fake_launch(*, demo: bool, bundle: str | None = None, resume_id: str | None = None) -> int:
+    async def fake_launch(
+        *, demo: bool, bundle: str | None = None, resume_id: str | None = None
+    ) -> int:
         launched["resume_id"] = resume_id
         return 0
 
@@ -154,7 +156,9 @@ def test_resume_picker_selects_and_launches(
 def test_resume_direct_id_resolves_prefix(
     scratch: SessionStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def fake_launch(*, demo: bool, bundle: str | None = None, resume_id: str | None = None) -> int:
+    async def fake_launch(
+        *, demo: bool, bundle: str | None = None, resume_id: str | None = None
+    ) -> int:
         assert resume_id == "cafef00d"
         return 0
 

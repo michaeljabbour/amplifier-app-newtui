@@ -74,7 +74,9 @@ def test_demo_turn_streams_plan_and_cost(demo_session: ForgeSession) -> None:
     first_word = STORE_NARRATIONS[0].split()[0]  # "Mapping"
     assert demo_session.wait(first_word, total_timeout_ms=_TURN_TIMEOUT_MS), "no streamed text"
     # Turn completes -> footer session cost advances 0.57 -> 0.70.
-    assert demo_session.wait(r"0\.70", total_timeout_ms=_TURN_TIMEOUT_MS), "footer cost did not update"
+    assert demo_session.wait(r"0\.70", total_timeout_ms=_TURN_TIMEOUT_MS), (
+        "footer cost did not update"
+    )
 
     screen = demo_session.screen()
     assert STORE_PLAN_TITLE in screen, "plan panel title missing"

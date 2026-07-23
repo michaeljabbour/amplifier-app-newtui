@@ -35,8 +35,7 @@ async def _booted(pilot, app: NewTuiApp) -> None:
     """Pause until the demo seed turn has settled (stable base state)."""
     await _wait_for(
         pilot,
-        lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks)
-        and not app.turn_active,
+        lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks) and not app.turn_active,
     )
 
 

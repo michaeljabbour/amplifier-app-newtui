@@ -785,9 +785,7 @@ async def test_resume_attaches_under_the_stored_bundle_by_default(offline_env) -
     project = _resume_bundle_project(offline_env, "proj-resume-stored", active="offline2")
     _store_session(project, "resumestored01", "offline")
 
-    runtime = RealRuntime(
-        resume_id="resumestored01", project_dir=project, mode=lambda: "chat"
-    )
+    runtime = RealRuntime(resume_id="resumestored01", project_dir=project, mode=lambda: "chat")
     await runtime.start()
     try:
         assert runtime.bundle_name == "offline"
@@ -806,16 +804,13 @@ async def test_resume_override_setting_attaches_the_active_bundle(offline_env) -
     )
     _store_session(project, "resumeactive01", "offline")
 
-    runtime = RealRuntime(
-        resume_id="resumeactive01", project_dir=project, mode=lambda: "chat"
-    )
+    runtime = RealRuntime(resume_id="resumeactive01", project_dir=project, mode=lambda: "chat")
     await runtime.start()
     try:
         assert runtime.bundle_name == "offline2"
         notices = _notifications(runtime)
         assert any(
-            "offline" in m and "offline2" in m and "resume.use_active_bundle" in m
-            for m in notices
+            "offline" in m and "offline2" in m and "resume.use_active_bundle" in m for m in notices
         ), notices
     finally:
         await runtime.cleanup()
@@ -828,9 +823,7 @@ async def test_resume_missing_stored_bundle_falls_back_loudly(offline_env) -> No
     project = _resume_bundle_project(offline_env, "proj-resume-ghost", active="offline2")
     _store_session(project, "resumeghost01", "ghost-bundle")
 
-    runtime = RealRuntime(
-        resume_id="resumeghost01", project_dir=project, mode=lambda: "chat"
-    )
+    runtime = RealRuntime(resume_id="resumeghost01", project_dir=project, mode=lambda: "chat")
     await runtime.start()
     try:
         assert runtime.bundle_name == "offline2"

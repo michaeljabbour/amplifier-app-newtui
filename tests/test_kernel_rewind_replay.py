@@ -255,16 +255,11 @@ def test_cost_reseed_stays_consistent_with_a_marker_in_the_log(tmp_path: Path) -
     for event in [event for event in log if not isinstance(event, ev.RewindMarker)]:
         control.append_event("ctrl01", event)
     control_tracker = CostTracker()
-    control_prior = restore_session_cost(
-        control_tracker, *control.events_read_paths("ctrl01")
-    )
+    control_prior = restore_session_cost(control_tracker, *control.events_read_paths("ctrl01"))
     assert prior == control_prior
 
     reducer, _host = make_reducer()
-    assert (
-        reducer.replay(restored_ui_events(store, sid), turn_base=3, session_cost=prior)
-        is True
-    )
+    assert reducer.replay(restored_ui_events(store, sid), turn_base=3, session_cost=prior) is True
     # The kernel re-seed stays the single footer authority (spec §11).
     assert reducer.session_cost == prior
 
@@ -315,11 +310,7 @@ async def test_real_runtime_fork_writes_a_rewind_marker(tmp_path: Path) -> None:
     outcome = await runtime.fork("t2", ledger)
     assert outcome.forked_from_turn == 2
 
-    markers = [
-        record
-        for record in store.read_events(SID)
-        if record.get("kind") == "rewind_marker"
-    ]
+    markers = [record for record in store.read_events(SID) if record.get("kind") == "rewind_marker"]
     assert len(markers) == 1
     assert markers[0]["checkpoint_id"] == "t2"
     assert markers[0]["kept_turns"] == 2  # keep turns 1 and 2
@@ -344,6 +335,4 @@ async def test_real_runtime_fork_marker_only_after_successful_trim(tmp_path: Pat
 
     with pytest.raises(RewindError, match="turn still running"):
         await runtime.fork("t2", ledger)
-    assert not any(
-        record.get("kind") == "rewind_marker" for record in store.read_events(SID)
-    )
+    assert not any(record.get("kind") == "rewind_marker" for record in store.read_events(SID))
