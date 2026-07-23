@@ -46,6 +46,9 @@ NEUTRAL_CASES: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
     ("list_skills", (), ()),
     ("load_skill", ("brainstorming",), (False, "skills need a real session")),
     ("mcp_tools", (), ()),
+    ("rename_session", ("auth work",), (False, "renaming needs a real session")),
+    ("session_summaries", (), ()),
+    ("branch_session", ("spike",), (False, "branching needs a real session")),
     ("directory_entries", ("allowed",), ()),
     (
         "update_directory",

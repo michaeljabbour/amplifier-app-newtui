@@ -49,6 +49,10 @@ MOCKUP_TABLE = [
     # Beyond the mockup table: app/core/bundle/session identity block.
     ("Ship", "/about", "app, core, bundle + session identity", "built-in"),
     ("Between", "/rewind", "fork from any turn-rule checkpoint", "built-in"),
+    # Stored-session lifecycle (amplifier-app-cli parity).
+    ("Between", "/rename", "name this session for the resume picker", "built-in"),
+    ("Between", "/sessions", "list stored sessions for this project", "built-in"),
+    ("Between", "/branch", "snapshot this conversation into a new session", "built-in"),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
     ("Repair", "/permissions", "edit trust slots: boundary, blocks, exceptions", "built-in"),
@@ -78,7 +82,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 30
+    assert len(registry.specs) == 33
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -197,6 +201,21 @@ def test_config_dispatches_through_context(fake_command_context) -> None:
         "manage_config:save --scope project",
     ]
     assert ctx.user_lines[0] == "/config"
+
+
+def test_session_lifecycle_dispatch_through_context(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/rename", ctx, "auth refactor")
+    registry.run("/sessions", ctx)
+    registry.run("/branch", ctx)
+    registry.run("/branch", ctx, "spike")
+    assert ctx.calls == [
+        "rename_session:auth refactor",
+        "show_sessions",
+        "branch_session:",
+        "branch_session:spike",
+    ]
 
 
 def test_skills_and_mcp_dispatch_through_context(fake_command_context) -> None:

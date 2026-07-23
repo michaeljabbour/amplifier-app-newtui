@@ -252,6 +252,20 @@ class CommandContext(Protocol):
         """``/config``: show/toggle/set/diff/save live session config."""
         ...
 
+    # -- stored-session lifecycle (rename / list / branch) ------------------
+
+    def rename_session(self, name: str) -> None:
+        """``/rename <name>``: label the live session (resume-picker name)."""
+        ...
+
+    def show_sessions(self) -> None:
+        """``/sessions``: post the stored-session roster for this project."""
+        ...
+
+    def branch_session(self, name: str) -> None:
+        """``/branch [name]``: snapshot this conversation into a new session."""
+        ...
+
 
 CommandHandler = Callable[[CommandContext, str], None]
 """Handler signature: ``(ctx, args)`` where ``args`` is the text after the

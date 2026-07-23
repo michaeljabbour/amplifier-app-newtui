@@ -14,6 +14,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from ..kernel.compaction import CompactionConfig
+from ..kernel.session_manager import SessionSummary
 from ..kernel.session_ops import ModelListing, SkillInfo, StatusInfo
 from ..model.blocks import Segment
 from .live_tail import answer_spans
@@ -102,6 +103,56 @@ def status_spans(
     for label, value in rows:
         spans.append(Segment(text=f"  {label.ljust(width)}  ", style_token="dim"))
         spans.append(Segment(text=f"{value}\n", style_token="teal"))
+    return tuple(spans)
+
+
+def sessions_spans(
+    summaries: tuple[SessionSummary, ...], *, current: str = ""
+) -> tuple[Segment, ...]:
+    """``/sessions``: the stored-session roster (name · id · msgs · age).
+
+    The live session (its short id is a prefix of *current*) is marked with
+    a green ▸; the rest read dim. Read-only — switching sessions is a fresh
+    ``amplifier-newtui resume <id>`` (noted in the header), never an
+    in-place teardown.
+    """
+    if not summaries:
+        return (
+            Segment(
+                text="  no stored sessions · this project has no history yet\n",
+                style_token="dimmer",
+            ),
+        )
+    spans = list(
+        _header(
+            "Sessions",
+            f"{len(summaries)} stored · resume: amplifier-newtui resume <id>",
+        )
+    )
+    for summary in summaries:
+        is_current = bool(current) and summary.session_id.startswith(current)
+        spans.append(
+            Segment(
+                text="  ▸ " if is_current else "    ",
+                style_token="green" if is_current else "dim",
+            )
+        )
+        spans.append(
+            Segment(
+                text=f"{summary.short_id}  ",
+                style_token="green" if is_current else "teal",
+                bold=is_current,
+            )
+        )
+        spans.append(
+            Segment(
+                text=(
+                    f"{summary.name or '—'}  ·  {summary.bundle}  ·  "
+                    f"{summary.messages} msgs  ·  {summary.time_ago}\n"
+                ),
+                style_token="dim",
+            )
+        )
     return tuple(spans)
 
 
@@ -229,6 +280,7 @@ __all__ = [
     "mcp_spans",
     "model_listing_spans",
     "names_spans",
+    "sessions_spans",
     "skill_loaded_spans",
     "skills_spans",
     "status_spans",

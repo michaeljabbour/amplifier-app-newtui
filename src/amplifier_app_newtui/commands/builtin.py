@@ -159,6 +159,22 @@ def _cmd_rewind(ctx: CommandContext, args: str) -> None:
     ctx.open_rewind()
 
 
+def _cmd_rename(ctx: CommandContext, args: str) -> None:
+    """``/rename <name>`` — label the current session for the resume picker."""
+    ctx.rename_session(args.strip())
+
+
+def _cmd_sessions(ctx: CommandContext, args: str) -> None:
+    """``/sessions`` — list this project's stored sessions."""
+    del args
+    ctx.show_sessions()
+
+
+def _cmd_branch(ctx: CommandContext, args: str) -> None:
+    """``/branch [name]`` — snapshot this conversation into a new session."""
+    ctx.branch_session(args.strip())
+
+
 def _cmd_permissions(ctx: CommandContext, args: str) -> None:
     del args
     ctx.open_permissions()
@@ -413,6 +429,30 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         tag="built-in",
         handler=_cmd_rewind,
         key_action="open_rewind",
+    ),
+    # Stored-session lifecycle (amplifier-app-cli parity: /rename, session
+    # picker, the /branch fork family) — the persisted counterparts to the
+    # in-memory /rewind.
+    CommandSpec(
+        group="Between",
+        name="/rename",
+        desc="name this session for the resume picker",
+        tag="built-in",
+        handler=_cmd_rename,
+    ),
+    CommandSpec(
+        group="Between",
+        name="/sessions",
+        desc="list stored sessions for this project",
+        tag="built-in",
+        handler=_cmd_sessions,
+    ),
+    CommandSpec(
+        group="Between",
+        name="/branch",
+        desc="snapshot this conversation into a new session",
+        tag="built-in",
+        handler=_cmd_branch,
     ),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     CommandSpec(

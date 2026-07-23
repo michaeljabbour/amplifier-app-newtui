@@ -5,12 +5,14 @@ from __future__ import annotations
 from decimal import Decimal
 
 from amplifier_app_newtui.kernel.compaction import CompactionConfig
+from amplifier_app_newtui.kernel.session_manager import SessionSummary
 from amplifier_app_newtui.kernel.session_ops import ModelListing, SkillInfo, StatusInfo
 from amplifier_app_newtui.ui.session_ops_view import (
     diff_spans,
     mcp_spans,
     model_listing_spans,
     names_spans,
+    sessions_spans,
     skill_loaded_spans,
     skills_spans,
     status_spans,
@@ -133,3 +135,24 @@ def test_mcp_spans_servers_and_empty() -> None:
     assert "postgres" in text
     assert "mcp_postgres_query" in text
     assert "no servers" in _text(mcp_spans({}, ()))
+
+
+def test_sessions_spans_empty() -> None:
+    assert "no stored sessions" in _text(sessions_spans(()))
+
+
+def test_sessions_spans_lists_rows_and_marks_current() -> None:
+    rows = (
+        SessionSummary(session_id="abc12345ff", name="auth", bundle="newtui", messages=6, mtime=0.0),
+        SessionSummary(session_id="def67890aa", name="", bundle="dev", messages=2, mtime=0.0),
+    )
+    spans = sessions_spans(rows, current="abc12345")
+    text = _text(spans)
+    assert "Sessions" in text
+    assert "abc12345" in text and "def67890" in text
+    assert "auth" in text
+    assert "6 msgs" in text
+    assert "▸" in text  # current-session marker
+    # The current session's short id renders bold.
+    current = [sp for sp in spans if sp.text.strip() == "abc12345"]
+    assert current and current[0].bold

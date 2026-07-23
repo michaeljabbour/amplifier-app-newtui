@@ -303,14 +303,175 @@ def sessions() -> None:
         click.echo(session_id)
 
 
+def _session_store():  # noqa: ANN202 — SessionStore (lazy import keeps --demo offline)
+    from .kernel.persistence import SessionStore
+
+    return SessionStore()
+
+
+def _pick_session_id(limit: int) -> str | None:
+    """Print a numbered picker of recent sessions; return the chosen id.
+
+    The interactive counterpart to ``resume ID`` (amplifier-app-cli
+    ``resume`` with no argument): a single-session store auto-selects, an
+    empty store returns ``None`` with a hint, and ``q`` cancels. Numbering
+    is 1-based over the newest-first listing.
+    """
+    from .kernel import session_manager
+
+    summaries = session_manager.list_summaries(_session_store(), limit=limit)
+    if not summaries:
+        click.echo("no stored sessions · start one with `amplifier-newtui`")
+        return None
+    if len(summaries) == 1:
+        click.echo(f"only one session · resuming {summaries[0].short_id}")
+        return summaries[0].session_id
+    click.echo("Recent sessions:")
+    for index, summary in enumerate(summaries, start=1):
+        label = f"{summary.name} · " if summary.name else ""
+        click.echo(
+            f"  [{index}] {label}{summary.short_id} · {summary.bundle} · "
+            f"{summary.messages} msgs · {summary.time_ago}"
+        )
+    raw = click.prompt("resume which? (number, or q to cancel)", default="q", show_default=False)
+    choice = raw.strip().lower()
+    if choice in ("q", "quit", "exit", ""):
+        click.echo("cancelled")
+        return None
+    try:
+        selected = summaries[int(choice) - 1]
+    except (ValueError, IndexError):
+        click.echo(f"invalid selection: {raw}", err=True)
+        return None
+    return selected.session_id
+
+
 @main.command()
-@click.argument("session_id")
+@click.argument("session_id", required=False, default=None)
 @click.option("--bundle", default=None, help="Bundle name or URI.")
-def resume(session_id: str, bundle: str | None) -> None:
-    """Launch the TUI resuming a stored session."""
+@click.option("--limit", "-n", default=10, show_default=True, help="Sessions shown in the picker.")
+def resume(session_id: str | None, bundle: str | None, limit: int) -> None:
+    """Launch the TUI resuming a stored session (interactive picker if no id)."""
+    if session_id is None:
+        resolved = _pick_session_id(limit)
+        if resolved is None:
+            raise SystemExit(0)
+    else:
+        from .kernel import session_manager
+
+        try:
+            resolved = session_manager.resolve(_session_store(), session_id)
+        except FileNotFoundError:
+            click.echo(f"no session found matching '{session_id}'", err=True)
+            raise SystemExit(1) from None
+        except ValueError as error:
+            click.echo(str(error), err=True)
+            raise SystemExit(1) from None
     raise SystemExit(
-        asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=session_id))
+        asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=resolved))
     )
+
+
+# --------------------------------------------------------------------------
+# session group — stored-session lifecycle (list / rename / delete / cleanup)
+# --------------------------------------------------------------------------
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def session(ctx: click.Context) -> None:
+    """Manage stored sessions: list, rename, delete, cleanup."""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@session.command("list")
+@click.option("--limit", "-n", default=20, show_default=True, help="Number of sessions to show.")
+def session_list(limit: int) -> None:
+    """List stored sessions (name · id · messages · age), newest first."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from .kernel import session_manager
+
+    summaries = session_manager.list_summaries(_session_store(), limit=limit)
+    if not summaries:
+        click.echo("no stored sessions")
+        return
+    table = Table(title="Sessions", title_justify="center", header_style="bold cyan")
+    table.add_column("Name", style="cyan", overflow="fold")
+    table.add_column("Session", style="green", no_wrap=True)
+    table.add_column("Bundle", style="magenta", no_wrap=True)
+    table.add_column("Msgs", justify="right")
+    table.add_column("Age", style="dim", no_wrap=True)
+    for summary in summaries:
+        table.add_row(
+            summary.name or "—",
+            summary.short_id,
+            summary.bundle,
+            str(summary.messages),
+            summary.time_ago,
+        )
+    Console().print(table)
+
+
+@session.command("rename")
+@click.argument("session_id")
+@click.argument("name", nargs=-1, required=True)
+def session_rename(session_id: str, name: tuple[str, ...]) -> None:
+    """Rename a stored session (metadata name, no file surgery)."""
+    from .kernel import session_manager
+
+    ok, detail = session_manager.rename(_session_store(), session_id, " ".join(name))
+    if ok:
+        click.echo(f"renamed → {detail}")
+        return
+    click.echo(detail, err=True)
+    raise SystemExit(1)
+
+
+@session.command("delete")
+@click.argument("session_id")
+@click.option("--force", "-f", is_flag=True, help="Skip the confirmation prompt.")
+def session_delete(session_id: str, force: bool) -> None:
+    """Delete a stored session and everything under it."""
+    from .kernel import session_manager
+
+    store = _session_store()
+    try:
+        resolved = session_manager.resolve(store, session_id)
+    except FileNotFoundError:
+        click.echo(f"no session found matching '{session_id}'", err=True)
+        raise SystemExit(1) from None
+    except ValueError as error:
+        click.echo(str(error), err=True)
+        raise SystemExit(1) from None
+    if not force and not click.confirm(f"delete session {resolved}?", default=False):
+        click.echo("cancelled")
+        return
+    ok, detail = session_manager.delete(store, resolved)
+    if ok:
+        click.echo(f"deleted {detail}")
+        return
+    click.echo(detail, err=True)
+    raise SystemExit(1)
+
+
+@session.command("cleanup")
+@click.option("--days", "-d", default=30, show_default=True, help="Delete sessions older than N days.")
+@click.option("--force", "-f", is_flag=True, help="Skip the confirmation prompt.")
+def session_cleanup(days: int, force: bool) -> None:
+    """Delete stored sessions older than N days."""
+    from .kernel import session_manager
+
+    if days < 0:
+        click.echo("--days must be non-negative", err=True)
+        raise SystemExit(1)
+    if not force and not click.confirm(f"delete sessions older than {days} days?", default=False):
+        click.echo("cancelled")
+        return
+    removed = session_manager.cleanup(_session_store(), days)
+    click.echo(f"removed {removed} session(s) older than {days} days")
 
 
 @main.command()

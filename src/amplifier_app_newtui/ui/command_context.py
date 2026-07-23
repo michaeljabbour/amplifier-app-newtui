@@ -179,5 +179,14 @@ class AppCommandContext:
     def manage_config(self, args: str) -> None:
         self._app.manage_config(args)
 
+    def rename_session(self, name: str) -> None:
+        self._app.rename_session(name)
+
+    def show_sessions(self) -> None:
+        self._app.show_sessions()
+
+    def branch_session(self, name: str) -> None:
+        self._app.branch_session(name)
+
 
 __all__ = ["AppCommandContext"]
