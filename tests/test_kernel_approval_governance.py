@@ -434,10 +434,11 @@ def test_register_hooks_high_precedence_and_unregister() -> None:
     hooks = FakeHooks()
     unregister = hook.register_hooks(hooks)
     events = [event for event, _, _ in hooks.registered]
-    assert events == ["prompt:submit", "tool:pre"]
+    # tool:post / tool:error added for the injection probe (issue #100).
+    assert events == ["prompt:submit", "tool:pre", "tool:post", "tool:error"]
     assert all(priority == 1_000 for _, priority, _ in hooks.registered)
     unregister()
-    assert len(hooks.unregistered) == 2
+    assert len(hooks.unregistered) == 4
 
 
 @pytest.mark.asyncio
