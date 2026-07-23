@@ -195,12 +195,20 @@ def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str],
 _REPLAY_STREAM_KINDS = frozenset(
     {"stream_block_start", "stream_block_delta", "stream_block_end", "stream_aborted"}
 )
-"""Channel A kinds dropped when loading stored events for resume replay.
+"""Channel A stream kinds that never belong in ``ui-events.jsonl``.
 
-Deltas dominate the event log by count and the transcript replay renders
-from Channel B's durable ``content_block_end`` records only (ADR-0007:
-never reconstruct one channel from the other) — dropping them at load
-time bounds the in-memory replay list."""
+The transcript replay renders from Channel B's durable
+``content_block_end`` records only, and cost re-seed reads
+``provider_response_usage`` / ``content_block_end`` (kernel/cost.py) — so
+nothing that resume or re-seed reads is a stream kind. That makes these
+kinds pure write-side noise: ``stream_block_delta`` fires **per token**,
+turning the hottest path into an unbounded per-token open/write/close on
+the log.
+
+So they are skipped at **write** time (:meth:`RealRuntime._tap`) rather
+than merely filtered at load time. The load-time filter in
+:func:`restored_ui_events` is retained for backward compatibility with
+logs written by older builds that still recorded every delta."""
 
 
 def restored_ui_events(store: SessionStore, session_id: str) -> tuple[UIEvent, ...]:
@@ -853,8 +861,14 @@ class RealRuntime:
         ui-events.jsonl is the append-only normalized UIEvent log
         (persistence module contract / ADR-0007 resolution 9); it powers
         the resume cost re-seed (``restore_session_cost``), so every
-        emitted event is appended once the session identity exists.
-        Both halves are best-effort and never block the queue.
+        durable event is appended once the session identity exists.
+
+        Channel A stream kinds (:data:`_REPLAY_STREAM_KINDS`) are skipped:
+        ``stream_block_delta`` fires per token, and appending it would open
+        /write/close the log on every token while nothing that resume or
+        re-seed reads is a stream kind (they render from Channel B's
+        durable records). Everything resume/cost re-seed reads still lands
+        on disk. Both halves are best-effort and never block the queue.
         """
         self.evidence.observe(event)
         self.turn_yield.observe(event)
@@ -864,7 +878,11 @@ class RealRuntime:
             and event.input_tokens > 0
         ):
             asyncio.create_task(self._compaction_binding.observe_input_tokens(event.input_tokens))
-        if self._store is not None and self._initialized is not None:
+        if (
+            self._store is not None
+            and self._initialized is not None
+            and event.kind not in _REPLAY_STREAM_KINDS
+        ):
             self._store.append_event(self._initialized.session_id, event)
 
     def _steer_applied(self, steer: QueuedMessage) -> None:
