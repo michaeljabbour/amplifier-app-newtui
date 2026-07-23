@@ -8,9 +8,11 @@ description: >-
   No app overlays: raw anchors; providers come from settings
   `config.providers` / keys.env.
 includes:
-  # Keep this SHA in lockstep with the include in newtui.md — a test pins
-  # the two together (test_kernel_session_config.py).
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@93615d9847ce40313cc0d60583cb886de4337f9e#subdirectory=bundles/anchors/bundle.md
+  # Keep this ref in lockstep with the include in newtui.md — a test pins
+  # the two together (test_kernel_session_config.py). Tracked at foundation
+  # @main: fetchable, and the only ref that ships bundles/anchors (release
+  # tags don't). A bare SHA becomes unfetchable once foundation advances.
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 ---
 
 # anchors (packaged pointer)
