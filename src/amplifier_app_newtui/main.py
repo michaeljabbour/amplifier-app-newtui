@@ -212,6 +212,44 @@ def _resolve_run_prompt(prompt: str | None) -> str:
     raise click.UsageError("Prompt required (pass PROMPT or pipe content on stdin)")
 
 
+async def _first_run_gate() -> int | None:
+    """Launch-time provider gate (app-cli's ``check_first_run`` wiring).
+
+    Ported from amplifier-app-cli ``run.py`` / ``session_runner.py``: when no
+    provider can be mounted, an interactive terminal is walked through provider
+    setup *before* the full-screen TUI takes over; a non-interactive shell
+    falls back to env-var auto-init. Returns ``None`` to proceed to launch, or
+    an exit code to stop (nothing to onboard). ``--demo`` skips this entirely.
+    """
+    from .kernel import setup
+
+    if setup.has_configured_provider():
+        return None
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not interactive:
+        configured = await setup.auto_init_from_env()
+        if configured:
+            click.echo(f"auto-configured {configured} from environment", err=True)
+            return None
+        click.echo(
+            "No AI provider configured. Run `amplifier-newtui init` or export a "
+            "provider key (e.g. ANTHROPIC_API_KEY) to get started.",
+            err=True,
+        )
+        return 1
+    click.echo("Welcome to Amplifier — no AI provider is configured yet. Let's set one up.\n")
+    code = await _init(
+        provider=None, api_key=None, base_url=None, model=None, yes=False, from_env=False
+    )
+    if code != 0:
+        return code
+    if setup.has_configured_provider():
+        click.echo("")  # spacer before the full-screen TUI takes over
+        return None
+    click.echo("\nNo provider configured yet. Run `amplifier-newtui` again when ready.")
+    return 0
+
+
 @click.group(invoke_without_command=True)
 @click.option("--demo", is_flag=True, help="Run the scripted DemoRuntime instead of a real session.")
 @click.option("--bundle", default=None, help="Bundle name or URI (default: settings/bundled).")
@@ -221,6 +259,10 @@ def main(ctx: click.Context, demo: bool, bundle: str | None) -> None:
     """Amplifier full-screen TUI (v3 Cohesive)."""
     if ctx.invoked_subcommand is not None:
         return
+    if not demo:
+        gate = asyncio.run(_first_run_gate())
+        if gate is not None:
+            raise SystemExit(gate)
     raise SystemExit(asyncio.run(_launch_tui(demo=demo, bundle=bundle)))
 
 
@@ -633,7 +675,7 @@ async def _init(
         "stored keys: " + (", ".join(status.stored_keys) if status.stored_keys else "none")
     )
 
-    choices = await setup.discover_providers()
+    choices = await setup.onboarding_choices()
     if not choices:
         click.echo("no provider modules discovered (is amplifier-core installed?)", err=True)
         return 1
@@ -716,6 +758,106 @@ def init(
     """Set up a provider: writes the API key to ~/.amplifier/keys.env and the
     provider entry to settings (config.providers)."""
     raise SystemExit(asyncio.run(_init(provider, api_key, base_url, model, yes, from_env)))
+
+
+# --------------------------------------------------------------------------
+# provider group — configure providers and switch the primary
+# --------------------------------------------------------------------------
+
+
+@main.group()
+def provider() -> None:
+    """Manage AI providers: list, add, use, remove, dashboard."""
+
+
+@provider.command("list")
+def provider_list() -> None:
+    """List configured providers (★ marks the primary)."""
+    from .kernel import setup
+
+    providers = setup.configured_providers()
+    if not providers:
+        click.echo("no providers configured · run `amplifier-newtui provider add`")
+        return
+    for entry in providers:
+        marker = "★" if entry.primary else " "
+        model = f"  ({entry.model})" if entry.model else ""
+        click.echo(
+            f"{marker} {entry.name}  ·  {entry.module_id}  ·  "
+            f"pri {entry.priority}  ·  {entry.scope}{model}"
+        )
+
+
+@provider.command("add")
+@click.argument("provider_type", required=False)
+@click.option("--api-key", default=None, help="API key (non-interactive; else prompted).")
+@click.option("--base-url", default=None, help="Optional provider base-URL override.")
+@click.option("--model", default=None, help="Default model for the provider.")
+@click.option("--yes", "-y", is_flag=True, help="Non-interactive: never prompt (needs --api-key).")
+def provider_add(
+    provider_type: str | None,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+    yes: bool,
+) -> None:
+    """Add and configure a provider (interactive picker when TYPE is omitted).
+
+    Adding a second provider keeps the first: the newest becomes primary and
+    the others stay switchable via `amplifier-newtui provider use`.
+    """
+    raise SystemExit(asyncio.run(_init(provider_type, api_key, base_url, model, yes, False)))
+
+
+@provider.command("use")
+@click.argument("name")
+def provider_use(name: str) -> None:
+    """Make NAME the primary provider (sets it to priority 1)."""
+    from .kernel import bundle_admin, setup
+
+    target = setup.use_provider(bundle_admin.settings_paths(None, None), name)
+    if target is None:
+        click.echo(f"unknown provider: {name} · run `amplifier-newtui provider list`", err=True)
+        raise SystemExit(1)
+    click.echo(f"primary provider → {target.name}")
+
+
+@provider.command("remove")
+@click.argument("name")
+def provider_remove(name: str) -> None:
+    """Remove NAME from the provider configuration (every scope)."""
+    from .kernel import bundle_admin, setup
+
+    removed = setup.remove_provider(bundle_admin.settings_paths(None, None), name)
+    if removed is None:
+        click.echo(f"unknown provider: {name} · run `amplifier-newtui provider list`", err=True)
+        raise SystemExit(1)
+    click.echo(f"removed provider: {removed.name}")
+
+
+@provider.command("dashboard")
+def provider_dashboard() -> None:
+    """Show configured providers, the primary, and how to switch."""
+    from .kernel import setup
+
+    status = setup.setup_status()
+    providers = setup.configured_providers()
+    click.echo(f"active bundle: {status.active_bundle or 'newtui (default)'}")
+    click.echo("stored keys: " + (", ".join(status.stored_keys) if status.stored_keys else "none"))
+    click.echo("")
+    if not providers:
+        click.echo("no providers configured · run `amplifier-newtui provider add`")
+        return
+    click.echo("providers (★ = primary):")
+    for entry in providers:
+        marker = "★" if entry.primary else " "
+        model = f" ({entry.model})" if entry.model else ""
+        click.echo(
+            f"  {marker} {entry.name} · {entry.module_id} · "
+            f"pri {entry.priority} · {entry.scope}{model}"
+        )
+    click.echo("")
+    click.echo("switch with `amplifier-newtui provider use <name>`")
 
 
 # --------------------------------------------------------------------------
