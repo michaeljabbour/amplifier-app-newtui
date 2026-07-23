@@ -1,0 +1,120 @@
+// Backlog attractor: drive EVERY open issue in pipelines/ledger.tsv to done.
+//
+// Generalizes gene-transfer.dot for a heterogeneous backlog. A deterministic
+// RouteGate looks the issue up in pipelines/categories.tsv and routes it to one
+// of three treatments:
+//
+//   port     — donor study in amplifier-app-cli, re-express through newtui seams
+//              (NEVER import/vendor/copy app-cli), gate on unit + forge
+//   internal — fix/refactor/feature; no donor step; gate on unit + forge
+//   decision — design doc in docs/plans/; gate on doc-exists + review; no forge
+//
+// Node types: box = LLM agent (claude-opus-4-8; fable-5 refuses this autonomous
+// work), parallelogram = deterministic tool node (LAST printed line routes edges).
+// Params supplied by the launcher bundle: $newtui_path, $donor_path, $forge_tool.
+//
+// Branch discipline: auto/<slug>, one issue per branch, one PR each, never main.
+
+digraph backlog_attractor {
+    graph [
+        goal="Drive every 'new' row in pipelines/ledger.tsv to implemented (green-gated PR) or acknowledged (human handoff). HARD RULES (ADR-0007): kernel is the ONLY layer importing amplifier-core/foundation; ui/ and commands/ never touch amplifier-core; pure renderers golden-tested in the same commit. Port issues NEVER import, vendor, or copy amplifier-app-cli — re-express the capability through this repo's seams reusing amplifier-native primitives. One issue per auto/<slug> branch, one PR each, never main. Max 3 attempts per issue, then acknowledge and move on.",
+        default_fidelity="truncate",
+        default_thread_id="backlog",
+        default_max_retry="3"
+    ]
+
+    start [shape=Mdiamond]
+
+    // --- loop head: any work left? ---
+    CheckLedger [shape=parallelogram,
+        tool_command="cd $newtui_path && test \"$(python3 pipelines/ledger.py earliest)\" = NONE && printf done || printf process"]
+
+    // --- pick the earliest 'new' issue; capture issue + acceptance verbatim ---
+    SelectIssue [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Run `python3 pipelines/ledger.py earliest` in $newtui_path — it prints '<issue> <slug>'. Read the issue: `gh issue view <issue> -R michaeljabbour/amplifier-app-newtui`. Write (1) .ai/bk_current.md — issue, slug, capability summary, Acceptance section VERBATIM (derive criteria from the body if no explicit section); (2) .ai/bk_current.env — exactly `ISSUE=<issue>` and `SLUG=<slug>`. Delete .ai/bk_retries if present. $goal"]
+
+    // --- deterministic routing via categories.tsv ---
+    RouteGate [shape=parallelogram,
+        tool_command="cd $newtui_path && . .ai/bk_current.env && awk -F'\\t' -v i=$ISSUE '$1==i{print $2}' pipelines/categories.tsv | head -1"]
+
+    // --- fresh per-issue branch off origin/main (in a worktree, never the user's checkout) ---
+    BranchSetup [shape=parallelogram,
+        tool_command="cd $newtui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
+
+    // ============ decision treatment ============
+    DraftDoc [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Read .ai/bk_current.md. Study the repo (docs/ARCHITECTURE.md, docs/decisions/, relevant source; donor at $donor_path read-only if the decision references app-cli). Write docs/plans/<date>-<slug>.md in $work_tree: Problem, Evidence (real file:line cites), Options (≥2) with trade-offs, Decision, Phased implementation plan, Test strategy, Risks, Acceptance mapping. Self-review against every acceptance bullet before finishing. $goal"]
+    ReviewDoc [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Critique the new docs/plans/ doc in $work_tree against .ai/bk_current.md acceptance criteria: grounded evidence? real options? actionable plan? Write verdict PASS or a numbered fix list to .ai/bk_review.md, and print the verdict as your last line."]
+    DocGate [shape=parallelogram,
+        tool_command="cd $work_tree && test -n \"$(git status --porcelain docs/plans/)\" && grep -q '^PASS' $newtui_path/.ai/bk_review.md && printf pass || printf fail"]
+
+    // ============ port treatment (gene-transfer shape) ============
+    LocateDonor [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Read .ai/bk_current.md. In the donor at $donor_path locate the construct(s) implementing this capability. Record file:symbol refs and the BEHAVIORAL CONTRACT (inputs, outputs, settings keys, edge cases) in .ai/bk_donor.md. Do NOT copy source — document the gene, not the organ. $goal"]
+
+    // ============ shared implement path (port + internal) ============
+    PlanWork [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Read .ai/bk_current.md (+ .ai/bk_donor.md if present), docs/ARCHITECTURE.md, docs/decisions/ADR-0007-*. Design the change through newtui's kernel/model/ui/commands seams; name exact files, amplifier-core/foundation primitives to reuse, tests and goldens to add. Write .ai/bk_plan.md. THEN author .ai/bk_forge_check.sh: a bash probe using $forge_tool (env FORGE) that boots the real TUI (`uv run amplifier-newtui` in a forge pty, session name auto-<slug>) or runs the new CLI via forge exec, asserts the issue's acceptance behavior from screen/grep, exit 0 on pass. $goal"]
+    Implement [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Read .ai/bk_plan.md including appended 'Fix N' sections. Implement in $work_tree on the current auto/<slug> branch. Add/extend tests; regenerate goldens for pure-renderer changes. ADR-0007-clean; never import amplifier-app-cli. Append changed files to .ai/bk_impl.log. $goal"]
+    UnitValidate [shape=parallelogram,
+        tool_command="cd $work_tree && uv run ruff check . >/tmp/bk_lint 2>&1 && uv run pyright src/ >/tmp/bk_types 2>&1 && uv run pytest -q >/tmp/bk_test 2>&1 && printf pass || printf fail"]
+    ForgeValidate [shape=parallelogram,
+        tool_command="cd $work_tree && export FORGE=$forge_tool && python3 \"$FORGE\" doctor >/tmp/bk_doctor 2>&1 && bash $newtui_path/.ai/bk_forge_check.sh >/tmp/bk_forge 2>&1 && printf pass || printf fail"]
+
+    // --- diagnose / bound retries ---
+    AnalyzeFailure [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="A gate failed. Read /tmp/bk_lint /tmp/bk_types /tmp/bk_test /tmp/bk_forge /tmp/bk_doctor (or .ai/bk_review.md for decision issues) and .ai/bk_impl.log. Diagnose root cause; append a numbered 'Fix N' section with concrete minimal changes to .ai/bk_plan.md. Do not edit source here. $goal"]
+    RetryGate [shape=parallelogram,
+        tool_command="cd $newtui_path && n=$(cat .ai/bk_retries 2>/dev/null || echo 0); n=$((n+1)); echo $n > .ai/bk_retries; test $n -le 3 && printf retry || printf giveup"]
+
+    // --- converged: commit, push, PR, ledger, comment ---
+    Commit [shape=parallelogram,
+        tool_command="cd $work_tree && . $newtui_path/.ai/bk_current.env && git add -A -- ':!.ai' && git commit -q -m \"auto/$SLUG: close #$ISSUE via backlog attractor\" && git push -q -u origin HEAD && gh pr create --fill --base main --head auto/$SLUG --label auto-pipeline >/tmp/bk_pr 2>&1; cd $newtui_path && python3 pipelines/ledger.py update $ISSUE implemented >/dev/null && gh issue comment $ISSUE -b \"Landed by the backlog attractor pipeline; gates green. PR: $(tail -1 /tmp/bk_pr)\" >/dev/null && printf next"]
+
+    // --- could not converge: acknowledge + human handoff ---
+    MarkBlocked [shape=parallelogram,
+        tool_command="cd $newtui_path && . .ai/bk_current.env && python3 pipelines/ledger.py update $ISSUE acknowledged >/dev/null && gh issue comment $ISSUE -b \"Backlog attractor could not converge after 3 attempts — needs a human. See branch auto/$SLUG and .ai/bk_plan.md.\" >/dev/null && printf next"]
+
+    exit [shape=Msquare]
+
+    // --- flow ---
+    start -> CheckLedger
+    CheckLedger -> exit        [condition="context.tool.last_line=done"]
+    CheckLedger -> SelectIssue [condition="context.tool.last_line=process"]
+    SelectIssue -> RouteGate
+    RouteGate -> BranchSetup   [condition="context.tool.last_line=port"]
+    RouteGate -> BranchSetup2  [condition="context.tool.last_line=internal"]
+    RouteGate -> BranchSetup3  [condition="context.tool.last_line=decision"]
+
+    // graphviz needs distinct nodes for distinct routed paths; all three run the
+    // same tool_command as BranchSetup (kept in sync — see README)
+    BranchSetup  -> LocateDonor
+    BranchSetup2 [shape=parallelogram,
+        tool_command="cd $newtui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
+    BranchSetup3 [shape=parallelogram,
+        tool_command="cd $newtui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
+    BranchSetup2 -> PlanWork
+    BranchSetup3 -> DraftDoc
+
+    LocateDonor -> PlanWork
+    PlanWork -> Implement
+    Implement -> UnitValidate
+    UnitValidate  -> ForgeValidate  [condition="context.tool.last_line=pass"]
+    UnitValidate  -> AnalyzeFailure [condition="context.tool.last_line=fail"]
+    ForgeValidate -> Commit         [condition="context.tool.last_line=pass"]
+    ForgeValidate -> AnalyzeFailure [condition="context.tool.last_line=fail"]
+
+    DraftDoc -> ReviewDoc
+    ReviewDoc -> DocGate
+    DocGate -> Commit         [condition="context.tool.last_line=pass"]
+    DocGate -> AnalyzeFailure [condition="context.tool.last_line=fail"]
+
+    AnalyzeFailure -> RetryGate
+    RetryGate -> Implement   [condition="context.tool.last_line=retry"]
+    RetryGate -> MarkBlocked [condition="context.tool.last_line=giveup"]
+
+    Commit      -> CheckLedger [loop_restart="true"]
+    MarkBlocked -> CheckLedger [loop_restart="true"]
+}
