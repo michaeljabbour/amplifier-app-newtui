@@ -596,7 +596,7 @@ async def test_resolve_config_applies_compaction_to_prepared_default_bundle(
     Uses a local bundle declaring ``session.context`` directly (no ``source:``
     on the module spec, so ``Bundle.prepare()`` never adds it to
     ``modules_to_activate`` / never touches the network) rather than the
-    repo-root ``bundle.md`` \u2014 that file's ``includes:`` is a SHA-pinned
+    repo-root ``bundle.md`` \u2014 that file's ``includes:`` is a ref-pinned
     ``git+https://`` fetch of Foundation's anchors bundle, and resolving it
     live would break this file's documented offline-only convention (see
     module docstring) and depends on network reachability this suite must

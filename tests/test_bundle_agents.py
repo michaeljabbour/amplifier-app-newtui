@@ -1,6 +1,7 @@
 """Guard: the packaged newtui bundle is a THIN WRAPPER over anchors.
 
-The bundle composes foundation's `anchors` bundle (SHA-pinned includes) and
+The bundle composes foundation's `anchors` bundle (ref-pinned include: tracks
+foundation @main, the only ref that ships bundles/anchors) and
 overlays only a default provider, tool-mcp, and tool-team-pulse. Everything
 else — session (300k context), tool roster (incl. tool-delegate subagents),
 hooks, and the six bundle-local agents — arrives via the include. These tests
@@ -20,7 +21,7 @@ from amplifier_app_newtui.kernel.config import packaged_bundles_dir
 
 ANCHORS_INCLUDE_RE = re.compile(
     r"^git\+https://github\.com/microsoft/amplifier-foundation"
-    r"@(?P<sha>[0-9a-f]{40})#subdirectory=bundles/anchors/bundle\.md$"
+    r"@(?P<ref>[^\s#]+)#subdirectory=bundles/anchors/bundle\.md$"
 )
 
 
@@ -37,12 +38,12 @@ def test_wrapper_keeps_bundle_name() -> None:
     assert _frontmatter().get("bundle", {}).get("name") == "newtui"
 
 
-def test_wrapper_includes_sha_pinned_anchors() -> None:
+def test_wrapper_includes_ref_pinned_anchors() -> None:
     includes = _frontmatter().get("includes")
     assert isinstance(includes, list) and len(includes) == 1
     uri = includes[0].get("bundle", "")
     assert ANCHORS_INCLUDE_RE.match(uri), (
-        f"includes[0].bundle must be a SHA-pinned anchors URI, got {uri!r}"
+        f"includes[0].bundle must be a ref-pinned anchors URI (tag/branch/SHA), got {uri!r}"
     )
 
 
