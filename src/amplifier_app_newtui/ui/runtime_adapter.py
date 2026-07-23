@@ -17,11 +17,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from ..kernel.events import UIEvent
+
 from ..kernel.compaction import CompactionConfig
 from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
 from ..kernel.session_ops import ModelListing, StatusInfo
@@ -48,9 +50,105 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_OpT = TypeVar("_OpT")
+
+
+@dataclass(frozen=True)
+class SessionOp(Generic[_OpT]):
+    """One passthrough session op, declared ONCE (ADR-0007 §Runtimes).
+
+    The ~14 in-session ops (``/model`` ``/effort`` ``/status`` ``/tools``
+    …) used to be re-declared at every rung of the adapter ladder: a
+    neutral stub on the base adapter and a ``_runtime is None`` guard plus
+    a thread-marshalling twin on :class:`RealRuntimeAdapter`. This
+    descriptor collapses the two adapter rungs onto one seam:
+
+    - ``name`` is the method the adapter and ``kernel/runtime.RealRuntime``
+      share — the marshalling target looked up by name;
+    - ``demo`` is what the base/demo adapter answers (no session at all);
+    - ``starting`` is what the real adapter answers before its runtime
+      thread has finished booting.
+
+    The single marshalling seam is :meth:`RuntimeAdapter._run_op`. Adding
+    op #15 is one entry in :data:`SESSION_OPS` plus a two-line typed shim
+    on the base adapter — never a fifth hand-written twin.
+    """
+
+    name: str
+    demo: _OpT
+    starting: _OpT
+
+
+# The real adapter's shared "runtime thread still booting" reply for the
+# fallible (ok, detail) ops.
+_STILL_STARTING = "session still starting"
+
+_INTERRUPT: SessionOp[bool] = SessionOp("interrupt", False, False)
+_LIST_NATIVE_MODES: SessionOp[Any] = SessionOp("list_native_modes", "", "")
+_SET_NATIVE_MODE: SessionOp[tuple[bool, str]] = SessionOp(
+    "set_native_mode",
+    (False, "native modes need a real session"),
+    (False, _STILL_STARTING),
+)
+_LIST_MODELS: SessionOp[ModelListing] = SessionOp(
+    "list_models",
+    ModelListing(provider="", current=""),
+    ModelListing(provider="", current=""),
+)
+_SET_MODEL: SessionOp[tuple[bool, str]] = SessionOp(
+    "set_model",
+    (False, "switching models needs a real session"),
+    (False, _STILL_STARTING),
+)
+_GET_EFFORT: SessionOp[str | None] = SessionOp("get_effort", None, None)
+_SET_EFFORT: SessionOp[tuple[bool, str]] = SessionOp(
+    "set_effort",
+    (False, "reasoning effort needs a real session"),
+    (False, _STILL_STARTING),
+)
+_COMPACT: SessionOp[tuple[bool, str]] = SessionOp(
+    "compact",
+    (False, "compaction needs a real session"),
+    (False, _STILL_STARTING),
+)
+_CLEAR_CONTEXT: SessionOp[tuple[bool, int]] = SessionOp("clear_context", (False, 0), (False, 0))
+_STATUS: SessionOp[StatusInfo] = SessionOp("status", StatusInfo(), StatusInfo())
+_LIST_TOOLS: SessionOp[tuple[str, ...]] = SessionOp("list_tools", (), ())
+_LIST_AGENTS: SessionOp[tuple[str, ...]] = SessionOp("list_agents", (), ())
+_DIFF: SessionOp[str | None] = SessionOp("diff", None, None)
+_WORKSPACE_FILES: SessionOp[tuple[str, ...]] = SessionOp("workspace_files", (), ())
+_LIST_SKILLS: SessionOp[tuple[Any, ...]] = SessionOp("list_skills", (), ())
+_LOAD_SKILL: SessionOp[tuple[bool, str]] = SessionOp(
+    "load_skill",
+    (False, "skills need a real session"),
+    (False, _STILL_STARTING),
+)
+_MCP_TOOLS: SessionOp[tuple[str, ...]] = SessionOp("mcp_tools", (), ())
+
+SESSION_OPS: tuple[SessionOp[Any], ...] = (
+    _INTERRUPT,
+    _LIST_NATIVE_MODES,
+    _SET_NATIVE_MODE,
+    _LIST_MODELS,
+    _SET_MODEL,
+    _GET_EFFORT,
+    _SET_EFFORT,
+    _COMPACT,
+    _CLEAR_CONTEXT,
+    _STATUS,
+    _LIST_TOOLS,
+    _LIST_AGENTS,
+    _DIFF,
+    _WORKSPACE_FILES,
+    _LIST_SKILLS,
+    _LOAD_SKILL,
+    _MCP_TOOLS,
+)
+"""The one declaration site for the passthrough session-op ladder."""
 
 
 class RuntimeAdapter:
+
     """Base adapter: owns the event queue and shared interaction queues.
 
     The app calls :meth:`attach` before :meth:`start`; ``start`` must
@@ -114,70 +212,77 @@ class RuntimeAdapter:
         """
         await self.submit(text)
 
+    # -- in-session op dispatch (ONE seam; see :class:`SessionOp`) -----------
+
+    async def _run_op(self, op: SessionOp[_OpT], /, *args: Any) -> _OpT:
+        """Dispatch a passthrough session op through the single seam.
+
+        The base/demo adapter has no live session, so every op answers
+        with its neutral ``demo`` value. :class:`RealRuntimeAdapter`
+        overrides ONLY this method to guard the booting runtime and
+        marshal the call into the runtime thread — collapsing what used
+        to be a hand-written twin per op.
+        """
+        del args
+        return op.demo
+
     async def interrupt(self) -> bool:
         """Request an interrupt; True when the runtime accepted it."""
-        return False
+        return await self._run_op(_INTERRUPT)
 
     async def list_native_modes(self) -> Any:
         """Bundle-composed mode catalog (real sessions); "" when absent.
         Typically a mapping with a ``modes`` list of {name, description,
         source} dicts — whatever the mounted mode tool reports."""
-        return ""
+        return await self._run_op(_LIST_NATIVE_MODES)
 
     async def set_native_mode(self, name: str | None) -> tuple[bool, str]:
         """Activate/clear a bundle-provided mode via the native mode tool."""
-        del name
-        return (False, "native modes need a real session")
-
-    # -- in-session ops (base: no live session, neutral results) ------------
+        return await self._run_op(_SET_NATIVE_MODE, name)
 
     async def list_models(self) -> ModelListing:
-        return ModelListing(provider="", current="")
+        return await self._run_op(_LIST_MODELS)
 
     async def set_model(self, model: str) -> tuple[bool, str]:
-        del model
-        return (False, "switching models needs a real session")
+        return await self._run_op(_SET_MODEL, model)
 
     async def get_effort(self) -> str | None:
-        return None
+        return await self._run_op(_GET_EFFORT)
 
     async def set_effort(self, level: str) -> tuple[bool, str]:
-        del level
-        return (False, "reasoning effort needs a real session")
+        return await self._run_op(_SET_EFFORT, level)
 
     async def compact(self, focus: str = "") -> tuple[bool, str]:
-        del focus
-        return (False, "compaction needs a real session")
+        return await self._run_op(_COMPACT, focus)
 
     async def clear_context(self) -> tuple[bool, int]:
-        return (False, 0)
+        return await self._run_op(_CLEAR_CONTEXT)
 
     async def status(self) -> StatusInfo:
-        return StatusInfo()
+        return await self._run_op(_STATUS)
 
     async def list_tools(self) -> tuple[str, ...]:
-        return ()
+        return await self._run_op(_LIST_TOOLS)
 
     async def list_agents(self) -> tuple[str, ...]:
-        return ()
+        return await self._run_op(_LIST_AGENTS)
 
     async def diff(self, staged: bool = False) -> str | None:
-        del staged
-        return None
+        return await self._run_op(_DIFF, staged)
 
     async def workspace_files(self) -> tuple[str, ...]:
         """Relative paths available to composer ``@file`` autocomplete."""
-        return ()
+        return await self._run_op(_WORKSPACE_FILES)
 
     async def list_skills(self) -> tuple[Any, ...]:
-        return ()
+        return await self._run_op(_LIST_SKILLS)
 
     async def load_skill(self, name: str) -> tuple[bool, str]:
-        del name
-        return (False, "skills need a real session")
+        return await self._run_op(_LOAD_SKILL, name)
 
     async def mcp_tools(self) -> tuple[str, ...]:
-        return ()
+        return await self._run_op(_MCP_TOOLS)
+
 
     async def directory_entries(
         self, kind: DirectoryKind
@@ -445,92 +550,27 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is not None:
             await self._in_runtime(self._runtime.submit(text, attachments))
 
-    async def interrupt(self) -> bool:
-        if self._runtime is None:
-            return False
-        return await self._in_runtime(self._runtime.interrupt())
+    async def _run_op(self, op: SessionOp[_OpT], /, *args: Any) -> _OpT:
+        """The single marshalling seam (overrides the base dispatch).
 
-    async def list_native_modes(self) -> Any:
+        Before the runtime thread finishes booting ``_runtime`` is None
+        and every op answers with its ``starting`` value; once live, the
+        call hops onto the runtime loop via :meth:`_in_runtime` and lands
+        on the same-named ``RealRuntime`` method. This one override
+        replaces the seventeen hand-written thread-marshalling twins that
+        used to live here.
+        """
         if self._runtime is None:
-            return ""
-        return await self._in_runtime(self._runtime.list_native_modes())
-
-    async def set_native_mode(self, name: str | None) -> tuple[bool, str]:
-        if self._runtime is None:
-            return (False, "session still starting")
-        return await self._in_runtime(self._runtime.set_native_mode(name))
-
-    async def list_models(self) -> ModelListing:
-        if self._runtime is None:
-            return ModelListing(provider="", current="")
-        return await self._in_runtime(self._runtime.list_models())
+            return op.starting
+        return await self._in_runtime(getattr(self._runtime, op.name)(*args))
 
     async def set_model(self, model: str) -> tuple[bool, str]:
-        if self._runtime is None:
-            return (False, "session still starting")
-        result = await self._in_runtime(self._runtime.set_model(model))
-        self.model_name = self._runtime.model_name  # keep the footer's copy live
+        """Marshal the switch, then keep the footer's model copy live."""
+        result = await super().set_model(model)
+        if self._runtime is not None:
+            self.model_name = self._runtime.model_name
         return result
 
-    async def get_effort(self) -> str | None:
-        if self._runtime is None:
-            return None
-        return await self._in_runtime(self._runtime.get_effort())
-
-    async def set_effort(self, level: str) -> tuple[bool, str]:
-        if self._runtime is None:
-            return (False, "session still starting")
-        return await self._in_runtime(self._runtime.set_effort(level))
-
-    async def compact(self, focus: str = "") -> tuple[bool, str]:
-        if self._runtime is None:
-            return (False, "session still starting")
-        return await self._in_runtime(self._runtime.compact(focus))
-
-    async def clear_context(self) -> tuple[bool, int]:
-        if self._runtime is None:
-            return (False, 0)
-        return await self._in_runtime(self._runtime.clear_context())
-
-    async def status(self) -> StatusInfo:
-        if self._runtime is None:
-            return StatusInfo()
-        return await self._in_runtime(self._runtime.status())
-
-    async def list_tools(self) -> tuple[str, ...]:
-        if self._runtime is None:
-            return ()
-        return await self._in_runtime(self._runtime.list_tools())
-
-    async def list_agents(self) -> tuple[str, ...]:
-        if self._runtime is None:
-            return ()
-        return await self._in_runtime(self._runtime.list_agents())
-
-    async def diff(self, staged: bool = False) -> str | None:
-        if self._runtime is None:
-            return None
-        return await self._in_runtime(self._runtime.diff(staged))
-
-    async def workspace_files(self) -> tuple[str, ...]:
-        if self._runtime is None:
-            return ()
-        return await self._in_runtime(self._runtime.workspace_files())
-
-    async def list_skills(self) -> tuple[Any, ...]:
-        if self._runtime is None:
-            return ()
-        return await self._in_runtime(self._runtime.list_skills())
-
-    async def load_skill(self, name: str) -> tuple[bool, str]:
-        if self._runtime is None:
-            return (False, "session still starting")
-        return await self._in_runtime(self._runtime.load_skill(name))
-
-    async def mcp_tools(self) -> tuple[str, ...]:
-        if self._runtime is None:
-            return ()
-        return await self._in_runtime(self._runtime.mcp_tools())
 
     async def directory_entries(
         self, kind: DirectoryKind
@@ -650,4 +690,5 @@ class RealRuntimeAdapter(RuntimeAdapter):
         return super().decision_narration(choice)
 
 
-__all__ = ["RealRuntimeAdapter", "RuntimeAdapter"]
+__all__ = ["SESSION_OPS", "RealRuntimeAdapter", "RuntimeAdapter", "SessionOp"]
+
