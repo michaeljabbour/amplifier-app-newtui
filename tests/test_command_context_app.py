@@ -215,7 +215,10 @@ async def test_action_forwards_to_the_app(
         ctx = AppCommandContext(app)
 
         seen: list[tuple[object, ...]] = []
-        setattr(app, app_method, lambda *a, **k: seen.append(a))
+        # Session ops forward to the extracted SessionOpsController (#31);
+        # everything else still forwards to the App composition root.
+        target = app.session_ops if hasattr(type(app.session_ops), app_method) else app
+        setattr(target, app_method, lambda *a, **k: seen.append(a))
         getattr(ctx, ctx_method)(*args)
         await pilot.pause()
         assert seen == [args]

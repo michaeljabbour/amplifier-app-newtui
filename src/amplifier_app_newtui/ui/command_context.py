@@ -144,37 +144,37 @@ class AppCommandContext:
         self._app.activate_native_mode(name)
 
     def show_status(self) -> None:
-        self._app.show_status()
+        self._app.session_ops.show_status()
 
     def show_model(self, arg: str) -> None:
-        self._app.show_model(arg)
+        self._app.session_ops.show_model(arg)
 
     def apply_effort(self, arg: str) -> None:
-        self._app.apply_effort(arg)
+        self._app.session_ops.apply_effort(arg)
 
     def compact_context(self, focus: str) -> None:
-        self._app.compact_context(focus)
+        self._app.session_ops.compact_context(focus)
 
     def clear_context(self) -> None:
-        self._app.clear_context()
+        self._app.session_ops.clear_context()
 
     def show_tools(self) -> None:
-        self._app.show_tools()
+        self._app.session_ops.show_tools()
 
     def show_agents(self) -> None:
-        self._app.show_agents()
+        self._app.session_ops.show_agents()
 
     def show_diff(self, arg: str) -> None:
-        self._app.show_diff(arg)
+        self._app.session_ops.show_diff(arg)
 
     def show_skills(self) -> None:
-        self._app.show_skills()
+        self._app.session_ops.show_skills()
 
     def load_skill(self, name: str) -> None:
-        self._app.load_skill(name)
+        self._app.session_ops.load_skill(name)
 
     def manage_mcp(self, args: str) -> None:
-        self._app.manage_mcp(args)
+        self._app.session_ops.manage_mcp(args)
 
     def manage_config(self, args: str) -> None:
         self._app.manage_config(args)
