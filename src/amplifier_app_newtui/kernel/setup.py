@@ -246,6 +246,43 @@ async def discover_providers(amplifier_home: Path | None = None) -> tuple[Provid
     return tuple(sorted(choices, key=lambda c: c.module_id))
 
 
+async def onboarding_choices(
+    amplifier_home: Path | None = None,
+) -> tuple[ProviderChoice, ...]:
+    """Providers to offer during first-run setup.
+
+    Discovered provider *modules* are merged with the known-credential table.
+    newtui mounts providers from the bundle, so ``ModuleLoader`` discovery is
+    usually empty on a fresh machine — and after any real session boot it is
+    *partial* (foundation pip-installs the bundle's provider module, giving it
+    an ``amplifier.modules`` entry point while the other known providers stay
+    uninstalled). Either/or would then hide every other provider from
+    onboarding, so: a discovered module wins for its own id (its ``get_info()``
+    env var is authoritative), and the table fills the gaps. Providers that
+    need no key (e.g. ollama) are omitted from this key-setup flow."""
+    discovered = await discover_providers(amplifier_home=amplifier_home)
+    by_module: dict[str, ProviderChoice] = {c.module_id: c for c in discovered}
+    stored = stored_key_names(keys_file(amplifier_home))
+    for module_id, variables in PROVIDER_CREDENTIAL_VARS.items():
+        if not variables or module_id in by_module:
+            continue
+        info = load_provider_info(module_id)
+        key_var = info.key_var if info else variables[0]
+        base_url_var = (
+            info.base_url_var
+            if info and info.base_url_var
+            else f"{provider_env_prefix(module_id)}_BASE_URL"
+        )
+        by_module[module_id] = ProviderChoice(
+            module_id=module_id,
+            name=_provider_display_name(module_id),
+            key_var=key_var,
+            base_url_var=base_url_var,
+            has_key=key_var in stored,
+        )
+    return tuple(sorted(by_module.values(), key=lambda c: c.module_id))
+
+
 @dataclass(frozen=True)
 class SetupStatus:
     keys_path: Path
@@ -367,21 +404,271 @@ async def auto_init_from_env(
     return module_id
 
 
+# -- configured providers (provider list / use / remove + first-run gate) ---
+#
+# app-cli reads its ``config.providers`` list through ``AppSettings``
+# (``get_provider_overrides`` / ``get_scope_provider_overrides``) and drives
+# ``provider list/use/remove`` + ``check_first_run`` off it. newtui is not
+# built on those classes, so this re-expresses the same behavioral contract
+# over ``kernel/bundle_admin``'s scope files: the *primary* provider is the
+# lowest ``config.priority`` (app-cli's ★ marker); a more specific scope
+# (local > project > global) shadows the same identity key. Pure dict/file
+# work — unit-tested against ``tmp_path`` scope files.
+
+
+@dataclass(frozen=True)
+class ConfiguredProvider:
+    """One entry from the merged ``config.providers`` view."""
+
+    module_id: str
+    instance_id: str | None
+    name: str  # display: the instance id, else the module minus ``provider-``
+    model: str | None
+    priority: int
+    primary: bool  # lowest priority across the merged view (app-cli's ★)
+    scope: str  # the most specific scope contributing this entry
+
+    @property
+    def key(self) -> str:
+        """The identity key app-cli merges on (``id | module``)."""
+        return self.instance_id or self.module_id
+
+
+def _provider_display_name(module_id: str) -> str:
+    return module_id.replace("provider-", "") if module_id else module_id
+
+
+def _entry_key(entry: dict[str, Any]) -> str:
+    return str(entry.get("id") or entry.get("module") or "")
+
+
+def _entry_priority(entry: dict[str, Any]) -> int:
+    config = entry.get("config")
+    if isinstance(config, dict):
+        pri = config.get("priority", 100)
+        if isinstance(pri, int):
+            return pri
+    return 100
+
+
+def _scope_providers(paths: Any, scope: Literal["global", "project", "local"]) -> list[dict[str, Any]]:
+    """The raw ``config.providers`` list stored at one scope."""
+    from .bundle_admin import read_scope, scope_file
+
+    data = read_scope(scope_file(paths, scope))
+    config = data.get("config")
+    if isinstance(config, dict):
+        providers = config.get("providers")
+        if isinstance(providers, list):
+            return [p for p in providers if isinstance(p, dict)]
+    return []
+
+
+def configured_providers(
+    project_dir: Path | None = None, amplifier_home: Path | None = None
+) -> tuple[ConfiguredProvider, ...]:
+    """The merged ``config.providers`` view, sorted primary-first.
+
+    Same merge rule as app-cli's ``get_provider_overrides``: keyed by
+    ``id | module``, a more specific scope (local > project > global)
+    shadows the same key. The lowest ``config.priority`` is the primary."""
+    from .bundle_admin import SCOPES, settings_paths
+
+    paths = settings_paths(project_dir, amplifier_home)
+    merged: dict[str, tuple[str, dict[str, Any]]] = {}
+    for scope in SCOPES:  # global -> project -> local: later (more specific) wins
+        for entry in _scope_providers(paths, scope):
+            key = _entry_key(entry)
+            if key:
+                merged[key] = (scope, entry)
+    if not merged:
+        return ()
+    min_priority = min(_entry_priority(entry) for _scope, entry in merged.values())
+    result: list[ConfiguredProvider] = []
+    for scope, entry in merged.values():
+        module_id = str(entry.get("module") or "")
+        instance_id = entry.get("id")
+        instance = str(instance_id) if instance_id else None
+        config = entry.get("config")
+        model = config.get("default_model") if isinstance(config, dict) else None
+        priority = _entry_priority(entry)
+        result.append(
+            ConfiguredProvider(
+                module_id=module_id,
+                instance_id=instance,
+                name=instance or _provider_display_name(module_id),
+                model=str(model) if model else None,
+                priority=priority,
+                primary=priority == min_priority,
+                scope=scope,
+            )
+        )
+    return tuple(sorted(result, key=lambda c: (c.priority, c.name)))
+
+
+def _credential_available(amplifier_home: Path | None = None) -> bool:
+    """True when a known provider's credential vars are all present.
+
+    The packaged bundle already mounts a default provider (anthropic) that
+    reads ``ANTHROPIC_API_KEY``; if the credential is live in the process
+    env or stored in keys.env, that default will mount without an explicit
+    ``config.providers`` entry — so it is NOT a first run."""
+    stored = stored_key_names(keys_file(amplifier_home))
+    for variables in PROVIDER_CREDENTIAL_VARS.values():
+        if variables and all(os.environ.get(v) or v in stored for v in variables):
+            return True
+    return False
+
+
+def has_configured_provider(
+    project_dir: Path | None = None, amplifier_home: Path | None = None
+) -> bool:
+    """Whether the app can mount a provider without onboarding.
+
+    app-cli's ``check_first_run`` keys off configured providers only; newtui
+    also honours the bundle's default provider when its credential is already
+    available (env or keys.env), so an exported ``ANTHROPIC_API_KEY`` alone is
+    enough to boot the packaged bundle. ``not has_configured_provider()`` is
+    the first-run condition the launch gate acts on."""
+    if configured_providers(project_dir, amplifier_home):
+        return True
+    return _credential_available(amplifier_home)
+
+
+def _match_configured(
+    entries: tuple[ConfiguredProvider, ...], token: str
+) -> ConfiguredProvider | None:
+    """Resolve a user token (id / module / prefix / display) to an entry."""
+    needle = token.strip().lower()
+    if not needle:
+        return None
+    for entry in entries:
+        candidates = {
+            entry.module_id.lower(),
+            _provider_display_name(entry.module_id).lower(),
+            entry.name.lower(),
+            provider_env_prefix(entry.module_id).lower(),
+        }
+        if entry.instance_id:
+            candidates.add(entry.instance_id.lower())
+        if needle in candidates:
+            return entry
+    return None
+
+
+def use_provider(
+    paths: Any,
+    name: str,
+    *,
+    project_dir: Path | None = None,
+    amplifier_home: Path | None = None,
+) -> ConfiguredProvider | None:
+    """Make *name* the primary provider (app-cli's ``provider use``).
+
+    Sets the matched entry's ``config.priority`` to 1 and demotes any other
+    entry that also held priority 1 to 10 — the same primary-by-priority
+    mechanic as :func:`write_provider_config`. Returns the resolved entry, or
+    ``None`` when nothing matched."""
+    from .bundle_admin import SCOPES, read_scope, scope_file, write_scope
+
+    entries = configured_providers(project_dir, amplifier_home)
+    target = _match_configured(entries, name)
+    if target is None:
+        return None
+    for scope in SCOPES:
+        path = scope_file(paths, scope)
+        data = read_scope(path)
+        config = data.get("config")
+        if not isinstance(config, dict):
+            continue
+        providers = config.get("providers")
+        if not isinstance(providers, list):
+            continue
+        changed = False
+        for entry in providers:
+            if not isinstance(entry, dict):
+                continue
+            entry_config = entry.get("config")
+            if not isinstance(entry_config, dict):
+                entry_config = {}
+                entry["config"] = entry_config
+            if _entry_key(entry) == target.key:
+                if entry_config.get("priority") != 1:
+                    entry_config["priority"] = 1
+                    changed = True
+            elif entry_config.get("priority") == 1:
+                entry_config["priority"] = 10
+                changed = True
+        if changed:
+            write_scope(path, data)
+    return target
+
+
+def remove_provider(
+    paths: Any,
+    name: str,
+    *,
+    project_dir: Path | None = None,
+    amplifier_home: Path | None = None,
+) -> ConfiguredProvider | None:
+    """Drop *name* from ``config.providers`` across every scope.
+
+    Mirrors app-cli's ``provider remove`` (remove-from-all-scopes by identity
+    key). Returns the removed entry, or ``None`` when nothing matched."""
+    from .bundle_admin import SCOPES, read_scope, scope_file, write_scope
+
+    entries = configured_providers(project_dir, amplifier_home)
+    target = _match_configured(entries, name)
+    if target is None:
+        return None
+    removed = False
+    for scope in SCOPES:
+        path = scope_file(paths, scope)
+        data = read_scope(path)
+        config = data.get("config")
+        if not isinstance(config, dict):
+            continue
+        providers = config.get("providers")
+        if not isinstance(providers, list):
+            continue
+        kept = [
+            entry
+            for entry in providers
+            if not (isinstance(entry, dict) and _entry_key(entry) == target.key)
+        ]
+        if len(kept) == len(providers):
+            continue
+        if kept:
+            config["providers"] = kept
+        else:
+            config.pop("providers", None)
+            if not config:
+                data.pop("config", None)
+        write_scope(path, data)
+        removed = True
+    return target if removed else None
+
 __all__ = [
     "PROVIDER_CREDENTIAL_VARS",
+    "configured_providers",
     "ProviderChoice",
     "ProviderFields",
     "SetupStatus",
+    "ConfiguredProvider",
     "auto_init_from_env",
     "detect_provider_from_env",
+    "has_configured_provider",
     "discover_providers",
     "keys_file",
     "load_provider_info",
+    "onboarding_choices",
     "provider_config_entry",
     "provider_env_prefix",
+    "remove_provider",
     "read_keys",
     "setup_status",
     "stored_key_names",
+    "use_provider",
     "write_key",
     "write_provider_config",
 ]
