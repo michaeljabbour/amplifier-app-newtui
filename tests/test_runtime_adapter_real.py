@@ -123,6 +123,7 @@ class FakeRealRuntime:
         steering: Any,
         needs_you: Any,
         denial_log: Any,
+        surface: Any,
         mode: Callable[[], str],
         permission_resolver: Callable[..., Any],
         capability_resolver: Callable[..., Any],
@@ -135,6 +136,7 @@ class FakeRealRuntime:
             "steering": steering,
             "needs_you": needs_you,
             "denial_log": denial_log,
+            "surface": surface,
             "mode": mode,
             "permission_resolver": permission_resolver,
             "capability_resolver": capability_resolver,
@@ -326,6 +328,7 @@ async def test_start_happy_path_copies_identity(booted: Booted) -> None:
     assert fake.kwargs["steering"] is adapter.steering
     assert fake.kwargs["needs_you"] is adapter.needs_you
     assert fake.kwargs["denial_log"] is adapter.denial_log
+    assert fake.kwargs["surface"] is adapter.terminal
     assert fake.kwargs["mode"] == adapter._current_mode
     assert fake.kwargs["permission_resolver"] == adapter._resolve_permission
     assert fake.kwargs["capability_resolver"] == adapter._resolve_capability

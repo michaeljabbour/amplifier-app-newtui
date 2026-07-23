@@ -19,6 +19,7 @@ from typing import Any
 
 from ..model.config import SessionConfigState
 from ..model.queues import NeedsYouItem, NeedsYouQueue, QueuedMessage, SteeringQueue
+from ..model.terminal import TerminalSurface
 from ..model.trust import CapabilityClass, DenialLog, TrustDecision
 from .approval import ApprovalBroker
 from .bundle_admin import read_scope, settings_paths
@@ -71,6 +72,7 @@ from .turn_yield import TurnYieldTracker
 from .session_factory import InitializedSession, SessionRequest, create_initialized_session
 from .spawner import SessionSpawner
 from .steering import StepBoundaryBridge
+from .surface_hint import SurfaceHintInjector
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +425,7 @@ class RealRuntime:
         steering: SteeringQueue | None = None,
         needs_you: NeedsYouQueue | None = None,
         denial_log: DenialLog | None = None,
+        surface: TerminalSurface | None = None,
         mode: Callable[[], str] = lambda: "auto",
         permission_resolver: Callable[[str, Mapping[str, object] | None], TrustDecision]
         | None = None,
@@ -462,6 +465,9 @@ class RealRuntime:
         self.turn_yield = TurnYieldTracker()
         """Per-turn ``tests ✔`` evidence from tool results (bridge tap)."""
         self.steering = steering or SteeringQueue()
+        self.surface = surface or TerminalSurface()
+        """Live terminal width for the width-aware surface hint (#35);
+        the UI updates it on resize, the surface-hint hook reads it."""
         self.needs_you = needs_you or NeedsYouQueue()
         # Every kernel-side deferral (broker ctrl-y park, auto-classifier
         # deny, escalation) becomes ONE decision Notification carrying the
@@ -738,6 +744,19 @@ class RealRuntime:
             binding = CompactionRuntimeBinding(context, self.compaction)
             self.compaction = binding.apply()
             self._compaction_binding = binding
+            # Width-aware surface hint (issue #35 / docs/BACKLOG.md
+            # section 2): an app-level provider:request hook telling the
+            # model the live terminal width + supported Markdown subset,
+            # so it survives any bundle override that drops the packaged
+            # static contract. It edits the context directly and returns
+            # continue (like the clipboard injector) rather than returning
+            # inject_context -- a second inject_context on provider:request
+            # would merge with the steering bridge's persistent steer under
+            # one ephemeral flag and break rewind turn accounting.
+            surface_hint = SurfaceHintInjector(
+                initialized.session_id, self.surface, context
+            )
+            initialized.unregister_handles.append(surface_hint.register_hooks(hooks))
             injector = ClipboardImageInjector(context)
             unregister = hooks.register(
                 "provider:request",

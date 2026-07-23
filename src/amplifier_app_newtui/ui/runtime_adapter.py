@@ -33,6 +33,7 @@ from ..model.config import (
 )
 from ..model.evidence import EvidenceLink
 from ..model.queues import NeedsYouQueue, SteeringQueue
+from ..model.terminal import TerminalSurface
 from ..model.trust import (
     CapabilityClass,
     DenialLog,
@@ -58,6 +59,10 @@ class RuntimeAdapter:
         self.steering = SteeringQueue()
         self.needs_you = NeedsYouQueue()
         self.denial_log = DenialLog()
+        self.terminal = TerminalSurface()
+        """Live terminal width shared with the kernel's width-aware
+        surface-hint hook (#35). The app updates it from Textual resize
+        events; the RealRuntime reads it at each provider:request."""
         self.app: Any = None
         self.bundle_name: str = ""
         self.model_name: str = ""
@@ -358,6 +363,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
                 steering=self.steering,
                 needs_you=self.needs_you,
                 denial_log=self.denial_log,
+                surface=self.terminal,
                 mode=self._current_mode,
                 permission_resolver=self._resolve_permission,
                 capability_resolver=self._resolve_capability,
