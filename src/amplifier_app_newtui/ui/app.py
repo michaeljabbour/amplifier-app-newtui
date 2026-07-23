@@ -76,6 +76,7 @@ from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
 from .runtime_adapter import RuntimeAdapter
 from .session_ops_controller import SessionOpsController
+from .session_ops_view import sessions_spans
 from .splash import BootSplash
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
@@ -460,6 +461,46 @@ class NewTuiApp(App[None]):
     # In-session coordinator ops (/status /model /effort /compact /clear /tools
     # /agents /diff /skills /skill /mcp) live in SessionOpsController; the
     # command context drives them via ``self.session_ops`` (ADR-0007 seam).
+
+    # -- stored-session lifecycle (/rename /sessions /branch) ---------------
+
+    def rename_session(self, name: str) -> None:
+        if not name.strip():
+            self.show_notice("usage: /rename <new name>")
+            return
+        if self.session_ops._ops_starting():
+            return
+        self.run_worker(self._rename_session(name.strip()), exclusive=False)
+
+    async def _rename_session(self, name: str) -> None:
+        ok, detail = await self.adapter.rename_session(name)
+        self.show_notice(f"session renamed · {detail}" if ok else detail)
+
+    def show_sessions(self) -> None:
+        self.run_worker(self._show_sessions(), exclusive=False)
+
+    async def _show_sessions(self) -> None:
+        summaries = await self.adapter.session_summaries()
+        self.append_block(
+            Answer(
+                id=self.allocator.next_id(),
+                spans=sessions_spans(summaries, current=self.adapter.session_short),
+            )
+        )
+
+    def branch_session(self, name: str) -> None:
+        if self.session_ops._ops_starting():
+            return
+        self.run_worker(self._branch_session(name.strip()), exclusive=False)
+
+    async def _branch_session(self, name: str) -> None:
+        ok, detail = await self.adapter.branch_session(name)
+        if ok:
+            self.show_notice(
+                f"branch created · {detail[:12]} · resume: amplifier-newtui resume {detail[:8]}"
+            )
+        else:
+            self.show_notice(detail)
 
     def _sync_palette_commands(self) -> None:
         """Registry subscriber: every successful register/unregister

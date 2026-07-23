@@ -166,6 +166,15 @@ class FakeCommandContext:
     def manage_config(self, args: str) -> None:
         self.calls.append(f"manage_config:{args}")
 
+    def rename_session(self, name: str) -> None:
+        self.calls.append(f"rename_session:{name}")
+
+    def show_sessions(self) -> None:
+        self.calls.append("show_sessions")
+
+    def branch_session(self, name: str) -> None:
+        self.calls.append(f"branch_session:{name}")
+
 
 @pytest.fixture
 def fake_command_context() -> FakeCommandContext:

@@ -32,8 +32,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from collections.abc import Iterator, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -389,6 +390,56 @@ class SessionStore:
                 f"{len(matches)} sessions: {preview}{extra}"
             )
         return matches[0]
+
+    # -- lifecycle mutation (delete / cleanup) ------------------------------
+
+    def delete(self, session_id: str) -> bool:
+        """Remove a session directory and everything under it.
+
+        Reference contract: amplifier-app-cli ``session delete`` /
+        ``SessionStore`` — the id is validated (path-traversal guard), the
+        whole ``sessions/<id>/`` tree is removed, and the return says
+        whether it existed. Never resolves prefixes: callers resolve via
+        :meth:`find_session` first (so an ambiguous prefix cannot silently
+        delete the wrong session).
+        """
+        session_dir = self.session_dir(session_id)
+        if not session_dir.is_dir():
+            return False
+        shutil.rmtree(session_dir)
+        logger.info("Deleted session %s", session_id)
+        return True
+
+    def cleanup_old_sessions(self, days: int = 30) -> int:
+        """Delete top-level sessions whose directory mtime predates *days*.
+
+        Reference: amplifier-app-cli ``SessionStore.cleanup_old_sessions``
+        — sessions older than the cutoff are removed and the count is
+        returned. ``days`` must be non-negative (``days=0`` removes every
+        top-level session). Spawned sub-sessions and dotfiles are skipped;
+        a single unreadable/undeletable entry is logged and skipped, never
+        fatal.
+        """
+        if days < 0:
+            raise ValueError("days must be non-negative")
+        if not self.base_dir.exists():
+            return 0
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).timestamp()
+        removed = 0
+        for session_dir in self.base_dir.iterdir():
+            if not session_dir.is_dir() or session_dir.name.startswith("."):
+                continue
+            if not is_top_level_session(session_dir.name):
+                continue
+            try:
+                if session_dir.stat().st_mtime < cutoff:
+                    shutil.rmtree(session_dir)
+                    removed += 1
+            except OSError:
+                logger.warning("Failed to remove old session %s", session_dir.name, exc_info=True)
+        if removed:
+            logger.info("Cleaned up %d old sessions", removed)
+        return removed
 
 
 class IncrementalSaver:

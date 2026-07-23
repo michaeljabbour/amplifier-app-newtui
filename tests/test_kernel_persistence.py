@@ -376,3 +376,50 @@ def test_saved_files_are_valid_jsonl(store: SessionStore) -> None:
         .splitlines()
     ):
         json.loads(line)
+
+
+# --------------------------------------------------------------------------
+# delete / cleanup_old_sessions (session-manager lifecycle)
+# --------------------------------------------------------------------------
+
+
+def test_delete_removes_session_tree(store: SessionStore) -> None:
+    store.save("s1", [{"role": "user", "content": "hi"}], {"session_id": "s1"})
+    assert store.exists("s1")
+    assert store.delete("s1") is True
+    assert not store.exists("s1")
+
+
+def test_delete_missing_returns_false(store: SessionStore) -> None:
+    assert store.delete("ghost") is False
+
+
+def test_cleanup_old_sessions_removes_by_mtime(store: SessionStore) -> None:
+    import os
+    from datetime import UTC, datetime, timedelta
+
+    store.save("fresh", [], {"session_id": "fresh"})
+    store.save("stale", [], {"session_id": "stale"})
+    old = (datetime.now(UTC) - timedelta(days=60)).timestamp()
+    os.utime(store.session_dir("stale"), (old, old))
+
+    assert store.cleanup_old_sessions(days=30) == 1
+    assert store.exists("fresh")
+    assert not store.exists("stale")
+
+
+def test_cleanup_old_sessions_skips_subsessions(store: SessionStore) -> None:
+    import os
+    from datetime import UTC, datetime, timedelta
+
+    # Spawned sub-sessions carry '_' and are never top-level cleanup targets.
+    store.save("parent-abc_agent", [], {"session_id": "parent-abc_agent"})
+    old = (datetime.now(UTC) - timedelta(days=99)).timestamp()
+    os.utime(store.session_dir("parent-abc_agent"), (old, old))
+    assert store.cleanup_old_sessions(days=30) == 0
+    assert store.exists("parent-abc_agent")
+
+
+def test_cleanup_old_sessions_rejects_negative_days(store: SessionStore) -> None:
+    with pytest.raises(ValueError):
+        store.cleanup_old_sessions(days=-1)

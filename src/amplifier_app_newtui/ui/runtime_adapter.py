@@ -27,6 +27,7 @@ from ..kernel.events import UIEvent
 from ..kernel.compaction import CompactionConfig
 from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
 from ..kernel.session_ops import ModelListing, StatusInfo
+from ..kernel.session_manager import SessionSummary
 from ..model.blocks import BlockIdAllocator, TranscriptBlock
 from ..model.config import (
     ConfigChange,
@@ -287,6 +288,17 @@ class RuntimeAdapter:
     async def mcp_tools(self) -> tuple[str, ...]:
         return await self._run_op(_MCP_TOOLS)
 
+
+    async def rename_session(self, name: str) -> tuple[bool, str]:
+        del name
+        return (False, "renaming needs a real session")
+
+    async def session_summaries(self) -> tuple[SessionSummary, ...]:
+        return ()
+
+    async def branch_session(self, name: str) -> tuple[bool, str]:
+        del name
+        return (False, "branching needs a real session")
 
     async def directory_entries(
         self, kind: DirectoryKind
@@ -601,6 +613,25 @@ class RealRuntimeAdapter(RuntimeAdapter):
             self.model_name = self._runtime.model_name
         return result
 
+
+    async def rename_session(self, name: str) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.rename_session(name))
+
+    async def session_summaries(self) -> tuple[SessionSummary, ...]:
+        if self._runtime is None:
+            return ()
+
+        async def read() -> tuple[SessionSummary, ...]:
+            return self._runtime.session_summaries()
+
+        return await self._in_runtime(read())
+
+    async def branch_session(self, name: str) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.branch_session(name))
 
     async def directory_entries(
         self, kind: DirectoryKind

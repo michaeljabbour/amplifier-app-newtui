@@ -69,7 +69,7 @@ from .directory_permissions import (
 )
 from .governance_hook import GovernanceHook
 from .mention_expansion import MentionBudget, expand_mentions
-from . import session_ops
+from . import session_manager, session_ops
 from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
 from .queue_bridge import CONSUMED_EVENTS, QueueBridge
@@ -1363,6 +1363,54 @@ class RealRuntime:
     async def mcp_tools(self) -> tuple[str, ...]:
         coord = self._coordinator()
         return await session_ops.list_mcp_tools(coord) if coord is not None else ()
+
+    # -- stored-session lifecycle (/rename /sessions /branch) ---------------
+
+    def session_summaries(self) -> tuple[session_manager.SessionSummary, ...]:
+        """Newest-first summaries of this project's stored sessions."""
+        if self._store is None:
+            return ()
+        return tuple(session_manager.list_summaries(self._store, limit=20))
+
+    async def rename_session(self, name: str) -> tuple[bool, str]:
+        """Label the live session (persisted metadata ``name``).
+
+        A fresh session persists lazily (``tool:post`` / end-of-turn), so
+        its directory may not exist yet; a minimal metadata save is written
+        first so ``/rename`` always lands.
+        """
+        if self._store is None or self._initialized is None:
+            return (False, "session still starting")
+        session_id = self._initialized.session_id
+        if not self._store.exists(session_id):
+            try:
+                self._store.save(
+                    session_id, [], {"session_id": session_id, "bundle": self.bundle_name}
+                )
+            except (OSError, ValueError):
+                return (False, "could not persist session to rename")
+        return session_manager.rename(self._store, session_id, name)
+
+    async def branch_session(self, name: str = "") -> tuple[bool, str]:
+        """Snapshot the live conversation into a new stored session.
+
+        The persisted-fork analog of the in-memory ``/rewind``: the current
+        context messages are written under a fresh id carrying this
+        session's id as ``parent_id`` (kernel/session_manager.branch).
+        """
+        if self._store is None or self._initialized is None:
+            return (False, "session still starting")
+        context = self._initialized.coordinator.get("context")
+        messages: list[dict[str, Any]] = []
+        if context is not None and hasattr(context, "get_messages"):
+            messages = list(await context.get_messages())
+        return session_manager.branch(
+            self._store,
+            self._initialized.session_id,
+            messages,
+            name=name,
+            bundle=self.bundle_name,
+        )
 
     async def interrupt(self) -> bool:
         """Best-effort graceful cancellation at the next step boundary.
