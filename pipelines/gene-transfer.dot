@@ -1,0 +1,99 @@
+// Gene-transfer pipeline: port amplifier-app-cli capabilities into amplifier-app-newtui.
+//
+// Model: attractor loop-pipeline (Graphviz DOT). Each `box` node is an LLM agent with
+// file/bash tools; each `parallelogram` is a deterministic tool node whose LAST printed
+// line drives edge routing (context.tool.last_line). One ledger issue per loop.
+//
+// Modeled on the shipped `semport.dot` fixture (Strategy SF — "Skip the Format": agent
+// edits files directly, a downstream tool gate validates via exit code, no intermediate
+// format). See pipelines/README.md for the launch runbook and guardrails.
+//
+// MODELS: nodes use claude-opus-4-8 (verified working in this env; claude-fable-5's
+//   dual-use safety measures refuse autonomous self-porting work). Change to match your
+//   configured providers, or route the Implement node to openai/gpt-5.x-codex if you prefer.
+// PATHS: passed at launch via the launcher bundle's orchestrator params
+//   (donor_path, newtui_path, forge_tool) — see pipelines/gene-transfer.bundle.md.
+
+digraph gene_transfer {
+    graph [
+        goal="Port each amplifier-app-cli construct in pipelines/ledger.tsv into amplifier-app-newtui as a GENE TRANSFER: re-express the CAPABILITY through newtui's own seams, never a code graft. HARD RULES (ADR-0007): the kernel package is the ONLY layer that may import amplifier-core/amplifier-foundation; ui/ and commands/ never touch amplifier-core; pure renderers are golden-tested in the same commit. NEVER import, vendor, or copy from amplifier-app-cli — reuse amplifier foundation/core primitives instead (amplifier-native first). One ledger issue per loop; done when no 'new' rows remain.",
+        default_fidelity="truncate",
+        default_thread_id="gene-transfer",
+        default_max_retry="3"
+    ]
+
+    start [shape=Mdiamond]
+
+    // --- loop head: is there work left? (deterministic) ---
+    CheckLedger [shape=parallelogram,
+        tool_command="cd $newtui_path && test \"$(python3 pipelines/ledger.py earliest)\" = NONE && printf done || printf process"]
+
+    // --- pick the earliest 'new' issue, capture its acceptance criteria ---
+    SelectIssue [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Run `python3 pipelines/ledger.py earliest` in $newtui_path — it prints '<issue> <slug>'. Read that GitHub issue: `gh issue view <issue> -R michaeljabbour/amplifier-app-newtui`. Write TWO files under $newtui_path/.ai/: (1) gt_current.md — issue number, slug, a one-paragraph capability summary, and the issue's Acceptance section VERBATIM; (2) gt_current.env — exactly two lines `ISSUE=<issue>` and `SLUG=<slug>`. Reset the retry counter: delete .ai/gt_retries if present. $goal"]
+
+    // --- fresh per-issue branch off main (deterministic) ---
+    BranchSetup [shape=parallelogram,
+        tool_command="cd $newtui_path && set -a && . .ai/gt_current.env && set +a && rm -f .ai/gt_retries && git stash -q --include-untracked -- ':!.ai' 2>/dev/null; git checkout -q main && git pull -q --ff-only 2>/dev/null; git checkout -q -B gene-transfer/$SLUG && printf ready"]
+
+    // --- find the donor construct WITHOUT copying it ---
+    LocateDonor [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Read $newtui_path/.ai/gt_current.md. In the donor repo at $donor_path (amplifier-app-cli, microsoft), locate the construct(s) implementing this capability — command modules, hooks, foundation calls, tests. Record file:symbol references and the BEHAVIORAL CONTRACT (inputs, outputs, settings keys, edge cases) in $newtui_path/.ai/gt_donor.md. Do NOT copy source — you are documenting the gene, not grafting the organ. $goal"]
+
+    // --- design the port through newtui's seams + author the forge probe ---
+    PlanTransfer [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Read .ai/gt_current.md, .ai/gt_donor.md, docs/ARCHITECTURE.md and docs/decisions/ADR-0007-*. Design how to re-express this capability through newtui's layering WITHOUT importing amplifier-app-cli: name the exact kernel/model/ui/commands files to change, which amplifier-core/foundation primitives to reuse, and the tests (and goldens, if renderer-touching) to add. Write the plan to .ai/gt_plan.md. THEN author an issue-specific acceptance probe to .ai/gt_forge_check.sh: a bash script using the forge helper at $forge_tool (env $FORGE) that boots the real TUI (`python3 \"$FORGE\" new --cols 120 --rows 36 --cwd $newtui_path` then drives it) OR runs the new CLI subcommand via `python3 \"$FORGE\" exec`, and asserts the capability from `screen`/`grep`, `exit 0` on success and non-zero otherwise. Derive the assertion from the issue's Acceptance criteria. $goal"]
+
+    // --- implement on the branch ---
+    Implement [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="Read .ai/gt_plan.md (including any appended 'Fix N' sections). Implement it in $newtui_path with file tools on the current git branch. Add/extend tests; regenerate goldens if you changed a pure renderer. Keep it ADR-0007-clean: no amplifier-app-cli import, amplifier-core only in kernel/, pure renderers golden-tested. Do NOT run the full suite yourself — the next node does. Append a bullet list of files changed to .ai/gt_impl.log. $goal"]
+
+    // --- deterministic gate 1: lint + types + unit suite ---
+    UnitValidate [shape=parallelogram,
+        tool_command="cd $newtui_path && uv run ruff check . >/tmp/gt_lint 2>&1 && uv run pyright src/ >/tmp/gt_types 2>&1 && uv run pytest -q >/tmp/gt_test 2>&1 && printf pass || printf fail"]
+
+    // --- deterministic gate 2: capability through the real terminal (forge) ---
+    ForgeValidate [shape=parallelogram,
+        tool_command="cd $newtui_path && export FORGE=$forge_tool && python3 \"$FORGE\" doctor >/tmp/gt_forge_doctor 2>&1 && bash .ai/gt_forge_check.sh >/tmp/gt_forge 2>&1 && printf pass || printf fail"]
+
+    // --- diagnose a failing gate and append a concrete fix ---
+    AnalyzeFailure [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="A validation gate failed. Read /tmp/gt_test, /tmp/gt_lint, /tmp/gt_types, /tmp/gt_forge, /tmp/gt_forge_doctor and .ai/gt_impl.log. Diagnose the root cause and append a numbered 'Fix N' section to .ai/gt_plan.md with concrete, minimal changes. Do not edit source here — Implement will apply the fix. $goal"]
+
+    // --- bound the retry loop; give up gracefully after 3 ---
+    RetryGate [shape=parallelogram,
+        tool_command="cd $newtui_path && n=$(cat .ai/gt_retries 2>/dev/null || echo 0); n=$((n+1)); echo $n > .ai/gt_retries; test $n -le 3 && printf retry || printf giveup"]
+
+    // --- converged: commit, push, PR, mark implemented, comment the issue ---
+    Commit [shape=parallelogram,
+        tool_command="cd $newtui_path && set -a && . .ai/gt_current.env && set +a && git add -A -- ':!.ai' && git commit -q -m \"feat: gene-transfer $SLUG (#$ISSUE)\" && git push -q -u origin HEAD && gh pr create --fill --base main --head gene-transfer/$SLUG --label gene-transfer >/tmp/gt_pr 2>&1; python3 pipelines/ledger.py update $ISSUE implemented >/dev/null && gh issue comment $ISSUE -b \"Ported via the gene-transfer attractor pipeline; unit + forge gates green. PR: $(cat /tmp/gt_pr | tail -1)\" >/dev/null && printf next"]
+
+    // --- could not converge: hand back to a human, keep going ---
+    MarkBlocked [shape=parallelogram,
+        tool_command="cd $newtui_path && set -a && . .ai/gt_current.env && set +a && python3 pipelines/ledger.py update $ISSUE acknowledged >/dev/null && gh issue comment $ISSUE -b \"Auto gene-transfer could not converge after 3 attempts — needs a human. See branch gene-transfer/$SLUG and .ai/gt_plan.md.\" >/dev/null && git checkout -q main && printf next"]
+
+    exit [shape=Msquare]
+
+    // --- flow ---
+    start -> CheckLedger
+    CheckLedger -> exit        [condition="context.tool.last_line=done"]
+    CheckLedger -> SelectIssue [condition="context.tool.last_line=process"]
+
+    SelectIssue -> BranchSetup
+    BranchSetup -> LocateDonor
+    LocateDonor -> PlanTransfer
+    PlanTransfer -> Implement
+    Implement -> UnitValidate
+
+    UnitValidate  -> ForgeValidate  [condition="context.tool.last_line=pass"]
+    UnitValidate  -> AnalyzeFailure [condition="context.tool.last_line=fail"]
+    ForgeValidate -> Commit         [condition="context.tool.last_line=pass"]
+    ForgeValidate -> AnalyzeFailure [condition="context.tool.last_line=fail"]
+
+    AnalyzeFailure -> RetryGate
+    RetryGate -> Implement   [condition="context.tool.last_line=retry"]
+    RetryGate -> MarkBlocked [condition="context.tool.last_line=giveup"]
+
+    Commit      -> CheckLedger [loop_restart="true"]
+    MarkBlocked -> CheckLedger [loop_restart="true"]
+}

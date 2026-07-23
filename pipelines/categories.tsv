@@ -1,0 +1,38 @@
+# issue -> treatment routing for backlog.dot (deterministic; edit to re-route)
+# category ∈ {port, internal, decision}
+#   port     — amplifier-app-cli capability gene-transfer (donor study, never import/copy)
+#   internal — fix/refactor/feature inside this repo (no donor)
+#   decision — deliverable is a design doc in docs/plans/, gated on self-review (no forge)
+22	internal
+23	internal
+24	internal
+25	internal
+26	decision
+27	internal
+28	internal
+29	internal
+30	internal
+31	internal
+32	internal
+33	internal
+34	internal
+35	internal
+36	decision
+37	internal
+38	internal
+39	internal
+40	internal
+41	internal
+42	internal
+43	port
+44	port
+45	port
+46	port
+47	port
+48	port
+49	decision
+50	decision
+51	port
+52	port
+53	decision
+54	decision
