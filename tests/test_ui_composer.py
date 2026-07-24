@@ -477,7 +477,16 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
         await pilot.press("ctrl+c")
         await pilot.pause()
         assert copied and len(copied[0]) > 10
-        assert app.notice_slot.current == f"copied · {len(copied[0])} chars"
+        # Copy-on-select may also fire on the settled drag, so the notice can
+        # land as either "copied" (explicit ctrl+c) or "copied on select"
+        # (the settle reflex) depending on which resolves last. Both are a
+        # correct "copied N chars" outcome; asserting one exact string raced
+        # the settle under coverage instrumentation (flaky). The copy actually
+        # happening despite composer focus (above) is the real contract.
+        assert app.notice_slot.current in (
+            f"copied · {len(copied[0])} chars",
+            f"copied on select · {len(copied[0])} chars",
+        )
 
         # The composer's own selection wins over the transcript's.
         await pilot.press("h", "i")
