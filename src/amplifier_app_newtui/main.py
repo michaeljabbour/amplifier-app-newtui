@@ -862,8 +862,10 @@ def session_fork(session_id: str, directive: str, new_name: str) -> None:
 def doctor() -> None:
     """Setup checkup: prints the report, exit 1 when findings exist."""
     from .commands.doctor import run_standalone
+    from .kernel import updater
 
-    raise SystemExit(run_standalone())
+    anchors = asyncio.run(updater.anchors_status())
+    raise SystemExit(run_standalone(anchors_status=anchors))
 
 
 # --------------------------------------------------------------------------
@@ -1716,9 +1718,30 @@ async def _update(check_only: bool, yes: bool, force: bool) -> int:
         table.add_row(status.name, f"{mark} {status.summary}")
     console.print(table)
 
+    # Explain the otherwise-silent "unknown" count: which sources couldn't be
+    # checked and why (non-git source, unresolvable ref, ls-remote failure).
+    unknown = [reason for status in statuses for reason in status.unknown]
+    if unknown:
+        console.print("sources that couldn't be checked:", style="dim")
+        for reason in unknown:
+            console.print(f"  · {reason}", style="dim")
+
+    # Anchors is composed via an include, which foundation's check skips — so
+    # surface its freshness explicitly (offline degrades to a neutral note).
+    anchors = await updater.anchors_status()
+    if anchors.is_stale:
+        console.print(f"[yellow]●[/yellow] {anchors.describe()}")
+    elif anchors.error is not None or anchors.ref is None:
+        console.print(anchors.describe(), style="dim")
+    else:
+        console.print(f"[green]✓[/green] {anchors.describe()}")
+
     stale = [s for s in statuses if s.has_updates]
     if not stale and not force:
-        console.print("✓ all bundles up to date", style="green")
+        if anchors.is_stale:
+            console.print("bundles up to date; anchors is behind (see above)", style="yellow")
+        else:
+            console.print("✓ all bundles up to date", style="green")
         console.print(updater.self_update_hint(), style="dim")
         return 0
     if check_only:
