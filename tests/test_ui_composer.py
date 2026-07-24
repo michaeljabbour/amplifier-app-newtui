@@ -440,7 +440,14 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
 
     app.copy_to_clipboard = _fake_copy  # type: ignore[method-assign]
     async with app.run_test(size=(120, 36)) as pilot:
-        await pilot.pause(0.4)
+        # Wait for the demo transcript to actually paint rows before the drag.
+        # A fixed pause races the paint under coverage instrumentation, leaving
+        # the drag over empty rows → an empty selection → a flaky ctrl+c copy.
+        for _ in range(60):
+            await pilot.pause(0.05)
+            if any(b.kind == "answer" for b in app.transcript.blocks):
+                break
+        await pilot.pause(0.1)
 
         def ev(cls, x: int, y: int):
             return cls(
