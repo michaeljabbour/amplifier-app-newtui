@@ -212,6 +212,61 @@ def test_update_renders_sha_table(monkeypatch) -> None:
     assert "ccccccc" in result.output
 
 
+def test_update_table_dedupes_shared_sources_across_bundles(monkeypatch) -> None:
+    """A source shared by many composed bundles renders ONCE, not once per
+    bundle (the flat, app-cli-style view — regression for the repeated-content
+    complaint)."""
+    shared = updater.SourceRow("amplifier-foundation", "af7b19b", "32d4052", has_update=True)
+    _stub(
+        monkeypatch,
+        [
+            updater.BundleUpdate(
+                "memory",
+                "git+u/memory",
+                "",
+                True,
+                sources=(
+                    shared,
+                    updater.SourceRow(
+                        "amplifier-module-tool-memory", "111", "111", has_update=False
+                    ),
+                ),
+            ),
+            updater.BundleUpdate(
+                "attractor",
+                "git+u/attractor",
+                "",
+                True,
+                sources=(
+                    shared,
+                    updater.SourceRow("amplifier-module-tool-bash", "222", "222", has_update=False),
+                ),
+            ),
+        ],
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    # foundation is in BOTH bundles but must appear exactly once in the table.
+    assert result.output.count("amplifier-foundation") == 1
+    # Split: modules under a Modules table, foundation under Bundles.
+    assert "Bundles" in result.output and "Modules" in result.output
+    assert "amplifier-module-tool-memory" in result.output
+
+
+def test_unique_sources_collapses_and_splits() -> None:
+    """Pure: dedup by (name, cached, remote); distinct versions kept."""
+    a = updater.SourceRow("amplifier-foundation", "af7b19b", "32d4052", has_update=True)
+    b = updater.SourceRow("amplifier-module-tool-bash", "111", "111", has_update=False)
+    local = updater.SourceRow("tool-apply-patch", has_update=None, reason="local")
+    s1 = updater.BundleUpdate("x", "x", "", True, sources=(a, b, local))
+    s2 = updater.BundleUpdate("y", "y", "", True, sources=(a, b))  # exact repeats
+    rows = updater.unique_sources([s1, s2])
+    names = [r.name for r in rows]
+    assert names.count("amplifier-foundation") == 1
+    assert names.count("amplifier-module-tool-bash") == 1
+    assert "tool-apply-patch" not in names  # local/non-git excluded
+
+
 def test_update_dedupes_uncheckable_sources_with_plain_label(monkeypatch) -> None:
     generic = "Update checking not supported for this source type"
     _stub(

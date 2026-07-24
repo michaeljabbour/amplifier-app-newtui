@@ -1885,42 +1885,44 @@ def _status_glyph(has_update: bool | None):  # noqa: ANN202 — rich Text
 
 
 def _print_update_table(console, statuses) -> None:  # noqa: ANN001 — rich Console
-    """Render the Local-vs-Remote SHA table, grouped by composed bundle.
+    """Render Local-vs-Remote SHAs as two globally-deduplicated tables.
 
-    Mirrors app-cli's SHA-diff layout: each bundle heads a section, its module
-    sources list beneath with cached (local) and remote SHAs plus a status
-    glyph. Bundles whose sources are all local/non-git show a single aggregate
-    row (their sources appear once in the deduplicated section below)."""
+    app-cli's model: shared transitive sources (``amplifier-foundation``,
+    ``skills``, ``modes``…) are referenced by nearly every composed bundle, so a
+    per-bundle listing repeats each one ~15×. Instead we flatten to the *unique*
+    set (:func:`updater.unique_sources`) and split it into Bundles and Modules —
+    each source appears exactly once. Local/non-git sources are summarized
+    separately by the uncheckable section the caller prints."""
     from rich.table import Table
-    from rich.text import Text
 
-    table = Table(title="Bundle & module updates", title_justify="center", header_style="bold cyan")
-    table.add_column("Bundle", style="green", no_wrap=True)
-    table.add_column("Source", style="green")
-    table.add_column("Local", style="dim", justify="right")
-    table.add_column("Remote", style="dim", justify="right")
-    table.add_column("", width=1, justify="center")
+    from .kernel import updater
 
-    for index, status in enumerate(statuses):
-        if index:
-            table.add_section()
-        # Only sources with a real remote comparison belong in the SHA table;
-        # local/non-git ones are summarized once in the uncheckable section.
-        checkable = [row for row in status.sources if row.has_update is not None]
-        if not checkable:
-            dash = Text("—", style="dim")
-            table.add_row(status.name, dash, dash, dash, _status_glyph(status.has_updates))
-            continue
-        for offset, row in enumerate(checkable):
+    rows = updater.unique_sources(statuses)
+    modules = [r for r in rows if r.name.startswith("amplifier-module-")]
+    bundles = [r for r in rows if not r.name.startswith("amplifier-module-")]
+
+    def _render(title: str, items: list) -> None:  # noqa: ANN001 — SourceRow list
+        if not items:
+            return
+        table = Table(title=title, title_justify="center", header_style="bold cyan")
+        table.add_column("Name", style="green", no_wrap=True)
+        table.add_column("Local", style="dim", justify="right")
+        table.add_column("Remote", style="dim", justify="right")
+        table.add_column("", width=1, justify="center")
+        for row in items:
             table.add_row(
-                status.name if offset == 0 else "",
                 row.name,
                 _sha_text(row.cached),
                 _sha_text(row.remote),
                 _status_glyph(row.has_update),
             )
+        console.print(table)
 
-    console.print(table)
+    if not modules and not bundles:
+        console.print("[dim]No git-tracked sources to compare.[/dim]")
+    else:
+        _render("Bundles", bundles)
+        _render("Modules", modules)
     console.print(
         "[dim]Legend: [green]✓[/green] up to date  "
         "[yellow]●[/yellow] update available  [cyan]◦[/cyan] local changes[/dim]"
