@@ -49,6 +49,7 @@ from ..model.blocks import (
     SessionBanner,
     SteerEcho,
     StyleToken,
+    Thinking,
     ToolLine,
     TranscriptBlock,
     TurnRule,
@@ -61,6 +62,14 @@ from .segments import Line, lines_markup
 
 TOOL_EXPAND_HINT = " · click to expand"
 """Exact collapsed-tool-line hint (DESIGN-SPEC §3)."""
+
+THINKING_EXPAND_HINT = "ctrl-g/click to expand"
+"""Collapsed thinking-block reveal hint (issue #129) — the reveal chord
+rhymes with PR #128's live-tail ``ctrl-g``."""
+
+THINKING_WITHHELD = "(content withheld by provider)"
+"""Shown when core withholds the reasoning prose (``ThinkingBlock.visibility``
+LLM_ONLY/USER_ONLY) — the ``content_block:end`` payload arrives empty."""
 
 _SUPERSCRIPTS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
 
@@ -398,6 +407,45 @@ def _wrap_line(segs: Sequence[Segment], width: int, hang: int) -> tuple[Line, ..
             lines[-1].append(seg.model_copy(update={"text": token}))
             widths[-1] += tok_w
     return tuple(_coalesce(line) for line in lines)
+
+
+def _render_thinking(block: Thinking, width: int) -> tuple[Line, ...]:
+    """Collapsible inline thinking block (issue #129).
+
+    Collapsed: one dim ``▸ thinking · N lines · ctrl-g/click to expand``
+    row. Expanded: a ``▾ thinking`` header + the reasoning prose in dim
+    italic. When core withholds the reasoning (empty ``text`` —
+    ``ThinkingBlock.visibility`` LLM_ONLY/USER_ONLY), the block degrades to
+    a single dim ``· thinking · (content withheld by provider)`` line that
+    cannot be expanded — honest about the gap rather than rendering nothing.
+    """
+    if not block.text:
+        return (
+            (
+                Segment(text="· ", style_token="dimmer"),
+                Segment(text=f"thinking · {THINKING_WITHHELD}", style_token="dim"),
+            ),
+        )
+    body_lines = block.text.splitlines() or [block.text]
+    if not block.expanded:
+        count = len(body_lines)
+        noun = "line" if count == 1 else "lines"
+        return (
+            (
+                Segment(text=f"{GLYPH_CHEVRON_COLLAPSED} ", style_token="dimmer"),
+                Segment(text=f"thinking · {count} {noun}", style_token="dim"),
+                Segment(text=f" · {THINKING_EXPAND_HINT}", style_token="dimmer"),
+            ),
+        )
+    lines: list[Line] = [
+        (
+            Segment(text=f"{GLYPH_CHEVRON_EXPANDED} ", style_token="dimmer"),
+            Segment(text="thinking", style_token="dim"),
+        )
+    ]
+    for body_line in body_lines:
+        lines.append((Segment(text=f"  {body_line}", style_token="dim", italic=True),))
+    return tuple(lines)
 
 
 def _render_answer(block: Answer, width: int) -> tuple[Line, ...]:
@@ -804,6 +852,7 @@ _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "blocked": _render_blocked,
     "working_status": _render_working_status,
     "recap": _render_recap,
+    "thinking": _render_thinking,
     "answer": _render_answer,
     "steer_echo": _render_steer_echo,
     "turn_rule": _render_turn_rule,

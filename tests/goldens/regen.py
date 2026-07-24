@@ -65,6 +65,7 @@ from amplifier_app_newtui.model.blocks import (
     Recap,
     SessionBanner,
     SteerEcho,
+    Thinking,
     ToolLine,
     TodoItem,
     TranscriptBlock,
@@ -129,6 +130,11 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
             agent_count=1,
         ),
         Recap(id="g9", goal="durable session store", next="open PR against main"),
+        Thinking(
+            id="g9t",
+            text="The retry test is flaky under load.\nSwap the sleep for a deadline poll.",
+            expanded=True,
+        ),
         Answer(
             id="g10",
             spans=answer_spans(_ANSWER_SOURCE),

@@ -1234,7 +1234,21 @@ class NewTuiApp(App[None]):
         self.show_notice(f"tail · {record.lane.name}")
 
     def action_toggle_thinking(self) -> None:
-        """ctrl+g: show/hide the live thinking/response box (peek ⇄ content)."""
+        """ctrl+g: expand/collapse thinking (issue #129).
+
+        The durable home is the transcript's collapsible Thinking block, so
+        ctrl-g toggles the newest one and scrolls it into view. When no
+        durable block exists yet (a still-streaming demo turn), it falls
+        back to PR #128's ephemeral live-tail reveal (peek ⇄ content)."""
+        for block in reversed(self.transcript.blocks):
+            if block.kind == "thinking" and block.text:
+                toggled = block.model_copy(update={"expanded": not block.expanded})
+                self.transcript.replace(toggled)
+                self.transcript.scroll_block_visible(block.id)
+                self.show_notice(
+                    "thinking · expanded" if toggled.expanded else "thinking · collapsed"
+                )
+                return
         revealed = self.live_tail.toggle_reveal()
         self.show_notice("thinking · shown" if revealed else "thinking · hidden")
 

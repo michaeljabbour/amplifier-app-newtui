@@ -39,6 +39,7 @@ from ..model.blocks import (
     PlanItemState,
     Recap,
     Segment,
+    Thinking,
     TodoItem,
     TodoStatus,
     ToolLine,
@@ -501,6 +502,11 @@ class _Turn:
     """
     rendered_answers: set[str] = field(default_factory=set)
     """Normalized answer texts already rendered for exact-once close-out."""
+    thinking_id: str | None = None
+    """Open Thinking block awaiting its ``content_block:end`` prose (issue
+    #129). The loop-streaming runtime brackets a thinking block with
+    start/end, so the collapsed block is minted on start and populated in
+    place on end; reset once populated."""
     todo_items: tuple[TodoItem, ...] = ()
     """Latest root-todo list this turn (ambient-progress D3) — folded into
     the delegate summary's ``plan_final`` at fan-out close (D5)."""
@@ -712,8 +718,14 @@ class TranscriptReducer:
                 self._lane.root_streaming = False
                 self._host.stream_closed()
                 self._host.show_notice(f"stream aborted · {event.error_message}".rstrip(" ·"))
+            case ev.ContentBlockStart():
+                if event.block_type == "thinking":
+                    self._thinking_started(event)
             case ev.ContentBlockEnd():
-                self._durable_text(event)
+                if event.block_type == "thinking":
+                    self._thinking_recorded(event)
+                else:
+                    self._durable_text(event)
             case ev.ToolPre():
                 self._tool_pre(event)
             case ev.ToolPost():
@@ -1146,6 +1158,44 @@ class TranscriptReducer:
         self._host.append_block(self._working_block(turn))
 
     # -- assistant text (durable Channel B) -------------------------------------
+
+    def _thinking_started(self, event: ev.ContentBlockStart) -> None:
+        """Open a collapsed Thinking block where the model began reasoning.
+
+        The loop-streaming runtime carries no token deltas, so the block
+        opens empty here and its prose lands via :meth:`_thinking_recorded`
+        on the matching ``content_block:end``. The lane/working label stays
+        task-level (``thinking``) — reasoning prose lives only in this
+        durable transcript block, never in the lanes pane (issue #129).
+        """
+        turn = self._turn
+        if turn is None:
+            return
+        self.set_activity("thinking")
+        block = Thinking(id=self._ids.next_id())
+        self._append_content(block)
+        turn.thinking_id = block.id
+
+    def _thinking_recorded(self, event: ev.ContentBlockEnd) -> None:
+        """Populate a Thinking block from its ``content_block:end`` payload.
+
+        Reads ``block["thinking"]`` (core's ThinkingBlock field) then falls
+        back to ``block["text"]``. Degrades honestly on withheld reasoning:
+        core's ``ThinkingBlock.visibility`` (LLM_ONLY/USER_ONLY) can strip
+        the prose from UI-facing events, so the text may be empty — the
+        block stays and renders "content withheld by provider" rather than
+        vanishing. Replaces the open block in place (no working-line reflow);
+        appends defensively if no start was seen (non-streaming provider).
+        """
+        turn = self._turn
+        if turn is None:
+            return
+        text = str(event.block.get("thinking") or event.block.get("text") or "")
+        if turn.thinking_id is not None:
+            self._host.replace_block(Thinking(id=turn.thinking_id, text=text))
+        else:
+            self._append_content(Thinking(id=self._ids.next_id(), text=text))
+        turn.thinking_id = None
 
     def _durable_text(self, event: ev.ContentBlockEnd) -> None:
         if event.block_type != "text":

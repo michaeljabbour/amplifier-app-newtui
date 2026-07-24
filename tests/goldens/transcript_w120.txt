@@ -31,6 +31,11 @@
 === recap ===
 [$dimmer]✳ [/][italic $dim]Goal: durable session store. Next: open PR against main.[/]
 
+=== thinking ===
+[$dimmer]▾ [/][$dim]thinking[/]
+[italic $dim]  The retry test is flaky under load.[/]
+[italic $dim]  Swap the sleep for a deadline poll.[/]
+
 === answer ===
 [$fg]This repo is the [/][bold $bright]command-line app for Amplifier[/][$fg]. If amplifier-core is the engine, this is the[/]
 [$fg]dashboard and steering wheel: the [/][$teal]amplifier[/][$fg] command starts sessions, configures providers, loads[/]
