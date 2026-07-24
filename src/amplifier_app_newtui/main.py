@@ -1737,9 +1737,71 @@ def notify_test_cmd() -> None:
 # --------------------------------------------------------------------------
 
 
+def _sha_text(sha: str | None):  # noqa: ANN202 — rich Text
+    """A dim, non-hex-interpreted SHA cell (blank SHAs read as ``unknown``)."""
+    from rich.text import Text
+
+    return Text(sha[:7] if sha else "unknown", style="dim")
+
+
+def _status_glyph(has_update: bool | None):  # noqa: ANN202 — rich Text
+    """Map foundation's tri-state to the shared legend glyph.
+
+    ``●`` update available · ``✓`` up to date · ``◦`` no comparison (unknown)."""
+    from rich.text import Text
+
+    if has_update is True:
+        return Text("●", style="yellow")
+    if has_update is False:
+        return Text("✓", style="green")
+    return Text("◦", style="cyan")
+
+
+def _print_update_table(console, statuses) -> None:  # noqa: ANN001 — rich Console
+    """Render the Local-vs-Remote SHA table, grouped by composed bundle.
+
+    Mirrors app-cli's SHA-diff layout: each bundle heads a section, its module
+    sources list beneath with cached (local) and remote SHAs plus a status
+    glyph. Bundles whose sources are all local/non-git show a single aggregate
+    row (their sources appear once in the deduplicated section below)."""
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(title="Bundle & module updates", title_justify="center", header_style="bold cyan")
+    table.add_column("Bundle", style="green", no_wrap=True)
+    table.add_column("Source", style="green")
+    table.add_column("Local", style="dim", justify="right")
+    table.add_column("Remote", style="dim", justify="right")
+    table.add_column("", width=1, justify="center")
+
+    for index, status in enumerate(statuses):
+        if index:
+            table.add_section()
+        # Only sources with a real remote comparison belong in the SHA table;
+        # local/non-git ones are summarized once in the uncheckable section.
+        checkable = [row for row in status.sources if row.has_update is not None]
+        if not checkable:
+            dash = Text("—", style="dim")
+            table.add_row(status.name, dash, dash, dash, _status_glyph(status.has_updates))
+            continue
+        for offset, row in enumerate(checkable):
+            table.add_row(
+                status.name if offset == 0 else "",
+                row.name,
+                _sha_text(row.cached),
+                _sha_text(row.remote),
+                _status_glyph(row.has_update),
+            )
+
+    console.print(table)
+    console.print(
+        "[dim]Legend: [green]✓[/green] up to date  "
+        "[yellow]●[/yellow] update available  [cyan]◦[/cyan] local changes[/dim]"
+    )
+
+
 async def _update(check_only: bool, yes: bool, force: bool) -> int:
     from rich.console import Console
-    from rich.table import Table
 
     from .kernel import updater
 
@@ -1754,21 +1816,18 @@ async def _update(check_only: bool, yes: bool, force: bool) -> int:
         console.print(updater.self_update_hint(), style="dim")
         return 0
 
-    table = Table(title="Bundle updates", title_justify="center", header_style="bold cyan")
-    table.add_column("Bundle", style="green", no_wrap=True)
-    table.add_column("Status")
-    for status in statuses:
-        mark = "[yellow]●[/yellow]" if status.has_updates else "[green]✓[/green]"
-        table.add_row(status.name, f"{mark} {status.summary}")
-    console.print(table)
+    _print_update_table(console, statuses)
 
-    # Explain the otherwise-silent "unknown" count: which sources couldn't be
-    # checked and why (non-git source, unresolvable ref, ls-remote failure).
-    unknown = [reason for status in statuses for reason in status.unknown]
-    if unknown:
-        console.print("sources that couldn't be checked:", style="dim")
-        for reason in unknown:
-            console.print(f"  · {reason}", style="dim")
+    # Deduplicated "couldn't be checked": one line per source (a shared module
+    # used by many bundles collapses to a single entry) under a plain label,
+    # instead of foundation's opaque per-bundle "not supported" repeats.
+    uncheckable = updater.uncheckable_sources(statuses)
+    if uncheckable:
+        console.print()
+        console.print(f"{updater.UNCHECKABLE_LABEL} ({len(uncheckable)}):", style="dim")
+        for name, reason in uncheckable:
+            line = f"  · {name} — {reason}" if reason else f"  · {name}"
+            console.print(line, style="dim")
 
     # Anchors is composed via an include, which foundation's check skips — so
     # surface its freshness explicitly (offline degrades to a neutral note).

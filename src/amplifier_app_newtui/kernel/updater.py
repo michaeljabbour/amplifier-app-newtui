@@ -20,6 +20,7 @@ Updating the app itself, or the whole Amplifier platform, is out of scope
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,29 @@ from .config import (
     overlay_uris,
 )
 
+# Foundation's stock "no remote to compare" summary for local/cache/non-git
+# sources. It's technically accurate but unhelpful in a report, so the renderer
+# collapses it to a plainer section label (see UNCHECKABLE_LABEL).
+_GENERIC_UNCHECKABLE = "Update checking not supported for this source type"
+
+# The clearer header for the deduplicated "couldn't be checked" section.
+UNCHECKABLE_LABEL = "local or non-git sources (no remote to compare)"
+
+
+@dataclass(frozen=True)
+class SourceRow:
+    """One module/source inside a composed bundle, with its SHA comparison.
+
+    ``has_update`` follows foundation's tri-state: ``True`` (remote is ahead),
+    ``False`` (up to date), ``None`` (no remote to compare — local/cache/non-git;
+    ``reason`` then carries the honest explanation)."""
+
+    name: str
+    cached: str | None = None  # local/cached commit (full or short)
+    remote: str | None = None  # remote tip commit
+    has_update: bool | None = None
+    reason: str | None = None  # populated only when has_update is None
+
 
 @dataclass(frozen=True)
 class BundleUpdate:
@@ -39,7 +63,41 @@ class BundleUpdate:
     summary: str
     has_updates: bool
     error: str | None = None
+    sources: tuple[SourceRow, ...] = ()  # per-source SHA rows for the table
     unknown: tuple[str, ...] = ()  # per-source "couldn't be checked" reasons
+
+
+def _short_sha(sha: str | None) -> str | None:
+    """Truncate a commit to 7 chars for display; pass through short/None values."""
+    return sha[:7] if sha else None
+
+
+def uncheckable_sources(statuses: Iterable[BundleUpdate]) -> list[tuple[str, str]]:
+    """Deduplicated ``(name, reason)`` for sources with no remote to compare.
+
+    Collapses repeats so a shared module (e.g. ``tool-apply-patch``) used by many
+    bundles appears exactly once. The returned ``reason`` is blank for the stock
+    "not supported for this source type" case (the section label already says
+    so); genuine failures (ls-remote errors, unresolvable refs) keep their text.
+    Reads the structured ``sources`` rows when present; falls back to the legacy
+    ``unknown`` reason strings (``"name: reason"``) so older/stubbed callers still
+    render. Pure/offline."""
+
+    def _clean(reason: str) -> str:
+        reason = reason.strip()
+        return "" if reason in ("", _GENERIC_UNCHECKABLE) else reason
+
+    seen: dict[str, str] = {}
+    for status in statuses:
+        if status.sources:
+            for row in status.sources:
+                if row.has_update is None:
+                    seen.setdefault(row.name, _clean(row.reason or ""))
+        else:
+            for entry in status.unknown:
+                name, _, detail = entry.partition(":")
+                seen.setdefault(name.strip(), _clean(detail))
+    return sorted(seen.items())
 
 
 # --- anchors include ref (tracked, not statically pinned) -------------------
@@ -232,10 +290,31 @@ async def check_bundles(
                 continue
             status = await check_bundle_status(bundle)
             summary = str(getattr(status, "summary", "") or "")
+            rows: list[SourceRow] = []
+            for source in getattr(status, "sources", None) or []:
+                has_update = getattr(source, "has_update", None)
+                reason = None
+                if has_update is None:
+                    reason = str(
+                        getattr(source, "error", None)
+                        or getattr(source, "summary", "")
+                        or "reason unavailable"
+                    )
+                rows.append(
+                    SourceRow(
+                        name=display_name(str(getattr(source, "source_uri", "") or "")),
+                        cached=_short_sha(getattr(source, "cached_commit", None)),
+                        remote=_short_sha(getattr(source, "remote_commit", None)),
+                        has_update=has_update,
+                        reason=reason,
+                    )
+                )
+            # Legacy reason strings, derived from the structured rows so the
+            # two views can never disagree.
             unknown = tuple(
-                f"{display_name(str(getattr(source, 'source_uri', '') or ''))}: "
-                f"{getattr(source, 'error', None) or getattr(source, 'summary', '') or 'reason unavailable'}"
-                for source in (getattr(status, "unknown_sources", None) or [])
+                f"{row.name}: {row.reason or 'reason unavailable'}"
+                for row in rows
+                if row.has_update is None
             )
             results.append(
                 BundleUpdate(
@@ -243,6 +322,7 @@ async def check_bundles(
                     target,
                     summary,
                     bool(getattr(status, "has_updates", False)),
+                    sources=tuple(rows),
                     unknown=unknown,
                 )
             )
@@ -296,8 +376,10 @@ def self_update_hint() -> str:
 
 
 __all__ = [
+    "UNCHECKABLE_LABEL",
     "AnchorsStatus",
     "BundleUpdate",
+    "SourceRow",
     "anchors_ref",
     "anchors_status",
     "check_bundles",
@@ -306,6 +388,7 @@ __all__ = [
     "read_anchors_ref",
     "self_update_hint",
     "target_bundles",
+    "uncheckable_sources",
     "update_bundles",
     "uv_cache_clean",
 ]
