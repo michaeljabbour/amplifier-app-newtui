@@ -72,6 +72,24 @@ def _short_sha(sha: str | None) -> str | None:
     return sha[:7] if sha else None
 
 
+def unique_sources(statuses: Iterable[BundleUpdate]) -> list[SourceRow]:
+    """All checkable sources across the whole composition, deduplicated.
+
+    A shared transitive source (``amplifier-foundation``, ``skills``, ``modes``…)
+    is referenced by nearly every composed bundle, so a per-bundle listing repeats
+    it 15×. This collapses to one row per distinct ``(name, cached, remote)`` — the
+    flat, app-cli-style view — so genuinely different pinned versions still show
+    separately but identical repeats appear once. Only rows with a real remote
+    comparison (``has_update is not None``) are included; local/non-git sources are
+    summarized once by :func:`uncheckable_sources`. Pure/offline."""
+    seen: dict[tuple[str, str | None, str | None], SourceRow] = {}
+    for status in statuses:
+        for row in status.sources:
+            if row.has_update is not None:
+                seen.setdefault((row.name, row.cached, row.remote), row)
+    return [seen[key] for key in sorted(seen, key=lambda k: (k[0], k[1] or "", k[2] or ""))]
+
+
 def uncheckable_sources(statuses: Iterable[BundleUpdate]) -> list[tuple[str, str]]:
     """Deduplicated ``(name, reason)`` for sources with no remote to compare.
 
@@ -389,6 +407,7 @@ __all__ = [
     "self_update_hint",
     "target_bundles",
     "uncheckable_sources",
+    "unique_sources",
     "update_bundles",
     "uv_cache_clean",
 ]
