@@ -297,10 +297,44 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
+DEFAULT_INSTALL_SOURCE = "git+https://github.com/michaeljabbour/amplifier-app-newtui"
+"""Default source for ``reset --reinstall`` — the newtui git repo. Override with
+``--install-source .`` from a clone, or a fork URL."""
+
+
+def reinstall_command(source: str = DEFAULT_INSTALL_SOURCE) -> list[str]:
+    """The ``uv`` argv that reinstalls the newtui tool from *source* (pure)."""
+    return ["uv", "tool", "install", "--reinstall", source]
+
+
+def reinstall_tool(source: str = DEFAULT_INSTALL_SOURCE) -> tuple[bool, str]:
+    """Reinstall the newtui uv tool from *source*. Returns ``(ok, message)``.
+
+    Best-effort recovery for a wedged install — the ``uv tool`` analogue of
+    app-cli's reset-and-reinstall (newtui isn't the ``amplifier`` umbrella, so it
+    reinstalls *itself*). uv stages the new environment and swaps it, so
+    reinstalling the currently-running tool is safe. Never raises — a failure
+    returns a message telling the user the exact command to run by hand."""
+    import subprocess
+
+    cmd = reinstall_command(source)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except FileNotFoundError:
+        return (False, "uv not found on PATH — run manually: " + " ".join(cmd))
+    except Exception as error:  # noqa: BLE001 — recovery must never crash the reset
+        return (False, f"reinstall could not run ({error}); run manually: " + " ".join(cmd))
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return (False, detail[-1] if detail else f"uv exited {proc.returncode}")
+    return (True, f"reinstalled newtui from {source}")
+
+
 __all__ = [
     "CATEGORIES",
     "CATEGORY_ORDER",
     "DEFAULT_CATEGORIES",
+    "DEFAULT_INSTALL_SOURCE",
     "Category",
     "ResetError",
     "ResetReport",
@@ -308,6 +342,8 @@ __all__ = [
     "category_targets",
     "looks_like_app_home",
     "parse_categories",
+    "reinstall_command",
+    "reinstall_tool",
     "resolve_app_home",
     "run_reset",
 ]

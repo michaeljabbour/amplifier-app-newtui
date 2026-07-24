@@ -943,12 +943,25 @@ def version() -> None:
     help="App home to reset (default: $AMPLIFIER_HOME or ~/.amplifier).",
 )
 @click.option("--list", "list_only", is_flag=True, help="List the category taxonomy and exit.")
+@click.option(
+    "--reinstall",
+    is_flag=True,
+    help="After clearing, reinstall the newtui tool (repair a wedged install).",
+)
+@click.option(
+    "--install-source",
+    default=None,
+    metavar="URI",
+    help="Source for --reinstall (default: the newtui git repo; use '.' from a clone).",
+)
 def reset(
     categories: tuple[str, ...],
     dry_run: bool,
     yes: bool,
     home_override: str | None,
     list_only: bool,
+    reinstall: bool,
+    install_source: str | None,
 ) -> None:
     """Data-safe reset: clear selected categories, preserve the rest.
 
@@ -964,12 +977,17 @@ def reset(
       - secrets (keys) are cleared ONLY when named explicitly
       - never deletes outside the confirmed app home
 
+    ``--reinstall`` additionally repairs a wedged install by reinstalling the
+    newtui tool (``uv tool install --reinstall``) after clearing — the ``uv
+    tool`` analogue of app-cli's reset-and-reinstall.
+
     \b
     Examples:
       amplifier-newtui reset --list                 Show the taxonomy
       amplifier-newtui reset --dry-run              Preview the safe default
       amplifier-newtui reset --category cache -y    Clear only the cache
       amplifier-newtui reset -c sessions,config     Clear sessions + config
+      amplifier-newtui reset --reinstall -y         Clear + reinstall the tool
     """
     from .kernel import reset as reset_kernel
 
@@ -1008,33 +1026,49 @@ def reset(
     if plan.secret_cleared:
         click.echo(f"WARNING: this clears secrets: {', '.join(plan.secret_cleared)}")
 
-    if not plan.removed:
-        click.echo("nothing to remove -- selected categories have no files on disk")
-        return
+    source = install_source or reset_kernel.DEFAULT_INSTALL_SOURCE
 
-    click.echo("would remove:" if dry_run else "to remove:")
-    for path in plan.removed:
-        click.echo(f"  - {path}")
+    if plan.removed:
+        click.echo("would remove:" if dry_run else "to remove:")
+        for path in plan.removed:
+            click.echo(f"  - {path}")
+    else:
+        click.echo("nothing to remove -- selected categories have no files on disk")
 
     if dry_run:
-        click.echo("DRY RUN -- nothing was removed")
+        if reinstall:
+            click.echo(f"would reinstall: {' '.join(reset_kernel.reinstall_command(source))}")
+        click.echo("DRY RUN -- nothing was changed")
+        return
+
+    if not plan.removed and not reinstall:
         return
 
     if not yes:
-        prompt = f"permanently remove {len(plan.removed)} item(s)?"
-        if plan.destructive_cleared:
-            prompt = (
-                f"permanently remove {len(plan.removed)} item(s) "
-                f"including {', '.join(plan.destructive_cleared)}?"
-            )
-        if not click.confirm(prompt, default=False):
+        actions: list[str] = []
+        if plan.removed:
+            item = f"remove {len(plan.removed)} item(s)"
+            if plan.destructive_cleared:
+                item += f" (incl {', '.join(plan.destructive_cleared)})"
+            actions.append(item)
+        if reinstall:
+            actions.append("reinstall the newtui tool")
+        if not click.confirm("permanently " + " and ".join(actions) + "?", default=False):
             click.echo("cancelled")
             return
 
-    final = reset_kernel.run_reset(home, selected, dry_run=False)
-    click.echo(f"removed {len(final.removed)} item(s); preserved {len(final.preserved)}")
-    for path in final.preserved:
-        click.echo(f"  preserved: {path}")
+    if plan.removed:
+        final = reset_kernel.run_reset(home, selected, dry_run=False)
+        click.echo(f"removed {len(final.removed)} item(s); preserved {len(final.preserved)}")
+        for path in final.preserved:
+            click.echo(f"  preserved: {path}")
+
+    if reinstall:
+        click.echo(f"reinstalling newtui from {source} ...")
+        ok, message = reset_kernel.reinstall_tool(source)
+        click.echo(message if ok else f"reinstall failed: {message}", err=not ok)
+        if not ok:
+            raise SystemExit(1)
 
 
 # --------------------------------------------------------------------------

@@ -273,3 +273,47 @@ def test_run_reset_removes_symlinked_entry_without_following(tmp_path: Path) -> 
     assert not (home / "registry.json").exists()
     # The symlink target outside the home is untouched.
     assert (outside / "keep.txt").exists()
+
+
+def test_reinstall_command_builds_uv_argv() -> None:
+    from amplifier_app_newtui.kernel import reset
+
+    assert reset.reinstall_command("git+x") == ["uv", "tool", "install", "--reinstall", "git+x"]
+    assert reset.reinstall_command()[-1] == reset.DEFAULT_INSTALL_SOURCE
+
+
+def test_reinstall_tool_reports_uv_missing(monkeypatch) -> None:
+    import subprocess
+
+    from amplifier_app_newtui.kernel import reset
+
+    def _raise(*a, **k):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(subprocess, "run", _raise)
+    ok, msg = reset.reinstall_tool("git+x")
+    assert not ok and "uv not found" in msg
+
+
+def test_reinstall_tool_success_and_failure(monkeypatch) -> None:
+    import subprocess
+
+    from amplifier_app_newtui.kernel import reset
+
+    class _OK:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _OK())
+    ok, msg = reset.reinstall_tool("git+x")
+    assert ok and "git+x" in msg
+
+    class _Fail:
+        returncode = 1
+        stderr = "boom: the error"
+        stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Fail())
+    ok, msg = reset.reinstall_tool("git+x")
+    assert not ok and "the error" in msg
