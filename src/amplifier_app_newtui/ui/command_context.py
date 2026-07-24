@@ -176,6 +176,9 @@ class AppCommandContext:
     def manage_mcp(self, args: str) -> None:
         self._app.session_ops.manage_mcp(args)
 
+    def load_bundle(self, args: str) -> None:
+        self._app.session_ops.load_bundle(args)
+
     def manage_config(self, args: str) -> None:
         self._app.manage_config(args)
 

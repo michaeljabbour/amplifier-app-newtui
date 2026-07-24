@@ -198,6 +198,22 @@ def malformed_settings_notice(malformed: tuple[Path, ...]) -> str | None:
     )
 
 
+def deferred_overlays_notice(deferred: tuple[str, ...]) -> str | None:
+    """Build the boot notice for overlays held back by ``bundle.deferred``.
+
+    ``None`` when nothing is deferred, so an unconfigured app boots silently.
+    Names the count (URIs are noisy) and points at the load command — the
+    overlays are lazy, not lost."""
+    if not deferred:
+        return None
+    count = len(deferred)
+    plural = "overlay" if count == 1 else "overlays"
+    return (
+        f"deferred {count} {plural} for fast boot — compose on demand with "
+        "`/bundle load <name>` (bundle list shows them)"
+    )
+
+
 def map_provider_ids_to_instance_ids(mount_plan: dict[str, Any]) -> None:
     """Copy each provider's settings ``id`` to the kernel's ``instance_id``.
 
@@ -271,7 +287,12 @@ def added_bundle_uris(settings: dict[str, Any]) -> dict[str, str]:
 
 
 def overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
-    """App/behavior bundles (``bundle.app``) composed onto every session."""
+    """App/behavior bundles (``bundle.app``) registered as session overlays.
+
+    This is every overlay a user has configured, boot-set and deferred
+    alike; :func:`boot_overlay_uris` is the subset composed at startup and
+    :func:`deferred_overlay_uris` is the subset held back for on-demand
+    :func:`resolve_deferred_bundle` loading."""
     bundle_section = settings.get("bundle")
     if not isinstance(bundle_section, dict):
         return ()
@@ -279,6 +300,91 @@ def overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
     if not isinstance(app_bundles, list):
         return ()
     return tuple(str(uri) for uri in app_bundles if uri)
+
+
+def deferred_bundle_entries(settings: dict[str, Any]) -> tuple[str, ...]:
+    """The ``bundle.deferred`` opt-out list (names and/or URIs), verbatim.
+
+    Fast boot (issue: 18 overlays composed on every boot): a user marks the
+    heavy/slow overlays here so they are held back at startup and composed
+    in-session on demand (``/bundle load <name>``). Each entry is a bundle
+    *name* (as registered via ``bundle add``/``bundle.added``) or an overlay
+    URI. Absent/junk shapes yield ``()`` — deferral is strictly opt-in, so an
+    unconfigured app composes exactly what it does today."""
+    bundle_section = settings.get("bundle")
+    if not isinstance(bundle_section, dict):
+        return ()
+    deferred = bundle_section.get("deferred")
+    if not isinstance(deferred, list):
+        return ()
+    return tuple(str(entry) for entry in deferred if entry)
+
+
+def _deferred_overlay_uri_set(settings: dict[str, Any]) -> set[str]:
+    """Resolve ``bundle.deferred`` entries to the overlay URIs they defer.
+
+    An entry matches an overlay when it *is* the overlay URI, or when it is a
+    ``bundle.added`` name whose registered URI is the overlay URI. Only URIs
+    that actually appear in ``bundle.app`` are returned — deferring a name that
+    is not an overlay is a harmless no-op, never a way to silently drop a
+    bundle that was never composed anyway."""
+    entries = deferred_bundle_entries(settings)
+    if not entries:
+        return set()
+    added = added_bundle_uris(settings)
+    overlays = set(overlay_uris(settings))
+    deferred: set[str] = set()
+    for entry in entries:
+        if entry in overlays:
+            deferred.add(entry)
+        registered = added.get(entry)
+        if registered and registered in overlays:
+            deferred.add(registered)
+    return deferred
+
+
+def deferred_overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
+    """The ``bundle.app`` overlays held back from boot (``bundle.deferred``).
+
+    Order follows ``bundle.app`` so the deferred listing stays stable. Empty
+    unless :func:`deferred_bundle_entries` names an actual overlay."""
+    deferred = _deferred_overlay_uri_set(settings)
+    if not deferred:
+        return ()
+    return tuple(uri for uri in overlay_uris(settings) if uri in deferred)
+
+
+def boot_overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
+    """The ``bundle.app`` overlays composed at startup (deferred ones removed).
+
+    Identical to :func:`overlay_uris` unless a ``bundle.deferred`` opt-out is
+    configured, so existing settings boot byte-for-byte as before."""
+    deferred = _deferred_overlay_uri_set(settings)
+    if not deferred:
+        return overlay_uris(settings)
+    return tuple(uri for uri in overlay_uris(settings) if uri not in deferred)
+
+
+def resolve_deferred_bundle(name: str, settings: dict[str, Any]) -> str | None:
+    """Resolve a ``/bundle load <name>`` argument to a deferred overlay URI.
+
+    Accepts the deferred bundle's registry *name* (``bundle.added``) or its
+    URI directly, and returns the URI only when it is actually held back by
+    :func:`deferred_overlay_uris`. Returns ``None`` for an unknown name or for
+    a bundle that is not deferred (already composed at boot — nothing to load).
+    Pure: the caller does the foundation load/compose."""
+    target = name.strip()
+    if not target:
+        return None
+    deferred = set(deferred_overlay_uris(settings))
+    if not deferred:
+        return None
+    if target in deferred:
+        return target
+    registered = added_bundle_uris(settings).get(target)
+    if registered and registered in deferred:
+        return registered
+    return None
 
 
 ROUTING_MATRIX_BUNDLE_URI = "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main"
@@ -312,15 +418,17 @@ def routing_enabled(settings: dict[str, Any]) -> bool:
 
 
 def composed_overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
-    """All overlay bundle URIs composed onto the session, in compose order.
+    """The overlay bundle URIs composed onto the session at boot, in order.
 
-    User ``bundle.app`` overlays come first; the routing-matrix bundle is
-    appended last when routing is opted in (:func:`routing_enabled`) so the
-    settings→hook bridge (:func:`inject_routing_config`) has a mounted
-    ``hooks-routing`` to patch. Deduped by bundle identity: a user who
-    already lists the routing-matrix bundle in ``bundle.app`` never composes
-    it twice."""
-    overlays = list(overlay_uris(settings))
+    User ``bundle.app`` overlays come first — minus any held back by
+    ``bundle.deferred`` (:func:`boot_overlay_uris`), the fast-boot opt-out —
+    and the routing-matrix bundle is appended last when routing is opted in
+    (:func:`routing_enabled`) so the settings→hook bridge
+    (:func:`inject_routing_config`) has a mounted ``hooks-routing`` to patch.
+    Deduped by bundle identity: a user who already lists the routing-matrix
+    bundle in ``bundle.app`` never composes it twice. With no deferral
+    configured this equals every ``bundle.app`` overlay (behavior unchanged)."""
+    overlays = list(boot_overlay_uris(settings))
     if routing_enabled(settings) and not any(_ROUTING_BUNDLE_MARKER in uri for uri in overlays):
         overlays.append(ROUTING_MATRIX_BUNDLE_URI)
     return tuple(overlays)
@@ -1175,6 +1283,11 @@ class ResolvedConfig:
     prepared: Any  # amplifier_foundation.bundle.PreparedBundle
     mount_plan: dict[str, Any]
     overlays: tuple[str, ...] = field(default=())
+    deferred_overlays: tuple[str, ...] = field(default=())
+    """``bundle.app`` overlays held back from this boot by ``bundle.deferred``
+    (the fast-boot opt-out). Composed on demand via ``/bundle load <name>`` —
+    :attr:`deferred_notice` surfaces the count so held-back overlays are never
+    silently dropped."""
     project_dir: Path = field(default_factory=Path.cwd)
     fallback_notice: str | None = None
     """Set when a settings-configured bundle failed discovery and the app
@@ -1183,6 +1296,10 @@ class ResolvedConfig:
     """Set when a settings.yaml scope was malformed and skipped — the
     runtime surfaces it as a Notification, so a whole ignored scope is not
     buried in a silent ``logger.warning`` (doctor also flags it at rest)."""
+    deferred_notice: str | None = None
+    """Set when ``bundle.deferred`` held overlays back from boot — the runtime
+    surfaces it so the user knows which overlays are lazy (and that
+    ``/bundle load`` composes them), never a silent drop."""
 
 
 async def resolve_config(
@@ -1291,6 +1408,11 @@ async def resolve_config(
     apply_notification_ladder_env(settings)
     expand_env_placeholders(mount_plan)
 
+    # Overlays held back from THIS boot by bundle.deferred (fast boot). They
+    # are composed on demand in-session; surfacing the count keeps deferral
+    # honest — the overlays are lazy, never silently dropped.
+    deferred = deferred_overlay_uris(settings)
+
     return ResolvedConfig(
         bundle_name=bundle_name,
         bundle_uri=uri,
@@ -1298,10 +1420,57 @@ async def resolve_config(
         prepared=prepared,
         mount_plan=mount_plan,
         overlays=overlays,
+        deferred_overlays=deferred,
         project_dir=project_dir,
         fallback_notice=fallback_notice,
         settings_notice=settings_notice,
+        deferred_notice=deferred_overlays_notice(deferred),
     )
+
+
+async def prepare_overlay_bundle(
+    uri: str,
+    settings: dict[str, Any],
+    *,
+    amplifier_home: Path | None = None,
+    install_deps: bool = True,
+    progress: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
+    """Load + ``prepare()`` a single overlay bundle, returning its mount plan.
+
+    The shared foundation half of two newtui-controlled operations:
+
+    - **warm** (``bundle warm`` / ``bundle add --warm``): ``install_deps=True``
+      installs the overlay's modules ONCE, out of the boot burst — the
+      mitigation for foundation's fragile mass ``activate_all`` install
+      (RCA: a cold boot installs ~18 overlays' modules at once and one gets
+      killed);
+    - **in-session load** (``/bundle load``): the returned mount plan feeds
+      :func:`kernel.bundle_compose.mount_overlay_modules`, which mounts the
+      overlay's additive tool/hook/agent modules onto the live coordinator.
+
+    Reuses the same ``sources``-override seams as :func:`resolve_config`
+    (source resolver + include-resolver registry) so an overlay loaded here
+    resolves modules exactly as it would at boot. ``${VAR}`` placeholders are
+    expanded from the environment (keys.env already loaded by boot). Foundation
+    is imported lazily so ``--demo`` never touches it."""
+    amplifier_home = amplifier_home or (Path.home() / ".amplifier")
+    from amplifier_foundation import load_bundle  # lazy: keep module import light
+
+    registry = _bundle_registry_for(settings, amplifier_home)
+    if progress:
+        progress("loading", uri)
+    root = await load_bundle(uri, registry=registry)
+    if progress:
+        progress("preparing", uri)
+    prepared = await root.prepare(
+        install_deps=install_deps,
+        source_resolver=build_source_resolver(settings),
+        progress_callback=progress,
+    )
+    mount_plan = prepared.mount_plan
+    expand_env_placeholders(mount_plan)
+    return mount_plan
 
 
 def get_project_slug(project_dir: Path | None = None) -> str:
@@ -1356,6 +1525,12 @@ __all__ = [
     "map_provider_ids_to_instance_ids",
     "overlay_uris",
     "composed_overlay_uris",
+    "boot_overlay_uris",
+    "deferred_bundle_entries",
+    "deferred_overlay_uris",
+    "deferred_overlays_notice",
+    "resolve_deferred_bundle",
+    "prepare_overlay_bundle",
     "routing_enabled",
     "ROUTING_MATRIX_BUNDLE_URI",
     "packaged_bundles_dir",

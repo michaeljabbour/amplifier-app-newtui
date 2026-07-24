@@ -125,6 +125,11 @@ _LOAD_SKILL: SessionOp[tuple[bool, str]] = SessionOp(
     (False, _STILL_STARTING),
 )
 _MCP_TOOLS: SessionOp[tuple[str, ...]] = SessionOp("mcp_tools", (), ())
+_LOAD_DEFERRED_BUNDLE: SessionOp[tuple[bool, str]] = SessionOp(
+    "load_deferred_bundle",
+    (False, "loading a bundle needs a real session"),
+    (False, _STILL_STARTING),
+)
 
 SESSION_OPS: tuple[SessionOp[Any], ...] = (
     _INTERRUPT,
@@ -144,6 +149,7 @@ SESSION_OPS: tuple[SessionOp[Any], ...] = (
     _LIST_SKILLS,
     _LOAD_SKILL,
     _MCP_TOOLS,
+    _LOAD_DEFERRED_BUNDLE,
 )
 """The one declaration site for the passthrough session-op ladder."""
 
@@ -290,6 +296,14 @@ class RuntimeAdapter:
 
     async def mcp_tools(self) -> tuple[str, ...]:
         return await self._run_op(_MCP_TOOLS)
+
+    async def load_deferred_bundle(self, name: str) -> tuple[bool, str]:
+        """Compose a deferred overlay into the live session (``/bundle load``)."""
+        return await self._run_op(_LOAD_DEFERRED_BUNDLE, name)
+
+    async def deferred_bundles(self) -> tuple[str, ...]:
+        """Overlay URIs held back from boot (``bundle.deferred``); () for demo."""
+        return ()
 
     async def rename_session(self, name: str) -> tuple[bool, str]:
         del name
@@ -621,6 +635,15 @@ class RealRuntimeAdapter(RuntimeAdapter):
 
         async def read() -> tuple[SessionSummary, ...]:
             return self._runtime.session_summaries()
+
+        return await self._in_runtime(read())
+
+    async def deferred_bundles(self) -> tuple[str, ...]:
+        if self._runtime is None:
+            return ()
+
+        async def read() -> tuple[str, ...]:
+            return self._runtime.deferred_bundles()
 
         return await self._in_runtime(read())
 

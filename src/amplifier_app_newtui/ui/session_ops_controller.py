@@ -272,5 +272,50 @@ class SessionOpsController:
         else:
             self._host.show_notice(f"unknown /mcp subcommand · {sub} (list | add | remove)")
 
+    def load_bundle(self, args: str) -> None:
+        """``/bundle`` — list deferred overlays; ``load <name>`` composes one.
+
+        The in-session half of fast-boot deferral (``bundle.deferred``): heavy
+        overlays skipped at boot are composed into the running session here on
+        demand. Preparing an overlay can install modules, so the compose runs
+        on a worker (never blocks the UI); loading needs a live session."""
+        parts = args.split()
+        sub = parts[0].lower() if parts else "list"
+        if sub in ("", "list"):
+            self._host.run_worker(self._list_deferred_bundles(), exclusive=False)
+            return
+        if sub == "load":
+            name = parts[1] if len(parts) > 1 else ""
+            if not name:
+                self._host.show_notice("usage: /bundle load <name> · /bundle lists deferred")
+                return
+            if self._ops_starting():
+                return
+            self._host.run_worker(self._load_bundle(name), exclusive=False)
+            return
+        # A bare `/bundle <name>` is the natural shorthand for `load <name>`.
+        if self._ops_starting():
+            return
+        self._host.run_worker(self._load_bundle(parts[0]), exclusive=False)
+
+    async def _list_deferred_bundles(self) -> None:
+        names = await self._host.adapter.deferred_bundles()
+        self._host.append_block(
+            Answer(
+                id=self._host.allocator.next_id(),
+                spans=names_spans(
+                    "Deferred overlays",
+                    names,
+                    "none deferred · set bundle.deferred to hold heavy overlays back",
+                ),
+            )
+        )
+
+    async def _load_bundle(self, name: str) -> None:
+        ok, detail = await self._host.adapter.load_deferred_bundle(name)
+        if ok:
+            self._host.refresh_status()  # mounted tools/agents change the roster
+        self._host.show_notice(f"bundle · {detail}" if ok else detail)
+
 
 __all__ = ["SessionOpsController", "SessionOpsHost"]

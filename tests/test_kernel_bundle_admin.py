@@ -90,3 +90,22 @@ def test_scope_selection_writes_to_the_right_file(tmp_path: Path) -> None:
     assert paths.project_settings.is_file()
     assert not paths.global_settings.is_file()
     assert bundle_admin.read_scope(paths.project_settings)["bundle"]["active"] == "p"
+
+
+# -- warm (pre-install modules out of the boot burst) -----------------------
+
+
+def test_warm_bundle_bad_source_reports_failure_offline(tmp_path: Path) -> None:
+    """A bogus source degrades to ok=False (never raises) — offline safe."""
+    import asyncio
+
+    result = asyncio.run(
+        bundle_admin.warm_bundle(
+            str(tmp_path / "does-not-exist"),
+            project_dir=tmp_path / "proj",
+            amplifier_home=tmp_path / "home",
+        )
+    )
+    assert isinstance(result, bundle_admin.WarmResult)
+    assert result.ok is False
+    assert result.message  # a reason, not empty

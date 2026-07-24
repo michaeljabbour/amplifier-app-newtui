@@ -1016,7 +1016,7 @@ def _scope_options(fn):  # noqa: ANN001 — click decorator stack
 
 @main.group()
 def bundle() -> None:
-    """Manage bundles: list, show, use, add, remove, update."""
+    """Manage bundles: list, show, use, add, remove, update, warm."""
 
 
 @bundle.command("list")
@@ -1123,9 +1123,21 @@ def bundle_show(name: str) -> None:
 @click.argument("uri")
 @click.option("--name", "-n", default=None, help="Registry name (default: the bundle's own name).")
 @click.option("--app", "as_app", is_flag=True, help="Also compose onto every session (overlay).")
+@click.option(
+    "--warm",
+    "warm",
+    is_flag=True,
+    help="Pre-install the bundle's modules now (out of the boot burst).",
+)
 @_scope_options
 def bundle_add(
-    uri: str, name: str | None, as_app: bool, is_global: bool, is_project: bool, is_local: bool
+    uri: str,
+    name: str | None,
+    as_app: bool,
+    warm: bool,
+    is_global: bool,
+    is_project: bool,
+    is_local: bool,
 ) -> None:
     """Register a bundle URI for discovery (validates it loads first)."""
     from .kernel import bundle_admin
@@ -1141,6 +1153,38 @@ def bundle_add(
     )
     overlay = " · composed as app overlay" if as_app else ""
     click.echo(f"registered {resolved_name} → {uri}  ({scope}: {path}){overlay}")
+    if warm:
+        # Install modules NOW so a later boot only ever skips the install —
+        # the newtui-side mitigation for foundation's fragile mass install.
+        result = asyncio.run(bundle_admin.warm_bundle(uri))
+        click.echo(
+            f"warmed {resolved_name} · {result.message}"
+            if result.ok
+            else f"warm failed · {result.message}",
+            err=not result.ok,
+        )
+
+
+@bundle.command("warm")
+@click.argument("name")
+def bundle_warm(name: str) -> None:
+    """Pre-install a bundle's modules (out of the boot install burst).
+
+    NAME is a registered bundle name or a URI. Warming installs its modules
+    once so a later session that composes it only ever skips the install —
+    the mitigation for the cold-boot ``activate_all`` burst getting a module
+    killed. Also the recommended companion to ``bundle.deferred``: warm a
+    deferred overlay so ``/bundle load`` composes it instantly."""
+    from .kernel import bundle_admin
+
+    # Resolve a registered name to its URI so `bundle warm <added-name>` works.
+    settings = bundle_admin.load_merged_settings(bundle_admin.settings_paths(None, None))
+    uri = bundle_admin.added_bundles(settings).get(name, name)
+    result = asyncio.run(bundle_admin.warm_bundle(uri))
+    if not result.ok:
+        click.echo(f"warm failed · {result.message}", err=True)
+        raise SystemExit(1)
+    click.echo(f"warmed {name} · {result.message}")
 
 
 @bundle.command("remove")

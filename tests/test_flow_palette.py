@@ -42,6 +42,7 @@ ALL_COMMANDS = (
     "/skills",
     "/skill",
     "/mcp",
+    "/bundle",
     "/tasks",
     "/ledger",
     "/export",

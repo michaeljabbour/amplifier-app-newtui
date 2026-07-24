@@ -133,6 +133,12 @@ def _cmd_mcp(ctx: CommandContext, args: str) -> None:
     ctx.manage_mcp(args.strip())
 
 
+def _cmd_bundle(ctx: CommandContext, args: str) -> None:
+    """``/bundle`` — list deferred overlays; ``/bundle load <name>`` composes
+    one into the running session (fast-boot deferral, ``bundle.deferred``)."""
+    ctx.load_bundle(args.strip())
+
+
 def _cmd_ledger(ctx: CommandContext, args: str) -> None:
     del args
     ledger = ctx.ledger
@@ -368,6 +374,15 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="MCP servers: list · add · remove",
         tag="built-in",
         handler=_cmd_mcp,
+    ),
+    # Fast boot: heavy bundle.app overlays are deferred and composed on
+    # demand here, into the running session (kernel/bundle_compose).
+    CommandSpec(
+        group="During",
+        name="/bundle",
+        desc="deferred overlays; /bundle load <name> composes one now",
+        tag="built-in",
+        handler=_cmd_bundle,
     ),
     CommandSpec(
         group="Parallel",

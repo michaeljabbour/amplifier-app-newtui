@@ -48,6 +48,8 @@ class _FakeAdapter:
         self.compact_result: tuple[bool, str] = (True, "9 -> 1 messages")
         self.clear_result: tuple[bool, int] = (True, 4)
         self.load_skill_result: tuple[bool, str] = (True, "# skill body")
+        self.deferred: tuple[str, ...] = ("git+https://x/heavy@main",)
+        self.load_bundle_result: tuple[bool, str] = (True, "loaded · heavy · 2 module(s) mounted")
 
     async def status(self) -> StatusInfo:
         self.calls.append("status")
@@ -100,6 +102,14 @@ class _FakeAdapter:
     async def mcp_tools(self) -> tuple[str, ...]:
         self.calls.append("mcp_tools")
         return ()
+
+    async def deferred_bundles(self) -> tuple[str, ...]:
+        self.calls.append("deferred_bundles")
+        return self.deferred
+
+    async def load_deferred_bundle(self, name: str) -> tuple[bool, str]:
+        self.calls.append(f"load_deferred_bundle:{name}")
+        return self.load_bundle_result
 
 
 class _FakeHost:
@@ -274,3 +284,54 @@ def test_manage_mcp_list(controller: SessionOpsController, host: _FakeHost, monk
     controller.manage_mcp("")
     assert "mcp_tools" in host.adapter.calls
     assert "MCP" in _text(host.blocks[0])
+
+
+# ---------------------------------------------------------------------------
+# /bundle — deferred overlay listing + on-demand in-session load (fast boot)
+# ---------------------------------------------------------------------------
+
+
+def test_bundle_bare_lists_deferred(controller: SessionOpsController, host: _FakeHost) -> None:
+    controller.load_bundle("")
+    assert host.adapter.calls == ["deferred_bundles"]
+    body = _text(host.blocks[0])
+    assert "Deferred overlays" in body and "heavy" in body
+
+
+def test_bundle_list_when_none_deferred(controller: SessionOpsController, host: _FakeHost) -> None:
+    host.adapter.deferred = ()
+    controller.load_bundle("list")
+    assert "none deferred" in _text(host.blocks[0])
+
+
+def test_bundle_load_composes(controller: SessionOpsController, host: _FakeHost) -> None:
+    controller.load_bundle("load heavy")
+    assert host.adapter.calls == ["load_deferred_bundle:heavy"]
+    assert host.status_refreshes == 1  # mounted tools/agents change the roster
+    assert host.notices == ["bundle · loaded · heavy · 2 module(s) mounted"]
+
+
+def test_bundle_load_shorthand(controller: SessionOpsController, host: _FakeHost) -> None:
+    # `/bundle heavy` is shorthand for `/bundle load heavy`.
+    controller.load_bundle("heavy")
+    assert host.adapter.calls == ["load_deferred_bundle:heavy"]
+
+
+def test_bundle_load_missing_name(controller: SessionOpsController, host: _FakeHost) -> None:
+    controller.load_bundle("load")
+    assert host.adapter.calls == []
+    assert host.notices == ["usage: /bundle load <name> · /bundle lists deferred"]
+
+
+def test_bundle_load_failure_notices(controller: SessionOpsController, host: _FakeHost) -> None:
+    host.adapter.load_bundle_result = (False, "'heavy' is not a deferred bundle · deferred: none")
+    controller.load_bundle("load heavy")
+    assert host.status_refreshes == 0  # nothing mounted
+    assert host.notices == ["'heavy' is not a deferred bundle · deferred: none"]
+
+
+def test_bundle_load_gated_while_starting() -> None:
+    host = _FakeHost(_FakeAdapter(), splash_active=True)
+    SessionOpsController(host).load_bundle("load heavy")
+    assert host.adapter.calls == []
+    assert host.notices == ["session still starting · try again once the banner lands"]
