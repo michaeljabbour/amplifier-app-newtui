@@ -102,7 +102,12 @@ class ApprovalBar(Horizontal):
         color: $fg;
         padding: 0 2 0 0;
     }
-    ApprovalBar.-wrapped { layout: vertical; }
+    ApprovalBar.-wrapped { layout: vertical; height: auto; }
+    /* When wrapped, stack the options vertically — one full-width row each —
+       so long/many options stay visible (a Horizontal row clips them
+       off-screen) and the selected row's highlight spans the width. */
+    ApprovalBar.-wrapped #approval-options { layout: vertical; height: auto; width: 1fr; }
+    ApprovalBar.-wrapped ApprovalOption { width: 1fr; }
     """
 
     selected: reactive[int] = reactive(0)
