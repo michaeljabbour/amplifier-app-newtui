@@ -132,3 +132,41 @@ def test_reset_reports_when_nothing_to_remove(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["reset", "--home", str(home), "-c", "cache", "--yes"])
     assert result.exit_code == 0
     assert "nothing to remove" in result.output
+
+
+# -- --reinstall (repair flow; the uv call is mocked, never actually run) -----
+
+
+def test_reset_reinstall_dry_run_previews_and_changes_nothing(tmp_path: Path) -> None:
+    home = _populate(tmp_path / ".amplifier")
+    result = CliRunner().invoke(main, ["reset", "--home", str(home), "--reinstall", "--dry-run"])
+    assert result.exit_code == 0
+    assert "would reinstall" in result.output
+    assert "uv tool install --reinstall" in result.output
+    assert (home / "cache" / "bundle-abc").exists()  # nothing removed in dry-run
+
+
+def test_reset_reinstall_yes_invokes_reinstall(tmp_path: Path, monkeypatch) -> None:
+    home = _populate(tmp_path / ".amplifier")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "amplifier_app_newtui.kernel.reset.reinstall_tool",
+        lambda source: calls.append(source) or (True, "reinstalled newtui"),
+    )
+    result = CliRunner().invoke(
+        main, ["reset", "--home", str(home), "-c", "cache", "--reinstall", "-y"]
+    )
+    assert result.exit_code == 0
+    assert calls, "reinstall_tool should have been invoked"
+    assert "reinstalling newtui" in result.output
+
+
+def test_reset_reinstall_failure_exits_nonzero(tmp_path: Path, monkeypatch) -> None:
+    home = _populate(tmp_path / ".amplifier")
+    monkeypatch.setattr(
+        "amplifier_app_newtui.kernel.reset.reinstall_tool",
+        lambda source: (False, "uv not found on PATH"),
+    )
+    result = CliRunner().invoke(main, ["reset", "--home", str(home), "--reinstall", "-y"])
+    assert result.exit_code == 1
+    assert "reinstall failed" in result.output
