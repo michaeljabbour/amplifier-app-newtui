@@ -173,3 +173,34 @@ def test_resume_unknown_id_exits_nonzero(scratch: SessionStore) -> None:
     result = CliRunner().invoke(main, ["resume", "zzz"])
     assert result.exit_code == 1
     assert "no session found" in result.output
+
+
+# -- continue (most-recent shortcut) ---------------------------------------
+
+
+def test_continue_empty_store(scratch: SessionStore) -> None:
+    result = CliRunner().invoke(main, ["continue"])
+    assert result.exit_code == 0
+    assert "no stored sessions" in result.output
+
+
+def test_continue_launches_most_recent(
+    scratch: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launched: dict[str, object] = {}
+
+    async def fake_launch(
+        *, demo: bool, bundle: str | None = None, resume_id: str | None = None
+    ) -> int:
+        launched["resume_id"] = resume_id
+        return 0
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+    _seed(scratch, "aaaa1111", name="one")
+    _seed(scratch, "bbbb2222", name="two")
+    # Make bbbb2222 the newest by touching it last.
+    os.utime(scratch.session_dir("bbbb2222"), None)
+    result = CliRunner().invoke(main, ["continue"])
+    assert result.exit_code == 0
+    assert launched["resume_id"] == "bbbb2222"
+    assert "continuing bbbb2222" in result.output
