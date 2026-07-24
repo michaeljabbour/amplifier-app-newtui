@@ -187,7 +187,9 @@ class NewTuiApp(App[None]):
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
         self._splash: BootSplash | None = None  # boot splash overlay (wordmark)
         self._auto_native_mode: str | None = None  # posture-bridged native mode
-        self._native_mode = ""  # explicitly-activated native mode (/mode <name>), for the footer badge
+        self._native_mode = (
+            ""  # explicitly-activated native mode (/mode <name>), for the footer badge
+        )
         self._os_clipboard_copied = False  # last copy reached an OS clipboard tool
         self._clipboard_write_seq = 0  # latest native write wins
         self._clipboard_write_lock = asyncio.Lock()
@@ -499,9 +501,7 @@ class NewTuiApp(App[None]):
                 style_token="dim",
             ),
         ]
-        native = (
-            app_support.native_modes_segments(catalog, self.size.width) if catalog else ()
-        )
+        native = app_support.native_modes_segments(catalog, self.size.width) if catalog else ()
         if native:
             spans.extend(native)
         else:
