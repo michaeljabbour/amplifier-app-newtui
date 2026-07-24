@@ -61,6 +61,7 @@ This is the complete set of keys the app consumes:
 | `overrides.<id>.source` | Per-module source redirect; wins over `sources.modules` | none | local |
 | `overrides.<id>.config` | Dict deep-merged into that module's config (applied before `config.providers` / `modules.tools`, so those win) | none | project / local |
 | `telemetry.*` | Configures the composed **context-intelligence-logging** behavior (module `hook-context-intelligence`): `telemetry.destinations` is the multi-destination fan-out map, `telemetry.server_url`/`api_key`/`workspace` the legacy single destination, plus dispatch tuning. A no-op unless that behavior is composed via `bundle.app`; see *Context-intelligence telemetry* below | none (local JSONL capture only) | global or project |
+| `config.notifications.*` | Attention-notification config, honored via the `kernel/config` bridge: `suppress` silences the whole local ladder; `desktop.enabled` gates the OSC 777 rung (`false`→off, `true`→force any terminal); `push`/`ntfy` (`enabled`/`server`/`priority`/`tags`) feed the mounted `hooks-notify-push`. The ntfy **topic** is a secret — it lives in `keys.env` (`AMPLIFIER_NTFY_TOPIC`), never a settings scope. Env vars win over settings; written by the `notify` CLI. See *Attention notifications* below | none (env + native ladder) | global or project |
 
 **Bundle discovery**, for `--bundle NAME` or `bundle.active`: `<project>/.amplifier/bundles/`
 → `~/.amplifier/bundles/` → the packaged `data/bundles/` — first hit wins. Names resolve as
@@ -184,6 +185,54 @@ is the historical kill switch and silences every rung. The desktop rung's termin
 garbage — is kitty (via `TERM`/`KITTY_WINDOW_ID`) and ghostty / iTerm2 / WezTerm / Warp
 (via `TERM_PROGRAM`). `AMPLIFIER_TERMINAL_NOTIFICATIONS=force` opts any other terminal in;
 `=off` opts any terminal out.
+
+### Configuring notifications (`config.notifications.*` + the `notify` CLI)
+
+The ladder above reads two env vars directly; the `config.notifications` settings section
+lets you persist the same choices (and the ntfy push knobs) per scope. The
+`kernel/config` bridge lowers them onto the same seams the runtime already uses, and
+**an explicit env var always wins over a settings value** (settings only fill an unset
+var). An unconfigured app is byte-identical to today.
+
+Honored keys:
+
+| Key | Effect | Maps to |
+|---|---|---|
+| `config.notifications.suppress` | `true` silences the whole local ladder (bell **and** desktop) | `AMPLIFIER_NOTIFY=off` (when unset) |
+| `config.notifications.desktop.enabled` | `false` drops the desktop rung (bell still rings); `true` forces desktop on **any** terminal (bypasses the render allowlist) | `AMPLIFIER_TERMINAL_NOTIFICATIONS=off`/`force` (when unset) |
+| `config.notifications.push.enabled` (alias `ntfy.enabled`) | Enable/disable off-machine ntfy push | `hooks-notify-push.enabled` (env `AMPLIFIER_NOTIFY_PUSH_ENABLED` wins) |
+| `config.notifications.push.server` (alias `ntfy.server`) | ntfy server URL | `hooks-notify-push.server` (env `AMPLIFIER_NTFY_SERVER` wins) |
+| `config.notifications.push.priority` | ntfy message priority (`min`\|`low`\|`default`\|`high`\|`urgent`) | `hooks-notify-push.priority` |
+| `config.notifications.push.tags` | ntfy emoji tags (list or comma string) | `hooks-notify-push.tags` |
+
+The `push`/`ntfy` blocks are aliases (ntfy is the only transport); on a field-level conflict
+the `ntfy` block wins, matching amplifier-app-cli.
+
+**The ntfy topic is a secret**, not a settings key. Public ntfy topics are world-readable, so
+the push module reads the topic **only** from `AMPLIFIER_NTFY_TOPIC` (stored in
+`~/.amplifier/keys.env`). `notify set topic <topic>` writes it there; it is never persisted to,
+or displayed from, a settings scope.
+
+The `notify` command group is the admin surface (same scope-file writers as `source`/`routing`;
+`--global` default, `--project`, `--local`):
+
+```
+amplifier-newtui notify show                 # effective config (settings + env resolved)
+amplifier-newtui notify set <key> <value>    # persist a key (unknown key -> error, exit 1)
+amplifier-newtui notify enable|disable [desktop|push]   # toggle a channel (default: desktop)
+amplifier-newtui notify set topic <topic>    # secret -> keys.env
+amplifier-newtui notify test                 # fire a test through the REAL ladder
+```
+
+**Documented-unsupported.** amplifier-app-cli's desktop notifications go through its
+OS-integration `hooks-notify` (terminal-notifier), which newtui suppresses at boot because it
+writes raw OSC/BEL to stdout and corrupts the full-screen TUI. newtui's desktop rung is the
+driver-safe OSC 777 path instead, which carries only a title + a bounded (240-char) body. So the
+app-cli desktop sub-keys that have no OSC 777 channel are **accepted in a shared settings file but
+not honored** by newtui: `desktop.sound` (OSC 777 has no sound channel), `desktop.show_device` /
+`desktop.show_project` / `desktop.subtitle` / `desktop.show_preview` / `desktop.preview_length` /
+`desktop.min_iterations` / `desktop.show_iteration_count`. `notify set` only accepts the keys
+newtui actually honors, so it never lets you set a field that would silently do nothing.
 
 ## Quirks worth knowing
 

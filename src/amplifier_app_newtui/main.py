@@ -1375,6 +1375,153 @@ def provider_dashboard() -> None:
 
 
 # --------------------------------------------------------------------------
+# notify — configure the attention-notification ladder + ntfy push (issue #106)
+# --------------------------------------------------------------------------
+
+
+def _notify_show() -> None:
+    from .kernel import notify_admin
+
+    status = notify_admin.load_status()
+    click.echo("Notifications (effective — env wins over settings):")
+    click.echo(f"  ladder ceiling : {status.ceiling}  (from {status.ceiling_source})")
+    click.echo(f"  desktop rung   : {status.desktop_gate}  (from {status.desktop_gate_source})")
+    click.echo(f"  suppress all   : {status.suppress}")
+    click.echo("  push (ntfy):")
+    enabled = "(module default)" if status.push_enabled is None else str(status.push_enabled)
+    click.echo(f"    enabled  : {enabled}")
+    click.echo(f"    topic    : {'configured' if status.topic else 'not set'}")
+    click.echo(f"    server   : {status.push_server or '(default) https://ntfy.sh'}")
+    if status.push_priority:
+        click.echo(f"    priority : {status.push_priority}")
+    if status.push_tags:
+        click.echo(f"    tags     : {', '.join(status.push_tags)}")
+
+
+def _notify_test() -> int:
+    from .kernel import bundle_admin, notify_admin
+    from .kernel.config import load_merged_settings
+    from .ui import notifications
+
+    paths = bundle_admin.settings_paths(None, None)
+    settings = load_merged_settings(paths)
+    env = notify_admin.resolved_environ(settings)
+    # A deferred decision always qualifies and, when unfocused, opens the
+    # desktop rung -- so a test exercises the whole ladder the app would fire.
+    rungs = notifications.notification_rungs("decision_deferred", focused=False, environ=env)
+    fired: list[str] = []
+    if "bell" in rungs:
+        click.echo("\a", nl=False)
+        fired.append("bell")
+    if "desktop" in rungs:
+        click.echo(
+            notifications.osc777_notification_sequence(
+                "Amplifier", "Test notification — the assistant needs you."
+            ),
+            nl=False,
+        )
+        fired.append("desktop (OSC 777)")
+    if fired:
+        click.echo(f"fired: {', '.join(fired)}")
+    else:
+        click.echo("nothing fired — notifications are silenced (ceiling off / suppress)")
+    if "desktop" not in rungs and notifications.notify_ceiling(env) == "desktop":
+        if not notifications.desktop_notifications_supported(env):
+            click.echo(
+                "desktop skipped — terminal not on the OSC render allowlist; enable with "
+                "`amplifier-newtui notify enable desktop` or AMPLIFIER_TERMINAL_NOTIFICATIONS=force",
+                err=True,
+            )
+    return 0
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def notify(ctx: click.Context) -> None:
+    """Configure attention notifications: show, set, enable, disable, test."""
+    if ctx.invoked_subcommand is None:
+        _notify_show()
+
+
+@notify.command("show")
+def notify_show_cmd() -> None:
+    """Show the effective notification config (settings + env resolved)."""
+    _notify_show()
+
+
+@notify.command("set")
+@click.argument("key")
+@click.argument("value")
+@_scope_options
+def notify_set(key: str, value: str, is_global: bool, is_project: bool, is_local: bool) -> None:
+    """Set a notification KEY to VALUE.
+
+    Keys: suppress, desktop.enabled, push.enabled, push.server, push.priority,
+    push.tags, topic. The ntfy topic is a secret — it is saved to
+    ~/.amplifier/keys.env, never a settings file.
+    """
+    from .kernel import bundle_admin, notify_admin
+
+    scope = _scope(is_global, is_project, is_local)
+    try:
+        result = notify_admin.set_key(bundle_admin.settings_paths(None, None), key, value, scope)
+    except notify_admin.UnknownNotifyKeyError:
+        keys = ", ".join(notify_admin.known_key_names())
+        click.echo(f"unknown key: {key} · known keys: {keys}", err=True)
+        raise SystemExit(1) from None
+    except notify_admin.InvalidNotifyValueError as exc:
+        click.echo(f"invalid value for {key}: {exc}", err=True)
+        raise SystemExit(1) from None
+    if result.is_secret:
+        click.echo(f"{key} → configured  (secret saved to {result.path})")
+    else:
+        click.echo(f"{key} → {result.value}  ({scope}: {result.path})")
+
+
+def _set_channel_enabled(
+    target: str, enabled: bool, is_global: bool, is_project: bool, is_local: bool
+) -> None:
+    from .kernel import bundle_admin, notify_admin
+
+    paths = bundle_admin.settings_paths(None, None)
+    scope = _scope(is_global, is_project, is_local)
+    result = notify_admin.set_enabled(paths, target, enabled, scope)  # type: ignore[arg-type]
+    state = "enabled" if enabled else "disabled"
+    click.echo(f"{target} notifications {state}  ({scope}: {result.path})")
+    if (
+        target == "push"
+        and enabled
+        and not notify_admin.topic_configured(paths.global_settings.parent)
+    ):
+        click.echo(
+            "  note: no ntfy topic set — run `amplifier-newtui notify set topic <topic>`",
+            err=True,
+        )
+
+
+@notify.command("enable")
+@click.argument("target", type=click.Choice(["desktop", "push"]), required=False, default="desktop")
+@_scope_options
+def notify_enable(target: str, is_global: bool, is_project: bool, is_local: bool) -> None:
+    """Enable desktop or push notifications (default: desktop)."""
+    _set_channel_enabled(target, True, is_global, is_project, is_local)
+
+
+@notify.command("disable")
+@click.argument("target", type=click.Choice(["desktop", "push"]), required=False, default="desktop")
+@_scope_options
+def notify_disable(target: str, is_global: bool, is_project: bool, is_local: bool) -> None:
+    """Disable desktop or push notifications (default: desktop)."""
+    _set_channel_enabled(target, False, is_global, is_project, is_local)
+
+
+@notify.command("test")
+def notify_test_cmd() -> None:
+    """Fire a test notification through the real attention ladder."""
+    raise SystemExit(_notify_test())
+
+
+# --------------------------------------------------------------------------
 # update — refresh the bundles/modules newtui mounts (foundation cache)
 # --------------------------------------------------------------------------
 
