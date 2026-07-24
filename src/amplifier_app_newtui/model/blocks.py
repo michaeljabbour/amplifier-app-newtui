@@ -333,6 +333,30 @@ class Recap(_FrozenModel):
     next: str
 
 
+class Thinking(_FrozenModel):
+    """Collapsible model-thinking block, rendered inline in the transcript
+    where the model reasoned — before the answer (issue #129).
+
+    Thinking is durable scrollback, not the ephemeral live-tail strip: it
+    lands where the model thought so a supervisor can reopen the reasoning
+    long after the turn ends. Default ``expanded=False`` (Claude-Code
+    style): collapsed shows one dim summary line, click / ``ctrl-g``
+    expands it to the reasoning prose.
+
+    ``text`` holds the reasoning. Core may withhold it — its ``ThinkingBlock``
+    carries a ``visibility`` enum (``ALL``/``LLM_ONLY``/``USER_ONLY``) and
+    only surfaces the prose to the UI when policy allows — in which case the
+    ``content_block:end`` payload arrives with empty text. The block then
+    degrades honestly to a single "content withheld by provider" line that
+    never expands, rather than rendering nothing.
+    """
+
+    id: str
+    kind: Literal["thinking"] = "thinking"
+    text: str = ""
+    expanded: bool = False
+
+
 class Answer(_FrozenModel):
     """Final answer text: styled spans with teal inline code.
 
@@ -521,6 +545,7 @@ TranscriptBlock = Annotated[
     | Blocked
     | WorkingStatus
     | Recap
+    | Thinking
     | Answer
     | SteerEcho
     | TurnRule
@@ -585,6 +610,7 @@ __all__ = [
     "SessionBanner",
     "SteerEcho",
     "StyleToken",
+    "Thinking",
     "ToolLine",
     "ToolLineStatus",
     "TranscriptBlock",

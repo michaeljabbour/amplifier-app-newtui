@@ -37,6 +37,7 @@ from amplifier_app_newtui.model.blocks import (
     Segment,
     SessionBanner,
     SteerEcho,
+    Thinking,
     ToolLine,
     TodoItem,
     TranscriptBlock,
@@ -82,6 +83,9 @@ def test_every_block_kind_has_stable_id_and_roundtrips() -> None:
         ),
         WorkingStatus(id="b8", telemetry=telemetry, agent_count=2),
         Recap(id="b9", goal="ship the fix", next="run full suite"),
+        Thinking(
+            id="b9t", text="weigh the retry approaches\npick the deadline poll", expanded=True
+        ),
         Answer(
             id="b10",
             spans=(
@@ -145,7 +149,7 @@ def test_every_block_kind_has_stable_id_and_roundtrips() -> None:
         dumped = block.model_dump_json()
         restored = _ADAPTER.validate_json(dumped)
         assert restored == block, f"{block.kind} did not round-trip"
-    assert len(seen_kinds) == 20
+    assert len(seen_kinds) == 21
 
 
 def test_blocks_are_frozen() -> None:

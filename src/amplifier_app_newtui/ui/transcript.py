@@ -54,6 +54,7 @@ from ..model.blocks import (
     NeedsYouBlock,
     PlanBlock,
     Segment,
+    Thinking,
     ToolLine,
     TranscriptBlock,
 )
@@ -128,6 +129,15 @@ class ToolLineToggled(Message):
 
 class DelegateSummaryToggled(Message):
     """A delegate summary was expanded/collapsed in place (click or enter)."""
+
+    def __init__(self, block_id: str, expanded: bool) -> None:
+        super().__init__()
+        self.block_id = block_id
+        self.expanded = expanded
+
+
+class ThinkingToggled(Message):
+    """A thinking block was expanded/collapsed in place (click or enter)."""
 
     def __init__(self, block_id: str, expanded: bool) -> None:
         super().__init__()
@@ -264,9 +274,10 @@ class BlockWidget(Static):
             self.add_class("read-only")
         if isinstance(block, Answer) and block.compact:
             self.add_class("compact")
-        if block.kind in ("tool_line", "evidence", "delegate_summary"):
+        if block.kind in ("tool_line", "evidence", "delegate_summary", "thinking"):
             # Evidence blocks take keyboard focus so the header's
-            # advertised keys work (keymap "evidence" context, spec §10).
+            # advertised keys work (keymap "evidence" context, spec §10);
+            # thinking/tool/delegate blocks focus so ``enter`` toggles them.
             self.can_focus = True
         elif block.kind == "turn_rule":
             # Mockup line 46: the rule row advertises its rewind anchor
@@ -415,6 +426,12 @@ class BlockWidget(Static):
             self._block = toggled
             self.repaint_block()
             self.post_message(DelegateSummaryToggled(toggled.id, toggled.expanded))
+        elif block.kind == "thinking" and block.text:
+            # Withheld thinking (empty text) is not expandable — nothing to show.
+            toggled = block.model_copy(update={"expanded": not block.expanded})
+            self._block = toggled
+            self.repaint_block()
+            self.post_message(ThinkingToggled(toggled.id, toggled.expanded))
         elif block.kind == "answer" and block.clickable:
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
         elif block.kind == "turn_rule":
@@ -555,6 +572,8 @@ class HistoryArchive(Static):
             return f"archive_activate({block.id!r})"
         if block.kind == "delegate_summary" and block.entries:
             return f"archive_activate({block.id!r})"
+        if block.kind == "thinking" and block.text:
+            return f"archive_activate({block.id!r})"
         if block.kind == "answer" and block.clickable:
             return f"archive_activate({block.id!r})"
         if block.kind in ("turn_rule", "evidence"):
@@ -631,6 +650,10 @@ class HistoryArchive(Static):
             # merge, or collapsing would be undone by _preserve_expansion.
             self._owner.replace(toggled, preserve_expansion=False)
             self.post_message(DelegateSummaryToggled(toggled.id, toggled.expanded))
+        elif block.kind == "thinking" and block.text:
+            toggled = block.model_copy(update={"expanded": not block.expanded})
+            self._owner.replace(toggled)
+            self.post_message(ThinkingToggled(toggled.id, toggled.expanded))
         elif block.kind == "answer" and block.clickable:
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
         elif block.kind == "turn_rule":
@@ -951,6 +974,13 @@ class TranscriptView(VerticalScroll):
 
         widget = self._widgets.get(message.block_id)
         if isinstance(widget, BlockWidget) and isinstance(widget.block, DelegateSummaryBlock):
+            self._blocks[message.block_id] = widget.block
+
+    def on_thinking_toggled(self, message: ThinkingToggled) -> None:
+        """Keep canonical history aligned with a tail widget's local toggle."""
+
+        widget = self._widgets.get(message.block_id)
+        if isinstance(widget, BlockWidget) and isinstance(widget.block, Thinking):
             self._blocks[message.block_id] = widget.block
 
     # -- tail-follow anchor --------------------------------------------------
