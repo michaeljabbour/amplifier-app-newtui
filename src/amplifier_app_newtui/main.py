@@ -2027,13 +2027,14 @@ def source_show(module_id: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# routing group — inspect/choose the model routing matrix (list/use)
+# routing group — inspect/choose the model routing matrix
+# (list/use/show/create/manage)
 # --------------------------------------------------------------------------
 
 
 @main.group("routing")
 def routing() -> None:
-    """Manage model routing matrices: list, use."""
+    """Manage model routing matrices: list, use, show, create, manage."""
 
 
 @routing.command("list")
@@ -2118,6 +2119,382 @@ def routing_use(matrix_name: str, is_global: bool, is_project: bool, is_local: b
         else:
             table.add_row(row.role, "\u26a0 (no provider)", "-")
     console.print(table)
+
+
+def _render_matrix_resolution(
+    console: Any, matrix_name: str, matrix_data: dict[str, Any], settings: dict[str, Any]
+) -> None:
+    """Print the role -> effective (model, provider) table plus a provider summary."""
+    from rich.table import Table
+
+    from .kernel import routing_admin
+
+    rows = routing_admin.resolve_effective(matrix_data, settings)
+    if not rows:
+        console.print(f"matrix '{matrix_name}' has no roles defined", style="yellow")
+        return
+    table = Table(title=f"Routing: {matrix_name}", title_justify="center", header_style="bold cyan")
+    table.add_column("Role", style="cyan", no_wrap=True)
+    table.add_column("Model", style="green")
+    table.add_column("Provider")
+    for row in rows:
+        if row.model and row.provider:
+            table.add_row(row.role, row.model, row.provider)
+        else:
+            table.add_row(row.role, "\u26a0 (no provider)", "-")
+    console.print(table)
+
+    provider_types = routing_admin.configured_provider_types(settings)
+    if provider_types:
+        primary = routing_admin.primary_provider_type(settings)
+        display = [f"{pt} (\u2605)" if pt == primary else pt for pt in sorted(provider_types)]
+        console.print(f"Providers: {', '.join(display)}", style="dim")
+    else:
+        console.print("No providers configured. Run `amplifier-newtui init`.", style="yellow")
+
+
+def _render_matrix_waterfall(
+    console: Any, matrix_name: str, matrix_data: dict[str, Any], settings: dict[str, Any]
+) -> None:
+    """Print the full candidate waterfall per role (\u2605 active, \u2713 available, \u2717 missing)."""
+    from .kernel import routing_admin
+
+    provider_types = routing_admin.configured_provider_types(settings)
+    description = str(matrix_data.get("description", ""))
+    updated = str(matrix_data.get("updated", ""))
+    console.print(f"\nMatrix: [bold]{matrix_name}[/bold]")
+    if description:
+        console.print(f"  {description}", style="dim")
+    if updated:
+        console.print(f"  Updated: {updated}", style="dim")
+
+    for role in routing_admin.matrix_waterfall(matrix_data, provider_types):
+        header = f"\n[bold cyan]{role.role}[/bold cyan]"
+        if role.description:
+            header += f" \u2014 {role.description}"
+        console.print(header)
+        for cand in role.candidates:
+            cfg_str = ""
+            if cand.config:
+                pairs = ", ".join(f"{k}: {v}" for k, v in cand.config.items())
+                cfg_str = f"  [dim]\\[{pairs}][/dim]"
+            if cand.active:
+                console.print(
+                    f"  [green]\u2605 {cand.provider} / {cand.model}[/green]"
+                    f"{cfg_str}  [green]\u2190 active[/green]"
+                )
+            elif cand.configured:
+                console.print(f"  [dim]\u2713 {cand.provider} / {cand.model}[/dim]{cfg_str}")
+            else:
+                console.print(
+                    f"  [dim]\u2717 {cand.provider} / {cand.model}[/dim]"
+                    f"{cfg_str}  [dim]not configured[/dim]"
+                )
+        if not role.servable:
+            console.print("  [yellow]\u26a0 no configured provider can serve this role[/yellow]")
+
+
+@routing.command("show")
+@click.argument("matrix_name", required=False)
+@click.option(
+    "--detailed", "detailed", is_flag=True, help="Show the full candidate waterfall per role."
+)
+def routing_show(matrix_name: str | None, detailed: bool) -> None:
+    """Show the effective model routing per role for MATRIX_NAME (default: active)."""
+    from rich.console import Console
+
+    from .kernel import bundle_admin, routing_admin
+    from .kernel.config import load_merged_settings
+
+    paths = bundle_admin.settings_paths(None, None)
+    home = paths.global_settings.parent
+    matrices = routing_admin.load_all_matrices(
+        routing_admin.discover_matrix_files(home, fetch=True)
+    )
+    console = Console()
+    if not matrices:
+        console.print("no routing matrices found")
+        console.print(
+            "Run `amplifier-newtui update` to fetch the routing-matrix bundle.", style="dim"
+        )
+        return
+    settings = load_merged_settings(paths)
+    if matrix_name is None:
+        matrix_name = routing_admin.active_matrix(settings)
+    if matrix_name not in matrices:
+        available = ", ".join(sorted(matrices)) or "none"
+        click.echo(f"unknown matrix: {matrix_name} \u00b7 available: {available}", err=True)
+        raise SystemExit(1)
+    matrix_data = matrices[matrix_name]
+    if detailed:
+        _render_matrix_waterfall(console, matrix_name, matrix_data, settings)
+    else:
+        _render_matrix_resolution(console, matrix_name, matrix_data, settings)
+
+
+def _prompt_role_assignment(
+    role_name: str, role_desc: str, selectors: list[str], settings: dict[str, Any]
+) -> tuple[str, str] | None:
+    """Prompt for a provider (by number) + model for one role; None to skip."""
+    from .kernel import routing_admin
+
+    click.echo(f"\n{role_name}: {role_desc}" if role_desc else f"\n{role_name}")
+    for index, selector in enumerate(selectors, start=1):
+        click.echo(f"  [{index}] {selector}")
+    click.echo("  [s] skip")
+    raw = click.prompt("provider", default="s", show_default=False).strip().lower()
+    if raw in ("s", ""):
+        return None
+    try:
+        idx = int(raw)
+    except ValueError:
+        click.echo(f"invalid choice: {raw}", err=True)
+        return None
+    if idx < 1 or idx > len(selectors):
+        click.echo(f"invalid choice: {raw}", err=True)
+        return None
+    provider = selectors[idx - 1]
+    default_model = routing_admin.provider_default_model(settings, provider) or ""
+    model = click.prompt("model", default=default_model, show_default=bool(default_model)).strip()
+    if not model:
+        return None
+    return provider, model
+
+
+def _print_assignments_summary(assignments: dict[str, dict[str, str]]) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title="Matrix Summary", title_justify="center", header_style="bold cyan")
+    table.add_column("Role", style="cyan", no_wrap=True)
+    table.add_column("Provider")
+    table.add_column("Model", style="green")
+    for role, info in assignments.items():
+        table.add_row(role, info["provider"], info["model"])
+    Console().print(table)
+
+
+@routing.command("create")
+def routing_create() -> None:
+    """Interactively create a custom routing matrix (persisted under ~/.amplifier/routing)."""
+    from .kernel import bundle_admin, routing_admin
+    from .kernel.config import load_merged_settings
+
+    paths = bundle_admin.settings_paths(None, None)
+    home = paths.global_settings.parent
+    settings = load_merged_settings(paths)
+    selectors = routing_admin.provider_selectors(settings)
+    if not selectors:
+        click.echo("no providers configured \u2014 run `amplifier-newtui init` first", err=True)
+        raise SystemExit(1)
+
+    roles = routing_admin.discover_roles(routing_admin.discover_matrix_files(home, fetch=True))
+    if not roles:
+        roles = {
+            "general": "Balanced catch-all for unspecialized tasks",
+            "fast": "Quick parsing, classification, utility work",
+        }
+
+    click.echo("Create Custom Routing Matrix")
+    click.echo(f"providers: {', '.join(selectors)}")
+
+    assignments: dict[str, dict[str, str]] = {}
+    for role_name, role_desc in roles.items():
+        result = _prompt_role_assignment(role_name, role_desc, selectors, settings)
+        if result:
+            provider, model = result
+            assignments[role_name] = {
+                "description": role_desc,
+                "provider": provider,
+                "model": model,
+            }
+            click.echo(f"  \u2713 {role_name} \u2192 {provider} / {model}")
+
+    # general + fast are the required roles the runtime always needs.
+    for required in ("general", "fast"):
+        if required not in assignments:
+            click.echo(f"\nrequired role '{required}' must be assigned")
+            result = _prompt_role_assignment(required, roles.get(required, ""), selectors, settings)
+            if not result:
+                click.echo("cannot create matrix without required roles", err=True)
+                raise SystemExit(1)
+            provider, model = result
+            assignments[required] = {
+                "description": roles.get(required, ""),
+                "provider": provider,
+                "model": model,
+            }
+            click.echo(f"  \u2713 {required} \u2192 {provider} / {model}")
+
+    _print_assignments_summary(assignments)
+    while True:
+        click.echo("\n  [a] add role   [e] edit role   [s] save   [q] quit")
+        action = click.prompt("action", default="s", show_default=False).strip().lower()
+        if action in ("q",):
+            click.echo("cancelled")
+            return
+        if action in ("s", ""):
+            break
+        if action == "a":
+            name = click.prompt("role name", default="", show_default=False).strip()
+            if not name:
+                continue
+            desc = click.prompt("description", default="", show_default=False).strip()
+            result = _prompt_role_assignment(name, desc, selectors, settings)
+            if result:
+                provider, model = result
+                assignments[name] = {"description": desc, "provider": provider, "model": model}
+                click.echo(f"  \u2713 {name} \u2192 {provider} / {model}")
+                _print_assignments_summary(assignments)
+        elif action == "e":
+            name = click.prompt("role to edit", default="", show_default=False).strip()
+            if name not in assignments:
+                click.echo(f"unknown role: {name}", err=True)
+                continue
+            result = _prompt_role_assignment(
+                name, assignments[name]["description"], selectors, settings
+            )
+            if result:
+                provider, model = result
+                assignments[name]["provider"] = provider
+                assignments[name]["model"] = model
+                click.echo(f"  \u2713 {name} \u2192 {provider} / {model}")
+                _print_assignments_summary(assignments)
+
+    name = click.prompt("matrix name", default="", show_default=False).strip()
+    if not name:
+        click.echo("name cannot be empty", err=True)
+        raise SystemExit(1)
+    if not routing_admin.matrix_name_valid(name):
+        click.echo(
+            "invalid name: use letters, digits, '-' and '_' (max 64, leading alphanumeric)",
+            err=True,
+        )
+        raise SystemExit(1)
+    output_dir = routing_admin.custom_routing_dir(home)
+    if (output_dir / f"{name}.yaml").exists() and not click.confirm(
+        f"'{name}' already exists \u2014 overwrite?", default=False
+    ):
+        click.echo("cancelled")
+        return
+    saved = routing_admin.save_matrix(
+        routing_admin.build_custom_matrix(name, assignments), output_dir
+    )
+    click.echo(f"saved custom matrix '{name}' \u2192 {saved}")
+
+
+def _manage_select(
+    console: Any,
+    num_str: str,
+    names: list[str],
+    paths: Any,
+    scope: Literal["global", "project", "local"],
+) -> None:
+    from .kernel import routing_admin
+
+    if not num_str:
+        num_str = click.prompt("matrix number", default="", show_default=False).strip()
+    try:
+        num = int(num_str)
+    except ValueError:
+        console.print(f"invalid number: {num_str}", style="yellow")
+        return
+    if num < 1 or num > len(names):
+        console.print(f"out of range: 1-{len(names)}", style="yellow")
+        return
+    name = names[num - 1]
+    path = routing_admin.set_active_matrix(paths, name, scope)
+    console.print(f"active routing matrix \u2192 {name}  ({scope}: {path})", style="green")
+
+
+def _manage_view(
+    console: Any,
+    num_str: str,
+    names: list[str],
+    matrices: dict[str, dict[str, Any]],
+    settings: dict[str, Any],
+) -> None:
+    if not num_str:
+        num_str = click.prompt("matrix number", default="", show_default=False).strip()
+    try:
+        num = int(num_str)
+    except ValueError:
+        console.print(f"invalid number: {num_str}", style="yellow")
+        return
+    if num < 1 or num > len(names):
+        console.print(f"out of range: 1-{len(names)}", style="yellow")
+        return
+    name = names[num - 1]
+    _render_matrix_waterfall(console, name, matrices[name], settings)
+
+
+@routing.command("manage")
+@_scope_options
+def routing_manage(is_global: bool, is_project: bool, is_local: bool) -> None:
+    """Interactive routing-matrix management: select, view details, or create."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from .kernel import bundle_admin, routing_admin
+    from .kernel.config import load_merged_settings
+
+    paths = bundle_admin.settings_paths(None, None)
+    home = paths.global_settings.parent
+    scope = _scope(is_global, is_project, is_local)
+    console = Console()
+
+    while True:
+        settings = load_merged_settings(paths)
+        matrices = routing_admin.load_all_matrices(
+            routing_admin.discover_matrix_files(home, fetch=True)
+        )
+        active = routing_admin.active_matrix(settings)
+        console.print(
+            f"\nActive routing matrix: [bold]{active}[/bold]  [dim](write scope: {scope})[/dim]"
+        )
+        if not matrices:
+            console.print("no routing matrices found", style="yellow")
+            console.print(
+                "Run `amplifier-newtui update` to fetch the routing-matrix bundle.", style="dim"
+            )
+            return
+
+        provider_types = routing_admin.configured_provider_types(settings)
+        names = sorted(matrices)
+        table = Table(title="Available Matrices", title_justify="center", header_style="bold cyan")
+        table.add_column("#", justify="right", no_wrap=True)
+        table.add_column("", width=1, no_wrap=True)
+        table.add_column("Name", style="green", no_wrap=True)
+        table.add_column("Description", style="dim", overflow="fold")
+        table.add_column("Compatibility", no_wrap=True)
+        for index, name in enumerate(names, start=1):
+            data = matrices[name]
+            marker = "\u25cf" if name == active else ""
+            if provider_types:
+                covered, total = routing_admin.check_compatibility(data, provider_types)
+                compat = f"{covered}/{total} roles"
+            else:
+                compat = "no providers"
+            table.add_row(str(index), marker, name, str(data.get("description", "")), compat)
+        console.print(table)
+        if active in matrices:
+            _render_matrix_resolution(console, active, matrices[active], settings)
+
+        console.print("\n  [s<N>] select matrix   [v<N>] view details   [c] create   [d] done")
+        raw = click.prompt("choice", default="d", show_default=False).strip().lower()
+        if raw in ("d", "", "q"):
+            return
+        if raw == "c":
+            try:
+                click.get_current_context().invoke(routing_create)
+            except SystemExit:
+                pass
+        elif raw.startswith("s"):
+            _manage_select(console, raw[1:].strip(), names, paths, scope)
+        elif raw.startswith("v"):
+            _manage_view(console, raw[1:].strip(), names, matrices, settings)
+        else:
+            console.print(f"unknown choice: {raw}", style="yellow")
 
 
 if __name__ == "__main__":
