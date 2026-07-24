@@ -156,9 +156,8 @@ The app's capabilities (orchestrator, provider, tools, agents) come from its **b
 not from code:
 
 - `bundle.md` at the repo root is a **thin wrapper**: it `includes:` foundation's `anchors`
-  bundle at a pinned `amplifier-foundation` SHA (partial pin — only anchors' own `bundle.md`
-  is pinned; its internal includes and module sources still float `@main`) and overlays only
-  a default provider, `tool-mcp`, and `tool-team-pulse`. The packaged copy at
+  bundle (tracked at `amplifier-foundation@main` — see "Anchors ref lifecycle" below) and
+  overlays only a default provider, `tool-mcp`, and `tool-team-pulse`. The packaged copy at
   `src/amplifier_app_newtui/data/bundles/newtui.md` must stay **byte-identical** (compare
   with `diff` after editing).
 - Users can point `--bundle` at any bundle file/URI, drop bundles into
@@ -171,6 +170,38 @@ not from code:
 - Bundle authoring itself is an Amplifier-ecosystem topic — see the
   [foundation Bundle Guide](https://github.com/microsoft/amplifier-foundation/blob/main/docs/BUNDLE_GUIDE.md).
 
+## Anchors ref lifecycle
+
+The wrapper composes foundation's `anchors` bundle via an `includes:` entry. That include
+tracks **`amplifier-foundation@main` (a floating ref)** — not a static pin. Background and
+policy (issue #53):
+
+- **Why not a bare SHA.** A pinned 40-hex SHA was tried and abandoned: GitHub stops serving a
+  non-tip SHA once foundation advances, so clean installs failed with "Include Failed
+  (skipping): amplifier-foundation" and booted degraded (#96). Foundation's release **tags**
+  (`v2.1.x`) do **not** ship `bundles/anchors` — only `@main` carries it — so `@main` is the
+  only fetchable source today, and it matches how the shared registry resolves `anchors`.
+- **How updates flow.** Tracking `@main` means composition changes (roster, behaviors) *and*
+  anchors' internal module/behavior fixes all arrive on the next fetch. `amplifier-newtui
+  update` refreshes the runtime cache (`--force` runs `uv cache clean` for a true re-fetch).
+  This is the "bump" — there is no static SHA to hand-edit on the happy path.
+- **How staleness surfaces (instead of silence).** Anchors is *included*, and foundation's
+  per-bundle `check_bundle_status` deliberately skips included-bundle URIs, so its freshness
+  was previously invisible. `kernel/updater.py:anchors_status()` checks it directly (an
+  offline-safe `git ls-remote` compare against the local cache) and both `amplifier-newtui
+  update --check-only` and `amplifier-newtui doctor` now report `anchors up to date` /
+  `anchors is behind upstream …` / `… check unavailable (offline)`. Offline degrades to a
+  neutral note — never a false "stale" finding.
+- **Three copies, kept in lockstep.** The anchors include ref appears in **three** live files
+  (`kernel/updater.py:pin_files`): repo-root `bundle.md`, the byte-identical packaged
+  `newtui.md`, and the packaged `anchors.md` pointer. Anti-drift is enforced by
+  `tests/test_kernel_session_config.py` (byte-identity + a three-way ref-match).
+- **Changing the tracked ref.** Use `uv run python scripts/bump_anchors_ref.py <ref>` — it
+  rewrites all three copies atomically and re-verifies byte-identity + lockstep before writing
+  (defaults to `main`; idempotent). It **refuses a bare SHA** without `--allow-sha`. When
+  foundation ships tagged releases that carry `bundles/anchors`, switch to
+  `scripts/bump_anchors_ref.py vX.Y.Z` for reproducible boots (issue #53 Option B).
+
 ## Before you open a PR
 
 - [ ] `uv run pytest -q` green, `ruff check .` clean, `pyright src/` clean
@@ -180,6 +211,7 @@ not from code:
 - [ ] Rendering changed? Goldens regenerated **in the same commit**, diff reviewed
 - [ ] Event added/changed? `kernel/events.py` is the only boundary touched, `DemoRuntime` updated, both channels respected
 - [ ] Key added? `ui/keymap.py` table only (footer hints follow automatically)
-- [ ] `bundle.md` changed? Packaged copy updated byte-identically
+- [ ] `bundle.md` changed? All **three** anchors-ref copies updated in lockstep (`bundle.md`,
+      packaged `newtui.md` byte-identically, packaged `anchors.md`) — use `scripts/bump_anchors_ref.py`
 - [ ] User-visible behavior changed? [USER-GUIDE.md](USER-GUIDE.md) updated; strings match [DESIGN-SPEC.md](DESIGN-SPEC.md)
 - [ ] Docs assets stale? Regenerate screenshot/diagrams (commands above)

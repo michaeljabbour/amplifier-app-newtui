@@ -9,6 +9,7 @@ from amplifier_app_newtui.commands.doctor import (
     DoctorReport,
     McpServerStats,
     build_doctor_block,
+    check_anchors_pin,
     check_install,
     check_path,
     check_repeated_approvals,
@@ -19,6 +20,7 @@ from amplifier_app_newtui.commands.doctor import (
     run_standalone,
 )
 from amplifier_app_newtui.commands.improve import ApprovalTally
+from amplifier_app_newtui.kernel.updater import AnchorsStatus
 
 
 def _ok(name: str, message: str) -> CheckResult:
@@ -100,6 +102,45 @@ def test_check_repeated_approvals() -> None:
     assert check_repeated_approvals(
         (ApprovalTally(action="read x", approved=11, asked=12, capability="read"),)
     ).ok
+
+
+def test_check_anchors_pin_stale_is_finding() -> None:
+    status = AnchorsStatus(
+        ref="main", has_update=True, cached_commit="aaaa1111", remote_commit="bbbb2222"
+    )
+    result = check_anchors_pin(status)
+    assert not result.ok
+    assert "behind upstream" in result.message
+
+
+def test_check_anchors_pin_current_is_ok() -> None:
+    status = AnchorsStatus(ref="main", has_update=False, cached_commit="cccc3333")
+    result = check_anchors_pin(status)
+    assert result.ok
+    assert "up to date" in result.message
+
+
+def test_check_anchors_pin_offline_is_ok_no_false_finding() -> None:
+    status = AnchorsStatus(ref="main", error="network down")
+    result = check_anchors_pin(status)
+    assert result.ok  # offline never fabricates a finding
+
+
+def test_check_anchors_pin_none_is_skipped_ok() -> None:
+    result = check_anchors_pin(None)
+    assert result.ok
+    assert "skipped" in result.message
+
+
+def test_run_checks_includes_stale_anchors_finding() -> None:
+    stale = AnchorsStatus(ref="main", has_update=True, cached_commit="a1", remote_commit="b2")
+    report = run_checks(
+        settings_paths=(),
+        package="amplifier-app-newtui",
+        executable="python3",
+        anchors_status=stale,
+    )
+    assert any("anchors" in f.text for f in report.findings)
 
 
 def test_report_headline_and_healthy_join() -> None:

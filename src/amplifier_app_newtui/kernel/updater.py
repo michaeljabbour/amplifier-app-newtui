@@ -19,6 +19,7 @@ Updating the app itself, or the whole Amplifier platform, is out of scope
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,139 @@ class BundleUpdate:
     summary: str
     has_updates: bool
     error: str | None = None
+    unknown: tuple[str, ...] = ()  # per-source "couldn't be checked" reasons
+
+
+# --- anchors include ref (tracked, not statically pinned) -------------------
+
+# Every live copy of the anchors include declares this ref. The wrapper tracks
+# foundation @main (a *floating* ref): bundle.md pins nothing statically — a
+# bare 40-hex SHA was tried and abandoned because GitHub stops serving a
+# non-tip SHA once foundation advances, which broke clean installs (see #96).
+# So "staleness" here means "the local anchors cache is behind upstream", which
+# `amplifier-newtui update` refreshes; it is NOT a static-pin bump.
+_ANCHORS_REF_RE = re.compile(
+    r"git\+https://github\.com/microsoft/amplifier-foundation@([^\s#]+)#subdirectory=bundles/anchors"
+)
+
+
+def read_anchors_ref(text: str) -> str | None:
+    """Extract the foundation ref the anchors include tracks from bundle text.
+
+    Matches the exact URI shape the anti-drift test relies on
+    (``test_kernel_session_config.py``); tolerant of a branch, tag, or SHA.
+    Returns ``None`` when no anchors include is present."""
+    match = _ANCHORS_REF_RE.search(text)
+    return match.group(1) if match else None
+
+
+def anchors_ref() -> str | None:
+    """The foundation ref anchors is tracked at, read from the packaged bundle.
+
+    Offline/pure: reads the shipped ``newtui.md`` — never touches the network."""
+    from .config import packaged_bundles_dir
+
+    try:
+        text = (packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return read_anchors_ref(text)
+
+
+def pin_files(repo_root: Path) -> tuple[Path, ...]:
+    """The three live files that must carry the anchors ref in lockstep.
+
+    Single source of truth for the bump script and the anti-drift tests, so a
+    bump can never miss a copy: repo-root ``bundle.md``, the packaged
+    byte-identical ``newtui.md``, and the packaged ``anchors.md`` pointer."""
+    packaged = repo_root / "src" / "amplifier_app_newtui" / "data" / "bundles"
+    return (repo_root / "bundle.md", packaged / "newtui.md", packaged / "anchors.md")
+
+
+def _is_sha(ref: str | None) -> bool:
+    return bool(ref) and len(ref) == 40 and all(c in "0123456789abcdef" for c in ref.lower())
+
+
+@dataclass(frozen=True)
+class AnchorsStatus:
+    """Freshness of the tracked anchors include against its upstream ref.
+
+    Degrades honestly: any network/foundation failure sets ``error`` and leaves
+    ``has_update`` at ``None`` (never a false "stale" finding), mirroring the
+    ``check_bundles()`` offline contract."""
+
+    ref: str | None
+    has_update: bool | None = None
+    cached_commit: str | None = None
+    remote_commit: str | None = None
+    detail: str = ""
+    error: str | None = None
+
+    @property
+    def is_pinned(self) -> bool:
+        """The ref is a bare 40-hex SHA (statically pinned — no auto-updates)."""
+        return _is_sha(self.ref)
+
+    @property
+    def is_stale(self) -> bool:
+        """True only when upstream is confirmed ahead of the local cache."""
+        return self.has_update is True
+
+    def describe(self) -> str:
+        """One honest human line for `update` / `/doctor`."""
+        if self.ref is None:
+            return "anchors include not found in bundle"
+        if self.error is not None:
+            return f"anchors ref check unavailable · tracking @{self.ref} ({self.error})"
+        if self.is_pinned:
+            return f"anchors pinned to {self.ref[:8]} · no auto-updates (bump via update tooling)"
+        if self.has_update is True:
+            cached = (self.cached_commit or "unknown")[:8]
+            remote = (self.remote_commit or "unknown")[:8]
+            return (
+                f"anchors (@{self.ref}) is behind upstream · {cached} → {remote} · "
+                "run `amplifier-newtui update`"
+            )
+        if self.has_update is False:
+            cached = (self.cached_commit or self.remote_commit or "")[:8]
+            suffix = f" ({cached})" if cached else ""
+            return f"anchors up to date · tracking @{self.ref}{suffix}"
+        return f"anchors ref check unavailable · tracking @{self.ref}"
+
+
+async def anchors_status(amplifier_home: Path | None = None) -> AnchorsStatus:
+    """Check the tracked anchors include against upstream (side-effect-light).
+
+    The anchors bundle is composed via an *include*, and foundation's
+    ``check_bundle_status`` deliberately skips included-bundle URIs, so anchors
+    freshness is otherwise invisible to ``amplifier-newtui update``. This checks
+    it directly via foundation's git source handler (an ``ls-remote`` compare
+    against the local cache). Offline → ``error`` set, ``has_update`` ``None``."""
+    ref = anchors_ref()
+    if ref is None:
+        return AnchorsStatus(ref=None, error="anchors include not found")
+    try:
+        from amplifier_foundation.paths.resolution import parse_uri
+        from amplifier_foundation.sources.git import GitSourceHandler
+    except Exception as error:  # noqa: BLE001 — foundation unavailable
+        return AnchorsStatus(ref=ref, error=f"foundation unavailable: {error}")
+    uri = (
+        "git+https://github.com/microsoft/amplifier-foundation@"
+        f"{ref}#subdirectory=bundles/anchors/bundle.md"
+    )
+    cache_dir = _amplifier_home(amplifier_home) / "cache"
+    try:
+        source = await GitSourceHandler().get_status(parse_uri(uri), cache_dir)
+    except Exception as error:  # noqa: BLE001 — never crash the check (offline-safe)
+        return AnchorsStatus(ref=ref, error=str(error))
+    return AnchorsStatus(
+        ref=ref,
+        has_update=getattr(source, "has_update", None),
+        cached_commit=getattr(source, "cached_commit", None),
+        remote_commit=getattr(source, "remote_commit", None),
+        detail=str(getattr(source, "summary", "") or ""),
+        error=getattr(source, "error", None),
+    )
 
 
 def _amplifier_home(amplifier_home: Path | None) -> Path:
@@ -98,8 +232,19 @@ async def check_bundles(
                 continue
             status = await check_bundle_status(bundle)
             summary = str(getattr(status, "summary", "") or "")
+            unknown = tuple(
+                f"{display_name(str(getattr(source, 'source_uri', '') or ''))}: "
+                f"{getattr(source, 'error', None) or getattr(source, 'summary', '') or 'reason unavailable'}"
+                for source in (getattr(status, "unknown_sources", None) or [])
+            )
             results.append(
-                BundleUpdate(name, target, summary, bool(getattr(status, "has_updates", False)))
+                BundleUpdate(
+                    name,
+                    target,
+                    summary,
+                    bool(getattr(status, "has_updates", False)),
+                    unknown=unknown,
+                )
             )
         except Exception as error:  # noqa: BLE001 — never abort the whole check
             results.append(
@@ -151,9 +296,14 @@ def self_update_hint() -> str:
 
 
 __all__ = [
+    "AnchorsStatus",
     "BundleUpdate",
+    "anchors_ref",
+    "anchors_status",
     "check_bundles",
     "display_name",
+    "pin_files",
+    "read_anchors_ref",
     "self_update_hint",
     "target_bundles",
     "update_bundles",

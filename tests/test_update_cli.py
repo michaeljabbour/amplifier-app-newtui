@@ -45,7 +45,7 @@ def test_self_update_hint_mentions_uv() -> None:
 # -- CLI wiring (stubbed foundation) ----------------------------------------
 
 
-def _stub(monkeypatch, statuses, *, cleaned=None, applied=None):
+def _stub(monkeypatch, statuses, *, cleaned=None, applied=None, anchors=None):
     async def _check(*a, **k):
         return statuses
 
@@ -54,8 +54,13 @@ def _stub(monkeypatch, statuses, *, cleaned=None, applied=None):
             applied.extend(targets)
         return ([updater.display_name(t) for t in targets], [])
 
+    async def _anchors(*a, **k):
+        # Default: offline/neutral so CLI tests never touch the network.
+        return anchors or updater.AnchorsStatus(ref="main", error="offline (test stub)")
+
     monkeypatch.setattr(updater, "check_bundles", _check)
     monkeypatch.setattr(updater, "update_bundles", _apply)
+    monkeypatch.setattr(updater, "anchors_status", _anchors)
     monkeypatch.setattr(
         updater, "uv_cache_clean", lambda: cleaned.append(True) if cleaned is not None else True
     )
@@ -109,3 +114,60 @@ def test_update_force_cleans_cache_and_updates_all(monkeypatch) -> None:
     assert result.exit_code == 0
     assert cleaned == [True]  # uv cache cleaned
     assert applied == ["newtui"]  # --force updates all, not just stale
+
+
+# -- "unknown" sources are explained, not swallowed -------------------------
+
+
+def test_update_explains_unknown_sources(monkeypatch) -> None:
+    _stub(
+        monkeypatch,
+        [
+            updater.BundleUpdate(
+                "newtui",
+                "newtui",
+                "Up to date (1 source(s) could not be checked)",
+                False,
+                unknown=("tool-local: Update checking not supported for this source type",),
+            )
+        ],
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert "couldn't be checked" in result.output
+    assert "tool-local" in result.output
+    assert "not supported for this source type" in result.output
+
+
+# -- anchors freshness line -------------------------------------------------
+
+
+def test_update_reports_anchors_behind(monkeypatch) -> None:
+    behind = updater.AnchorsStatus(
+        ref="main",
+        has_update=True,
+        cached_commit="aaaaaaaa1111",
+        remote_commit="bbbbbbbb2222",
+    )
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("newtui", "newtui", "up to date", False)],
+        anchors=behind,
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert "anchors" in result.output and "behind upstream" in result.output
+    # Must not falsely claim everything is up to date when anchors is behind.
+    assert "all bundles up to date" not in result.output
+
+
+def test_update_reports_anchors_current(monkeypatch) -> None:
+    current = updater.AnchorsStatus(ref="main", has_update=False, cached_commit="cccccccc3333")
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("newtui", "newtui", "up to date", False)],
+        anchors=current,
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert "anchors up to date" in result.output

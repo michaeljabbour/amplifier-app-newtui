@@ -25,6 +25,7 @@ import shutil
 from collections.abc import Iterable, Sequence
 from importlib import metadata
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -189,6 +190,38 @@ def check_repeated_approvals(
     )
 
 
+@runtime_checkable
+class AnchorsPinStatus(Protocol):
+    """Structural shape of ``kernel.updater.AnchorsStatus`` the check reads.
+
+    Kept as a Protocol so ``commands/`` never imports ``kernel/`` (ADR-0007
+    layering); the CLI computes the status and injects it here."""
+
+    @property
+    def is_stale(self) -> bool: ...
+
+    @property
+    def error(self) -> str | None: ...
+
+    def describe(self) -> str: ...
+
+
+def check_anchors_pin(status: AnchorsPinStatus | None) -> CheckResult:
+    """The composed anchors bundle is not behind its upstream ref.
+
+    Anchors is included (not a direct source), so ``update``'s per-bundle
+    check skips it — this surfaces its freshness instead of leaving it silent.
+    Green when current, when offline (``error`` set — never a false finding),
+    or when no status was supplied. A confirmed-behind cache is the finding."""
+    if status is None:
+        return CheckResult(name="anchors", ok=True, message="anchors ref check skipped")
+    if status.error is not None:
+        return CheckResult(name="anchors", ok=True, message=status.describe())
+    if status.is_stale:
+        return CheckResult(name="anchors", ok=False, message=status.describe())
+    return CheckResult(name="anchors", ok=True, message=status.describe())
+
+
 def run_checks(
     *,
     mcp_stats: Iterable[McpServerStats] = (),
@@ -196,6 +229,7 @@ def run_checks(
     settings_paths: Sequence[Path] = DEFAULT_SETTINGS_PATHS,
     package: str = PACKAGE_NAME,
     executable: str = EXECUTABLE_NAME,
+    anchors_status: AnchorsPinStatus | None = None,
 ) -> DoctorReport:
     """Run the full named-check suite and return the report."""
     return DoctorReport(
@@ -205,6 +239,7 @@ def run_checks(
             check_settings(settings_paths),
             check_unused_mcp(mcp_stats),
             check_repeated_approvals(approval_tallies),
+            check_anchors_pin(anchors_status),
         )
     )
 
@@ -241,6 +276,7 @@ def run_standalone(
     settings_paths: Sequence[Path] = DEFAULT_SETTINGS_PATHS,
     package: str = PACKAGE_NAME,
     executable: str = EXECUTABLE_NAME,
+    anchors_status: AnchorsPinStatus | None = None,
     echo=print,
 ) -> int:
     """Run checks, print the plain report, return the CI exit code.
@@ -253,12 +289,14 @@ def run_standalone(
         settings_paths=settings_paths,
         package=package,
         executable=executable,
+        anchors_status=anchors_status,
     )
     echo(render_text(report))
     return 0 if report.finding_count == 0 else 1
 
 
 __all__ = [
+    "AnchorsPinStatus",
     "CheckResult",
     "DoctorReport",
     "EXECUTABLE_NAME",
@@ -267,6 +305,7 @@ __all__ = [
     "REPEATED_APPROVAL_THRESHOLD",
     "UNUSED_MCP_THRESHOLD_DAYS",
     "build_doctor_block",
+    "check_anchors_pin",
     "check_install",
     "check_path",
     "check_repeated_approvals",
