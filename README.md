@@ -98,7 +98,11 @@ path boundary.
 
 ### Use it on your own projects
 
-`uv run` works inside this clone; to use the TUI anywhere, install it as a tool:
+`uv run` works inside this clone, but for real use **install it as a tool** — a
+tool install gives the app a durable environment, so bundle modules install
+**once and persist** instead of being re-derived on every launch. `uv run` re-syncs
+a volatile project venv each time, which puts a fragile module-install burst on the
+boot-critical path; the tool install is the reliable path.
 
 ```sh
 uv tool install /path/to/amplifier-app-newtui
@@ -106,15 +110,49 @@ cd ~/code/my-project
 amplifier-newtui                   # sessions are stored per project directory
 ```
 
+### Faster boots (composing fewer bundles)
+
+Every `bundle.app` overlay composes on **every** session and runs its boot hooks, so
+a large overlay list slows startup. Two levers:
+
+```yaml
+# ~/.amplifier/settings.yaml — hold heavy overlays back from boot (opt-in)
+bundle:
+  deferred:
+    - git+https://github.com/microsoft/amplifier-bundle-digital-twin-universe@main
+    # …any bundle.app entry you don't need on every session
+```
+
+Deferred bundles are **not** composed at boot (faster startup); load one into the
+running session on demand, or pre-install a bundle's modules once so a later boot only
+ever skips:
+
+```sh
+# in-session
+/bundle                 # list deferred overlays
+/bundle load NAME       # compose a deferred bundle into the live session
+
+# out-of-session
+amplifier-newtui bundle warm NAME     # install a bundle's modules ahead of time
+```
+
+With no `bundle.deferred` set, boot composes exactly what it did before — deferral is
+opt-in and backward-compatible. (In-session load mounts additive tools/hooks/agents;
+single-slot modules — providers, orchestrator, context — attach at the next boot.)
+
 ### Updating / uninstalling
 
 ```sh
 git pull && uv sync                          # update this app (clone workflow)
 uv tool install --reinstall /path/to/clone   # update this app (tool install workflow)
+amplifier-newtui update                       # update the mounted bundles/modules (SHA-compare + re-fetch)
 uv tool upgrade amplifier                    # update the Amplifier platform
 uv tool uninstall amplifier-app-newtui       # remove this app (tool install)
 uv tool uninstall amplifier                  # remove the Amplifier platform
 ```
+
+`amplifier-newtui update --check-only` reports available bundle/module updates without
+changing anything; `--force` runs `uv cache clean` first so `@main` sources genuinely re-fetch.
 
 ## Providers
 
