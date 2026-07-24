@@ -45,6 +45,17 @@ THROTTLE_SECONDS = 1 / 30
 LANE_TAIL_LINES = 3
 """Max painted lines of a focused lane's live tail (design doc D4)."""
 
+MAX_ROOT_LINES = 6
+"""Max painted lines of the revealed root stream (thinking/response preview).
+
+The live box is a *peek*, not the transcript: it shows the last few lines
+of the in-flight block. The durable, full-length text arrives on the
+consolidated Answer (Channel B) — never truncated here.
+"""
+
+REVEAL_HINT_KEY = "ctrl-g"
+"""Chord advertised in the collapsed-stream hint (mirrors the keymap)."""
+
 ASYNC_RENDER_THRESHOLD = 100_000
 """Long streams parse off-thread so markdown can never stall the UI loop."""
 
@@ -384,6 +395,18 @@ def streaming_spans(source: str) -> tuple[Segment, ...]:
     return tuple(spans)
 
 
+def _last_lines(text: str, max_lines: int | None) -> str:
+    """The last ``max_lines`` lines of ``text`` (all of it when ``max_lines`` is None).
+
+    Blank lines are kept — the root peek mirrors the model's own line breaks,
+    unlike :func:`lane_tail_markup` which drops blanks to pack three dense lines.
+    """
+    if max_lines is None:
+        return text
+    lines = text.split("\n")
+    return "\n".join(lines[-max_lines:]) if len(lines) > max_lines else text
+
+
 def lane_tail_markup(text: str) -> str:
     """Markup for a focused lane's tail: the last :data:`LANE_TAIL_LINES`
     non-blank lines, ``┆``-guttered, dim (DESIGN-SPEC §8). Pure function —
@@ -433,10 +456,14 @@ class LiveTail(Static):
         self._last_paint = 0.0
         self._paint_count = 0
         self._render_generation = 0
-        self._render_pending: tuple[int, str, str] | None = None
+        self._render_pending: tuple[int, str, str, int | None] | None = None
         self._async_render_active = False
         self._lane_mode = False
         self._root_open = False
+        # Reveal is a session-level preference: the box defaults to hidden
+        # (a one-line peek hint), and once the user shows it, it stays shown
+        # across subsequent blocks until they hide it again.
+        self._revealed = False
 
     @property
     def source(self) -> str:
@@ -454,6 +481,28 @@ class LiveTail(Static):
     def paint_count(self) -> int:
         """Paints performed so far (throttle tests observe this)."""
         return self._paint_count
+
+    @property
+    def revealed(self) -> bool:
+        """True while the root stream box shows its content (not the peek hint)."""
+        return self._revealed
+
+    def toggle_reveal(self) -> bool:
+        """Flip the reveal preference; repaint the open root stream. Returns new state."""
+        self._revealed = not self._revealed
+        if self._root_open:
+            self._paint_now()
+        return self._revealed
+
+    def on_click(self) -> None:
+        """Clicking the box toggles reveal (peek hint ⇄ content)."""
+        if self._root_open:
+            self.toggle_reveal()
+
+    def _reveal_hint(self) -> str:
+        """The collapsed-stream peek: one dim line naming the activity + how to show."""
+        label = "thinking" if self._block_type == "thinking" else "responding"
+        return f"[$dim]▸ {label}… — {REVEAL_HINT_KEY} or click to show[/]"
 
     def open_stream(self, block_type: str = "text") -> None:
         """Reset for a new streaming block (``llm:stream_block_start``)."""
@@ -556,18 +605,27 @@ class LiveTail(Static):
     def _paint_now(self) -> None:
         self._timer = None
         self._last_paint = monotonic()
+        # Collapsed: show a single-line peek hint instead of the content.
+        # Deltas still accumulate into ``source`` so a mid-stream reveal
+        # snaps straight to the current tail.
+        if self._root_open and not self._revealed:
+            self._render_generation += 1  # fence any in-flight async frame
+            self._render_pending = None
+            self._paint_count += 1
+            self.update(self._reveal_hint())
+            return
         source = self.source
         self._render_generation += 1
         generation = self._render_generation
         if len(source) < ASYNC_RENDER_THRESHOLD:
             self._render_pending = None
             self._paint_count += 1
-            self.update(self._markup_for(source, self._block_type))
+            self.update(self._markup_for(source, self._block_type, MAX_ROOT_LINES))
             return
         # Keep only the newest requested frame. The parser is pure and the
         # generation fence prevents a stale worker from repainting after a
         # stream closes or a newer delta arrives.
-        self._render_pending = (generation, source, self._block_type)
+        self._render_pending = (generation, source, self._block_type, MAX_ROOT_LINES)
         if not self._async_render_active:
             self._async_render_active = True
             self.run_worker(self._drain_async_renders(), exclusive=False)
@@ -575,9 +633,9 @@ class LiveTail(Static):
     async def _drain_async_renders(self) -> None:
         try:
             while self._render_pending is not None:
-                generation, source, block_type = self._render_pending
+                generation, source, block_type, max_lines = self._render_pending
                 self._render_pending = None
-                markup = await asyncio.to_thread(self._markup_for, source, block_type)
+                markup = await asyncio.to_thread(self._markup_for, source, block_type, max_lines)
                 if generation == self._render_generation:
                     self._paint_count += 1
                     self.update(markup)
@@ -588,7 +646,7 @@ class LiveTail(Static):
         return self._markup_for(self.source, self._block_type)
 
     @staticmethod
-    def _markup_for(source: str, block_type: str) -> str:
+    def _markup_for(source: str, block_type: str, max_lines: int | None = None) -> str:
         lines = source.split("\n")
         cut = visible_length(lines)
         visible = source if cut >= len(lines) else "\n".join(lines[:cut])
@@ -597,13 +655,16 @@ class LiveTail(Static):
         if block_type == "thinking":
             from textual.markup import escape
 
-            return f"[italic $dim]{escape(visible)}[/]"
-        return "".join(segment_markup(segment) for segment in streaming_spans(source))
+            text = _last_lines(visible, max_lines)
+            return f"[italic $dim]{escape(text)}[/]"
+        render_source = _last_lines(source, max_lines) if max_lines is not None else source
+        return "".join(segment_markup(segment) for segment in streaming_spans(render_source))
 
 
 __all__ = [
     "ASYNC_RENDER_THRESHOLD",
     "LANE_TAIL_LINES",
+    "MAX_ROOT_LINES",
     "THROTTLE_SECONDS",
     "LiveTail",
     "answer_spans",

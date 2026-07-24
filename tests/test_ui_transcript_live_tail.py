@@ -14,6 +14,7 @@ from amplifier_app_newtui.model.blocks import Answer, Segment
 from amplifier_app_newtui.model.evidence import EvidenceLink
 from amplifier_app_newtui.ui.live_tail import (
     ASYNC_RENDER_THRESHOLD,
+    MAX_ROOT_LINES,
     THROTTLE_SECONDS,
     LiveTail,
     answer_spans,
@@ -280,6 +281,67 @@ async def test_thinking_blocks_paint_italic_dim() -> None:
         await pilot.pause(0.1)
         assert tail.block_type == "thinking"
         assert tail._markup().startswith("[italic $dim]")
+
+
+def test_markup_for_caps_revealed_stream_to_max_lines() -> None:
+    """A revealed root stream shows only the last :data:`MAX_ROOT_LINES` lines —
+    the box is a peek; the durable text arrives on the consolidated Answer."""
+    src = "\n".join(f"row{index}" for index in range(20))
+    out = LiveTail._markup_for(src, "thinking", MAX_ROOT_LINES)
+    assert "row19" in out  # newest line kept
+    assert "row0\n" not in out and not out.endswith("row0")  # oldest trimmed
+    inner = out[len("[italic $dim]") : -len("[/]")]
+    assert inner.count("\n") == MAX_ROOT_LINES - 1  # exactly the last N lines
+
+
+def test_markup_for_without_cap_is_unchanged() -> None:
+    """Omitting ``max_lines`` reproduces the pre-reveal rendering byte-for-byte."""
+    src = "# Head\nRun `pytest`\nbody text"
+    assert LiveTail._markup_for(src, "text") == LiveTail._markup_for(src, "text", None)
+
+
+def test_toggle_reveal_returns_state_and_persists() -> None:
+    """Reveal is a session preference: it flips and sticks (default hidden)."""
+    tail = LiveTail()
+    assert tail.revealed is False  # default hidden
+    assert tail.toggle_reveal() is True
+    assert tail.revealed is True
+    assert tail.toggle_reveal() is False
+    assert tail.revealed is False
+
+
+@pytest.mark.asyncio
+async def test_hidden_root_stream_paints_peek_hint(monkeypatch) -> None:
+    """Default-hidden: an open root stream paints a one-line peek, not content."""
+    app = TailHarness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        tail = _tail(app)
+        painted: list[str] = []
+        monkeypatch.setattr(tail, "update", painted.append)
+        tail.open_stream(block_type="thinking")
+        tail.feed("secret line one\nsecret line two")
+        await pilot.pause(0.1)
+        assert tail.revealed is False
+        assert painted[-1] == tail._reveal_hint()
+        assert "click to show" in painted[-1]
+        assert "secret line" not in painted[-1]  # content stays hidden
+
+
+@pytest.mark.asyncio
+async def test_revealed_root_stream_paints_capped_content(monkeypatch) -> None:
+    """After reveal, an open stream paints the last few lines of real content."""
+    app = TailHarness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        tail = _tail(app)
+        tail.toggle_reveal()  # user shows the box
+        painted: list[str] = []
+        monkeypatch.setattr(tail, "update", painted.append)
+        tail.open_stream(block_type="thinking")
+        tail.feed("\n".join(f"line{index}" for index in range(10)))
+        await pilot.pause(THROTTLE_SECONDS * 4)
+        assert tail.revealed is True
+        assert "line9" in painted[-1]  # newest content shown
+        assert "click to show" not in painted[-1]  # not the hint
 
 
 @pytest.mark.asyncio
