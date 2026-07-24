@@ -42,6 +42,73 @@ def test_self_update_hint_mentions_uv() -> None:
     assert "uv sync" in hint and "uv tool upgrade amplifier" in hint
 
 
+# -- uncheckable_sources: deduplicated, plainly labeled (pure) ---------------
+
+
+def test_uncheckable_sources_dedupes_shared_module() -> None:
+    """A module used by several bundles collapses to one entry."""
+    generic = "Update checking not supported for this source type"
+    statuses = [
+        updater.BundleUpdate(
+            "newtui",
+            "newtui",
+            "",
+            False,
+            sources=(
+                updater.SourceRow("tool-apply-patch", has_update=None, reason=generic),
+                updater.SourceRow("tool-bash", "aaaaaaa", "aaaaaaa", has_update=False),
+            ),
+        ),
+        updater.BundleUpdate(
+            "skills",
+            "git+u/skills",
+            "",
+            False,
+            sources=(updater.SourceRow("tool-apply-patch", has_update=None, reason=generic),),
+        ),
+    ]
+    result = updater.uncheckable_sources(statuses)
+    # tool-apply-patch once, tool-bash (checkable) excluded.
+    assert result == [("tool-apply-patch", "")]
+
+
+def test_uncheckable_sources_keeps_real_errors_but_drops_generic() -> None:
+    statuses = [
+        updater.BundleUpdate(
+            "newtui",
+            "newtui",
+            "",
+            False,
+            sources=(
+                updater.SourceRow("tool-a", has_update=None, reason="ls-remote failed: timeout"),
+                updater.SourceRow(
+                    "tool-b",
+                    has_update=None,
+                    reason="Update checking not supported for this source type",
+                ),
+            ),
+        ),
+    ]
+    assert updater.uncheckable_sources(statuses) == [
+        ("tool-a", "ls-remote failed: timeout"),
+        ("tool-b", ""),
+    ]
+
+
+def test_uncheckable_sources_falls_back_to_legacy_unknown() -> None:
+    """Stubs that only set the legacy ``unknown`` tuple still render."""
+    statuses = [
+        updater.BundleUpdate(
+            "newtui",
+            "newtui",
+            "",
+            False,
+            unknown=("tool-local: ls-remote failed", "tool-local: ls-remote failed"),
+        ),
+    ]
+    assert updater.uncheckable_sources(statuses) == [("tool-local", "ls-remote failed")]
+
+
 # -- CLI wiring (stubbed foundation) ----------------------------------------
 
 
@@ -116,27 +183,63 @@ def test_update_force_cleans_cache_and_updates_all(monkeypatch) -> None:
     assert applied == ["newtui"]  # --force updates all, not just stale
 
 
-# -- "unknown" sources are explained, not swallowed -------------------------
+# -- SHA-diff table + deduplicated uncheckable section -----------------------
 
 
-def test_update_explains_unknown_sources(monkeypatch) -> None:
+def test_update_renders_sha_table(monkeypatch) -> None:
     _stub(
         monkeypatch,
         [
             updater.BundleUpdate(
                 "newtui",
                 "newtui",
-                "Up to date (1 source(s) could not be checked)",
-                False,
-                unknown=("tool-local: Update checking not supported for this source type",),
+                "1 update available",
+                True,
+                sources=(
+                    updater.SourceRow("tool-bash", "aaaaaaa1", "aaaaaaa1", has_update=False),
+                    updater.SourceRow("tool-todo", "bbbbbbb2", "ccccccc3", has_update=True),
+                ),
             )
         ],
     )
     result = CliRunner().invoke(main, ["update", "--check-only"])
     assert result.exit_code == 0
-    assert "couldn't be checked" in result.output
-    assert "tool-local" in result.output
-    assert "not supported for this source type" in result.output
+    # Table header + legend + per-source SHAs.
+    assert "Local" in result.output and "Remote" in result.output
+    assert "Legend" in result.output and "update available" in result.output
+    assert "tool-bash" in result.output and "tool-todo" in result.output
+    # Truncated SHAs appear (7 chars).
+    assert "ccccccc" in result.output
+
+
+def test_update_dedupes_uncheckable_sources_with_plain_label(monkeypatch) -> None:
+    generic = "Update checking not supported for this source type"
+    _stub(
+        monkeypatch,
+        [
+            updater.BundleUpdate(
+                "newtui",
+                "newtui",
+                "up to date",
+                False,
+                sources=(updater.SourceRow("tool-apply-patch", has_update=None, reason=generic),),
+            ),
+            updater.BundleUpdate(
+                "skills",
+                "git+u/skills",
+                "up to date",
+                False,
+                sources=(updater.SourceRow("tool-apply-patch", has_update=None, reason=generic),),
+            ),
+        ],
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    # Plainer label, not foundation's opaque per-source message.
+    assert "local or non-git sources (no remote to compare)" in result.output
+    assert "not supported for this source type" not in result.output
+    # Deduplicated: the shared module appears exactly once.
+    assert result.output.count("tool-apply-patch") == 1
 
 
 # -- anchors freshness line -------------------------------------------------
