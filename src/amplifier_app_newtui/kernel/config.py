@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -809,6 +809,170 @@ def inject_telemetry_config(mount_plan: dict[str, Any], settings: dict[str, Any]
         config["additional_events"] = merged
 
 
+# --------------------------------------------------------------------------
+# Notifications bridge (config.notifications.*) -- desktop ladder + ntfy push
+# --------------------------------------------------------------------------
+
+NOTIFY_PUSH_HOOK = "hooks-notify-push"
+"""Module id of the mounted off-machine ntfy push hook (amplifier-bundle-notify).
+
+The wrapper bundle mounts it inert (no-op unless ``AMPLIFIER_NTFY_TOPIC`` is
+set); :func:`inject_notifications_config` bridges the non-secret ntfy knobs
+from settings onto its config, mirroring :func:`inject_telemetry_config`."""
+
+# The attention-ladder env vars the native OSC 777 path (``ui/notifications``)
+# already reads. Mirrored here as literals (kernel must not import ``ui`` --
+# ADR-0007 layering) so settings can be lowered onto the same contract.
+_NOTIFY_ENV = "AMPLIFIER_NOTIFY"
+_NOTIFY_TERMINAL_ENV = "AMPLIFIER_TERMINAL_NOTIFICATIONS"
+
+# ntfy push env vars owned by the hooks-notify-push module. The topic is a
+# secret (public ntfy topics are world-readable) and is read ONLY from the
+# environment/keys.env -- never bridged from a settings scope.
+_NTFY_TOPIC_ENV = "AMPLIFIER_NTFY_TOPIC"
+_NTFY_SERVER_ENV = "AMPLIFIER_NTFY_SERVER"
+_NOTIFY_PUSH_ENABLED_ENV = "AMPLIFIER_NOTIFY_PUSH_ENABLED"
+
+_PUSH_PASSTHROUGH_KEYS = ("priority", "tags", "debug")
+"""ntfy push config keys with no env equivalent -- taken from settings as-is."""
+
+_TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
+_FALSE_STRINGS = frozenset({"false", "0", "no", "off"})
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    """A real bool, a YAML-ish bool string, or ``None`` when unrecognized."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in _TRUE_STRINGS:
+            return True
+        if low in _FALSE_STRINGS:
+            return False
+    return None
+
+
+def notification_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """The ``config.notifications`` section of merged settings (``{}`` if absent).
+
+    Donor parity: amplifier-app-cli keeps notification config under
+    ``config.notifications`` (``AppSettings.get_notification_config``); newtui
+    reads the same key so a settings file shared between the two apps agrees.
+    Any non-dict shape yields ``{}`` so an unconfigured/junk section is inert.
+    """
+    config = settings.get("config")
+    if not isinstance(config, dict):
+        return {}
+    notifications = config.get("notifications")
+    return notifications if isinstance(notifications, dict) else {}
+
+
+def merged_push_settings(notifications: dict[str, Any]) -> dict[str, Any]:
+    """Merge the ``push`` + ``ntfy`` blocks into one dict (ntfy wins on conflict).
+
+    ntfy is the only push transport today, so the two blocks are aliases; the
+    more specific ``ntfy`` key wins for field-level values (donor parity:
+    ``get_notification_hook_overrides`` merges the same way). Non-dict blocks
+    are ignored. The secret ``topic`` is intentionally left in place here but
+    is never lowered onto the hook config by :func:`inject_notifications_config`.
+    """
+    merged: dict[str, Any] = {}
+    for block in (notifications.get("push"), notifications.get("ntfy")):
+        if isinstance(block, dict):
+            merged.update(block)
+    return merged
+
+
+def apply_notification_ladder_env(
+    settings: dict[str, Any], environ: MutableMapping[str, str] | None = None
+) -> None:
+    """Lower ``config.notifications`` desktop/suppress keys onto the ladder env.
+
+    The native attention ladder (``ui/notifications``) is driven by two env
+    vars: ``AMPLIFIER_NOTIFY`` (off/bell/desktop ceiling) and
+    ``AMPLIFIER_TERMINAL_NOTIFICATIONS`` (desktop-rung gate). Rather than teach
+    the pure ladder about settings, the two honored keys are lowered onto those
+    vars here -- the same "settings seed the environment, an explicit env var
+    always wins" contract as :func:`load_keys_env`:
+
+    - ``notifications.suppress: true`` -> ``AMPLIFIER_NOTIFY=off`` (silence the
+      whole local ladder: bell + desktop);
+    - ``notifications.desktop.enabled: false`` ->
+      ``AMPLIFIER_TERMINAL_NOTIFICATIONS=off`` (drop the desktop rung, keep the
+      bell); ``true`` -> ``=force`` (desktop on any terminal, bypassing the
+      render allowlist -- the user opted in explicitly).
+
+    Precedence: an already-set env var is never overwritten (explicit env
+    wins over settings). A no-op when ``config.notifications`` is absent/junk,
+    so an unconfigured app's environment is byte-identical to today. Never
+    raises. Idempotent.
+    """
+    env = os.environ if environ is None else environ
+    notifications = notification_settings(settings)
+    if not notifications:
+        return
+    if _coerce_bool(notifications.get("suppress")) and _NOTIFY_ENV not in env:
+        env[_NOTIFY_ENV] = "off"
+    desktop = notifications.get("desktop")
+    if isinstance(desktop, dict) and _NOTIFY_TERMINAL_ENV not in env:
+        enabled = _coerce_bool(desktop.get("enabled"))
+        if enabled is False:
+            env[_NOTIFY_TERMINAL_ENV] = "off"
+        elif enabled is True:
+            env[_NOTIFY_TERMINAL_ENV] = "force"
+
+
+def inject_notifications_config(
+    mount_plan: dict[str, Any],
+    settings: dict[str, Any],
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Bridge ``config.notifications.push``/``ntfy`` onto the ntfy push hook.
+
+    Mirrors :func:`inject_telemetry_config`: finds the mounted
+    ``hooks-notify-push`` entry and folds the non-secret ntfy knobs a user can
+    safely keep in a settings scope onto its config, preserving the mounted
+    ``listen_event`` (and anything else already there):
+
+    - ``enabled`` / ``server`` -- env-aware: the ``AMPLIFIER_NOTIFY_PUSH_ENABLED``
+      / ``AMPLIFIER_NTFY_SERVER`` vars win, so settings only fill an unset var
+      (consistent "explicit env wins" precedence);
+    - ``priority`` / ``tags`` / ``debug`` -- no env equivalent, taken from
+      settings as-is.
+
+    The ntfy *topic* is deliberately NOT bridged: the push module treats it as
+    a secret and reads it only from ``AMPLIFIER_NTFY_TOPIC`` (keys.env), so
+    ``notify set topic`` writes there, never a settings scope. A no-op when the
+    hook isn't mounted or ``config.notifications`` is absent/junk -- so an
+    unconfigured app is byte-identical to today. Never raises.
+    """
+    entry = None
+    for hook in mount_plan.get("hooks") or []:
+        if isinstance(hook, dict) and hook.get("module") == NOTIFY_PUSH_HOOK:
+            entry = hook
+            break
+    if entry is None:
+        return
+    push = merged_push_settings(notification_settings(settings))
+    if not push:
+        return
+    env = os.environ if environ is None else environ
+    config = entry.get("config")
+    if not isinstance(config, dict):
+        config = {}
+        entry["config"] = config
+    enabled = _coerce_bool(push.get("enabled"))
+    if enabled is not None and not env.get(_NOTIFY_PUSH_ENABLED_ENV):
+        config["enabled"] = enabled
+    server = push.get("server")
+    if isinstance(server, str) and server and not env.get(_NTFY_SERVER_ENV):
+        config["server"] = server
+    for key in _PUSH_PASSTHROUGH_KEYS:
+        if key in push:
+            config[key] = push[key]
+
+
 def inject_mode_search_paths(mount_plan: dict[str, Any], modes_dir: Path) -> None:
     """Add *modes_dir* to the mounted ``hooks-mode`` config's search_paths.
 
@@ -1119,6 +1283,12 @@ async def resolve_config(
     # hook (custom destinations + legacy single-destination keys); a no-op
     # unless that behavior is composed in via a bundle.app overlay (issue #51).
     inject_telemetry_config(mount_plan, settings)
+    # Bridge settings.config.notifications -> the mounted ntfy push hook
+    # (non-secret knobs) and lower the desktop/suppress keys onto the
+    # attention-ladder env vars the native OSC 777 path reads; both no-op
+    # (byte-identical) unless config.notifications is configured (issue #106).
+    inject_notifications_config(mount_plan, settings)
+    apply_notification_ladder_env(settings)
     expand_env_placeholders(mount_plan)
 
     return ResolvedConfig(
@@ -1168,6 +1338,11 @@ __all__ = [
     "inject_mode_search_paths",
     "inject_routing_config",
     "inject_telemetry_config",
+    "inject_notifications_config",
+    "apply_notification_ladder_env",
+    "notification_settings",
+    "merged_push_settings",
+    "NOTIFY_PUSH_HOOK",
     "packaged_modes_dir",
     "get_project_slug",
     "is_bundle_uri",
