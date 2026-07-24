@@ -43,6 +43,12 @@ MOCKUP_TABLE = [
     ("During", "/skills", "list available skills", "skill"),
     ("During", "/skill", "load a skill by name: /skill <name>", "skill"),
     ("During", "/mcp", "MCP servers: list · add · remove", "built-in"),
+    (
+        "During",
+        "/bundle",
+        "deferred overlays; /bundle load <name> composes one now",
+        "built-in",
+    ),
     ("Parallel", "/tasks", "agent lanes: one line per subagent", "built-in"),
     ("Ship", "/ledger", "session outcome ledger: spend vs yield", "built-in"),
     # Beyond the mockup table: transcript markdown export.
@@ -88,7 +94,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 34
+    assert len(registry.specs) == 35
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 

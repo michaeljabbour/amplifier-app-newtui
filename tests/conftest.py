@@ -163,6 +163,9 @@ class FakeCommandContext:
     def manage_mcp(self, args: str) -> None:
         self.calls.append(f"manage_mcp:{args}")
 
+    def load_bundle(self, args: str) -> None:
+        self.calls.append(f"load_bundle:{args}")
+
     def manage_config(self, args: str) -> None:
         self.calls.append(f"manage_config:{args}")
 

@@ -248,6 +248,11 @@ class CommandContext(Protocol):
         """``/mcp``: list / add / remove MCP servers (mcp.json)."""
         ...
 
+    def load_bundle(self, args: str) -> None:
+        """``/bundle``: list deferred overlays, or ``load <name>`` composes one
+        into the running session on demand (fast-boot deferral)."""
+        ...
+
     def manage_config(self, args: str) -> None:
         """``/config``: show/toggle/set/diff/save live session config."""
         ...

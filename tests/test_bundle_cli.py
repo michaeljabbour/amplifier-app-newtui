@@ -19,8 +19,24 @@ from amplifier_app_newtui.main import main
 def test_bundle_group_lists_subcommands() -> None:
     result = CliRunner().invoke(main, ["bundle", "--help"])
     assert result.exit_code == 0
-    for sub in ("list", "show", "use", "clear", "current", "add", "remove", "update"):
+    for sub in ("list", "show", "use", "clear", "current", "add", "remove", "update", "warm"):
         assert sub in result.output
+
+
+def test_bundle_add_offers_warm_flag() -> None:
+    result = CliRunner().invoke(main, ["bundle", "add", "--help"])
+    assert result.exit_code == 0
+    assert "--warm" in result.output
+
+
+def test_bundle_warm_bad_source_exits_nonzero(tmp_path: Path, monkeypatch) -> None:
+    # A source foundation cannot load reports the miss and exits nonzero,
+    # never a traceback. Bogus local path → offline safe.
+    paths = bundle_admin.settings_paths(tmp_path / "proj", tmp_path / "home")
+    monkeypatch.setattr(bundle_admin, "settings_paths", lambda *a, **k: paths)
+    result = CliRunner().invoke(main, ["bundle", "warm", str(tmp_path / "nope")])
+    assert result.exit_code == 1
+    assert "warm failed" in result.output
 
 
 def test_bundle_list_all_is_superset_of_default() -> None:

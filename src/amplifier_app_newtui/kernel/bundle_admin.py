@@ -373,14 +373,70 @@ async def check_updates(name: str) -> str | None:
     return "updates available" if getattr(status, "has_updates", False) else "up to date"
 
 
+@dataclass(frozen=True)
+class WarmResult:
+    """Outcome of warming (pre-installing) a bundle's modules."""
+
+    ok: bool
+    name: str
+    message: str
+
+
+async def warm_bundle(
+    uri: str,
+    *,
+    project_dir: Path | None = None,
+    amplifier_home: Path | None = None,
+    progress: Any = None,
+) -> WarmResult:
+    """Pre-install a bundle's modules ONCE, out of the boot install burst.
+
+    The newtui-side mitigation for foundation's fragile mass install (RCA: a
+    cold boot runs ``activate_all`` across every overlay's modules at once and
+    one intermittently gets killed). Warming a bundle at ``bundle add`` time —
+    or explicitly via ``bundle warm`` — prepares it with ``install_deps=True``
+    so its modules land in the module cache; a later boot that composes it then
+    only ever *skips* the install. Foundation owns the actual install; newtui
+    only controls *when* it runs (add-time, not the boot path).
+
+    Never raises: a load/prepare failure comes back as ``ok=False`` with the
+    reason so the CLI reports the miss and exits cleanly (offline stays offline
+    — foundation is imported lazily inside :func:`config.prepare_overlay_bundle`)."""
+    from .config import prepare_overlay_bundle
+
+    paths = settings_paths(project_dir, amplifier_home)
+    settings = load_merged_settings(paths)
+    home = _amplifier_home(amplifier_home)
+    target = discover_bundle(uri, bundle_search_paths(paths.project_settings.parent.parent, home))
+    resolved_uri = target or uri
+    try:
+        mount_plan = await prepare_overlay_bundle(
+            resolved_uri, settings, amplifier_home=home, install_deps=True, progress=progress
+        )
+    except Exception as error:  # noqa: BLE001 — surfaced as a CLI miss, never a traceback
+        return WarmResult(ok=False, name=uri, message=str(error) or type(error).__name__)
+
+    def _count(section: str) -> int:
+        value = mount_plan.get(section)
+        return len(value) if isinstance(value, list) else 0
+
+    summary = (
+        f"{_count('providers')} providers · {_count('tools')} tools · "
+        f"{_count('hooks')} hooks · {_count('agents')} agents"
+    )
+    return WarmResult(ok=True, name=uri, message=f"modules ready ({summary})")
+
+
 __all__ = [
     "SCOPES",
     "BundleEntry",
     "BundleInfo",
     "Scope",
+    "WarmResult",
     "add_bundle",
     "added_bundles",
     "check_updates",
+    "warm_bundle",
     "clear_active_bundle",
     "current_bundle",
     "is_bundle_uri",

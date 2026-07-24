@@ -35,8 +35,16 @@ from .config import (
     ResolvedConfig,
     SettingsPaths,
     active_bundle_name,
+    deferred_overlay_uris,
+    inject_mode_search_paths,
+    inject_notifications_config,
+    inject_routing_config,
+    inject_telemetry_config,
     load_merged_settings,
+    packaged_modes_dir,
+    prepare_overlay_bundle,
     resolve_config,
+    resolve_deferred_bundle,
 )
 from .clipboard import ClipboardImageInjector, ImageAttachment
 from .compaction import CompactionConfig, CompactionRuntimeBinding, compaction_config
@@ -633,6 +641,10 @@ class RealRuntime:
             # loudly rather than silently dropping the whole scope (the
             # analogous bundle fallback above already speaks up).
             self.bridge.emit(Notification(message=resolved.settings_notice, level="warning"))
+        if resolved.deferred_notice:
+            # bundle.deferred held overlays back from this boot for speed —
+            # say so out loud (never a silent drop); /bundle load composes them.
+            self.bridge.emit(Notification(message=resolved.deferred_notice))
         self._resolved = resolved
 
         self.compaction = compaction_config(resolved.mount_plan)
@@ -1414,6 +1426,62 @@ class RealRuntime:
     async def mcp_tools(self) -> tuple[str, ...]:
         coord = self._coordinator()
         return await session_ops.list_mcp_tools(coord) if coord is not None else ()
+
+    # -- in-session bundle composition (/bundle load) -----------------------
+
+    def deferred_bundles(self) -> tuple[str, ...]:
+        """Overlay URIs held back from boot (``bundle.deferred``) for this session.
+
+        The candidates a user can compose on demand with ``/bundle load``;
+        empty when nothing was deferred."""
+        if self._resolved is None:
+            return ()
+        return deferred_overlay_uris(self._resolved.settings)
+
+    async def load_deferred_bundle(self, name: str) -> tuple[bool, str]:
+        """Compose a deferred overlay into the LIVE session (``/bundle load``).
+
+        Resolves *name* to a ``bundle.deferred`` overlay URI, prepares it
+        (installing any missing modules — the same warm foundation owns), and
+        mounts its additive tool/hook/agent modules onto the running
+        coordinator via :func:`kernel.bundle_compose.mount_overlay_modules`.
+        Settings bridges (mode search paths, routing, telemetry, notifications)
+        are applied to the overlay plan first so a deferred behavior bundle
+        still gets its config lowered exactly as it would at boot.
+
+        Returns ``(ok, detail)``; never raises into the UI. A name that is not
+        a deferred overlay comes back ``(False, reason)`` — loading a
+        boot-composed bundle is a no-op by design (it is already mounted)."""
+        target = name.strip()
+        if self._initialized is None or self._resolved is None:
+            return (False, "session still starting")
+        if not target:
+            available = ", ".join(self.deferred_bundles()) or "none"
+            return (False, f"usage: /bundle load <name> · deferred: {available}")
+        settings = self._resolved.settings
+        uri = resolve_deferred_bundle(target, settings)
+        if uri is None:
+            available = ", ".join(self.deferred_bundles()) or "none"
+            return (False, f"'{target}' is not a deferred bundle · deferred: {available}")
+        try:
+            mount_plan = await prepare_overlay_bundle(uri, settings, progress=self._progress)
+        except Exception as error:  # noqa: BLE001 — surfaced as a load miss, never a traceback
+            logger.warning("deferred bundle prepare failed: %s", uri, exc_info=True)
+            return (False, f"could not prepare '{target}': {error or type(error).__name__}")
+        # Bridge the same settings sections the boot path bridges, and strip
+        # any TUI-corrupting printing hooks the overlay drags in, BEFORE mount.
+        inject_mode_search_paths(mount_plan, packaged_modes_dir())
+        inject_routing_config(mount_plan, settings, Path.home() / ".amplifier")
+        inject_telemetry_config(mount_plan, settings)
+        inject_notifications_config(mount_plan, settings)
+        _apply_hook_suppression(mount_plan, self.bridge.emit, suppressed_hooks_setting(settings))
+        from .bundle_compose import mount_overlay_modules
+
+        result = await mount_overlay_modules(self._initialized.coordinator, mount_plan)
+        # Mounted modules unwind with the session (parity with the boot hooks'
+        # unregister_handles) — a bare cleanup would otherwise leak on exit.
+        self._initialized.unregister_handles.extend(result.cleanups)
+        return (result.ok, result.summary(target))
 
     # -- stored-session lifecycle (/rename /sessions /branch) ---------------
 
