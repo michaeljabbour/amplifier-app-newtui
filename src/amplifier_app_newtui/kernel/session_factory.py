@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -99,20 +99,22 @@ class MountReport:
 
     @property
     def tools_degraded(self) -> bool:
-        return bool(self.missing_tools) or self.mounted_tool_count < self.configured_tool_count
+        return bool(self.missing_tools)
 
     def degraded_notice(self) -> str | None:
         """The blocking transcript notice for a degraded start (a provider
-        or tool module that failed to mount while the session still ran)."""
+        or tool module that failed to mount while the session still ran).
+
+        Names every failed module so the failure is honest, not silent: the
+        kernel swallows mount errors for resilience (ADR-0007), so this
+        notice is the only place a missing ``tool-team-pulse`` (etc.)
+        surfaces to the user. ``run doctor`` is the actionable next step
+        (re-prepare / reinstall — see :func:`verify_mounts`)."""
         parts: list[str] = []
         if self.missing_providers:
             parts.append(f"provider(s) unavailable: {', '.join(self.missing_providers)}")
         if self.missing_tools:
-            parts.append(f"tool modules failed to mount: {', '.join(self.missing_tools)}")
-        elif self.mounted_tool_count < self.configured_tool_count:
-            parts.append(
-                f"{self.mounted_tool_count}/{self.configured_tool_count} tool modules mounted"
-            )
+            parts.append(f"tool module(s) failed to mount: {', '.join(self.missing_tools)}")
         if not parts:
             return None
         return f"degraded start · {' · '.join(parts)} · run doctor for details"
@@ -191,14 +193,133 @@ def _configured_ids(mount_plan: dict[str, Any], section: str) -> list[str]:
     return [i for i in ids if i]
 
 
-def verify_mounts(mount_plan: dict[str, Any], coordinator: Any) -> MountReport:
+def _normalize_tool_name(name: str) -> str:
+    """Match key for a tool name: lowercase, hyphens → underscores.
+
+    Mirrors foundation's provenance normalization
+    (``configurator/_provenance_utils._normalize_module_name``) so
+    ``team-pulse`` and ``team_pulse`` compare equal.
+    """
+    return name.lower().replace("-", "_")
+
+
+def _name_matches(expected_norm: str, mounted_norm: str) -> bool:
+    """Does a mounted (normalized) tool name satisfy an expected name?
+
+    Exact match, or an underscore-delimited prefix match (foundation
+    Strategy 4: a short module name like ``web`` is a prefix of the
+    mounted ``web_search``). The underscore boundary keeps ``bash`` from
+    spuriously matching ``bash_extras`` — a false *present*, never a false
+    missing.
+    """
+    return mounted_norm == expected_norm or mounted_norm.startswith(f"{expected_norm}_")
+
+
+def _tool_present(expected_norm: str, mounted_norm: set[str]) -> bool:
+    """Is a module's expected (normalized) tool name among mounted names?"""
+    return any(_name_matches(expected_norm, name) for name in mounted_norm)
+
+
+def _module_expected_names(
+    module_id: str, module_exports: Mapping[str, list[str]] | None
+) -> tuple[list[str], bool]:
+    """A module's expected (normalized) tool names, and whether they are authoritative.
+
+    Foundation's ``PreparedBundle.module_exports`` (module_id → tool names)
+    is authoritative when it covers the module. Otherwise we fall back to
+    the 1-tool-per-module convention foundation itself uses — the module id
+    minus its ``tool-`` prefix (``tool-bash`` → ``bash``; see
+    ``amplifier_foundation.modules._module_exports``) — flagged non-
+    authoritative because it is only a *guess* for modules the map omits.
+    """
+    if module_exports:
+        exported = module_exports.get(module_id)
+        if exported:
+            return [_normalize_tool_name(n) for n in exported], True
+    return [_normalize_tool_name(module_id.removeprefix("tool-"))], False
+
+
+def missing_tool_modules(
+    configured_tool_modules: Iterable[str],
+    mounted_tool_names: Iterable[str],
+    module_exports: Mapping[str, list[str]] | None = None,
+) -> tuple[str, ...]:
+    """Configured tool modules that registered NONE of their tools.
+
+    The coordinator keys mounted tools by tool *name*, not by module, so a
+    single tool module that failed to mount is invisible to a bare
+    name-count diff — the RCA gap: ``tool-team-pulse`` fails to mount while
+    ``tool-bash`` succeeds, ``coordinator.get("tools")`` is still non-empty,
+    and the failure is swallowed silently. We reconstruct each module's
+    expected tool names (foundation's ``module_exports`` plus the
+    ``tool-bash`` → ``bash`` fallback) and report every configured module
+    whose expected names are ALL absent from the mounted set.
+
+    Two safeguards keep this honest — the task's "only act on genuine
+    failures" nuance (ported from app-cli's ``_should_attempt_self_healing``):
+
+    * **Only complete per-module failure counts.** A module that registered
+      at least one of its tools is present; a partial outcome is often
+      benign and re-preparing would not fix it.
+    * **The short-name fallback never convicts alone.** ``module_exports``
+      is a v1 stopgap that omits many modules, and a module can register a
+      tool whose name the ``tool-<x>`` → ``<x>`` convention does not predict
+      (e.g. a ``tool-fake`` that mounts ``write_file``). So if ANY mounted
+      tool cannot be attributed to some configured module's expected names,
+      the fallback is deemed unreliable for this session and non-
+      authoritative modules are given the benefit of the doubt. Authoritative
+      (``module_exports``-backed) verdicts always stand.
+    """
+    mounted_norm = {_normalize_tool_name(str(n)) for n in mounted_tool_names}
+    expected_by_module = [
+        (module_id, *_module_expected_names(module_id, module_exports))
+        for module_id in configured_tool_modules
+    ]
+
+    # A mounted tool is "attributed" when it matches some configured module's
+    # expected name. Any UNattributed mounted tool means a configured module
+    # registered a tool under a name we could not predict, so the short-name
+    # fallback cannot be trusted to convict a module on absence alone.
+    attributed = {
+        name
+        for name in mounted_norm
+        if any(
+            _name_matches(expected, name)
+            for _module_id, names, _authoritative in expected_by_module
+            for expected in names
+        )
+    }
+    fallback_reliable = attributed == mounted_norm
+
+    missing: list[str] = []
+    for module_id, names, authoritative in expected_by_module:
+        if any(_tool_present(name, mounted_norm) for name in names):
+            continue
+        if authoritative or fallback_reliable:
+            missing.append(module_id)
+    return tuple(missing)
+
+
+def verify_mounts(
+    mount_plan: dict[str, Any],
+    coordinator: Any,
+    module_exports: Mapping[str, list[str]] | None = None,
+) -> MountReport:
     """Compare mounted providers/tools against the mount plan.
 
     Providers are matched by normalized name with multiplicity (Counter,
-    so multi-instance configs are counted accurately). Tool modules
-    cannot be mapped 1:1 to mounted tool names (one module registers
-    many tools), so tools report *complete* failure by module list and
-    partial failure by count only.
+    so multi-instance configs are counted accurately). Tool modules are
+    matched per-module via their expected tool names (see
+    :func:`missing_tool_modules`): *module_exports* is foundation's
+    ``PreparedBundle.module_exports`` map, without which multi-tool modules
+    fall back to the short-name convention.
+
+    Recovery beyond surfacing is deliberately deferred here: an actual
+    re-prepare/reinstall is a network-bound bundle operation outside the
+    session-composition seam (matching app-cli, whose ``self-healing`` at
+    the analogous call site only *warns*). The degraded notice naming the
+    failed module — surfaced to the user via ``startup_notices`` — plus the
+    ``run doctor`` pointer is the actionable win.
     """
     configured_providers = _configured_ids(mount_plan, "providers")
     mounted_providers: dict[str, Any] = coordinator.get("providers") or {}
@@ -208,9 +329,7 @@ def verify_mounts(mount_plan: dict[str, Any], coordinator: Any) -> MountReport:
 
     configured_tools = _configured_ids(mount_plan, "tools")
     mounted_tools: dict[str, Any] = coordinator.get("tools") or {}
-    missing_tools: tuple[str, ...] = ()
-    if configured_tools and not mounted_tools:
-        missing_tools = tuple(configured_tools)
+    missing_tools = missing_tool_modules(configured_tools, mounted_tools.keys(), module_exports)
 
     return MountReport(
         missing_providers=missing_providers,
@@ -308,7 +427,16 @@ async def create_initialized_session(request: SessionRequest) -> InitializedSess
     # down while another is up, e.g. an offline local vLLM endpoint next to
     # Anthropic) must degrade, not block. Only zero mounted providers is
     # fatal; missing providers otherwise ride the degraded notice.
-    report = verify_mounts(resolved.mount_plan, session.coordinator)
+    # ``module_exports`` (module_id → registered tool names) lets a single
+    # failed tool module be named even when other tools mounted — the RCA
+    # gap that a bare tool-name diff misses. It rides the PreparedBundle;
+    # absent (test fakes, older foundation) the diff falls back to the
+    # short-name convention.
+    report = verify_mounts(
+        resolved.mount_plan,
+        session.coordinator,
+        getattr(prepared, "module_exports", None),
+    )
     if report.no_provider:
         try:
             await session.cleanup()
@@ -347,6 +475,7 @@ __all__ = [
     "ProviderMountError",
     "SessionRequest",
     "create_initialized_session",
+    "missing_tool_modules",
     "stamp_root_metadata",
     "verify_mounts",
 ]
