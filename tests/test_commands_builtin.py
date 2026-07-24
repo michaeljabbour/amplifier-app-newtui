@@ -58,6 +58,7 @@ MOCKUP_TABLE = [
     ("Between", "/rename", "name this session for the resume picker", "built-in"),
     ("Between", "/sessions", "list stored sessions for this project", "built-in"),
     ("Between", "/branch", "snapshot this conversation into a new session", "built-in"),
+    ("Between", "/fork", "snapshot into a new session primed to run a directive", "built-in"),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
     ("Repair", "/permissions", "edit trust slots: boundary, blocks, exceptions", "built-in"),
@@ -87,7 +88,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 33
+    assert len(registry.specs) == 34
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -215,11 +216,13 @@ def test_session_lifecycle_dispatch_through_context(fake_command_context) -> Non
     registry.run("/sessions", ctx)
     registry.run("/branch", ctx)
     registry.run("/branch", ctx, "spike")
+    registry.run("/fork", ctx, "continue the refactor")
     assert ctx.calls == [
         "rename_session:auth refactor",
         "show_sessions",
         "branch_session:",
         "branch_session:spike",
+        "fork_session:continue the refactor",
     ]
 
 

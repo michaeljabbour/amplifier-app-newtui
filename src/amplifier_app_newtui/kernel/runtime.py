@@ -538,6 +538,11 @@ class RealRuntime:
         (DESIGN-SPEC §3/§11); empty for fresh sessions and for stored
         sessions with no usable event log (prose fallback)."""
         self.degraded_notice: str | None = None
+        self.pending_directive = ""
+        """A resumed fork child's primed starting directive (``/fork`` /
+        ``session fork``): set from stored metadata in :meth:`start` and
+        consumed once by the app, which auto-runs it as the first turn. Empty
+        for fresh sessions and ordinary resumes."""
         self.compaction = CompactionConfig()
         self._compaction_binding: CompactionRuntimeBinding | None = None
         self._background_tasks: set[asyncio.Task[Any]] = set()
@@ -577,6 +582,11 @@ class RealRuntime:
             session_id = store.find_session(self._resume_id)
             transcript, metadata = store.load(session_id)
             stored_bundle = str(metadata.get("bundle") or "") or None
+            # A resumed fork child (/fork, session fork) is primed with a
+            # starting directive; surface it for the app to auto-run as the
+            # first turn. Consume-once: the store copy is cleared here so a
+            # later resume of the same child never replays the instruction.
+            self.pending_directive = session_manager.take_pending_directive(store, session_id)
             # resolve_config re-reads settings itself; this early read
             # exists only because the resume-policy knob must be known
             # BEFORE the golden path takes its bundle argument.
@@ -1450,6 +1460,31 @@ class RealRuntime:
             self._initialized.session_id,
             messages,
             name=name,
+            bundle=self.bundle_name,
+        )
+
+    async def fork_session(self, directive: str) -> tuple[bool, str]:
+        """Snapshot the live conversation into a new session PRIMED with *directive*.
+
+        The directive-seeded sibling of :meth:`branch_session`: the current
+        context messages are copied into a fresh id carrying this session's id
+        as ``parent_id``, and *directive* is stored so a later
+        ``amplifier-newtui resume <child>`` runs it first
+        (kernel/session_manager.fork). The re-expression of app-cli's ``/fork
+        <directive>`` background self-delegation over newtui's persisted store —
+        a primed, resumable child, not a detached daemon (see the module note).
+        """
+        if self._store is None or self._initialized is None:
+            return (False, "session still starting")
+        context = self._initialized.coordinator.get("context")
+        messages: list[dict[str, Any]] = []
+        if context is not None and hasattr(context, "get_messages"):
+            messages = list(await context.get_messages())
+        return session_manager.fork(
+            self._store,
+            self._initialized.session_id,
+            messages,
+            directive,
             bundle=self.bundle_name,
         )
 

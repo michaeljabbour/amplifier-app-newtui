@@ -187,6 +187,12 @@ class RuntimeAdapter:
         summaries, turn rules — DESIGN-SPEC §3/§11); empty means the
         prose ``restored_history`` fallback renders instead."""
         self.startup_notices: tuple[str, ...] = ()
+        self.pending_directive: str = ""
+        """A resumed fork child's primed starting directive (``/fork`` /
+        ``session fork``), surfaced from ``RealRuntime.pending_directive`` at
+        ``start()``. The app consumes it once via
+        ``app_support.run_pending_directive``; empty for fresh/demo sessions
+        and ordinary resumes."""
         self.compaction = CompactionConfig(auto_compact=True, compact_threshold=0.8)
         self._config_state: SessionConfigState = default_config_state()
         """Live ``/config`` state — shared by demo and real (invariant 4);
@@ -295,6 +301,10 @@ class RuntimeAdapter:
     async def branch_session(self, name: str) -> tuple[bool, str]:
         del name
         return (False, "branching needs a real session")
+
+    async def fork_with_directive(self, directive: str) -> tuple[bool, str]:
+        del directive
+        return (False, "forking needs a real session")
 
     async def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
         del kind
@@ -471,6 +481,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.restored_history = runtime.restored_history
         self.restored_events = runtime.restored_events
         self.compaction = runtime.compaction
+        self.pending_directive = runtime.pending_directive
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
         self._config_state = runtime.config_state()
@@ -617,6 +628,11 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is None:
             return (False, "session still starting")
         return await self._in_runtime(self._runtime.branch_session(name))
+
+    async def fork_with_directive(self, directive: str) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.fork_session(directive))
 
     async def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
         if self._runtime is None:

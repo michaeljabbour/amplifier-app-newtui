@@ -498,6 +498,25 @@ async def confirm_fork(app: NewTuiApp, checkpoint_id: str, label: str) -> None:
         app.drain_turn_queues()
 
 
+def run_pending_directive(app: NewTuiApp) -> None:
+    """Auto-run a resumed fork child's primed directive as the first turn.
+
+    A session created by ``/fork`` / ``session fork`` stores a starting
+    directive; :attr:`RuntimeAdapter.pending_directive` surfaces it on resume
+    (consume-once, cleared in the store by ``RealRuntime.start``). Submitting it
+    here makes the child *run* that instruction first — the reachable stand-in
+    for app-cli's background-directive fork (true detached execution is not
+    reachable from the full-screen host, issue #45). No pending directive (fresh
+    session, ordinary resume) is the common case and does nothing.
+    """
+    directive = getattr(app.adapter, "pending_directive", "")
+    if not directive:
+        return
+    app.adapter.pending_directive = ""  # belt-and-suspenders: never re-run in-process
+    app.show_notice(f"fork directive · running: {directive[:48]}")
+    app.submit_prompt(directive)
+
+
 def apply_decision(app: NewTuiApp, decision_id: str, answer: str) -> None:
     """Act on a deferred decision: answer it + log ``Applying decision``.
 

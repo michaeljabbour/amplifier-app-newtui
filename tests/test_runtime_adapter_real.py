@@ -154,6 +154,7 @@ class FakeRealRuntime:
         self.restored_events = (PromptSubmit(session_id="stored", prompt="hi"),)
         self.compaction = CompactionConfig(auto_compact=False, compact_threshold=0.5)
         self.degraded_notice = ""
+        self.pending_directive = ""
         self.broker = FakeBroker()
         self.evidence = FakeEvidence()
         self.calls: list[tuple[str, tuple[Any, ...], int]] = []

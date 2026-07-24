@@ -49,6 +49,7 @@ NEUTRAL_CASES: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
     ("rename_session", ("auth work",), (False, "renaming needs a real session")),
     ("session_summaries", (), ()),
     ("branch_session", ("spike",), (False, "branching needs a real session")),
+    ("fork_with_directive", ("go",), (False, "forking needs a real session")),
     ("directory_entries", ("allowed",), ()),
     (
         "update_directory",

@@ -175,6 +175,11 @@ def _cmd_branch(ctx: CommandContext, args: str) -> None:
     ctx.branch_session(args.strip())
 
 
+def _cmd_fork(ctx: CommandContext, args: str) -> None:
+    """``/fork <directive>`` — snapshot into a new session primed to run it."""
+    ctx.fork_session(args.strip())
+
+
 def _cmd_permissions(ctx: CommandContext, args: str) -> None:
     del args
     ctx.open_permissions()
@@ -443,6 +448,13 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="snapshot this conversation into a new session",
         tag="built-in",
         handler=_cmd_branch,
+    ),
+    CommandSpec(
+        group="Between",
+        name="/fork",
+        desc="snapshot into a new session primed to run a directive",
+        tag="built-in",
+        handler=_cmd_fork,
     ),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     CommandSpec(
