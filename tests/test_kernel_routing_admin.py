@@ -148,3 +148,128 @@ def test_list_matrices_marks_active_and_compat(tmp_path: Path) -> None:
     assert entries["balanced"].has_providers is True
     assert (entries["balanced"].covered, entries["balanced"].total) == (1, 2)
     assert entries["mine"].active is False
+
+
+# -- provider selectors -----------------------------------------------------
+
+
+def test_provider_selectors_single_instance_uses_type_name() -> None:
+    settings = {"config": {"providers": [{"module": "provider-anthropic"}]}}
+    assert routing_admin.provider_selectors(settings) == ["anthropic"]
+
+
+def test_provider_selectors_multi_instance_uses_id() -> None:
+    settings = {
+        "config": {
+            "providers": [
+                {"module": "provider-anthropic"},
+                {"module": "provider-chat-completions", "id": "qwen"},
+                {"module": "provider-chat-completions", "id": "ornith"},
+            ]
+        }
+    }
+    # Ambiguous module -> instance ids; single-instance module -> type name.
+    assert routing_admin.provider_selectors(settings) == ["anthropic", "qwen", "ornith"]
+
+
+def test_provider_default_model_and_primary() -> None:
+    settings = {
+        "config": {
+            "providers": [
+                {"module": "provider-anthropic", "config": {"default_model": "claude-opus"}},
+                {"module": "provider-openai"},
+            ]
+        }
+    }
+    assert routing_admin.provider_default_model(settings, "anthropic") == "claude-opus"
+    assert routing_admin.provider_default_model(settings, "openai") is None
+    assert routing_admin.primary_provider_type(settings) == "anthropic"
+
+
+def test_provider_selectors_empty_when_none_configured() -> None:
+    assert routing_admin.provider_selectors({}) == []
+    assert routing_admin.primary_provider_type({}) is None
+
+
+# -- effective resolution (show) -------------------------------------------
+
+
+def test_resolve_effective_applies_default_model() -> None:
+    settings = {
+        "config": {
+            "providers": [
+                {"module": "provider-anthropic", "config": {"default_model": "claude-opus"}},
+            ]
+        }
+    }
+    rows = {r.role: r for r in routing_admin.resolve_effective(_balanced(), settings)}
+    # general -> anthropic candidate; display model overridden by default_model.
+    assert (rows["general"].provider, rows["general"].model) == ("anthropic", "claude-opus")
+    # fast has no anthropic candidate -> unservable.
+    assert rows["fast"].provider is None and rows["fast"].model is None
+
+
+def test_matrix_waterfall_flags_active_and_missing() -> None:
+    roles = {r.role: r for r in routing_admin.matrix_waterfall(_balanced(), {"openai"})}
+    general = roles["general"]
+    assert general.servable is True
+    # anthropic candidate not configured; openai is the active winner.
+    assert [(c.provider, c.configured, c.active) for c in general.candidates] == [
+        ("anthropic", False, False),
+        ("openai", True, True),
+    ]
+
+
+def test_matrix_waterfall_unservable_when_no_provider() -> None:
+    rows = {r.role: r for r in routing_admin.matrix_waterfall(_balanced(), set())}
+    assert rows["general"].servable is False
+    assert all(not c.active for c in rows["general"].candidates)
+
+
+# -- role discovery + custom matrix authoring ------------------------------
+
+
+def test_discover_roles_first_description_wins(tmp_path: Path) -> None:
+    _write_matrix(
+        tmp_path / "routing" / "a.yaml",
+        {"name": "a", "roles": {"general": {"description": "first"}}},
+    )
+    _write_matrix(
+        tmp_path / "routing" / "b.yaml",
+        {"name": "b", "roles": {"general": {"description": "second"}, "fast": {}}},
+    )
+    roles = routing_admin.discover_roles(routing_admin.discover_matrix_files(tmp_path))
+    assert roles["general"] == "first"
+    assert roles["fast"] == ""
+
+
+def test_matrix_name_valid() -> None:
+    assert routing_admin.matrix_name_valid("my-matrix_1")
+    assert not routing_admin.matrix_name_valid("-leading")
+    assert not routing_admin.matrix_name_valid("has space")
+    assert not routing_admin.matrix_name_valid("")
+
+
+def test_build_and_save_custom_matrix_roundtrip(tmp_path: Path) -> None:
+    assignments = {
+        "general": {"description": "catch-all", "provider": "anthropic", "model": "claude-x"},
+        "fast": {"description": "quick", "provider": "openai", "model": "gpt-mini"},
+    }
+    data = routing_admin.build_custom_matrix("mine", assignments, updated="2026-07-24")
+    assert data["name"] == "mine"
+    assert data["updated"] == "2026-07-24"
+    assert data["roles"]["general"]["candidates"] == [
+        {"provider": "anthropic", "model": "claude-x"}
+    ]
+
+    out_dir = routing_admin.custom_routing_dir(tmp_path)
+    saved = routing_admin.save_matrix(data, out_dir)
+    assert saved == out_dir / "mine.yaml"
+    # Re-discoverable + resolvable through the normal read path.
+    matrices = routing_admin.load_all_matrices(routing_admin.discover_matrix_files(tmp_path))
+    assert "mine" in matrices
+    rows = {
+        r.role: r.provider
+        for r in routing_admin.resolve_matrix(matrices["mine"], {"anthropic", "openai"})
+    }
+    assert rows == {"general": "anthropic", "fast": "openai"}

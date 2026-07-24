@@ -22,7 +22,9 @@ lazy bundle fetch is best-effort and offline-safe (foundation imported lazily).
 
 from __future__ import annotations
 
+import datetime
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -275,18 +277,245 @@ def list_matrices(
     return tuple(entries)
 
 
+# --------------------------------------------------------------------------
+# Provider selectors + effective resolution (`routing show`)
+# --------------------------------------------------------------------------
+
+
+def _provider_type_name(entry: dict[str, Any]) -> str:
+    """Bare module type of a provider entry (``provider-anthropic`` -> ``anthropic``)."""
+    module = str(entry.get("module", ""))
+    return module.removeprefix("provider-") if module.startswith("provider-") else module
+
+
+def _provider_entries(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    config = settings.get("config")
+    providers = config.get("providers") if isinstance(config, dict) else None
+    if not isinstance(providers, list):
+        return []
+    return [entry for entry in providers if isinstance(entry, dict)]
+
+
+def provider_selectors(settings: dict[str, Any]) -> list[str]:
+    """Ordered provider selectors a matrix candidate may target.
+
+    Returns the bare module type (e.g. ``"anthropic"``) for single-instance
+    modules — what the spawner's type-name resolution expects. When multiple
+    instances of one module are configured (e.g. two ``provider-chat-completions``
+    with distinct ``id:`` values) the bare type is ambiguous, so each instance's
+    ``id`` is returned instead, mirroring app-cli's ``_get_provider_names``.
+    """
+    providers = _provider_entries(settings)
+    type_counts: dict[str, int] = {}
+    for entry in providers:
+        name = _provider_type_name(entry)
+        if name:
+            type_counts[name] = type_counts.get(name, 0) + 1
+    seen: set[str] = set()
+    selectors: list[str] = []
+    for entry in providers:
+        name = _provider_type_name(entry)
+        if not name:
+            continue
+        instance_id = entry.get("id")
+        selector = (
+            (instance_id if isinstance(instance_id, str) and instance_id else name)
+            if type_counts[name] > 1
+            else name
+        )
+        if selector not in seen:
+            seen.add(selector)
+            selectors.append(selector)
+    return selectors
+
+
+def provider_default_model(settings: dict[str, Any], selector: str) -> str | None:
+    """The configured ``default_model`` for a provider selector, if any.
+
+    ``selector`` may be a bare module type or an instance ``id``. Used by
+    ``routing show`` to display the model a role actually resolves to (the
+    provider's configured default) rather than the matrix candidate's pattern.
+    """
+    for entry in _provider_entries(settings):
+        if entry.get("id") == selector or _provider_type_name(entry) == selector:
+            cfg = entry.get("config")
+            if isinstance(cfg, dict):
+                default_model = cfg.get("default_model")
+                if isinstance(default_model, str) and default_model:
+                    return default_model
+    return None
+
+
+def primary_provider_type(settings: dict[str, Any]) -> str | None:
+    """The bare type of the first configured provider (the routing default)."""
+    providers = _provider_entries(settings)
+    if not providers:
+        return None
+    return _provider_type_name(providers[0]) or None
+
+
+@dataclass(frozen=True)
+class ResolvedRole:
+    role: str
+    model: str | None
+    provider: str | None
+
+
+def resolve_effective(
+    matrix_data: dict[str, Any], settings: dict[str, Any]
+) -> tuple[ResolvedRole, ...]:
+    """Role -> effective (model, provider), with configured default_model applied.
+
+    Each role resolves to its first candidate served by a configured provider
+    (see ``resolve_matrix``); when that provider pins a ``default_model`` the
+    displayed model reflects it, matching what the runtime would actually use.
+    """
+    provider_types = configured_provider_types(settings)
+    rows: list[ResolvedRole] = []
+    for row in resolve_matrix(matrix_data, provider_types):
+        model = row.model
+        if row.provider:
+            pinned = provider_default_model(settings, row.provider)
+            if pinned:
+                model = pinned
+        rows.append(ResolvedRole(role=row.role, model=model, provider=row.provider))
+    return tuple(rows)
+
+
+@dataclass(frozen=True)
+class CandidateView:
+    provider: str
+    model: str
+    config: dict[str, Any]
+    configured: bool
+    active: bool
+
+
+@dataclass(frozen=True)
+class RoleWaterfall:
+    role: str
+    description: str
+    candidates: tuple[CandidateView, ...]
+    servable: bool
+
+
+def matrix_waterfall(
+    matrix_data: dict[str, Any], provider_types: set[str]
+) -> tuple[RoleWaterfall, ...]:
+    """Full candidate waterfall per role for the detailed ``routing show`` view.
+
+    Each candidate is flagged ``configured`` (its provider is available) and
+    the first configured candidate per role is flagged ``active`` (the winner).
+    """
+    out: list[RoleWaterfall] = []
+    for role_name, role_config in _roles(matrix_data).items():
+        description = ""
+        raw_candidates: Any = None
+        if isinstance(role_config, dict):
+            description = str(role_config.get("description", ""))
+            raw_candidates = role_config.get("candidates")
+        views: list[CandidateView] = []
+        winner_found = False
+        if isinstance(raw_candidates, list):
+            for candidate in raw_candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                provider = str(candidate.get("provider", ""))
+                model = str(candidate.get("model", "?"))
+                cfg = candidate.get("config")
+                cfg = dict(cfg) if isinstance(cfg, dict) else {}
+                configured = provider in provider_types
+                active = configured and not winner_found
+                if active:
+                    winner_found = True
+                views.append(CandidateView(provider, model, cfg, configured, active))
+        out.append(RoleWaterfall(str(role_name), description, tuple(views), winner_found))
+    return tuple(out)
+
+
+# --------------------------------------------------------------------------
+# Role discovery + custom-matrix authoring (`routing create` / `manage`)
+# --------------------------------------------------------------------------
+
+
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+
+
+def matrix_name_valid(name: str) -> bool:
+    """Whether *name* is a legal matrix (and filename) identifier."""
+    return bool(_NAME_RE.match(name))
+
+
+def discover_roles(matrix_files: list[Path]) -> dict[str, str]:
+    """Unique ``role -> description`` across all matrices (first description wins)."""
+    roles: dict[str, str] = {}
+    for path in matrix_files:
+        data = load_matrix(path)
+        if not data:
+            continue
+        for role_name, role_config in _roles(data).items():
+            if role_name not in roles:
+                desc = role_config.get("description", "") if isinstance(role_config, dict) else ""
+                roles[str(role_name)] = str(desc)
+    return roles
+
+
+def build_custom_matrix(
+    name: str,
+    assignments: dict[str, dict[str, str]],
+    *,
+    updated: str | None = None,
+) -> dict[str, Any]:
+    """Assemble a custom-matrix dict from ``role -> {description, provider, model}``."""
+    roles: dict[str, Any] = {}
+    for role_name, info in assignments.items():
+        roles[role_name] = {
+            "description": info.get("description", ""),
+            "candidates": [{"provider": info["provider"], "model": info["model"]}],
+        }
+    return {
+        "name": name,
+        "description": f"Custom matrix: {name}",
+        "updated": updated or datetime.date.today().isoformat(),
+        "roles": roles,
+    }
+
+
+def save_matrix(matrix_data: dict[str, Any], output_dir: Path) -> Path:
+    """Write *matrix_data* to ``<output_dir>/<name>.yaml`` and return the path."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{matrix_data['name']}.yaml"
+    output_path.write_text(
+        yaml.safe_dump(matrix_data, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+    return output_path
+
+
 __all__ = [
     "DEFAULT_MATRIX",
+    "CandidateView",
     "MatrixEntry",
+    "ResolvedRole",
     "RoleResolution",
+    "RoleWaterfall",
     "active_matrix",
+    "build_custom_matrix",
     "check_compatibility",
     "configured_provider_types",
     "custom_routing_dir",
     "discover_matrix_files",
+    "discover_roles",
     "list_matrices",
     "load_all_matrices",
     "load_matrix",
+    "matrix_name_valid",
+    "matrix_waterfall",
+    "primary_provider_type",
+    "provider_default_model",
+    "provider_selectors",
+    "resolve_effective",
     "resolve_matrix",
+    "save_matrix",
     "set_active_matrix",
 ]
