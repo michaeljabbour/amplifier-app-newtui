@@ -10,6 +10,12 @@ dependencies = [
     "textual~=8.2",
     "amplifier-core>=1.6.0",
     "amplifier-foundation",
+    # team_pulse_lib is the unpublished peer that tool-team-pulse (composed by
+    # the packaged newtui bundle) imports at mount(). The bundle installs it via
+    # a root shim; newtui pulls only the module subdir, so we install the lib
+    # here — without it, tool-team-pulse fails to mount on a clean env (it is
+    # meant to degrade gracefully, not hard-fail). Retire once it hits PyPI.
+    "team-pulse-lib",
     "rich>=13.0.0",
     "pydantic>=2.0.0",
     "click>=8.1.0",
@@ -46,6 +52,7 @@ dev = [
 
 [tool.uv.sources]
 amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "dc010423d010da9a52e1b49808a1865666008c25" }
+team-pulse-lib = { git = "https://github.com/microsoft/amplifier-bundle-team-pulse", rev = "e89574d2b90814a0c10a2164aa7d5c9cc43bd3ce", subdirectory = "team-pulse-lib" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
