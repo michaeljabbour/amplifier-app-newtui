@@ -19,6 +19,7 @@ from amplifier_app_newtui.kernel.session_factory import (
     ProviderMountError,
     SessionRequest,
     create_initialized_session,
+    missing_tool_modules,
     stamp_root_metadata,
     verify_mounts,
 )
@@ -71,9 +72,18 @@ class FakeSession:
 
 
 class FakePrepared:
-    def __init__(self, session: FakeSession, mount_plan: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        session: FakeSession,
+        mount_plan: dict[str, Any],
+        module_exports: dict[str, list[str]] | None = None,
+    ) -> None:
         self.session = session
         self.mount_plan = mount_plan
+        # Mirrors amplifier_foundation.bundle.PreparedBundle.module_exports
+        # (module_id → registered tool names) so verify_mounts can name a
+        # single failed multi-tool module.
+        self.module_exports: dict[str, list[str]] = module_exports or {}
         self.create_kwargs: dict[str, Any] = {}
 
     async def create_session(self, **kwargs: Any) -> FakeSession:
@@ -81,10 +91,20 @@ class FakePrepared:
         return self.session
 
 
+# Matches the real foundation KNOWN_MODULE_EXPORTS shape for the two
+# multi-tool modules the fixtures use.
+FAKE_MODULE_EXPORTS: dict[str, list[str]] = {
+    "tool-filesystem": ["read_file", "write_file", "edit_file", "glob"],
+}
+
+
 def make_resolved(
-    session: FakeSession, mount_plan: dict[str, Any], project_dir: Path
+    session: FakeSession,
+    mount_plan: dict[str, Any],
+    project_dir: Path,
+    module_exports: dict[str, list[str]] | None = None,
 ) -> ResolvedConfig:
-    prepared = FakePrepared(session, mount_plan)
+    prepared = FakePrepared(session, mount_plan, module_exports)
     return ResolvedConfig(
         bundle_name="testbundle",
         bundle_uri="file:///test/bundle.md",
@@ -106,7 +126,7 @@ def healthy_setup(tmp_path: Path) -> tuple[FakeSession, ResolvedConfig]:
         context=FakeContext(),
     )
     session = FakeSession(coordinator)
-    return session, make_resolved(session, mount_plan, tmp_path)
+    return session, make_resolved(session, mount_plan, tmp_path, FAKE_MODULE_EXPORTS)
 
 
 # --------------------------------------------------------------------------
@@ -126,13 +146,66 @@ def test_stamp_root_metadata_fills_and_guards(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
+# missing_tool_modules (pure)
+# --------------------------------------------------------------------------
+
+
+def test_missing_tool_modules_none_missing_via_short_name() -> None:
+    # No exports map: single-tool modules resolve by the tool-bash → bash
+    # convention; both present ⇒ nothing missing.
+    assert missing_tool_modules(["tool-bash", "tool-grep"], ["bash", "grep"]) == ()
+
+
+def test_missing_tool_modules_names_the_absent_module() -> None:
+    assert missing_tool_modules(["tool-bash", "tool-team-pulse"], ["bash"]) == ("tool-team-pulse",)
+
+
+def test_missing_tool_modules_normalizes_hyphen_underscore() -> None:
+    # module short name 'team-pulse' matches a mounted 'team_pulse' tool.
+    assert missing_tool_modules(["tool-team-pulse"], ["team_pulse"]) == ()
+
+
+def test_missing_tool_modules_prefix_boundary_match() -> None:
+    # 'web' is an underscore-delimited prefix of the mounted 'web_search'.
+    assert missing_tool_modules(["tool-web"], ["web_search"]) == ()
+    # but 'bash' must NOT match 'bash_extras' as a bare substring — the
+    # boundary is the underscore, and here 'bash' itself is absent.
+    assert missing_tool_modules(["tool-bash"], ["bash_extras"]) == ()  # bash_ prefix ⇒ present
+
+
+def test_missing_tool_modules_exports_win_over_short_name() -> None:
+    exports = {"tool-filesystem": ["read_file", "write_file"]}
+    # short-name 'filesystem' is absent, but an exported tool mounted ⇒ present.
+    assert missing_tool_modules(["tool-filesystem"], ["read_file"], exports) == ()
+    # none of the exported tools mounted ⇒ named as failed.
+    assert missing_tool_modules(["tool-filesystem"], ["bash"], exports) == ("tool-filesystem",)
+
+
+def test_missing_tool_modules_unpredictable_name_not_falsely_flagged() -> None:
+    # tool-fake mounts a tool named 'write_file' (its short name 'fake' is
+    # NOT the registered name, and it's absent from module_exports). Since
+    # 'write_file' is unattributed, the short-name fallback is unreliable —
+    # tool-fake must NOT be convicted just because 'fake' is absent.
+    assert missing_tool_modules(["tool-fake"], ["write_file"]) == ()
+
+
+def test_missing_tool_modules_authoritative_verdict_holds_despite_unattributed() -> None:
+    # tool-filesystem is authoritative (in exports); none of its exports
+    # mounted ⇒ failed, even though the unrelated 'write_file' is unattributed.
+    exports = {"tool-filesystem": ["read_file", "glob"]}
+    assert missing_tool_modules(["tool-filesystem"], ["write_file"], exports) == (
+        "tool-filesystem",
+    )
+
+
+# --------------------------------------------------------------------------
 # verify_mounts
 # --------------------------------------------------------------------------
 
 
 def test_verify_mounts_all_healthy(tmp_path: Path) -> None:
     session, resolved = healthy_setup(tmp_path)
-    report = verify_mounts(resolved.mount_plan, session.coordinator)
+    report = verify_mounts(resolved.mount_plan, session.coordinator, FAKE_MODULE_EXPORTS)
     assert report.missing_providers == ()
     assert report.missing_tools == ()
     assert not report.tools_degraded
@@ -169,14 +242,40 @@ def test_verify_mounts_complete_tool_failure_lists_modules() -> None:
     assert notice is not None and "tool-filesystem" in notice
 
 
-def test_verify_mounts_partial_tool_shortfall_is_degraded() -> None:
-    mount_plan = {"tools": [{"module": "tool-filesystem"}, {"module": "tool-bash"}]}
+def test_verify_mounts_single_failed_tool_module_is_named() -> None:
+    # The RCA case: tool-team-pulse fails to mount while tool-bash succeeds.
+    # coordinator.get("tools") is non-empty, so a name-count diff would miss
+    # it — the per-module diff names the exact module that failed.
+    mount_plan = {"tools": [{"module": "tool-bash"}, {"module": "tool-team-pulse"}]}
     coordinator = FakeCoordinator(tools={"bash": object()})
     report = verify_mounts(mount_plan, coordinator)
-    assert report.missing_tools == ()
+    assert report.missing_tools == ("tool-team-pulse",)
     assert report.tools_degraded
     notice = report.degraded_notice()
-    assert notice is not None and "1/2" in notice
+    assert notice is not None and "tool-team-pulse" in notice
+
+
+def test_verify_mounts_partial_multitool_module_named_via_exports() -> None:
+    # tool-filesystem registers read_file/write_file/... ; only 'bash' mounted
+    # ⇒ filesystem contributed none of its tools ⇒ named as failed. Uses the
+    # module_exports map so a multi-tool module isn't judged by its short name.
+    mount_plan = {"tools": [{"module": "tool-filesystem"}, {"module": "tool-bash"}]}
+    coordinator = FakeCoordinator(tools={"bash": object()})
+    report = verify_mounts(mount_plan, coordinator, FAKE_MODULE_EXPORTS)
+    assert report.missing_tools == ("tool-filesystem",)
+    assert report.tools_degraded
+    notice = report.degraded_notice()
+    assert notice is not None and "tool-filesystem" in notice
+
+
+def test_verify_mounts_multitool_module_present_if_any_tool_mounts() -> None:
+    # tool-filesystem mounted only one of its tools (edit_file) — that is a
+    # benign partial, NOT a module failure (app-cli's lesson). Not named.
+    mount_plan = {"tools": [{"module": "tool-filesystem"}]}
+    coordinator = FakeCoordinator(tools={"edit_file": object()})
+    report = verify_mounts(mount_plan, coordinator, FAKE_MODULE_EXPORTS)
+    assert report.missing_tools == ()
+    assert not report.tools_degraded
 
 
 # --------------------------------------------------------------------------
@@ -270,6 +369,27 @@ async def test_missing_tools_start_degraded_not_fatal(tmp_path: Path) -> None:
     initialized = await create_initialized_session(SessionRequest(resolved=resolved))
     assert initialized.degraded_notice is not None
     assert "tool-filesystem" in initialized.degraded_notice
+
+
+@pytest.mark.asyncio
+async def test_single_tool_module_failure_surfaces_by_name(tmp_path: Path) -> None:
+    # RCA: tool-team-pulse fails to mount while the provider and tool-bash are
+    # fine. The kernel swallows the mount error, so without reconciliation the
+    # session limps on silently. It must start (not fatal — only zero providers
+    # is fatal) AND name the failed module in the degraded notice.
+    mount_plan = {
+        "providers": [{"module": "provider-anthropic"}],
+        "tools": [{"module": "tool-bash"}, {"module": "tool-team-pulse"}],
+    }
+    coordinator = FakeCoordinator(providers={"anthropic": object()}, tools={"bash": object()})
+    session = FakeSession(coordinator)
+    resolved = make_resolved(session, mount_plan, tmp_path)
+
+    initialized = await create_initialized_session(SessionRequest(resolved=resolved))
+    assert not session.cleaned  # session is live, not torn down
+    assert initialized.degraded_notice is not None
+    assert "tool-team-pulse" in initialized.degraded_notice
+    assert "doctor" in initialized.degraded_notice
 
 
 @pytest.mark.asyncio
