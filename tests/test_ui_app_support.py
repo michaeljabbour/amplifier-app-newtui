@@ -6,8 +6,22 @@ from amplifier_app_newtui.ui.app_support import (
     ATTENTION_MIN_TURN_SECONDS,
     EscSequence,
     attention_bell_needed,
+    native_modes_segments,
 )
 from amplifier_app_newtui.ui.keymap import ESC_BACKTRACK_WINDOW_SECONDS
+
+
+def test_native_modes_use_full_terminal_width() -> None:
+    long_desc = "Amplifier-way conformance audit of the working repo across every module today"
+    catalog = {"modes": [{"name": "audit", "description": long_desc, "source": "conformance"}]}
+    text = "".join(s.text for s in native_modes_segments(catalog, term_width=200))
+    wide = next(line for line in text.splitlines() if "Amplifier-way" in line)
+    narrow_text = "".join(s.text for s in native_modes_segments(catalog, term_width=60))
+    narrow = next(line for line in narrow_text.splitlines() if "Amplifier-way" in line)
+    # Wider terminal → longer description line (no fixed 90-col cap), and the
+    # narrow render truncates with an ellipsis to fit.
+    assert len(wide) > len(narrow)
+    assert "…" in narrow and "…" not in wide
 
 
 def test_esc_sequence_accepts_the_boundary_once() -> None:
