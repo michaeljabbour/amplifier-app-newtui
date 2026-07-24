@@ -187,6 +187,7 @@ class NewTuiApp(App[None]):
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
         self._splash: BootSplash | None = None  # boot splash overlay (wordmark)
         self._auto_native_mode: str | None = None  # posture-bridged native mode
+        self._native_mode = ""  # explicitly-activated native mode (/mode <name>), for the footer badge
         self._os_clipboard_copied = False  # last copy reached an OS clipboard tool
         self._clipboard_write_seq = 0  # latest native write wins
         self._clipboard_write_lock = asyncio.Lock()
@@ -409,6 +410,11 @@ class NewTuiApp(App[None]):
         return self._mode.id
 
     @property
+    def native_mode(self) -> str:
+        """The explicitly-activated bundle mode for the footer badge ("" if none)."""
+        return self._native_mode
+
+    @property
     def splash_active(self) -> bool:
         """True while the boot splash is up (SessionOpsController host surface)."""
         return self._splash is not None
@@ -463,6 +469,11 @@ class NewTuiApp(App[None]):
             ok, _detail = await self.adapter.set_native_mode(mode_id)
             if ok:
                 self._auto_native_mode = mode_id
+                # The posture's native twin now owns the mode slot; the posture
+                # chip reflects it, so drop any stale explicit-mode badge.
+                if self._native_mode:
+                    self._native_mode = ""
+                    self._refresh_footer()
         elif self._auto_native_mode is not None:
             await self.adapter.set_native_mode(None)
             self._auto_native_mode = None
@@ -485,7 +496,9 @@ class NewTuiApp(App[None]):
                 style_token="dim",
             ),
         ]
-        native = app_support.native_modes_segments(catalog) if catalog else ()
+        native = (
+            app_support.native_modes_segments(catalog, self.size.width) if catalog else ()
+        )
         if native:
             spans.extend(native)
         else:
@@ -505,6 +518,8 @@ class NewTuiApp(App[None]):
         ok, detail = await self.adapter.set_native_mode(name)
         if ok:
             self._auto_native_mode = None  # explicit choice — never auto-cleared
+            self._native_mode = name or ""  # sticky footer badge (◆ <name>); "" on /mode off
+            self._refresh_footer()
             label = name or "off"
             self.show_notice(f"mode {label} · native (bundle)")
         else:

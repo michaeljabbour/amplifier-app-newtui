@@ -51,6 +51,10 @@ class FooterState(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mode_id: ModeId = "chat"
+    native_mode: str = ""
+    """Explicitly-activated bundle-composed mode (``/mode <name>``), shown as
+    a ``◆ <name>`` badge next to the posture so activation is visible and
+    sticky (the posture chip alone never reflected it)."""
     bundle: str = ""
     """Bundle name — painted with a ``bundle `` label (story #4: the footer
     speaks human; a bare ``newtui`` reads as noise)."""
@@ -92,6 +96,8 @@ def _left_parts(
     """The left-segment parts, with decorative ones optionally dropped."""
     mode = get_mode(state.mode_id)
     parts = [f"mode {mode.id}"]
+    if state.native_mode:
+        parts.append(f"◆ {state.native_mode}")
     if trust:
         parts.append(mode.trust_str)
     if bundle and state.bundle:
@@ -303,6 +309,9 @@ class FooterBar(Horizontal):
         rest_parts.append(f"{'~' if state.cost_estimated else ''}${state.cost:.2f}")
         markup = f"[${mode.color_token}]$mode_part[/]"
         substitutions = {"mode_part": f"mode {mode.id}"}
+        if state.native_mode:
+            markup += f"[$dimmer]{SEPARATOR}[/][$teal]$native_part[/]"
+            substitutions["native_part"] = f"◆ {state.native_mode}"
         for index, part in enumerate(rest_parts):
             key = f"part{index}"
             markup += f"[$dimmer]{SEPARATOR}[/]${key}"
