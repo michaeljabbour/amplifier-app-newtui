@@ -434,6 +434,8 @@ class RealRuntime:
         denial_log: DenialLog | None = None,
         surface: TerminalSurface | None = None,
         mode: Callable[[], str] = lambda: "auto",
+        model_override: str | None = None,
+        provider_override: str | None = None,
         permission_resolver: Callable[[str, Mapping[str, object] | None], TrustDecision]
         | None = None,
         capability_resolver: Callable[[CapabilityClass], TrustDecision] | None = None,
@@ -500,6 +502,8 @@ class RealRuntime:
         self._bundle = bundle
         self._resume_id = resume_id
         self._mode = mode
+        self._model_override = model_override
+        self._provider_override = provider_override
         self._permission_resolver = permission_resolver
         self._capability_resolver = capability_resolver
         self._project_dir = project_dir
@@ -587,7 +591,11 @@ class RealRuntime:
             )
         try:
             resolved = await resolve_config(
-                boot_bundle, project_dir=self._project_dir, progress=self._progress
+                boot_bundle,
+                project_dir=self._project_dir,
+                progress=self._progress,
+                provider_override=self._provider_override,
+                model_override=self._model_override,
             )
         except BundleNotFoundError:
             if resume_reason != "stored":
@@ -597,7 +605,11 @@ class RealRuntime:
             # below says so out loud.
             resume_reason = "stored-missing"
             resolved = await resolve_config(
-                None, project_dir=self._project_dir, progress=self._progress
+                None,
+                project_dir=self._project_dir,
+                progress=self._progress,
+                provider_override=self._provider_override,
+                model_override=self._model_override,
             )
         _apply_hook_suppression(
             resolved.mount_plan, self.bridge.emit, suppressed_hooks_setting(resolved.settings)
