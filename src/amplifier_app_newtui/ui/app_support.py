@@ -571,7 +571,7 @@ def os_clipboard_copy(text: str) -> bool:
     return False
 
 
-def native_modes_segments(catalog: object) -> tuple[Segment, ...]:
+def native_modes_segments(catalog: object, term_width: int = 120) -> tuple[Segment, ...]:
     """Render the mode tool's catalog output grouped by source bundle.
 
     The mounted mode tool reports ``{"modes": [{name, description,
@@ -593,13 +593,18 @@ def native_modes_segments(catalog: object) -> tuple[Segment, ...]:
     for mode in modes:
         by_source.setdefault(str(mode.get("source", "")), []).append(mode)
     segments: list[Segment] = []
-    width = max(len(str(m.get("name", ""))) for m in modes)
+    name_w = max(len(str(m.get("name", ""))) for m in modes)
+    # Fill the terminal width instead of a fixed 90-col cap: indent(4) + name
+    # column + 2-space gap leaves this for the description on one line.
+    desc_budget = max(24, term_width - 4 - name_w - 2)
     for source in sorted(by_source):
         segments.append(Segment(text=f"  {source or 'bundle'}\n", style_token="dimmer"))
         for mode in sorted(by_source[source], key=lambda m: str(m.get("name", ""))):
             name = str(mode.get("name", ""))
-            desc = str(mode.get("description", "")).split("\n")[0][:90]
-            segments.append(Segment(text=f"    {name.ljust(width)}  ", style_token="teal"))
+            desc = str(mode.get("description", "")).split("\n")[0]
+            if len(desc) > desc_budget:
+                desc = desc[: desc_budget - 1] + "…"
+            segments.append(Segment(text=f"    {name.ljust(name_w)}  ", style_token="teal"))
             segments.append(Segment(text=f"{desc}\n", style_token="dim"))
     segments.append(
         Segment(text="  /mode <name> activates · /mode off clears", style_token="dimmer")
@@ -685,6 +690,7 @@ def footer_state(app: NewTuiApp) -> FooterState:
     done, total = plan_footer_counts(app)
     return FooterState(
         mode_id=app.mode_id,  # type: ignore[arg-type]
+        native_mode=app.native_mode,
         bundle=app.adapter.bundle_name,
         # The adapter may carry a provider-qualified id ("anthropic/x");
         # the footer speaks human and shows the bare model name (story #4).

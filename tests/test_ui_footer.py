@@ -45,6 +45,13 @@ def test_left_text_full_state_exact() -> None:
     )
 
 
+def test_left_text_shows_native_mode_badge() -> None:
+    state = FULL_STATE.model_copy(update={"native_mode": "machete"})
+    left = footer_left_text(state)
+    assert left.startswith("mode build · ◆ machete · ")  # badge right after the posture chip
+    assert "◆" not in footer_left_text(FULL_STATE)  # absent when no native mode active
+
+
 def test_left_text_labels_bundle_and_carries_model() -> None:
     """Story #4 (status bar speaks human): the bundle is labeled as a
     bundle — never a bare name — and the primary model is its own part."""
