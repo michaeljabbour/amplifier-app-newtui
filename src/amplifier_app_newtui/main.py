@@ -867,6 +867,124 @@ def doctor() -> None:
 
 
 # --------------------------------------------------------------------------
+# reset -- data-safe, category-scoped cleaner (see kernel/reset.py, issue #110)
+# --------------------------------------------------------------------------
+
+
+@main.command()
+@click.option(
+    "--category",
+    "-c",
+    "categories",
+    multiple=True,
+    metavar="NAME",
+    help="Category to clear (repeatable or comma-separated). Default: cache,registry.",
+)
+@click.option("--dry-run", is_flag=True, help="Preview what would be removed; change nothing.")
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt (scripted use).")
+@click.option(
+    "--home",
+    "home_override",
+    default=None,
+    metavar="PATH",
+    help="App home to reset (default: $AMPLIFIER_HOME or ~/.amplifier).",
+)
+@click.option("--list", "list_only", is_flag=True, help="List the category taxonomy and exit.")
+def reset(
+    categories: tuple[str, ...],
+    dry_run: bool,
+    yes: bool,
+    home_override: str | None,
+    list_only: bool,
+) -> None:
+    """Data-safe reset: clear selected categories, preserve the rest.
+
+    Re-expresses amplifier-app-cli's ``reset`` recovery command as a guarded,
+    category-scoped cleaner scoped to newtui's app home. ``--category`` names
+    what to CLEAR; everything else is preserved. The default clears only the
+    auto-regenerating categories (cache, registry).
+
+    \b
+    Guards:
+      - --dry-run previews and removes NOTHING
+      - a confirmation prompt (bypass with --yes) before any removal
+      - secrets (keys) are cleared ONLY when named explicitly
+      - never deletes outside the confirmed app home
+
+    \b
+    Examples:
+      amplifier-newtui reset --list                 Show the taxonomy
+      amplifier-newtui reset --dry-run              Preview the safe default
+      amplifier-newtui reset --category cache -y    Clear only the cache
+      amplifier-newtui reset -c sessions,config     Clear sessions + config
+    """
+    from .kernel import reset as reset_kernel
+
+    if list_only:
+        for name in reset_kernel.CATEGORY_ORDER:
+            category = reset_kernel.CATEGORIES[name]
+            tags = []
+            if name in reset_kernel.DEFAULT_CATEGORIES:
+                tags.append("default")
+            if category.auto_regenerates:
+                tags.append("auto-regenerates")
+            if category.secret:
+                tags.append("secret")
+            suffix = f"  [{', '.join(tags)}]" if tags else ""
+            click.echo(f"{name:9} {category.description}{suffix}")
+        return
+
+    home = reset_kernel.resolve_app_home(Path(home_override) if home_override else None)
+
+    try:
+        selected = reset_kernel.parse_categories(categories)
+    except reset_kernel.ResetError as error:
+        click.echo(str(error), err=True)
+        raise SystemExit(2) from None
+
+    # Plan first (dry run under the hood) -- also runs the home safety guards.
+    try:
+        plan = reset_kernel.run_reset(home, selected, dry_run=True)
+    except reset_kernel.ResetError as error:
+        click.echo(f"refusing to reset: {error}", err=True)
+        raise SystemExit(2) from None
+
+    click.echo(f"app home: {plan.home}")
+    click.echo(f"clear:    {', '.join(plan.clear)}")
+    click.echo(f"preserve: {', '.join(plan.keep) or '(nothing else on disk)'}")
+    if plan.secret_cleared:
+        click.echo(f"WARNING: this clears secrets: {', '.join(plan.secret_cleared)}")
+
+    if not plan.removed:
+        click.echo("nothing to remove -- selected categories have no files on disk")
+        return
+
+    click.echo("would remove:" if dry_run else "to remove:")
+    for path in plan.removed:
+        click.echo(f"  - {path}")
+
+    if dry_run:
+        click.echo("DRY RUN -- nothing was removed")
+        return
+
+    if not yes:
+        prompt = f"permanently remove {len(plan.removed)} item(s)?"
+        if plan.destructive_cleared:
+            prompt = (
+                f"permanently remove {len(plan.removed)} item(s) "
+                f"including {', '.join(plan.destructive_cleared)}?"
+            )
+        if not click.confirm(prompt, default=False):
+            click.echo("cancelled")
+            return
+
+    final = reset_kernel.run_reset(home, selected, dry_run=False)
+    click.echo(f"removed {len(final.removed)} item(s); preserved {len(final.preserved)}")
+    for path in final.preserved:
+        click.echo(f"  preserved: {path}")
+
+
+# --------------------------------------------------------------------------
 # bundle group — manage the active bundle + the discovery registry
 # --------------------------------------------------------------------------
 
