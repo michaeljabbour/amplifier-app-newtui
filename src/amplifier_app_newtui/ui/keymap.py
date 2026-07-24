@@ -117,6 +117,9 @@ KEYMAP: tuple[Binding, ...] = (
     # Panels / pickers.
     _b("toggle_lanes", ("ctrl+t",), "ctrl-t", NO_APPROVAL),
     _b("cycle_tail", ("ctrl+o",), "ctrl-o", NO_APPROVAL),
+    # Show/hide the root stream box (thinking/response peek). Advertised
+    # only while a turn runs — that is the only time a live box exists.
+    _b("toggle_thinking", ("ctrl+g",), "ctrl-g think", _RUNNING),
     _b("show_ledger", ("ctrl+l",), "ctrl-l", NO_APPROVAL),
     _b("show_needs_you", ("ctrl+y",), "ctrl-y", NO_APPROVAL),
     _b("open_rewind", ("ctrl+r",), "ctrl-r", NO_APPROVAL),

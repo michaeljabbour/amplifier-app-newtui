@@ -1233,6 +1233,11 @@ class NewTuiApp(App[None]):
         self.reducer.repaint_lane_tail()  # tail switches with the pin, not on next delta
         self.show_notice(f"tail · {record.lane.name}")
 
+    def action_toggle_thinking(self) -> None:
+        """ctrl+g: show/hide the live thinking/response box (peek ⇄ content)."""
+        revealed = self.live_tail.toggle_reveal()
+        self.show_notice("thinking · shown" if revealed else "thinking · hidden")
+
     def action_show_ledger(self) -> None:
         spec = self._commands.get("/ledger")
         if spec is not None:

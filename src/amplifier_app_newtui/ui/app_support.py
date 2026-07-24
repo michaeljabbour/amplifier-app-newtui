@@ -55,6 +55,7 @@ _GLOBAL_ACTIONS = frozenset(
         "cycle_permission",
         "cycle_tail",
         "toggle_lanes",
+        "toggle_thinking",
         "show_ledger",
         "show_needs_you",
         "open_rewind",
