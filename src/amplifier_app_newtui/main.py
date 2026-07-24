@@ -811,6 +811,53 @@ def session_cleanup(days: int, force: bool) -> None:
     click.echo(f"removed {removed} session(s) older than {days} days")
 
 
+@session.command("fork")
+@click.argument("session_id")
+@click.option(
+    "--directive",
+    "-d",
+    "directive",
+    required=True,
+    help="Starting instruction the forked child runs first on resume.",
+)
+@click.option("--name", "-n", "new_name", default="", help="Custom name for the forked session.")
+def session_fork(session_id: str, directive: str, new_name: str) -> None:
+    """Fork a stored session into a directive-primed child.
+
+    Snapshots the parent's conversation into a NEW session (parent context +
+    lineage) and seeds it with DIRECTIVE, so ``amplifier-newtui resume <child>``
+    runs that instruction first. Re-expresses amplifier-app-cli's ``/fork
+    <directive>`` self-delegation over newtui's persisted store: the child is
+    primed and resumable rather than run in a detached background daemon (the
+    full-screen TUI host lacks that seam — see kernel/session_manager.fork).
+    """
+    from .kernel import session_manager
+
+    store = _session_store()
+    try:
+        resolved = session_manager.resolve(store, session_id)
+    except FileNotFoundError:
+        click.echo(f"no session found matching '{session_id}'", err=True)
+        raise SystemExit(1) from None
+    except ValueError as error:
+        click.echo(str(error), err=True)
+        raise SystemExit(1) from None
+    transcript, metadata = store.load(resolved)
+    ok, detail = session_manager.fork(
+        store,
+        resolved,
+        transcript,
+        directive,
+        name=new_name,
+        bundle=str(metadata.get("bundle") or ""),
+    )
+    if not ok:
+        click.echo(detail, err=True)
+        raise SystemExit(1)
+    click.echo(f"forked {resolved[:8]} → {detail}")
+    click.echo(f"resume to run the directive: amplifier-newtui resume {detail[:8]}")
+
+
 @main.command()
 def doctor() -> None:
     """Setup checkup: prints the report, exit 1 when findings exist."""

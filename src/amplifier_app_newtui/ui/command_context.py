@@ -188,5 +188,8 @@ class AppCommandContext:
     def branch_session(self, name: str) -> None:
         self._app.branch_session(name)
 
+    def fork_session(self, directive: str) -> None:
+        self._app.fork_session(directive)
+
 
 __all__ = ["AppCommandContext"]

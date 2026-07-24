@@ -347,6 +347,9 @@ class NewTuiApp(App[None]):
             await self.adapter.start(lambda: app_support.announce_ready(self))
             self.file_mentions.set_files(await self.adapter.workspace_files())
             self._register_skill_commands(await self.adapter.list_skills())
+            # A resumed fork child carries a primed directive; run it as the
+            # first turn (the reachable stand-in for app-cli's background fork).
+            app_support.run_pending_directive(self)
         except Exception as error:  # noqa: BLE001 — boot failure is shown to the user, not crashed out
             # (CancelledError/KeyboardInterrupt stay uncaught: a real
             # shutdown mid-boot must not read as "session failed to start".)
@@ -551,6 +554,24 @@ class NewTuiApp(App[None]):
         if ok:
             self.show_notice(
                 f"branch created · {detail[:12]} · resume: amplifier-newtui resume {detail[:8]}"
+            )
+        else:
+            self.show_notice(detail)
+
+    def fork_session(self, directive: str) -> None:
+        if not directive.strip():
+            self.show_notice("usage: /fork <directive>")
+            return
+        if self.session_ops._ops_starting():
+            return
+        self.run_worker(self._fork_session(directive.strip()), exclusive=False)
+
+    async def _fork_session(self, directive: str) -> None:
+        ok, detail = await self.adapter.fork_with_directive(directive)
+        if ok:
+            self.show_notice(
+                f"fork primed · {detail[:12]} · resume runs the directive: "
+                f"amplifier-newtui resume {detail[:8]}"
             )
         else:
             self.show_notice(detail)

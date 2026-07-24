@@ -175,6 +175,9 @@ class FakeCommandContext:
     def branch_session(self, name: str) -> None:
         self.calls.append(f"branch_session:{name}")
 
+    def fork_session(self, directive: str) -> None:
+        self.calls.append(f"fork_session:{directive}")
+
 
 @pytest.fixture
 def fake_command_context() -> FakeCommandContext:

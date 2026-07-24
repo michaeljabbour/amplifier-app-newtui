@@ -52,6 +52,7 @@ ALL_COMMANDS = (
     "/rename",
     "/sessions",
     "/branch",
+    "/fork",
     "/quit",
     "/permissions",
     "/allowed-dirs",

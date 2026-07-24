@@ -266,6 +266,10 @@ class CommandContext(Protocol):
         """``/branch [name]``: snapshot this conversation into a new session."""
         ...
 
+    def fork_session(self, directive: str) -> None:
+        """``/fork <directive>``: snapshot into a new session primed to run it."""
+        ...
+
 
 CommandHandler = Callable[[CommandContext, str], None]
 """Handler signature: ``(ctx, args)`` where ``args`` is the text after the
