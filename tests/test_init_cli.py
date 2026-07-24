@@ -10,7 +10,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel import setup
+import amplifier_app_newtui.main as main_mod
+from amplifier_app_newtui.kernel import routing_admin, setup
 from amplifier_app_newtui.main import main
 
 _CHOICES = (
@@ -108,9 +109,98 @@ def test_init_requires_key_with_yes(tmp_path: Path, monkeypatch) -> None:
     assert "--api-key required" in result.output
 
 
+def _no_matrices(monkeypatch) -> None:
+    """Neutralize the wizard's routing step so provider-only paths stay offline."""
+    monkeypatch.setattr(routing_admin, "list_matrices", lambda *a, **k: ())
+
+
 def test_init_interactive_selection_and_key(tmp_path: Path, monkeypatch) -> None:
     path, _written = _stub(monkeypatch, tmp_path)
+    _no_matrices(monkeypatch)
     # stdin: choose provider #1, then type the key at the hidden prompt.
     result = CliRunner().invoke(main, ["init"], input="1\nsk-interactive\n")
     assert result.exit_code == 0
     assert setup.read_keys(path)["ANTHROPIC_API_KEY"] == "sk-interactive"
+    # No matrices discovered → wizard prints the fetch hint and finishes clean.
+    assert "no routing matrices found" in result.output
+
+
+def _matrix(name: str, *, active: bool = False) -> routing_admin.MatrixEntry:
+    return routing_admin.MatrixEntry(
+        name=name,
+        active=active,
+        description=f"{name} matrix",
+        updated="2026-05-12",
+        covered=2,
+        total=2,
+        has_providers=True,
+    )
+
+
+def test_init_wizard_selects_provider_then_routing(tmp_path: Path, monkeypatch) -> None:
+    """No-flag init runs the full wizard: provider + key, then routing."""
+    path, written = _stub(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        routing_admin,
+        "list_matrices",
+        lambda *a, **k: (_matrix("balanced", active=True), _matrix("quality")),
+    )
+    selected: dict = {}
+    monkeypatch.setattr(
+        routing_admin,
+        "set_active_matrix",
+        lambda paths, name, scope: selected.update(name=name, scope=scope) or (tmp_path / "s.yaml"),
+    )
+    # stdin: provider #1, key, then routing matrix #2 (quality).
+    result = CliRunner().invoke(main, ["init"], input="1\nsk-wizard\n2\n")
+    assert result.exit_code == 0
+    assert setup.read_keys(path)["ANTHROPIC_API_KEY"] == "sk-wizard"
+    assert written  # provider persisted
+    assert selected == {"name": "quality", "scope": "global"}
+    assert "active routing matrix → quality" in result.output
+
+
+def test_init_wizard_blank_routing_keeps_current(tmp_path: Path, monkeypatch) -> None:
+    """A blank routing answer leaves the matrix untouched."""
+    _path, _written = _stub(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        routing_admin, "list_matrices", lambda *a, **k: (_matrix("balanced", active=True),)
+    )
+    touched: list = []
+    monkeypatch.setattr(
+        routing_admin,
+        "set_active_matrix",
+        lambda *a, **k: touched.append(a) or (tmp_path / "s.yaml"),
+    )
+    # provider #1, key, then blank (keep current routing).
+    result = CliRunner().invoke(main, ["init"], input="1\nsk-x\n\n")
+    assert result.exit_code == 0
+    assert touched == []  # routing left as-is
+
+
+def test_init_wizard_invalid_routing_selection(tmp_path: Path, monkeypatch) -> None:
+    _path, _written = _stub(monkeypatch, tmp_path)
+    monkeypatch.setattr(routing_admin, "list_matrices", lambda *a, **k: (_matrix("balanced"),))
+    touched: list = []
+    monkeypatch.setattr(
+        routing_admin,
+        "set_active_matrix",
+        lambda *a, **k: touched.append(a) or (tmp_path / "s.yaml"),
+    )
+    result = CliRunner().invoke(main, ["init"], input="1\nsk-x\n9\n")
+    assert result.exit_code == 0
+    assert "invalid selection: 9" in result.output
+    assert touched == []
+
+
+def test_init_any_flag_bypasses_wizard(tmp_path: Path, monkeypatch) -> None:
+    """Passing a flag must never reach the routing wizard step."""
+    path, _written = _stub(monkeypatch, tmp_path)
+
+    def _boom(*a, **k):
+        raise AssertionError("wizard routing step must not run on the flag path")
+
+    monkeypatch.setattr(main_mod, "_select_routing_interactive", _boom)
+    result = CliRunner().invoke(main, ["init", "-p", "anthropic", "--api-key", "sk-flag", "-y"])
+    assert result.exit_code == 0
+    assert setup.read_keys(path)["ANTHROPIC_API_KEY"] == "sk-flag"

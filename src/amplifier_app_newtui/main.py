@@ -8,6 +8,9 @@ session (RealRuntime); ``--demo`` swaps in the scripted DemoRuntime
   emits text, one-document JSON, or live versioned JSONL events.
 - ``sessions``     — list stored session ids for this project.
 - ``resume ID``    — launch the TUI resuming a stored session.
+- ``continue``     — resume the most recent stored session (no picker).
+- ``init``         — interactive provider + routing setup (flags bypass it).
+- ``version``      — app + amplifier-core/-foundation versions.
 - ``doctor``       — plain-text setup checkup (exit 0 ok / 1 findings).
 
 Contract: ``main()`` is the console-script entry; every async body runs
@@ -463,6 +466,28 @@ def resume(session_id: str | None, bundle: str | None, limit: int) -> None:
     raise SystemExit(asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=resolved)))
 
 
+@main.command("continue")
+@click.option("--bundle", default=None, help="Bundle name or URI.")
+def continue_(bundle: str | None) -> None:
+    """Resume the most recent stored session for this project.
+
+    The no-argument shortcut for ``resume``: auto-selects the newest stored
+    session (``list_summaries`` is newest-first) and launches straight into
+    it, skipping the picker.
+    """
+    from .kernel import session_manager
+
+    summaries = session_manager.list_summaries(_session_store(), limit=1)
+    if not summaries:
+        click.echo("no stored sessions · start one with `amplifier-newtui`")
+        raise SystemExit(0)
+    latest = summaries[0]
+    click.echo(f"continuing {latest.short_id}")
+    raise SystemExit(
+        asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=latest.session_id))
+    )
+
+
 # --------------------------------------------------------------------------
 # tool group -- list + invoke a mounted bundle tool from the command line
 # --------------------------------------------------------------------------
@@ -866,6 +891,32 @@ def doctor() -> None:
 
     anchors = asyncio.run(updater.anchors_status())
     raise SystemExit(run_standalone(anchors_status=anchors))
+
+
+def _package_version(dist_name: str) -> str:
+    """Installed distribution version, or ``unknown`` when absent.
+
+    Reads packaging metadata only — no ``import amplifier_core`` — so the
+    ADR-0007 kernel boundary stays intact and the command runs offline.
+    """
+    from importlib import metadata
+
+    try:
+        return metadata.version(dist_name)
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+@main.command()
+def version() -> None:
+    """Show the app version alongside amplifier-core / -foundation versions.
+
+    The subcommand form of the ``--version`` flag; the flag stays available on
+    the top-level command.
+    """
+    click.echo(f"amplifier-newtui {__version__}")
+    click.echo(f"  core        {_package_version('amplifier-core')}")
+    click.echo(f"  foundation  {_package_version('amplifier-foundation')}")
 
 
 # --------------------------------------------------------------------------
@@ -1463,6 +1514,73 @@ async def _init(
     return 0
 
 
+def _select_routing_interactive() -> None:
+    """Guided routing-matrix selection — the wizard's second step.
+
+    Reuses the existing routing ops (``routing_admin.list_matrices`` /
+    ``set_active_matrix`` — the same seams behind ``routing list``/``use``);
+    it only *selects* among matrices, never creates them. A blank answer keeps
+    the current matrix; an empty catalog prints a hint and returns. Prompts are
+    driven through ``click`` so tests can inject input, and EOF is a silent skip
+    so a caller who runs out of piped input never crashes the wizard.
+    """
+    from .kernel import bundle_admin, routing_admin
+
+    paths = bundle_admin.settings_paths(None, None)
+    entries = routing_admin.list_matrices(
+        project_dir=paths.project_settings.parent.parent,
+        amplifier_home=paths.global_settings.parent,
+        fetch=True,
+    )
+    if not entries:
+        click.echo(
+            "\nno routing matrices found · "
+            "run `amplifier-newtui update` to fetch the routing-matrix bundle"
+        )
+        return
+
+    click.echo("\nrouting matrices:")
+    for index, entry in enumerate(entries, start=1):
+        marker = "●" if entry.active else " "
+        compat = f"{entry.covered}/{entry.total} roles" if entry.has_providers else "no providers"
+        click.echo(f"  {index}. [{marker}] {entry.name}  ·  {compat}")
+
+    try:
+        raw = click.prompt(
+            "\nselect routing matrix? (number, or blank to keep current)",
+            default="",
+            show_default=False,
+        )
+    except click.Abort:
+        click.echo("")
+        return
+    choice = raw.strip()
+    if not choice:
+        return
+    try:
+        selected = entries[int(choice) - 1]
+    except (ValueError, IndexError):
+        click.echo(f"invalid selection: {raw}", err=True)
+        return
+    path = routing_admin.set_active_matrix(paths, selected.name, "global")
+    click.echo(f"active routing matrix → {selected.name}  (global: {path})")
+
+
+async def _init_wizard() -> int:
+    """No-flag interactive setup: provider credentials, then routing.
+
+    Composes the existing pieces — the interactive branch of :func:`_init` for
+    the provider + API key, then :func:`_select_routing_interactive` for the
+    routing matrix — so scripting via flags and this guided path share one
+    provider-config implementation.
+    """
+    code = await _init(None, None, None, None, False, False)
+    if code != 0:
+        return code
+    _select_routing_interactive()
+    return 0
+
+
 @main.command()
 @click.option("--provider", "-p", default=None, help="Provider to set up (e.g. anthropic).")
 @click.option("--api-key", default=None, help="API key (non-interactive; else prompted).")
@@ -1480,9 +1598,18 @@ def init(
     from_env: bool,
     yes: bool,
 ) -> None:
-    """Set up a provider: writes the API key to ~/.amplifier/keys.env and the
-    provider entry to settings (config.providers)."""
-    raise SystemExit(asyncio.run(_init(provider, api_key, base_url, model, yes, from_env)))
+    """Set up Amplifier: provider credentials plus a routing matrix.
+
+    With no flags this launches an interactive wizard — pick a provider, enter
+    its API key, then choose a routing matrix. Passing any flag
+    (``--provider``/``--api-key``/``--from-env``/``-y``/…) bypasses the wizard
+    and takes the non-interactive path: the key is written to
+    ~/.amplifier/keys.env and the provider entry to settings (config.providers).
+    """
+    flags_given = any([provider, api_key, base_url, model, from_env, yes])
+    if flags_given:
+        raise SystemExit(asyncio.run(_init(provider, api_key, base_url, model, yes, from_env)))
+    raise SystemExit(asyncio.run(_init_wizard()))
 
 
 # --------------------------------------------------------------------------
