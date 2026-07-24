@@ -29,12 +29,20 @@ from ..model.terminal import TerminalSurface
 from ..model.trust import CapabilityClass, DenialLog, TrustDecision
 from .approval import ApprovalBroker
 from .bundle_admin import read_scope, settings_paths
+from .bundle_summon import (
+    LOAD_BUNDLE_TOOL_NAME,
+    DeferredCatalogInjector,
+    LoadBundleTool,
+    build_deferred_catalog,
+    catalog_instruction_text,
+)
 from .config import (
     DEFAULT_BUNDLE,
     BundleNotFoundError,
     ResolvedConfig,
     SettingsPaths,
     active_bundle_name,
+    bundle_search_paths,
     deferred_overlay_uris,
     inject_mode_search_paths,
     inject_notifications_config,
@@ -847,6 +855,13 @@ class RealRuntime:
                 initialized.unregister_handles.append(_drop_injector)
             self._image_injector = injector
 
+        # Agent-summonable deferred bundles: when bundle.deferred held overlays
+        # back for fast boot, tell the model what it can summon (catalog in
+        # context) AND give it a host-provided load_bundle tool routing to the
+        # same load_deferred_bundle seam /bundle load drives. A no-op unless
+        # something was actually deferred (backward compatible).
+        await self._install_deferred_summon(initialized, context)
+
         if self._resume_id:
             # Both files: a pre-rename session resumed under this build has
             # UIEvents split across events.jsonl and ui-events.jsonl.
@@ -1426,6 +1441,51 @@ class RealRuntime:
     async def mcp_tools(self) -> tuple[str, ...]:
         coord = self._coordinator()
         return await session_ops.list_mcp_tools(coord) if coord is not None else ()
+
+    async def _install_deferred_summon(self, initialized: InitializedSession, context: Any) -> None:
+        """Make deferred bundles discoverable + summonable by the model.
+
+        Two app-level attachments, both skipped entirely when nothing was
+        deferred (backward compatible):
+
+        - **Discovery**: a catalog of every held-back overlay (name +
+          one-line description) injected into the root context as one system
+          message via :class:`DeferredCatalogInjector` (the same direct-edit
+          seam as the surface hint), so the model knows what it can summon.
+        - **Summon**: a host-provided ``load_bundle`` tool mounted onto the
+          live coordinator's ``tools`` point (foundation's own mount seam),
+          whose ``execute`` routes to :meth:`load_deferred_bundle` — the same
+          path ``/bundle load`` drives, honest single-slot boundary included.
+
+        Best-effort: a mount/registration failure degrades the session (the
+        manual ``/bundle load`` command still works) rather than blocking boot.
+        """
+        resolved = self._resolved
+        if resolved is None or not resolved.deferred_overlays:
+            return
+        catalog = build_deferred_catalog(
+            resolved.deferred_overlays,
+            resolved.settings,
+            bundle_search_paths(resolved.project_dir, Path.home() / ".amplifier"),
+        )
+        # Summon tool: mounted directly onto the coordinator (the seam
+        # foundation itself uses for a Python tool — loader_grpc mounts a
+        # bridge the same way), so the model sees it from turn one.
+        tool = LoadBundleTool(self.load_deferred_bundle, catalog)
+        try:
+            await initialized.coordinator.mount("tools", tool, name=LOAD_BUNDLE_TOOL_NAME)
+        except Exception:  # noqa: BLE001 — summon degrades to /bundle load, never blocks boot
+            logger.warning("could not mount load_bundle summon tool", exc_info=True)
+        # Discovery catalog: one system message reconciled at each root
+        # provider:request (survives /clear + compaction). Needs an editable
+        # context; without one the tool's own description still lists options.
+        if context is not None:
+            injector = DeferredCatalogInjector(
+                initialized.session_id, catalog_instruction_text(catalog), context
+            )
+            initialized.unregister_handles.append(
+                injector.register_hooks(initialized.coordinator.hooks)
+            )
 
     # -- in-session bundle composition (/bundle load) -----------------------
 
