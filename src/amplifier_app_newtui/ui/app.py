@@ -817,6 +817,10 @@ class NewTuiApp(App[None]):
     def on_composer_submit(self, message: Composer.Submit) -> None:
         message.stop()
         text = message.text
+        # Persist for cross-session ↑ recall (mirrors the composer's own
+        # in-memory ring; the adapter scrubs + dedups + caps). Base/demo
+        # adapters no-op, so only real sessions write to disk.
+        self.adapter.record_prompt(text)
         close_file_mentions(self)
         selected = self.palette.selected_command if self.palette.is_open else None
         self.palette.apply_filter(None)
@@ -862,6 +866,7 @@ class NewTuiApp(App[None]):
 
     def on_composer_steer(self, message: Composer.Steer) -> None:
         message.stop()
+        self.adapter.record_prompt(message.text)
         close_file_mentions(self)
         # Mockup onKeyDown: an open palette match runs BEFORE the steer
         # branch — a slash command typed mid-turn runs, never steers (§6).
@@ -887,6 +892,7 @@ class NewTuiApp(App[None]):
 
     def on_composer_queue_message(self, message: Composer.QueueMessage) -> None:
         message.stop()
+        self.adapter.record_prompt(message.text)
         close_file_mentions(self)
         # Mockup onKeyDown: every Enter — shift held or not — runs an open
         # palette's top match BEFORE the queue/submit branch (§5/§6).
