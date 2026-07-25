@@ -198,8 +198,14 @@ class CommandContext(Protocol):
         ...
 
     def set_native_mode(self, name: str | None) -> None:
-        """Activate (or clear with ``None``) a bundle-provided mode —
-        actioned through the mounted mode tool, never an app-local list."""
+        """ADD a bundle-provided mode to the active set (``None`` clears all) —
+        actioned through the mounted mode tool, never an app-local list. Only
+        the newest (primary) is enforced upstream (single-slot mode tool)."""
+        ...
+
+    def remove_native_mode(self, name: str) -> None:
+        """Remove ONE native mode from the active set (``/mode -<name>``),
+        promoting the next-newest back into the enforced upstream slot."""
         ...
 
     # -- in-session ops over the live amplifier coordinator -----------------

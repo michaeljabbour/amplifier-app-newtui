@@ -107,6 +107,62 @@ async def test_brainstorm_mode_denies_everything() -> None:
     assert result.action == "deny"
 
 
+# -- native-mode tool-policy precedence ------------------------------------------
+
+
+def make_native_hook(mode: str, native_tools: frozenset[str]) -> tuple[GovernanceHook, DenialLog]:
+    denial_log = DenialLog()
+    needs_you = NeedsYouQueue()
+    hook = GovernanceHook(
+        ROOT,
+        mode=lambda: mode,
+        denial_log=denial_log,
+        broker=ApprovalBroker(needs_you=needs_you, denial_log=denial_log),
+        needs_you=needs_you,
+        native_tools=lambda: native_tools,
+    )
+    return hook, denial_log
+
+
+@pytest.mark.asyncio
+async def test_native_safe_tool_survives_no_tools_posture() -> None:
+    # brainstorm denies everything, but team-pulse (active native mode) declared
+    # team_pulse_search safe — it must survive, not be silently nullified.
+    hook, log = make_native_hook("brainstorm", frozenset({"team_pulse_search"}))
+    result = await hook.handle_event("tool:pre", tool_pre("team_pulse_search", {"query": "sprint"}))
+    assert result.action == "continue"  # abstain → hooks-mode governs it
+    assert log.total_count == 0  # never counted as a denial
+
+
+@pytest.mark.asyncio
+async def test_non_native_tool_still_faces_the_posture() -> None:
+    # A tool NOT declared by the native mode is still denied under brainstorm.
+    hook, log = make_native_hook("brainstorm", frozenset({"team_pulse_search"}))
+    result = await hook.handle_event("tool:pre", tool_pre("write_file", {"file_path": "a.py"}))
+    assert result.action == "deny"
+    assert log.total_count == 1
+
+
+@pytest.mark.asyncio
+async def test_broken_native_tools_provider_fails_safe_to_posture() -> None:
+    denial_log = DenialLog()
+    needs_you = NeedsYouQueue()
+
+    def boom() -> frozenset[str]:
+        raise RuntimeError("mode discovery blew up")
+
+    hook = GovernanceHook(
+        ROOT,
+        mode=lambda: "brainstorm",
+        denial_log=denial_log,
+        broker=ApprovalBroker(needs_you=needs_you, denial_log=denial_log),
+        needs_you=needs_you,
+        native_tools=boom,
+    )
+    result = await hook.handle_event("tool:pre", tool_pre("read_file", {"path": "x"}))
+    assert result.action == "deny"  # a broken provider must not open a gate
+
+
 @pytest.mark.asyncio
 async def test_denial_escalation_raises_needs_you_decision() -> None:
     hook, _, needs_you, _ = make_hook("plan")

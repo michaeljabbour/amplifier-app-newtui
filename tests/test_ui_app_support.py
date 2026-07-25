@@ -24,6 +24,20 @@ def test_native_modes_use_full_terminal_width() -> None:
     assert "…" in narrow and "…" not in wide
 
 
+def test_native_modes_mark_the_active_set() -> None:
+    catalog = {
+        "modes": [
+            {"name": "audit", "description": "conformance audit", "source": "conformance"},
+            {"name": "careful", "description": "extra caution", "source": "modes"},
+        ]
+    }
+    text = "".join(s.text for s in native_modes_segments(catalog, active=("audit",)))
+    audit_line = next(line for line in text.splitlines() if "audit" in line)
+    careful_line = next(line for line in text.splitlines() if "careful" in line)
+    assert "◆" in audit_line  # active mode is marked
+    assert "◆" not in careful_line  # inactive mode is not
+
+
 def test_esc_sequence_accepts_the_boundary_once() -> None:
     sequence = EscSequence()
     sequence.arm_interrupt(10.0)

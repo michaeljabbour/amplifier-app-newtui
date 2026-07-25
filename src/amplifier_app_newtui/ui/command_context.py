@@ -143,6 +143,9 @@ class AppCommandContext:
     def set_native_mode(self, name: str | None) -> None:
         self._app.activate_native_mode(name)
 
+    def remove_native_mode(self, name: str) -> None:
+        self._app.deactivate_native_mode(name)
+
     def show_status(self) -> None:
         self._app.session_ops.show_status()
 

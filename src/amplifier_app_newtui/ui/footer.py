@@ -37,6 +37,7 @@ from textual.widgets import Static
 
 from ..model.blocks import GLYPH_YIELD
 from ..model.modes import ModeId, get_mode
+from ..model.native_modes import native_badge_text
 from .keymap import FOOTER_HINTS, Context, hint_label
 
 SEPARATOR = " · "
@@ -51,10 +52,12 @@ class FooterState(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mode_id: ModeId = "chat"
-    native_mode: str = ""
-    """Explicitly-activated bundle-composed mode (``/mode <name>``), shown as
-    a ``◆ <name>`` badge next to the posture so activation is visible and
-    sticky (the posture chip alone never reflected it)."""
+    native_modes: tuple[str, ...] = ()
+    """Active bundle-composed modes (``/mode <name>``), in activation order —
+    the LAST is the primary (the one enforced upstream). Shown as a
+    ``◆ <primary> +<others>`` badge next to the posture so activation is
+    visible and sticky. A single active mode renders exactly as the old
+    single-slot badge did (backward compatible)."""
     bundle: str = ""
     """Bundle name — painted with a ``bundle `` label (story #4: the footer
     speaks human; a bare ``newtui`` reads as noise)."""
@@ -96,8 +99,9 @@ def _left_parts(
     """The left-segment parts, with decorative ones optionally dropped."""
     mode = get_mode(state.mode_id)
     parts = [f"mode {mode.id}"]
-    if state.native_mode:
-        parts.append(f"◆ {state.native_mode}")
+    badge = native_badge_text(state.native_modes)
+    if badge:
+        parts.append(badge)
     if trust:
         parts.append(mode.trust_str)
     if bundle and state.bundle:
@@ -309,9 +313,10 @@ class FooterBar(Horizontal):
         rest_parts.append(f"{'~' if state.cost_estimated else ''}${state.cost:.2f}")
         markup = f"[${mode.color_token}]$mode_part[/]"
         substitutions = {"mode_part": f"mode {mode.id}"}
-        if state.native_mode:
+        native_badge = native_badge_text(state.native_modes)
+        if native_badge:
             markup += f"[$dimmer]{SEPARATOR}[/][$teal]$native_part[/]"
-            substitutions["native_part"] = f"◆ {state.native_mode}"
+            substitutions["native_part"] = native_badge
         for index, part in enumerate(rest_parts):
             key = f"part{index}"
             markup += f"[$dimmer]{SEPARATOR}[/]${key}"

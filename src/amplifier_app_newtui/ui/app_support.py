@@ -591,13 +591,16 @@ def os_clipboard_copy(text: str) -> bool:
     return False
 
 
-def native_modes_segments(catalog: object, term_width: int = 120) -> tuple[Segment, ...]:
+def native_modes_segments(
+    catalog: object, term_width: int = 120, active: tuple[str, ...] = ()
+) -> tuple[Segment, ...]:
     """Render the mode tool's catalog output grouped by source bundle.
 
     The mounted mode tool reports ``{"modes": [{name, description,
     source}, …]}`` — dynamically composed (superpowers, modes, llm-wiki,
     …), so this formats whatever arrives rather than any fixed list.
-    Non-mapping payloads fall back to plain text.
+    Non-mapping payloads fall back to plain text. Names in *active* are
+    marked with a ``◆`` so ``/modes`` shows the currently-active set.
     """
     from collections.abc import Mapping as _Mapping
 
@@ -624,7 +627,8 @@ def native_modes_segments(catalog: object, term_width: int = 120) -> tuple[Segme
             desc = str(mode.get("description", "")).split("\n")[0]
             if len(desc) > desc_budget:
                 desc = desc[: desc_budget - 1] + "…"
-            segments.append(Segment(text=f"    {name.ljust(name_w)}  ", style_token="teal"))
+            marker = "◆ " if name in active else "  "
+            segments.append(Segment(text=f"  {marker}{name.ljust(name_w)}  ", style_token="teal"))
             segments.append(Segment(text=f"{desc}\n", style_token="dim"))
     segments.append(
         Segment(text="  /mode <name> activates · /mode off clears", style_token="dimmer")
@@ -710,7 +714,7 @@ def footer_state(app: NewTuiApp) -> FooterState:
     done, total = plan_footer_counts(app)
     return FooterState(
         mode_id=app.mode_id,  # type: ignore[arg-type]
-        native_mode=app.native_mode,
+        native_modes=app.native_modes,
         bundle=app.adapter.bundle_name,
         # The adapter may carry a provider-qualified id ("anthropic/x");
         # the footer speaks human and shows the bare model name (story #4).
