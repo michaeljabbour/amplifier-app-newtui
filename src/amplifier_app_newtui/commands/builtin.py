@@ -26,9 +26,10 @@ from .registry import CommandContext, CommandRegistry, CommandSpec
 
 def _cmd_mode(ctx: CommandContext, args: str) -> None:
     """``/mode`` — cycle postures; ``/mode plan`` — jump to a posture;
-    ``/mode <bundle-mode>`` — activate a native, bundle-composed mode
-    (superpowers, careful, audit, …) through the mounted mode tool;
-    ``/mode off`` — clear the native mode."""
+    ``/mode <bundle-mode>`` — ADD a native, bundle-composed mode
+    (superpowers, careful, audit, …) to the active set through the mounted
+    mode tool; ``/mode off`` — clear all native modes; ``/mode off <name>``
+    or ``/mode -<name>`` — remove a single native mode from the set."""
     target = args.strip().lower()
     if not target:
         ctx.cycle_mode()
@@ -36,6 +37,10 @@ def _cmd_mode(ctx: CommandContext, args: str) -> None:
         ctx.set_mode(target)
     elif target == "off":
         ctx.set_native_mode(None)
+    elif target.startswith("off "):
+        ctx.remove_native_mode(target[len("off ") :].strip())
+    elif target.startswith("-") and target[1:].strip():
+        ctx.remove_native_mode(target[1:].strip())
     else:
         ctx.set_native_mode(target)
 

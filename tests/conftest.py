@@ -130,6 +130,9 @@ class FakeCommandContext:
     def set_native_mode(self, name: str | None) -> None:
         self.calls.append(f"set_native_mode:{name}")
 
+    def remove_native_mode(self, name: str) -> None:
+        self.calls.append(f"remove_native_mode:{name}")
+
     def show_status(self) -> None:
         self.calls.append("show_status")
 

@@ -46,10 +46,18 @@ def test_left_text_full_state_exact() -> None:
 
 
 def test_left_text_shows_native_mode_badge() -> None:
-    state = FULL_STATE.model_copy(update={"native_mode": "machete"})
+    state = FULL_STATE.model_copy(update={"native_modes": ("machete",)})
     left = footer_left_text(state)
     assert left.startswith("mode build · ◆ machete · ")  # badge right after the posture chip
     assert "◆" not in footer_left_text(FULL_STATE)  # absent when no native mode active
+
+
+def test_left_text_shows_stacked_native_modes() -> None:
+    # Activation order (last == primary): team-pulse then audit → audit enforced.
+    state = FULL_STATE.model_copy(update={"native_modes": ("team-pulse", "audit")})
+    left = footer_left_text(state)
+    # Primary (◆) first, the stacked one as a +entry.
+    assert left.startswith("mode build · ◆ audit +team-pulse · ")
 
 
 def test_left_text_labels_bundle_and_carries_model() -> None:

@@ -174,6 +174,48 @@ def test_compact_and_clear_delegate() -> None:
     assert context2.cleared is True
 
 
+class _FakeDiscovery:
+    """Minimal hooks-mode discovery: find() → a mode def with safe_tools."""
+
+    def __init__(self, safe_tools: dict[str, tuple[str, ...]]) -> None:
+        self._safe = safe_tools
+
+    def find(self, name: str) -> Any:
+        if name not in self._safe:
+            return None
+        return SimpleNamespace(safe_tools=list(self._safe[name]))
+
+
+def test_native_safe_tools_reads_active_modes_safe_list() -> None:
+    coord = FakeCoordinator()
+    coord.session_state["active_mode"] = "team-pulse"
+    coord.session_state["mode_discovery"] = _FakeDiscovery(
+        {"team-pulse": ("team_pulse_info", "team_pulse_search")}
+    )
+    runtime = _runtime(coord)
+    assert runtime._native_safe_tools() == frozenset({"team_pulse_info", "team_pulse_search"})
+
+
+def test_native_safe_tools_empty_without_session_or_mode() -> None:
+    # No session yet → empty (governance falls back to posture).
+    assert _runtime(None)._native_safe_tools() == frozenset()
+    # Session up, but no active mode / discovery mounted → empty.
+    assert _runtime(FakeCoordinator())._native_safe_tools() == frozenset()
+
+
+def test_native_safe_tools_fails_safe_on_broken_discovery() -> None:
+    coord = FakeCoordinator()
+    coord.session_state["active_mode"] = "audit"
+
+    class _Boom:
+        def find(self, name: str) -> Any:
+            raise RuntimeError("discovery exploded")
+
+    coord.session_state["mode_discovery"] = _Boom()
+    # A broken mode system must never open a gate — degrade to the empty set.
+    assert _runtime(coord)._native_safe_tools() == frozenset()
+
+
 def test_status_joins_coordinator_fields() -> None:
     runtime = _runtime(_full_coord())
     info = asyncio.run(runtime.status())

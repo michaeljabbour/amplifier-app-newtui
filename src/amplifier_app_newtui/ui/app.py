@@ -52,6 +52,7 @@ from ..model.blocks import (
 )
 from ..model.lanes import LaneRegistry
 from ..model.modes import DEFAULT_MODE, ModeProfile, cycle_mode, get_mode
+from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
 from ..model.turn import OutcomeLedger
 from . import app_support, keymap, notifications
 from .approval_bar import ApprovalBar
@@ -187,9 +188,11 @@ class NewTuiApp(App[None]):
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
         self._splash: BootSplash | None = None  # boot splash overlay (wordmark)
         self._auto_native_mode: str | None = None  # posture-bridged native mode
-        self._native_mode = (
-            ""  # explicitly-activated native mode (/mode <name>), for the footer badge
-        )
+        # Explicitly-activated native modes (/mode <name>) as an ordered stack;
+        # the last is the primary (the one pointed at the single upstream slot).
+        # Backward compatible: a single active mode behaves as the old single
+        # ``_native_mode`` string did.
+        self._native_modes = ActiveNativeModes()
         self._os_clipboard_copied = False  # last copy reached an OS clipboard tool
         self._clipboard_write_seq = 0  # latest native write wins
         self._clipboard_write_lock = asyncio.Lock()
@@ -415,9 +418,9 @@ class NewTuiApp(App[None]):
         return self._mode.id
 
     @property
-    def native_mode(self) -> str:
-        """The explicitly-activated bundle mode for the footer badge ("" if none)."""
-        return self._native_mode
+    def native_modes(self) -> tuple[str, ...]:
+        """Active bundle modes in activation order (last == primary) for the footer."""
+        return self._native_modes.names
 
     @property
     def splash_active(self) -> bool:
@@ -458,6 +461,13 @@ class NewTuiApp(App[None]):
         self.composer.set_mode(self._mode)
         if notify:
             self.show_notice(self._mode.notice())
+        # Precedence: a tool-restrictive posture must never SILENTLY nullify an
+        # active native mode. Surface the conflict so the user knows the modes
+        # coexist and how to let the native tools run (governance already lets
+        # the mode's declared safe tools survive; this covers the rest).
+        conflict = posture_conflict_notice(self._mode.id, self._native_modes)
+        if conflict:
+            self.show_notice(conflict)
         # Action through amplifier-foundation (user directive): a posture
         # with a same-named bundle-composed mode activates it natively —
         # kernel-side gating and per-turn context come from hooks-mode,
@@ -470,15 +480,16 @@ class NewTuiApp(App[None]):
     _NATIVE_POSTURES = frozenset({"plan", "brainstorm"})
 
     async def _sync_native_mode(self, mode_id: str) -> None:
+        # Explicitly-activated native modes own the single upstream slot; the
+        # posture bridge must never clobber them (the posture-conflict notice
+        # covers that case instead). Only auto-activate a posture twin when no
+        # explicit native mode is active — preserving single-mode behavior.
+        if self._native_modes:
+            return
         if mode_id in self._NATIVE_POSTURES:
             ok, _detail = await self.adapter.set_native_mode(mode_id)
             if ok:
                 self._auto_native_mode = mode_id
-                # The posture's native twin now owns the mode slot; the posture
-                # chip reflects it, so drop any stale explicit-mode badge.
-                if self._native_mode:
-                    self._native_mode = ""
-                    self._refresh_footer()
         elif self._auto_native_mode is not None:
             await self.adapter.set_native_mode(None)
             self._auto_native_mode = None
@@ -492,16 +503,22 @@ class NewTuiApp(App[None]):
             self.show_notice("session still starting · /modes once the banner lands")
             return
         catalog = await self.adapter.list_native_modes()
+        active = self._native_modes.names
+        active_line = f" · active: {', '.join(active)}" if active else ""
         spans = [
             Segment(text="· ", style_token="blue"),
             Segment(text="Modes", style_token="bright", bold=True),
             Segment(
                 text="  postures: chat plan brainstorm build auto · shift+tab cycles"
-                " · trust layer\n",
+                f" · trust layer{active_line}\n",
                 style_token="dim",
             ),
         ]
-        native = app_support.native_modes_segments(catalog, self.size.width) if catalog else ()
+        native = (
+            app_support.native_modes_segments(catalog, self.size.width, active=active)
+            if catalog
+            else ()
+        )
         if native:
             spans.extend(native)
         else:
@@ -514,19 +531,52 @@ class NewTuiApp(App[None]):
         self.append_block(Answer(id=self.allocator.next_id(), spans=tuple(spans)))
 
     def activate_native_mode(self, name: str | None) -> None:
-        """``/mode <bundle-mode>`` / ``/mode off``: native activation."""
+        """``/mode <bundle-mode>`` ADDs to the active set; ``/mode off`` clears all."""
         self.run_worker(self._activate_native_mode(name), exclusive=False)
 
     async def _activate_native_mode(self, name: str | None) -> None:
+        if name is None:
+            # /mode off — clear the whole stack (single upstream slot → clear).
+            await self.adapter.set_native_mode(None)
+            self._auto_native_mode = None
+            self._native_modes = self._native_modes.clear()
+            self._refresh_footer()
+            self.show_notice("mode off · native (bundle)")
+            return
+        # ADD: point the single upstream slot at the new primary; on success it
+        # joins (or is promoted within) the client-side stack.
         ok, detail = await self.adapter.set_native_mode(name)
         if ok:
             self._auto_native_mode = None  # explicit choice — never auto-cleared
-            self._native_mode = name or ""  # sticky footer badge (◆ <name>); "" on /mode off
+            self._native_modes = self._native_modes.add(name)
             self._refresh_footer()
-            label = name or "off"
-            self.show_notice(f"mode {label} · native (bundle)")
+            self.show_notice(f"mode {name} · native (bundle)")
+            conflict = posture_conflict_notice(self._mode.id, self._native_modes)
+            if conflict:
+                self.show_notice(conflict)
         else:
             self.show_notice(detail or f"no such mode · {name}")
+
+    def deactivate_native_mode(self, name: str) -> None:
+        """``/mode -<name>`` / ``/mode off <name>``: remove ONE native mode."""
+        self.run_worker(self._deactivate_native_mode(name), exclusive=False)
+
+    async def _deactivate_native_mode(self, name: str) -> None:
+        if name not in self._native_modes:
+            self.show_notice(f"mode not active · {name}")
+            return
+        remaining = self._native_modes.remove(name)
+        # Re-point the single upstream slot at the new primary (or clear it when
+        # the stack empties): only ever one native mode is enforced at a time.
+        ok, detail = await self.adapter.set_native_mode(remaining.primary)
+        if ok:
+            self._native_modes = remaining
+            self._refresh_footer()
+            promoted = remaining.primary
+            tail = f" · now {promoted}" if promoted else ""
+            self.show_notice(f"mode -{name} · native (bundle){tail}")
+        else:
+            self.show_notice(detail or f"could not deactivate · {name}")
 
     # -- registry wiring + directory admin -----------------------------------
     # In-session coordinator ops (/status /model /effort /compact /clear /tools

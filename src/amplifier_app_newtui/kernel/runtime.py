@@ -792,6 +792,7 @@ class RealRuntime:
             permission_resolver=self._permission_resolver,
             capability_resolver=self._capability_resolver,
             on_blocked=self._governance_blocked,
+            native_tools=self._native_safe_tools,
         )
         initialized.unregister_handles.append(governance.register_hooks(hooks))
         # Child lanes inherit the SAME governance instance so a gated posture
@@ -1276,6 +1277,31 @@ class RealRuntime:
             register = None
         if callable(register):
             register(_BrokerApprovalProvider(self.broker))
+
+    def _native_safe_tools(self) -> frozenset[str]:
+        """Tool names the ACTIVE native mode declares ``safe`` (hooks-mode).
+
+        The governance hook lets these survive a tool-restrictive posture
+        (tool-policy precedence). Reads the single upstream-enforced mode
+        (``session_state["active_mode"]``) from the mounted hooks-mode
+        discovery — consistent with the single-slot mode system. Best-effort:
+        any missing/broken mode system yields the empty set (posture governs).
+        """
+        init = self._initialized
+        if init is None:
+            return frozenset()
+        try:
+            state = getattr(init.coordinator, "session_state", None) or {}
+            active = state.get("active_mode")
+            discovery = state.get("mode_discovery")
+            if not active or discovery is None:
+                return frozenset()
+            mode_def = discovery.find(active)
+            safe = getattr(mode_def, "safe_tools", None) or ()
+            return frozenset(str(name) for name in safe)
+        except Exception:  # noqa: BLE001 — a broken mode system must not gate tools
+            logger.debug("native safe-tools lookup failed", exc_info=True)
+            return frozenset()
 
     def _mode_tool(self) -> Any | None:
         """The bundle-mounted ``mode`` tool (tool-mode), when composed in."""

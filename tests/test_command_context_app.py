@@ -190,6 +190,7 @@ _FORWARDING: tuple[tuple[str, tuple[object, ...], str], ...] = (
     ("quit_app", (), "exit"),
     ("show_modes", (), "show_native_modes"),
     ("set_native_mode", ("debug",), "activate_native_mode"),
+    ("remove_native_mode", ("team-pulse",), "deactivate_native_mode"),
     ("show_model", ("gpt",), "show_model"),
     ("apply_effort", ("high",), "apply_effort"),
     ("compact_context", ("focus",), "compact_context"),

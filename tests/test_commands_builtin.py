@@ -118,9 +118,20 @@ def test_mode_cycles_without_args_and_jumps_with_mode_arg(fake_command_context) 
     # Non-posture args route to the NATIVE bundle-composed mode system
     # (superpowers, careful, audit, …) — never an app-local list.
     registry.run("/mode", ctx, "debug")
-    assert ctx.calls[-1] == "set_native_mode:debug"
+    assert ctx.calls[-1] == "set_native_mode:debug"  # ADD to the active set
     registry.run("/mode", ctx, "off")
-    assert ctx.calls[-1] == "set_native_mode:None"
+    assert ctx.calls[-1] == "set_native_mode:None"  # clear ALL native modes
+
+
+def test_mode_removes_a_single_native_mode(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    # /mode -<name> removes one native mode from the set (promotes the next).
+    registry.run("/mode", ctx, "-team-pulse")
+    assert ctx.calls[-1] == "remove_native_mode:team-pulse"
+    # /mode off <name> is the same remove-one operation, spelled out.
+    registry.run("/mode", ctx, "off audit")
+    assert ctx.calls[-1] == "remove_native_mode:audit"
 
 
 def test_modes_lists_native_catalog(fake_command_context) -> None:

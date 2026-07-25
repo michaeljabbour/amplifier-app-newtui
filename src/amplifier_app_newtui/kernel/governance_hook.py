@@ -340,6 +340,7 @@ class GovernanceHook:
         permission_resolver: Callable[[str, Mapping[str, object] | None], TrustDecision]
         | None = None,
         capability_resolver: Callable[[CapabilityClass], TrustDecision] | None = None,
+        native_tools: Callable[[], frozenset[str]] | None = None,
     ) -> None:
         self._root_session_id = root_session_id
         self._mode = mode
@@ -351,6 +352,13 @@ class GovernanceHook:
         self._directory_policy = directory_policy
         self._permission_resolver = permission_resolver
         self._capability_resolver = capability_resolver
+        # Live set of tool names the ACTIVE native mode declares ``safe``
+        # (from hooks-mode). Tool-policy precedence: an active native mode's
+        # own declared tools survive a tool-restrictive posture — the app's
+        # posture must not SILENTLY nullify a mode the user explicitly turned
+        # on. We abstain (``continue``) for those tools so hooks-mode stays
+        # authoritative for them; every other tool still faces the posture.
+        self._native_tools = native_tools
         self._user_messages: list[str] = []
 
     async def handle_event(self, event: str, data: dict[str, Any]) -> HookResult:
@@ -439,6 +447,12 @@ class GovernanceHook:
         blocked = self._blocked_dependencies(dependencies)
         if blocked is not None:
             return blocked
+        # Native-mode tool-policy precedence: a tool the active native mode
+        # declares ``safe`` survives a tool-restrictive posture. Abstain so
+        # hooks-mode governs it — never let the posture silently nullify it.
+        if self._is_native_safe_tool(tool_name):
+            self._denial_log.record_non_denial()
+            return HookResult(action="continue")
         decision = (
             self._permission_resolver(tool_name, tool_input)
             if self._permission_resolver is not None
@@ -469,6 +483,19 @@ class GovernanceHook:
         if decision.decision == "ask":
             return self._ask(decision, tool_name, tool_input, action, target)
         return self._deny(decision.capability, action, decision.reason)
+
+    def _is_native_safe_tool(self, tool_name: str) -> bool:
+        """True when the active native mode declares *tool_name* ``safe``.
+
+        Best-effort and fail-safe: a missing or broken provider means no tool
+        is treated as native-safe (the posture governs normally).
+        """
+        if self._native_tools is None:
+            return False
+        try:
+            return tool_name in self._native_tools()
+        except Exception:  # noqa: BLE001 — a broken provider must not open a gate
+            return False
 
     def _resolve_capability(self, capability: CapabilityClass) -> TrustDecision:
         if self._capability_resolver is not None:
