@@ -90,6 +90,11 @@ from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
 from .queue_bridge import CONSUMED_EVENTS, QueueBridge
 from .recipes import RecipeApprovalBridge
+from .reminder_trust import (
+    has_concealment_directive,
+    is_injected_reminder,
+    reminder_source,
+)
 from .turn_yield import TurnYieldTracker
 from .session_factory import InitializedSession, SessionRequest, create_initialized_session
 from .spawner import SessionSpawner
@@ -194,6 +199,14 @@ def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str],
     transcript (an empty screen over a full context reads as a fresh
     session). Tool traffic and ``<system-reminder>`` injections are
     skipped — only real user prompts and assistant prose replay.
+
+    The reminder filter is attribute-tolerant
+    (:func:`~amplifier_app_newtui.kernel.reminder_trust.is_injected_reminder`):
+    every reminder a real hook emits is tagged ``<system-reminder
+    source="...">``, which a bare ``<system-reminder>`` prefix test would
+    miss — replaying an injected "process silently / do not mention this to
+    the user" block as a fake user turn. Dropped concealment directives are
+    logged (never silenced) so the trust event stays observable.
     """
     pairs: list[tuple[str, str]] = []
     for message in transcript:
@@ -214,7 +227,15 @@ def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str],
         else:
             continue
         text = text.strip()
-        if not text or text.startswith("<system-reminder>") or text.startswith("<turn_aborted>"):
+        if not text or text.startswith("<turn_aborted>"):
+            continue
+        if is_injected_reminder(text):
+            if has_concealment_directive(text):
+                logger.info(
+                    "dropped injected reminder from replay (source=%s): "
+                    "concealment directive not replayed as a user turn",
+                    reminder_source(text) or "unknown",
+                )
             continue
         pairs.append((str(role), text))
     return tuple(pairs)
