@@ -238,7 +238,19 @@ def announce_ready(app: NewTuiApp) -> None:
     # degrade to the prose-only prompts + answers below.
     from .live_tail import answer_spans
 
-    app.composer.seed_history(text for role, text in app.adapter.restored_history if role == "user")
+    # Seed ↑ history from the per-directory persistent store — a FRESH
+    # session recalls prompts from prior sessions in the same working dir
+    # (the cross-session-history fix; the store is the superset that also
+    # holds a resumed session's own prompts). Fall back to the resumed
+    # transcript's user prompts when nothing was persisted (legacy sessions
+    # or ones created by another amplifier app without a shared history file).
+    persisted = app.adapter.prompt_history()
+    if persisted:
+        app.composer.seed_history(persisted)
+    else:
+        app.composer.seed_history(
+            text for role, text in app.adapter.restored_history if role == "user"
+        )
     if not app.reducer.replay(
         app.adapter.restored_events,
         turn_base=app.adapter.turn_base,

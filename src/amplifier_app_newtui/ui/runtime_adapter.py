@@ -26,6 +26,7 @@ from ..kernel.events import UIEvent
 
 from ..kernel.compaction import CompactionConfig
 from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
+from ..kernel.prompt_history import PromptHistoryStore
 from ..kernel.session_ops import ModelListing, StatusInfo
 from ..kernel.session_manager import SessionSummary
 from ..model.blocks import BlockIdAllocator, TranscriptBlock
@@ -225,6 +226,19 @@ class RuntimeAdapter:
         ``queued message picked up`` notice.
         """
         await self.submit(text)
+
+    # -- persistent prompt history (cross-session ↑ recall) ------------------
+    # The store is keyed per working directory (ADR-0007: the adapter seam
+    # owns filesystem/session access so ``ui/`` stays core-free). The base
+    # and demo adapters have no real project on disk, so both no-op — only
+    # ``RealRuntimeAdapter`` persists.
+
+    def record_prompt(self, text: str) -> None:
+        """Persist a submitted prompt for future sessions in this directory."""
+
+    def prompt_history(self) -> tuple[str, ...]:
+        """Prompts submitted in this directory across sessions (oldest first)."""
+        return ()
 
     # -- in-session op dispatch (ONE seam; see :class:`SessionOp`) -----------
 
@@ -474,6 +488,20 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self._runtime_loop: asyncio.AbstractEventLoop | None = None
         self._thread: Any = None
         self._stop: asyncio.Event | None = None  # belongs to the runtime loop
+        self._prompt_store: PromptHistoryStore | None = None
+
+    def _history_store(self) -> PromptHistoryStore:
+        """Lazily build the per-project prompt-history store (keyed to the
+        real session's working directory, learned at ``start()``)."""
+        if self._prompt_store is None:
+            self._prompt_store = PromptHistoryStore(project_dir=self._config_project_dir)
+        return self._prompt_store
+
+    def record_prompt(self, text: str) -> None:
+        self._history_store().append(text)
+
+    def prompt_history(self) -> tuple[str, ...]:
+        return tuple(self._history_store().load())
 
     async def start(self, ready: Callable[[], None]) -> None:
         import threading
