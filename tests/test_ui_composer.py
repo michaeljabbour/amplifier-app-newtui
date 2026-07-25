@@ -496,13 +496,23 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
         await pilot.pause()
         assert copied[-1] == "hi"
 
-        # Nothing selected → guidance, not a silent no-op.
+        # Nothing selected: ctrl+c honors the terminal/Mac convention.
         app.composer._input.clear()
         app.screen.clear_selection()
         await pilot.pause()
-        await pilot.press("ctrl+c")
-        await pilot.pause()
-        assert app.notice_slot.current.startswith("nothing selected")
+
+        # ...idle → quit (like ctrl+d). Spy so the test app doesn't actually exit.
+        quit_calls: list[bool] = []
+        app.exit = lambda *a, **k: quit_calls.append(True)  # type: ignore[method-assign]
+        app.action_copy_selection()
+        assert quit_calls == [True]
+
+        # ...running turn → interrupt (not quit).
+        interrupts: list[bool] = []
+        app.turn_active = True
+        app.interrupt_turn = lambda: interrupts.append(True)  # type: ignore[method-assign]
+        app.action_copy_selection()
+        assert interrupts == [True]
 
 
 @pytest.mark.asyncio

@@ -979,10 +979,20 @@ class NewTuiApp(App[None]):
 
     def action_copy_selection(self) -> None:
         """ctrl+c: copy the composer's own selection, else the transcript
-        drag-selection. Always confirms — clipboard writes are invisible."""
+        drag-selection (always confirms — clipboard writes are invisible).
+
+        With NOTHING selected, honor the terminal/Mac convention that ctrl+c
+        interrupts/kills rather than being a dead no-op: a running turn is
+        interrupted (like esc), and an idle app quits (like ctrl+d). Copy always
+        wins whenever text is actually selected, so selecting-then-ctrl+c still
+        copies."""
         text = self.composer.selected_text or self.screen.get_selected_text()
         if not text:
-            self.show_notice("nothing selected · drag to select transcript text")
+            if self.turn_active:
+                self.interrupt_turn()
+                self.show_notice("interrupting… (ctrl+c)")
+            else:
+                self.exit()
             return
         self.copy_to_clipboard(text)
         if self._os_clipboard_copied:
