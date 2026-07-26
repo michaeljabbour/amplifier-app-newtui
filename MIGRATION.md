@@ -33,7 +33,7 @@ Port order respects intra-layer deps: wave 1 = independent units; then turn → 
 | model/redaction | model/redaction.py | test_model_redaction.py | verified | serde_json::Value instead of arbitrary objects; 23-case differential oracle matched byte-for-byte |
 | model/terminal | model/terminal.py | test_model_terminal.py | verified | duck-typed clamp → set_cols(i64)/set_cols_str; junk input falls back to 80 |
 | model/queues | model/queues.py | test_model_turn_queues_lanes.py | verified | ValueError/KeyError → QueueError w/ exact Python messages; listener closures → ListenerId; counts() HashMap unordered |
-| model/turn | model/turn.py | test_model_turn_queues_lanes.py | todo | needs formatting |
+| model/turn | model/turn.py | test_model_turn_queues_lanes.py | verified | Decimal cost arithmetic via rust_decimal (banker's rounding oracle-pinned); pydantic Field(ge/le) runtime validation not replicated; trim_to → Result |
 | model/blocks | model/blocks.py | test_model_blocks.py | todo | needs evidence, turn |
 | model/modes | model/modes.py | test_model_modes_trust.py | todo | needs blocks |
 | model/lanes | model/lanes.py | test_model_turn_queues_lanes.py, test_model_lane_steering.py | todo | needs blocks |

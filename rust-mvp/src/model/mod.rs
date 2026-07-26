@@ -8,6 +8,7 @@ pub mod queues;
 pub mod redaction;
 pub mod terminal;
 pub mod trust;
+pub mod turn;
 
 /// The five interaction modes, cycled with Shift+Tab (as in the real app).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
