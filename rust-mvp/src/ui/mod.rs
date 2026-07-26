@@ -2,6 +2,20 @@
 //! function of `App` state: title bar, transcript, live tail, composer/approval,
 //! footer. Colors are theme tokens, not literals scattered through logic.
 
+pub mod approval_bar;
+pub mod chrome;
+pub mod file_mentions;
+pub mod keymap;
+pub mod motion;
+pub mod needs_you;
+pub mod notices;
+pub mod notifications;
+pub mod palette;
+pub mod queued_strip;
+pub mod rewind_strip;
+pub mod segments;
+pub mod themes;
+
 use crate::app::{App, TurnState};
 use crate::model::Block;
 use ratatui::prelude::*;

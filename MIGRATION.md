@@ -79,11 +79,11 @@ Python backend behind `serve`.
 | commands/builtin | commands/builtin.py | test_commands_builtin.py | todo | |
 | commands/context | commands/context.py | test_commands_context.py | verified | segment math f64 op-order identical, 9 rows oracle-pinned bit-for-bit; app-level context tests belong to ui layer |
 | commands/copy | commands/copy.py | test_commands_copy.py | verified | all 7 cases, exact redaction strings |
-| commands/doctor | commands/doctor.py | test_commands_doctor.py | todo | |
+| commands/doctor | commands/doctor.py | test_commands_doctor.py | verified | all 19 cases; importlib probe → injected probe fn; AnchorsPinStatus → trait (kernel/updater not ported — test-local mirror pins exact strings); +serde_yaml dep |
 | commands/export | commands/export.py | test_commands_export.py | verified | injectable datetime → ExportStamp struct; now() stamps UTC vs Python local (filename only) |
 | commands/improve | commands/improve.py | test_commands_improve.py | verified | all 10 cases; Counter insertion order preserved via ask_order Vec |
 | commands/permissions | commands/permissions.py | test_commands_permissions.py | verified | all 11 cases; exact CPython list.remove message; frozen-mutation pin is compile-time |
-| commands/skills | commands/skills.py | test_commands_skills.py | todo | |
+| commands/skills | commands/skills.py | test_commands_skills.py | verified | all 8 cases; tests use minimal build_registry stand-in until commands/builtin lands (then switch to real one) |
 
 ## Layer 4 — ui/ (ratatui rebuild)
 
@@ -91,27 +91,27 @@ Python backend behind `serve`.
 |---|---|---|---|---|
 | ui/reducer | ui/reducer.py | test_ui_reducer_*.py | todo | grow existing rust-mvp app.rs/event.rs |
 | ui/lane_reducer | ui/lane_reducer.py | test_ui_lane_reducer.py | todo | |
-| ui/segments | ui/segments.py | (inline uses) | todo | |
+| ui/segments | ui/segments.py | (oracle-pinned) | verified | markup emitters byte-identical to Textual escape (oracle); to_ratatui_line replaces to_rich_text; link painting → app-assembly OSC 8 |
 | ui/transcript_render | ui/transcript_render.py | test_ui_transcript_render.py, test_ui_render_*.py | todo | |
 | ui/transcript (view) | ui/transcript.py | test_ui_transcript_view.py | todo | |
 | ui/live_tail | ui/live_tail.py | test_ui_transcript_live_tail.py | todo | |
 | ui/composer | ui/composer.py | test_ui_composer.py | todo | |
-| ui/approval_bar | ui/approval_bar.py | test_ui_approval.py, test_ui_approval_wrap.py | todo | |
+| ui/approval_bar | ui/approval_bar.py | test_ui_approval.py, test_ui_approval_wrap.py | verified | 20 tests; messages → KeyOutcome/ApprovalMsg return values; wrap decision at width 80 oracle-checked; colors await themes wiring at assembly |
 | ui/footer | ui/footer.py | test_ui_footer.py | todo | |
-| ui/keymap | ui/keymap.py | test_ui_keymap.py | todo | |
+| ui/keymap | ui/keymap.py | test_ui_keymap.py | verified | all 15 cases 1:1 |
 | ui/lanes_panel | ui/lanes_panel.py | test_ui_lanes.py, test_ui_lanes_needs_you.py | todo | |
-| ui/needs_you | ui/needs_you.py | test_needs_you_real.py | todo | |
-| ui/palette | ui/palette.py | test_ui_palette.py | todo | |
+| ui/needs_you | ui/needs_you.py | test_needs_you_real.py | verified | 13 tests; Textual pilot cases skipped w/ reasons |
+| ui/palette | ui/palette.py | test_ui_palette.py | verified | 13 tests; widget/pilot cases skipped w/ reasons |
 | ui/plan_panel | ui/plan_panel.py | test_ui_plan_panel.py | todo | |
-| ui/queued_strip | ui/queued_strip.py | test_ui_rewind_queued.py | todo | |
-| ui/rewind_strip | ui/rewind_strip.py | test_ui_rewind.py | todo | |
-| ui/notices | ui/notices.py | (inline uses) | todo | |
-| ui/notifications | ui/notifications.py | test_ui_notifications.py | todo | |
-| ui/themes | ui/themes.py | test_ui_themes.py | todo | |
+| ui/queued_strip | ui/queued_strip.py | test_ui_rewind_queued.py (queued cases) | verified | 4 tests |
+| ui/rewind_strip | ui/rewind_strip.py | test_ui_rewind.py | verified | 13 tests |
+| ui/notices | ui/notices.py | test_ui_chrome.py (NoticeSlot cases) | verified | 9 tests |
+| ui/notifications | ui/notifications.py | test_ui_notifications.py | verified | 15 tests, pure port |
+| ui/themes | ui/themes.py | test_ui_themes.py | verified | exact hex tables |
 | ui/splash | ui/splash.py | test_ui_splash.py | todo | |
-| ui/motion | ui/motion.py | (inline uses) | todo | |
-| ui/chrome | ui/chrome.py | test_ui_chrome.py | todo | |
-| ui/file_mentions | ui/file_mentions.py | test_ui_file_mentions.py | todo | |
+| ui/motion | ui/motion.py | (oracle-pinned) | verified | shimmer_band pinned vs live Python for 5 lengths; timers are app-assembly |
+| ui/chrome | ui/chrome.py | test_ui_chrome.py | verified | 12 tests; TitleBar reactive watchers → setters + terminal-title dedupe; spinner timer is app-assembly |
+| ui/file_mentions | ui/file_mentions.py | test_ui_file_mentions.py | verified | 4 tests; MentionHost trait replaces Textual widget plumbing |
 | ui/app_support | ui/app_support.py | test_ui_app_support.py | todo | |
 | ui/app (composition root) | ui/app.py | test_ui_snapshots.py, flow tests | todo | maps onto rust-mvp main.rs/app.rs |
 | ui/runtime_adapter | ui/runtime_adapter.py | test_runtime_adapter_*.py | todo | Rust side = CoreClientRuntime; Textual-thread specifics n/a |
