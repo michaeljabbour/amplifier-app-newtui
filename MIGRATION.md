@@ -48,12 +48,12 @@ Python backend behind `serve`.
 
 | Unit | Python source | Python tests pinned | Status | Caveats |
 |---|---|---|---|---|
-| kernel/events (normalization) | kernel/events.py | test_kernel_events_normalize.py, test_kernel_event_canary.py | todo | |
+| kernel/events (normalization) | kernel/events.py | test_kernel_events_normalize.py, test_kernel_event_canary.py | verified | UIEvent = internally-tagged serde enum; wire shape oracle-checked vs model_dump(mode="json") incl. Decimal-as-string; canary/QueueBridge cases deferred to queue_bridge seam (backend) |
 | kernel/cost | kernel/cost.py | test_kernel_cost.py, test_cost_parity_appcli.py | todo | includes wiring `provider_response_usage` → live token/cost tallies in the Rust client (known $0.0000 gap) |
-| kernel/git_yield | kernel/git_yield.py | (covered via turn_yield tests) | todo | |
+| kernel/git_yield | kernel/git_yield.py | test_kernel_turn_yield.py (git cases) | verified | asyncio subprocess → blocking Command w/ kill-on-timeout; capture_git_patch/_line_count oracle-backed; +tempfile dev-dep |
 | kernel/turn_yield | kernel/turn_yield.py | test_kernel_turn_yield.py | todo | |
 | kernel/approval (decision logic) | kernel/approval.py | test_kernel_approval.py, test_kernel_approval_governance.py | todo | decision logic only; broker IO stays Python |
-| kernel/reminder_trust | kernel/reminder_trust.py | test_denial_injection_trust.py | todo | |
+| kernel/reminder_trust | kernel/reminder_trust.py | test_denial_injection_trust.py | verified | 2 cases skipped (need kernel/runtime replay + ui render layers); regex edges oracle-checked |
 | kernel/safety | kernel/safety.py | test_kernel_safety.py | todo | |
 | kernel/evidence | kernel/evidence.py | test_kernel_evidence.py | todo | |
 | kernel/surface_hint | kernel/surface_hint.py | test_kernel_surface_hint.py | todo | |
@@ -62,9 +62,9 @@ Python backend behind `serve`.
 | kernel/trackers/stream_status | kernel/trackers/stream_status.py | test_kernel_trackers.py | todo | |
 | kernel/trackers/task_status | kernel/trackers/task_status.py | test_kernel_trackers.py, test_kernel_trackers_spawner.py | todo | |
 | kernel/display | kernel/display.py | (inline uses) | todo | |
-| kernel/file_mentions | kernel/file_mentions.py | test_kernel_file_mentions.py | todo | |
-| kernel/mention_expansion | kernel/mention_expansion.py | test_kernel_mention_expansion.py | todo | |
-| kernel/prompt_history | kernel/prompt_history.py | test_kernel_prompt_history.py | todo | |
+| kernel/file_mentions | kernel/file_mentions.py | test_kernel_file_mentions.py | verified | casefold→to_lowercase; non-UTF-8 names via to_string_lossy (unreachable in pinned tests) |
+| kernel/mention_expansion | kernel/mention_expansion.py | test_kernel_mention_expansion.py | n/a | thin wrapper over external amplifier_foundation.mentions (engine upstream, ~658 lines); serve backend already expands on submit (runtime.py _expand_mentions) and bound-skips surface as Notification events — Rust client sends raw prompt; reimplementing upstream would violate the no-reimplementation rule |
+| kernel/prompt_history | kernel/prompt_history.py | test_kernel_prompt_history.py | verified | all 15 cases + get_project_slug inline-ported from kernel/config.py; timestamp comment UTC not local; negative-limit escape hatch unrepresentable (usize) |
 | kernel/serve, runtime, session_manager, session_factory, spawner, persistence, config, config_ops, mcp_config, setup, updater, bundle_*, notify_admin, routing_admin, source_admin, clipboard, demo, tool_cli, queue_bridge, recipes, reset, rewind, session_ops, compaction, jsonl, approval broker, governance_hook, directory_permissions | — | — | n/a | backend concerns: stay Python behind `serve`; the Rust client consumes their effects via the protocol |
 
 ## Layer 3 — commands/
