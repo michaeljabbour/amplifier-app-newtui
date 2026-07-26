@@ -114,9 +114,9 @@ Python backend behind `serve`.
 | ui/motion | ui/motion.py | (oracle-pinned) | verified | shimmer_band pinned vs live Python for 5 lengths; timers are app-assembly |
 | ui/chrome | ui/chrome.py | test_ui_chrome.py | verified | 12 tests; TitleBar reactive watchers → setters + terminal-title dedupe; spinner timer is app-assembly |
 | ui/file_mentions | ui/file_mentions.py | test_ui_file_mentions.py | verified | 4 tests; MentionHost trait replaces Textual widget plumbing |
-| ui/app_support | ui/app_support.py | test_ui_app_support.py | todo | |
+| ui/app_support | ui/app_support.py | test_ui_app_support.py + 2 deferred outcome cases | verified | pure helpers ported (esc chain → resolve_esc, plan ladder → plan_surface, clipboard via std::process); orchestration fns (echo_steer, finish_turn_queues, footer_state, announce_*) are app-assembly items |
 | ui/app (composition root) | ui/app.py | test_ui_snapshots.py, flow tests | todo | maps onto rust-mvp main.rs/app.rs |
-| ui/runtime_adapter | ui/runtime_adapter.py | test_runtime_adapter_*.py | todo | Rust side = CoreClientRuntime; Textual-thread specifics n/a |
+| ui/runtime_adapter | ui/runtime_adapter.py | test_runtime_adapter_*.py | verified | RuntimeAdapter trait + ClientRuntimeAdapter over Box<dyn Runtime>; serve wire carries only submit/approve/interrupt — session ops answer Python "session still starting" until protocol grows ops (documented); config_ops save contract ported privately, oracle-verified; asyncio marshalling cases n/a with reasons |
 | ui/term_probe | ui/term_probe.py | test_ui_term_probe.py | verified | patch_legacy_alt_named_keys n/a (Textual XTermParser surgery); crossterm alt+enter check flagged for integration |
 | ui/config_view | ui/config_view.py | test_ui_config_view.py | verified | all 7 cases; spans oracle-verified incl. 'no None configured' quirk |
 | ui/directory_admin | ui/directory_admin.py | test_ui_directory_admin.py | verified | all 5 cases; host trait flattens adapter/allocator; persistence stays behind protocol |
@@ -124,7 +124,7 @@ Python backend behind `serve`.
 | ui/command_context | ui/command_context.py | test_command_context_contract.py, test_command_context_app.py | verified | contract enforced by compiler (AppCommandContext: &dyn CommandContext); CommandHost trait = the app-assembly surface |
 | ui/config_admin | ui/config_admin.py | test_ui_config_admin.py | verified | all 8 cases; config_ops save contract pinned via oracle (scope-path/deep-merge stays backend) |
 | ui/session_ops_controller | ui/session_ops_controller.py | test_ui_session_ops_controller.py | verified | all 26 cases; run_worker async → sync SessionOpsAdapter trait; mcp_config touchpoints live on SessionOpsHost |
-| ui/demo_wiring | ui/demo_wiring.py | (demo flow tests) | todo | needs reducer |
+| ui/demo_wiring | ui/demo_wiring.py | test_kernel_demo_data.py (data slice) + oracle tests | verified | inlines minimal kernel/demo data slice; tick_tokens RNG draws pinned as constants (CPython string-seeding not reimplemented); interrupted-close-out branch stays with legacy DemoRuntime |
 
 ## Layer 5 — Integration
 

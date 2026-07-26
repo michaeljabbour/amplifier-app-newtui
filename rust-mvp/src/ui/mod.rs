@@ -2,7 +2,9 @@
 //! function of `App` state: title bar, transcript, live tail, composer/approval,
 //! footer. Colors are theme tokens, not literals scattered through logic.
 
+pub mod app_support;
 pub mod approval_bar;
+pub mod demo_wiring;
 pub mod command_context;
 pub mod config_view;
 pub mod directory_admin;
@@ -28,6 +30,7 @@ pub mod palette;
 pub mod config_admin;
 pub mod queued_strip;
 pub mod reducer;
+pub mod runtime_adapter;
 pub mod session_ops_controller;
 pub mod rewind_strip;
 pub mod segments;
