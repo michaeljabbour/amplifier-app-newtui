@@ -58,8 +58,11 @@ pub enum Block {
 }
 
 /// Running session tallies shown in the footer.
+///
+/// `cost` is exact money (`Decimal`, like the Python app's ledger) — the
+/// per-usage figures come from `kernel::cost` pricing, never f64 math.
 #[derive(Clone, Debug, Default)]
 pub struct Tallies {
     pub tokens: u64,
-    pub cost: f64,
+    pub cost: rust_decimal::Decimal,
 }

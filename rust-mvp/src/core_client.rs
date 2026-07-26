@@ -132,5 +132,18 @@ mod tests {
         assert!(transcript.contains("Read 3 files"), "tool line (from tool_post)");
         assert!(transcript.contains("/health"), "streamed answer");
         assert!(transcript.contains("files: 1"), "turn rule from prompt_complete yield");
+
+        // The backend's two provider_response_usage events (1200/340/800/100
+        // and 900/120/0/0, claude-sonnet-4-5) accumulate live: 460 output
+        // tokens, and exactly $0.00924 + $0.0045 = $0.01374 (oracle-checked
+        // against the Python kernel.cost.cost_of over the fallback table).
+        use rust_decimal::Decimal;
+        use std::str::FromStr;
+        assert_eq!(app.tallies.tokens, 460, "output tokens from usage events");
+        assert_eq!(
+            app.tallies.cost,
+            Decimal::from_str("0.01374").unwrap(),
+            "session cost priced from usage events"
+        );
     }
 }

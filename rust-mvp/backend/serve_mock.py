@@ -50,6 +50,25 @@ def read_op() -> dict | None:
         return {}
 
 
+def usage_event(event_id: str, **fields) -> None:
+    """One ``provider_response_usage`` in the exact shape kernel/serve.py puts
+    on the wire (pydantic ``model_dump(mode="json")`` of ProviderResponseUsage:
+    full envelope, ``cost_usd`` null unless the provider reported one)."""
+    event(
+        "provider_response_usage",
+        event_id=event_id,
+        session_id="core-01",
+        parent_id=None,
+        ts=time.time(),
+        input_tokens=fields.get("input_tokens", 0),
+        output_tokens=fields.get("output_tokens", 0),
+        cache_read=fields.get("cache_read", 0),
+        cache_write=fields.get("cache_write", 0),
+        model=fields.get("model", "claude-sonnet-4-5"),
+        cost_usd=fields.get("cost_usd"),
+    )
+
+
 def run_turn(prompt: str) -> str:
     """A scripted turn in the REAL event vocabulary (kernel/events.py kinds),
     incl. an approval that PARKS until the UI answers over the protocol. This is
@@ -59,6 +78,10 @@ def run_turn(prompt: str) -> str:
     event("notification", message="Thinking…", level="info")
     time.sleep(DELAY)
     event("tool_post", tool_name="read_files", result={"summary": "Read 3 files · ran 2 commands"})
+    time.sleep(DELAY)
+    # First provider response of the turn (the planning/tool round).
+    usage_event("ev-usage-1", input_tokens=1200, output_tokens=340,
+                cache_read=800, cache_write=100)
     time.sleep(DELAY)
 
     # Park on approval: emit the ticket-bearing record (the one `run` can't), then
@@ -78,6 +101,7 @@ def run_turn(prompt: str) -> str:
             event("stream_block_delta", text=w + " ")
             time.sleep(DELAY)
         event("stream_block_end")
+        usage_event("ev-usage-denied", input_tokens=600, output_tokens=80)
         event("prompt_complete", response=response, files_changed=0, diffstat="")
         return response
 
@@ -92,6 +116,8 @@ def run_turn(prompt: str) -> str:
         event("stream_block_delta", text=w + " ")
         time.sleep(DELAY)
     event("stream_block_end")
+    # Final provider response (the streamed answer round).
+    usage_event("ev-usage-2", input_tokens=900, output_tokens=120)
     event("prompt_complete", response=response, files_changed=1, diffstat="+18/−0")
     return response
 

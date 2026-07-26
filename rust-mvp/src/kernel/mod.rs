@@ -10,6 +10,7 @@ pub mod events;
 pub mod evidence;
 pub mod file_mentions;
 pub mod git_yield;
+pub mod governance_hook;
 pub mod prompt_history;
 pub mod reminder_trust;
 pub mod safety;

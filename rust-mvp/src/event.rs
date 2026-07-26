@@ -2,6 +2,8 @@
 //! (scripted or, later, the real amplifier-core) emits exactly these typed
 //! events. The UI never sees anything else.
 
+use crate::kernel::events::ProviderResponseUsage;
+
 #[derive(Clone, Debug)]
 pub enum UiEvent {
     /// User's line, echoed instantly at submit.
@@ -17,6 +19,10 @@ pub enum UiEvent {
     StreamStart,
     StreamDelta(String),
     StreamEnd,
+    /// Token usage from one provider response (`provider_response_usage`) —
+    /// the typed kernel event, verbatim off the wire. Drives live token
+    /// tallies and cost (priced via `kernel::cost`).
+    Usage(ProviderResponseUsage),
     /// End of turn: shipped-outcome label + cost, enriches the turn rule.
     TurnComplete { files: u32, added: u32, removed: u32, tokens: u64, cost: f64 },
     /// Transient notice (floats, non-durable).

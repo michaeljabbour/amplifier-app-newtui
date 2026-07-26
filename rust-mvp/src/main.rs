@@ -184,7 +184,10 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 mod tests {
     use super::*;
     use amplifier_newtui_rs::event::UiEvent;
+    use amplifier_newtui_rs::kernel::events::ProviderResponseUsage;
     use ratatui::backend::TestBackend;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
 
     /// Headless render smoke test — the analogue of the Python app's Pilot tests.
     /// Drives a full scripted turn's events through the reducer and asserts the
@@ -206,17 +209,30 @@ mod tests {
         }
         assert_eq!(app.state, TurnState::AwaitingApproval);
 
-        // Approve, then stream the answer.
+        // Approve, then stream the answer — with the provider usage event a
+        // real serve turn emits (1200 in / 340 out / 800 cache-read /
+        // 100 cache-write on claude-sonnet-4-5 → exactly $0.00924 on the
+        // fallback pricing table, oracle-checked against Python cost_of).
         app.state = TurnState::Running;
         app.on_event(UiEvent::StreamStart);
         for w in "I've added a /health endpoint.".split_inclusive(' ') {
             app.on_event(UiEvent::StreamDelta(w.into()));
         }
         app.on_event(UiEvent::StreamEnd);
-        app.on_event(UiEvent::TurnComplete { files: 1, added: 18, removed: 0, tokens: 1240, cost: 0.0123 });
+        app.on_event(UiEvent::Usage(ProviderResponseUsage {
+            session_id: "demo-01".into(),
+            input_tokens: 1200,
+            output_tokens: 340,
+            cache_read: 800,
+            cache_write: 100,
+            model: "claude-sonnet-4-5".into(),
+            ..ProviderResponseUsage::default()
+        }));
+        app.on_event(UiEvent::TurnComplete { files: 1, added: 18, removed: 0, tokens: 0, cost: 0.0 });
 
         assert_eq!(app.state, TurnState::Idle);
-        assert!((app.tallies.cost - 0.0123).abs() < 1e-9);
+        assert_eq!(app.tallies.tokens, 340);
+        assert_eq!(app.tallies.cost, Decimal::from_str("0.00924").unwrap());
 
         terminal.draw(|f| ui::draw(f, &app)).unwrap();
         let text = buffer_text(terminal.backend().buffer());
@@ -225,7 +241,7 @@ mod tests {
         assert!(text.contains("Read 3 files"), "tool line missing");
         assert!(text.contains("/health endpoint"), "streamed answer missing");
         assert!(text.contains("files 1 · +18/−0"), "turn rule missing");
-        assert!(text.contains("chat ·"), "footer mode/cost missing");
+        assert!(text.contains("chat · 340 tok · $0.0092"), "footer shows non-zero usage cost");
     }
 
     #[test]
