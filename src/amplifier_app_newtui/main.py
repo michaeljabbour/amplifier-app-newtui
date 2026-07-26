@@ -650,6 +650,7 @@ def resume(session_id: str | None, bundle: str | None, limit: int) -> None:
             resolved = session_manager.resolve(_session_store(), session_id)
         except FileNotFoundError:
             click.echo(f"no session found matching '{session_id}'", err=True)
+            _echo_cross_project_hint(session_id)
             raise SystemExit(1) from None
         except ValueError as error:
             click.echo(str(error), err=True)
