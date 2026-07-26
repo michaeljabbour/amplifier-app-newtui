@@ -1,0 +1,148 @@
+"""Offline end-to-end test of the ``serve`` protocol loop.
+
+Drives :func:`amplifier_app_newtui.kernel.serve.serve_loop` against a REAL
+``RealRuntime`` mounted on the fake-module bundle from ``test_runtime_offline``
+(real foundation lifecycle, real ``ApprovalBroker`` through the Rust
+``process_hook_result`` path) — no API key, no network.
+
+Proves the two things a live smoke would: (1) a full turn streams to stdout as
+the schema-v1 protocol and terminates with ``turn.completed``; (2) the
+bidirectional approval round-trip — the backend emits ``approval.required`` with
+a broker ticket id and parks until an ``approve`` submission answers it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import queue
+import threading
+from typing import IO, Any, cast
+
+import pytest
+
+from amplifier_app_newtui.kernel.approval import ALLOW_ONCE, DENY
+from amplifier_app_newtui.kernel.serve import serve_loop
+
+# Started-runtime + policy-hook helpers; the offline_env fixture comes from
+# conftest (shared with test_runtime_offline).
+from tests.test_runtime_offline import _register_policy_hook, _started_runtime
+
+pytestmark = pytest.mark.asyncio
+
+
+class _PipeStdin:
+    """A blocking line source the test feeds on demand (request/response timing).
+
+    ``serve_loop`` iterates it on a reader thread; ``feed`` enqueues a line,
+    ``close`` signals EOF.
+    """
+
+    def __init__(self) -> None:
+        self._q: queue.Queue[str | None] = queue.Queue()
+
+    def feed(self, obj: dict[str, Any]) -> None:
+        self._q.put(json.dumps(obj) + "\n")
+
+    def close(self) -> None:
+        self._q.put(None)
+
+    def __iter__(self) -> _PipeStdin:
+        return self
+
+    def __next__(self) -> str:
+        item = self._q.get()
+        if item is None:
+            raise StopIteration
+        return item
+
+
+class _Capture:
+    """Collect emitted protocol lines (written only on the event loop thread)."""
+
+    def __init__(self) -> None:
+        self.lines: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+
+    def write(self, s: str) -> int:
+        for part in s.splitlines():
+            part = part.strip()
+            if part:
+                with self._lock:
+                    self.lines.append(json.loads(part))
+        return len(s)
+
+    def flush(self) -> None:  # noqa: D401 — file-like
+        pass
+
+    def types(self) -> list[str]:
+        with self._lock:
+            return [r.get("type", "") for r in self.lines]
+
+    def kinds(self) -> list[str]:
+        with self._lock:
+            return [r["event"].get("kind", "") for r in self.lines if r.get("type") == "runtime.event"]
+
+    def find(self, type_: str) -> dict[str, Any] | None:
+        with self._lock:
+            return next((r for r in self.lines if r.get("type") == type_), None)
+
+
+async def _wait_until(predicate, timeout: float = 5.0) -> None:
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("condition not met within timeout")
+
+
+async def _run_with_choice(offline_env, choice: str) -> _Capture:
+    """Drive one real turn through serve_loop, answering its approval with
+    *choice* over the protocol. Returns the captured protocol stream."""
+    runtime = await _started_runtime(offline_env["project"])
+    _register_policy_hook(runtime)  # makes write_file require a real ask_user
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))
+    )
+
+    stdin.feed({"op": "submit", "text": "please write hello.txt with hi"})
+
+    # Streaming flows first, then the turn PARKS on a real broker ticket.
+    await _wait_until(lambda: out.find("approval.required") is not None)
+    approval = out.find("approval.required")
+    assert approval is not None
+    assert out.find("turn.completed") is None, "must still be parked before answer"
+
+    stdin.feed({"op": "approve", "ticket_id": approval["ticket_id"], "choice": choice})
+    await _wait_until(lambda: out.find("turn.completed") is not None)
+    stdin.close()
+    await server
+    return out
+
+
+async def test_serve_approval_allow(offline_env) -> None:
+    """Allow: the parked turn resumes, the tool runs, turn.completed carries it."""
+    out = await _run_with_choice(offline_env, ALLOW_ONCE)
+
+    assert out.types()[0] == "session.started"
+    approval = out.find("approval.required")
+    assert approval is not None
+    assert approval["ticket_id"] and approval["options"][0] == "Allow once"
+    # Real normalized vocabulary streamed over the wire before/after the park.
+    for expected in ("prompt_submit", "stream_block_delta", "tool_post"):
+        assert expected in out.kinds(), f"missing {expected} in {out.kinds()}"
+    completed = out.find("turn.completed")
+    assert completed is not None
+    assert "wrote hello.txt" in completed["response"]  # the tool ran post-approval
+
+
+async def test_serve_approval_deny_continues(offline_env) -> None:
+    """Deny-and-continue: the turn still completes, but the tool never ran."""
+    out = await _run_with_choice(offline_env, DENY)
+
+    completed = out.find("turn.completed")
+    assert completed is not None
+    assert "Denied" in completed["response"]  # FakeLoop's deny branch
+    assert "tool_post" not in out.kinds()  # write_file did not execute

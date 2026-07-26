@@ -53,10 +53,15 @@ async def serve(
     model: str | None = None,
     provider: str | None = None,
     resume_id: str | None = None,
+    project_dir: Any = None,
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
 ) -> int:
-    """Run the interactive protocol loop until stdin closes. Returns an exit code."""
+    """Boot a RealRuntime and run the interactive protocol loop on stdio.
+
+    Returns an exit code. Construction lives here; the loop lives in
+    :func:`serve_loop`, which a test can drive against a pre-started runtime.
+    """
     runtime_kwargs: dict[str, Any] = {"bundle": bundle}
     if resume_id is not None:
         runtime_kwargs["resume_id"] = resume_id
@@ -64,17 +69,35 @@ async def serve(
         runtime_kwargs["model_override"] = model
     if provider is not None:
         runtime_kwargs["provider_override"] = provider
+    if project_dir is not None:
+        runtime_kwargs["project_dir"] = project_dir
     if mode is not None:
         mode_value = mode
         runtime_kwargs["mode"] = lambda: mode_value
     runtime = RealRuntime(**runtime_kwargs)
 
-    records = JsonlRecords()
     # Capture the real stdout BEFORE redirecting stray module prints to stderr —
     # exactly the discipline the ``run`` JSONL path uses so the protocol stream
     # stays clean while boot/module chatter still goes somewhere visible.
     out = stdout or sys.stdout
     source = stdin or sys.stdin
+
+    with redirect_stdout(sys.stderr):
+        try:
+            await runtime.start()
+        except Exception as caught:  # noqa: BLE001 — boot failure is a structured terminal record
+            _emit_raw(out, {"schema_version": 1, "type": "error",
+                            "error": str(caught), "error_type": type(caught).__name__})
+            return 1
+        return await serve_loop(runtime, source=source, out=out)
+
+
+async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> int:
+    """The protocol loop over an already-started ``runtime``: emit session start,
+    stream events, and service ``submit``/``approve``/``interrupt`` submissions
+    until ``source`` closes. Split out so tests drive it with a fake-module
+    runtime (real broker, no key/network)."""
+    records = JsonlRecords()
     loop = asyncio.get_running_loop()
 
     # stdin is blocking; read it on a thread and marshal ops onto the loop.
@@ -95,90 +118,82 @@ async def serve(
 
     threading.Thread(target=_read_stdin, daemon=True, name="serve-stdin").start()
 
-    with redirect_stdout(sys.stderr):
-        try:
-            await runtime.start()
-        except Exception as caught:  # noqa: BLE001 — boot failure is a structured terminal record
-            _emit_raw(out, {"schema_version": 1, "type": "error",
-                            "error": str(caught), "error_type": type(caught).__name__})
-            return 1
+    _emit_raw(out, records.session_started(
+        session_id=runtime.session_id,
+        bundle=runtime.bundle_name,
+        model=runtime.model_name,
+    ).model_dump(mode="json"))
 
-        _emit_raw(out, records.session_started(
-            session_id=runtime.session_id,
-            bundle=runtime.bundle_name,
-            model=runtime.model_name,
-        ).model_dump(mode="json"))
+    # Approvals: the broker owns the ticket id the UIEvent lacks. On every queue
+    # change, surface the head ticket once (id + prompt + options) so the UI can
+    # answer it by id. Fires in-loop (RealRuntime runs here, not on a separate
+    # thread), so writing to stdout from the listener is safe.
+    announced: set[str] = set()
 
-        # Approvals: the broker owns the ticket id the UIEvent lacks. On every
-        # queue change, surface the head ticket once (id + prompt + options) so
-        # the UI can answer it by id. Fires in-loop (RealRuntime runs here, not
-        # on a separate thread), so writing to stdout from the listener is safe.
-        announced: set[str] = set()
+    def _on_broker_change() -> None:
+        head = runtime.broker.head
+        if head is not None and head.ticket_id not in announced:
+            announced.add(head.ticket_id)
+            _emit_raw(out, {
+                "schema_version": 1,
+                "type": "approval.required",
+                "ticket_id": head.ticket_id,
+                "prompt": head.prompt,
+                "options": list(head.options),
+            })
 
-        def _on_broker_change() -> None:
-            head = runtime.broker.head
-            if head is not None and head.ticket_id not in announced:
-                announced.add(head.ticket_id)
-                _emit_raw(out, {
-                    "schema_version": 1,
-                    "type": "approval.required",
-                    "ticket_id": head.ticket_id,
-                    "prompt": head.prompt,
-                    "options": list(head.options),
-                })
+    runtime.broker.add_listener(_on_broker_change)
 
-        runtime.broker.add_listener(_on_broker_change)
+    # One pump drains normalized events for the whole session. The broker
+    # listener owns approval_required (with its id), so it is filtered here.
+    async def _pump() -> None:
+        while True:
+            event = await runtime.queue.get()
+            if getattr(event, "kind", "") == "approval_required":
+                continue
+            _emit_raw(out, records.runtime_event(event).model_dump(mode="json"))
 
-        # One pump drains normalized events for the whole session. The broker
-        # listener owns approval_required (with its id), so it is filtered here.
-        async def _pump() -> None:
-            while True:
-                event = await runtime.queue.get()
-                if getattr(event, "kind", "") == "approval_required":
-                    continue
-                _emit_raw(out, records.runtime_event(event).model_dump(mode="json"))
+    pump = asyncio.create_task(_pump())
+    turn: asyncio.Task[str] | None = None
 
-        pump = asyncio.create_task(_pump())
-        turn: asyncio.Task[str] | None = None
-
-        try:
-            while True:
-                op = await ops.get()
-                kind = op.get("op")
-                if kind in ("__eof__", "quit"):
-                    break
-                if kind == "submit":
-                    if turn is not None and not turn.done():
-                        continue  # a turn is already running; ignore re-submit
-                    text = str(op.get("text", ""))
-                    turn = asyncio.create_task(_run_turn(runtime, out, text))
-                elif kind == "approve":
-                    ticket = op.get("ticket_id") or (
-                        runtime.broker.head.ticket_id if runtime.broker.head else None
-                    )
-                    choice = str(op.get("choice", "Deny"))
-                    if ticket:
-                        try:
-                            runtime.broker.answer(ticket, choice)
-                        except KeyError:
-                            pass  # already resolved / timed out
-                elif kind == "interrupt":
-                    asyncio.create_task(runtime.interrupt())  # noqa: RUF006 — fire-and-forget
-        finally:
-            # Let an in-flight turn finish (the pump keeps draining its events) so
-            # a piped one-shot `submit` completes cleanly on stdin EOF; only then
-            # stop the pump and tear down. An interactive client that wants to
-            # abort sends `interrupt` rather than closing the pipe.
-            if turn is not None and not turn.done():
-                try:
-                    await turn
-                except Exception:  # noqa: BLE001 — a failed turn already emitted its record
-                    pass
-            pump.cancel()
+    try:
+        while True:
+            op = await ops.get()
+            kind = op.get("op")
+            if kind in ("__eof__", "quit"):
+                break
+            if kind == "submit":
+                if turn is not None and not turn.done():
+                    continue  # a turn is already running; ignore re-submit
+                text = str(op.get("text", ""))
+                turn = asyncio.create_task(_run_turn(runtime, out, text))
+            elif kind == "approve":
+                ticket = op.get("ticket_id") or (
+                    runtime.broker.head.ticket_id if runtime.broker.head else None
+                )
+                choice = str(op.get("choice", "Deny"))
+                if ticket:
+                    try:
+                        runtime.broker.answer(ticket, choice)
+                    except KeyError:
+                        pass  # already resolved / timed out
+            elif kind == "interrupt":
+                asyncio.create_task(runtime.interrupt())  # noqa: RUF006 — fire-and-forget
+    finally:
+        # Let an in-flight turn finish (the pump keeps draining its events) so a
+        # piped one-shot `submit` completes cleanly on stdin EOF; only then stop
+        # the pump and tear down. An interactive client that wants to abort sends
+        # `interrupt` rather than closing the pipe.
+        if turn is not None and not turn.done():
             try:
-                await runtime.cleanup()
-            except Exception:  # noqa: BLE001 — best-effort teardown
+                await turn
+            except Exception:  # noqa: BLE001 — a failed turn already emitted its record
                 pass
+        pump.cancel()
+        try:
+            await runtime.cleanup()
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            pass
     return 0
 
 
