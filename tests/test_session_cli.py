@@ -26,11 +26,20 @@ def scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SessionStore:
     return SessionStore()
 
 
-def _seed(store: SessionStore, session_id: str, *, name: str = "", messages: int = 0) -> None:
+def _seed(
+    store: SessionStore,
+    session_id: str,
+    *,
+    name: str = "",
+    messages: int = 0,
+    turns: int | None = None,
+) -> None:
     transcript = [{"role": "user", "content": f"m{i}"} for i in range(messages)]
-    metadata = {"session_id": session_id, "bundle": "newtui"}
+    metadata: dict[str, object] = {"session_id": session_id, "bundle": "newtui"}
     if name:
         metadata["name"] = name
+    if turns is not None:
+        metadata["turn_count"] = turns
     store.save(session_id, transcript, metadata)
 
 
@@ -49,6 +58,64 @@ def test_session_list_shows_rows(scratch: SessionStore) -> None:
     assert result.exit_code == 0
     assert "auth work" in result.output
     assert "abc12345" in result.output
+
+
+# -- sessions (top-level, shares session-list's renderer) -------------------
+
+
+def test_sessions_empty(scratch: SessionStore) -> None:
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "no stored sessions" in result.output
+
+
+def test_sessions_renders_named_table(scratch: SessionStore) -> None:
+    _seed(scratch, "abc12345", name="auth work", messages=3, turns=2)
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    # The rich table headers, not a bare wall of ids (S3).
+    for header in ("Name", "Session", "Msgs", "Turns", "Age"):
+        assert header in result.output
+    assert "auth work" in result.output
+    assert "abc12345" in result.output
+
+
+def test_sessions_matches_session_list(scratch: SessionStore) -> None:
+    _seed(scratch, "abc12345", name="auth work", messages=3, turns=2)
+    _seed(scratch, "def67890", name="ui polish", messages=5, turns=4)
+    top = CliRunner().invoke(main, ["sessions"])
+    grouped = CliRunner().invoke(main, ["session", "list"])
+    assert top.exit_code == 0
+    assert grouped.exit_code == 0
+    # One shared renderer: identical table for the same store.
+    assert top.output == grouped.output
+
+
+def test_sessions_shows_turns_when_recorded(scratch: SessionStore) -> None:
+    _seed(scratch, "abc12345", name="auth work", messages=6, turns=3)
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "3" in result.output
+
+
+def test_sessions_turns_dash_when_not_stored(scratch: SessionStore) -> None:
+    # No turn_count in metadata → the Turns cell degrades to em dash, not 0.
+    _seed(scratch, "abc12345", name="auth work", messages=6)
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "—" in result.output
+
+
+def test_sessions_plain_prints_bare_ids(scratch: SessionStore) -> None:
+    _seed(scratch, "abc12345", name="auth work", messages=3, turns=2)
+    _seed(scratch, "def67890", name="ui polish", messages=5, turns=4)
+    result = CliRunner().invoke(main, ["sessions", "--plain"])
+    assert result.exit_code == 0
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert set(lines) == {"abc12345", "def67890"}
+    # Plain output is ids-only: no table chrome.
+    assert "Name" not in result.output
+    assert "Session" not in result.output
 
 
 # -- session rename ---------------------------------------------------------

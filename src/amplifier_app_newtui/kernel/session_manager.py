@@ -68,7 +68,11 @@ class SessionSummary:
     ``messages`` is the transcript line count (fast: one ``wc``-style pass,
     matching app-cli's ``_get_session_display_info``); ``mtime`` is the
     directory modification time used for newest-first ordering and the
-    human ``time_ago`` label.
+    human ``time_ago`` label. ``turns`` is the user-turn count the
+    incremental saver records as ``turn_count`` in ``metadata.json``
+    (see :class:`~amplifier_app_newtui.kernel.persistence.SessionSaver`);
+    it is ``None`` when the stored metadata predates that field rather than
+    a fabricated zero.
     """
 
     session_id: str
@@ -76,6 +80,7 @@ class SessionSummary:
     bundle: str = "unknown"
     messages: int = 0
     mtime: float = 0.0
+    turns: int | None = None
 
     @property
     def short_id(self) -> str:
@@ -138,11 +143,15 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
         pass
     name = ""
     bundle = "unknown"
+    turns: int | None = None
     if (session_dir / METADATA_FILENAME).is_file():
         try:
             metadata = store.get_metadata(session_id)
             name = str(metadata.get("name", "") or "")
             bundle = str(metadata.get("bundle", "") or "unknown")
+            raw_turns = metadata.get("turn_count")
+            if isinstance(raw_turns, int) and not isinstance(raw_turns, bool):
+                turns = raw_turns
         except (FileNotFoundError, OSError, ValueError):
             pass
     return SessionSummary(
@@ -151,6 +160,7 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
         bundle=bundle,
         messages=_message_count(store, session_id),
         mtime=mtime,
+        turns=turns,
     )
 
 

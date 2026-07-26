@@ -28,11 +28,14 @@ def _seed(
     name: str = "",
     bundle: str = "newtui",
     messages: int = 0,
+    turns: int | None = None,
 ) -> None:
     transcript = [{"role": "user", "content": f"m{i}"} for i in range(messages)]
-    metadata = {"session_id": session_id, "bundle": bundle}
+    metadata: dict[str, object] = {"session_id": session_id, "bundle": bundle}
     if name:
         metadata["name"] = name
+    if turns is not None:
+        metadata["turn_count"] = turns
     store.save(session_id, transcript, metadata)
 
 
@@ -81,6 +84,20 @@ def test_summary_survives_missing_metadata(store: SessionStore) -> None:
     assert summary.name == ""
     assert summary.bundle == "unknown"
     assert summary.messages == 1
+
+
+def test_summary_reads_turn_count_when_stored(store: SessionStore) -> None:
+    _seed(store, "s1", messages=6, turns=3)
+    summary = sm.summary_for(store, "s1")
+    assert summary.turns == 3
+
+
+def test_summary_turns_none_when_not_stored(store: SessionStore) -> None:
+    # The incremental saver records turn_count; older metadata lacks it. The
+    # summary reports None (renderers show "—") rather than fabricating a 0.
+    _seed(store, "s1", messages=6)
+    summary = sm.summary_for(store, "s1")
+    assert summary.turns is None
 
 
 def test_list_summaries_limit(store: SessionStore) -> None:

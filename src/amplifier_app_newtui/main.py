@@ -6,7 +6,7 @@ session (RealRuntime); ``--demo`` swaps in the scripted DemoRuntime
 
 - ``run [PROMPT]`` — one-shot session from an argument or piped stdin;
   emits text, one-document JSON, or live versioned JSONL events.
-- ``sessions``     — list stored session ids for this project.
+- ``sessions``     — named table of stored sessions (``--plain`` for ids).
 - ``resume ID``    — launch the TUI resuming a stored session.
 - ``continue``     — resume the most recent stored session (no picker).
 - ``init``         — interactive provider + routing setup (flags bypass it).
@@ -386,17 +386,61 @@ def run(
     )
 
 
-@main.command()
-def sessions() -> None:
-    """List stored session ids for this project."""
-    from .kernel.runtime import list_sessions
+def _print_session_table(summaries: list[Any]) -> None:
+    """Render session *summaries* as the shared rich table (newest-first).
 
-    stored = list_sessions()
-    if not stored:
+    The single renderer behind both ``sessions`` and ``session list`` so the
+    two can't drift (S3): Name · Session · Bundle · Msgs · Turns · Age. The
+    Turns column reflects the ``turn_count`` the incremental saver records in
+    ``metadata.json``; sessions whose stored metadata predates that field show
+    ``—`` rather than a fabricated ``0``.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    table = Table(title="Sessions", title_justify="center", header_style="bold cyan")
+    table.add_column("Name", style="cyan", overflow="fold")
+    table.add_column("Session", style="green", no_wrap=True)
+    table.add_column("Bundle", style="magenta", no_wrap=True)
+    table.add_column("Msgs", justify="right")
+    table.add_column("Turns", justify="right")
+    table.add_column("Age", style="dim", no_wrap=True)
+    for summary in summaries:
+        table.add_row(
+            summary.name or "—",
+            summary.short_id,
+            summary.bundle,
+            str(summary.messages),
+            "—" if summary.turns is None else str(summary.turns),
+            summary.time_ago,
+        )
+    Console().print(table)
+
+
+@main.command()
+@click.option("--limit", "-n", default=20, show_default=True, help="Number of sessions to show.")
+@click.option(
+    "--plain",
+    is_flag=True,
+    help="Print bare session ids, one per line (machine-readable; no table).",
+)
+def sessions(limit: int, plain: bool) -> None:
+    """List stored sessions for this project (named table, newest first).
+
+    Renders the same rich table as ``session list`` (Name · Session · Bundle ·
+    Msgs · Turns · Age). ``--plain`` restores the ids-only stream for scripts.
+    """
+    from .kernel import session_manager
+
+    summaries = session_manager.list_summaries(_session_store(), limit=limit)
+    if not summaries:
         click.echo("no stored sessions")
         return
-    for session_id in stored:
-        click.echo(session_id)
+    if plain:
+        for summary in summaries:
+            click.echo(summary.session_id)
+        return
+    _print_session_table(summaries)
 
 
 def _session_store():  # noqa: ANN202 — SessionStore (lazy import keeps --demo offline)
@@ -748,31 +792,14 @@ def session(ctx: click.Context) -> None:
 @session.command("list")
 @click.option("--limit", "-n", default=20, show_default=True, help="Number of sessions to show.")
 def session_list(limit: int) -> None:
-    """List stored sessions (name · id · messages · age), newest first."""
-    from rich.console import Console
-    from rich.table import Table
-
+    """List stored sessions (name · id · msgs · turns · age), newest first."""
     from .kernel import session_manager
 
     summaries = session_manager.list_summaries(_session_store(), limit=limit)
     if not summaries:
         click.echo("no stored sessions")
         return
-    table = Table(title="Sessions", title_justify="center", header_style="bold cyan")
-    table.add_column("Name", style="cyan", overflow="fold")
-    table.add_column("Session", style="green", no_wrap=True)
-    table.add_column("Bundle", style="magenta", no_wrap=True)
-    table.add_column("Msgs", justify="right")
-    table.add_column("Age", style="dim", no_wrap=True)
-    for summary in summaries:
-        table.add_row(
-            summary.name or "—",
-            summary.short_id,
-            summary.bundle,
-            str(summary.messages),
-            summary.time_ago,
-        )
-    Console().print(table)
+    _print_session_table(summaries)
 
 
 @session.command("rename")
