@@ -6,6 +6,7 @@ sessions live in a tmp dir, never the developer's real ``~/.amplifier``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -240,6 +241,90 @@ def test_resume_unknown_id_exits_nonzero(scratch: SessionStore) -> None:
     result = CliRunner().invoke(main, ["resume", "zzz"])
     assert result.exit_code == 1
     assert "no session found" in result.output
+
+
+# -- session resume (alias to top-level resume) ----------------------------
+
+
+def test_session_resume_direct_id_matches_top_level(
+    scratch: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``session resume <id>`` reuses the top-level ``resume`` handler."""
+    seen: list[str | None] = []
+
+    async def fake_launch(
+        *, demo: bool, bundle: str | None = None, resume_id: str | None = None
+    ) -> int:
+        seen.append(resume_id)
+        return 0
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+    _seed(scratch, "cafef00d")
+
+    top = CliRunner().invoke(main, ["resume", "cafe"])
+    alias = CliRunner().invoke(main, ["session", "resume", "cafe"])
+
+    assert top.exit_code == 0
+    assert alias.exit_code == 0
+    # Both spellings resolve the same prefix to the same full id.
+    assert seen == ["cafef00d", "cafef00d"]
+
+
+def test_session_resume_unknown_id_exits_nonzero(scratch: SessionStore) -> None:
+    _seed(scratch, "cafef00d")
+    result = CliRunner().invoke(main, ["session", "resume", "zzz"])
+    assert result.exit_code == 1
+    assert "no session found" in result.output
+
+
+def test_session_resume_is_the_same_command_object() -> None:
+    """The alias registers the one Command, not a forked reimplementation."""
+    assert main.commands["session"].commands["resume"] is main.commands["resume"]
+
+
+# -- exit hint (how to resume, printed on TUI exit) ------------------------
+
+
+def test_exit_hint_prints_resume_command(capsys: pytest.CaptureFixture[str]) -> None:
+    main_mod._print_resume_hint("cafef00d1234")
+    printed = capsys.readouterr().out
+    assert "amplifier-newtui resume cafef00d1234" in printed
+    assert "amplifier-newtui sessions" in printed
+
+
+def test_exit_hint_skipped_without_session_id(capsys: pytest.CaptureFixture[str]) -> None:
+    main_mod._print_resume_hint("")
+    assert capsys.readouterr().out == ""
+
+
+def test_launch_tui_prints_hint_on_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The interactive TUI exit path surfaces the resume hint (S4)."""
+    import amplifier_app_newtui.ui.app as app_mod
+    import amplifier_app_newtui.ui.runtime_adapter as adapter_mod
+    import amplifier_app_newtui.ui.term_probe as probe_mod
+
+    class FakeAdapter:
+        def __init__(self, *, bundle: str | None = None, resume_id: str | None = None) -> None:
+            self.session_id = "feedface5678"
+
+    class FakeApp:
+        def __init__(self, adapter: object, *, kitty_protocol: bool) -> None:
+            self.return_code = 0
+
+        async def run_async(self) -> None:
+            return None
+
+    monkeypatch.setattr(adapter_mod, "RealRuntimeAdapter", FakeAdapter)
+    monkeypatch.setattr(app_mod, "NewTuiApp", FakeApp)
+    monkeypatch.setattr(probe_mod, "patch_legacy_alt_named_keys", lambda: None)
+    monkeypatch.setattr(probe_mod, "probe_kitty_protocol", lambda: False)
+
+    printed: list[str] = []
+    monkeypatch.setattr(main_mod, "_print_resume_hint", lambda sid: printed.append(sid))
+
+    code = asyncio.run(main_mod._launch_tui(demo=False))
+    assert code == 0
+    assert printed == ["feedface5678"]
 
 
 # -- continue (most-recent shortcut) ---------------------------------------

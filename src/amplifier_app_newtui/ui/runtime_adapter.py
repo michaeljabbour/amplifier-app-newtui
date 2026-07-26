@@ -181,6 +181,10 @@ class RuntimeAdapter:
         self.model_name: str = ""
         """Primary model id, possibly provider-qualified (``anthropic/x``)."""
         self.session_short: str = ""
+        self.session_id: str = ""
+        """Full stored-session id, surfaced on exit so the CLI can print the
+        exact ``amplifier-newtui resume <id>`` command (S4). Empty for demo
+        sessions, which have no resumable store entry."""
         self.banner: tuple[str, str] = ("", "")
         self.session_cost_start: Decimal = Decimal("0")
         self.turn_base: int = 0
@@ -528,6 +532,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.bundle_name = runtime.bundle_name
         self.model_name = runtime.model_name
         self.session_short = runtime.session_short
+        self.session_id = runtime.session_id
         self.banner = runtime.banner
         self.session_cost_start = runtime.session_cost_start
         self.turn_base = runtime.turn_base
