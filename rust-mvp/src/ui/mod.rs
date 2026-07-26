@@ -3,6 +3,13 @@
 //! footer. Colors are theme tokens, not literals scattered through logic.
 
 pub mod approval_bar;
+pub mod command_context;
+pub mod config_view;
+pub mod directory_admin;
+pub mod lanes_panel;
+pub mod session_ops_view;
+pub mod term_probe;
+pub mod transcript;
 pub mod composer;
 pub mod footer;
 pub mod lane_reducer;

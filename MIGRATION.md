@@ -95,13 +95,13 @@ Python backend behind `serve`.
 | ui/lane_reducer | ui/lane_reducer.py | test_ui_lane_reducer.py | verified | all 13 cases + oracle; LaneReducer OWNS registry/allocator — sharing decision deferred to ui/reducer port |
 | ui/segments | ui/segments.py | (oracle-pinned) | verified | markup emitters byte-identical to Textual escape (oracle); to_ratatui_line replaces to_rich_text; link painting → app-assembly OSC 8 |
 | ui/transcript_render | ui/transcript_render.py | test_ui_transcript_render.py, test_ui_render_*.py | verified | 53 tests; answer_spans-fed cases use oracle-pinned span dumps (rewire to live_tail now that it landed — parity-pass item); unknown-kind TypeError → exhaustive enum |
-| ui/transcript (view) | ui/transcript.py | test_ui_transcript_view.py | todo | |
+| ui/transcript (view) | ui/transcript.py | test_ui_transcript_view.py | verified | all 14 cases adapted (clicks → BlockWidget::click(row), timers injected, messages → TranscriptMsg enum); archive markup oracle-pinned byte-for-byte; assembly wiring documented in module doc |
 | ui/live_tail | ui/live_tail.py | test_ui_transcript_live_tail.py | verified | 26 tests; span pipeline oracle-verified byte-identical on 17-case corpus; timers/paint/consolidate message → return values for app assembly; lookaround italics regex rewritten lookaround-free |
 | ui/composer | ui/composer.py | test_ui_composer.py, test_ui_prompt_history.py | verified | 28 tests; ImageAttachment local stand-in (kernel/clipboard unported); mention regex lookbehind-free, oracle-verified; selection/clipboard model is app-assembly |
 | ui/approval_bar | ui/approval_bar.py | test_ui_approval.py, test_ui_approval_wrap.py | verified | 20 tests; messages → KeyOutcome/ApprovalMsg return values; wrap decision at width 80 oracle-checked; colors await themes wiring at assembly |
 | ui/footer | ui/footer.py | test_ui_footer.py | verified | 24 tests; fit-ladder + wrap thresholds oracle-checked at 5 widths; pass content width (terminal-2) at assembly |
 | ui/keymap | ui/keymap.py | test_ui_keymap.py | verified | all 15 cases 1:1 |
-| ui/lanes_panel | ui/lanes_panel.py | test_ui_lanes.py, test_ui_lanes_needs_you.py | todo | |
+| ui/lanes_panel | ui/lanes_panel.py | test_ui_lanes.py, test_ui_lanes_telemetry.py (panel cases) | verified | 31 tests; width-budget goldens at 80/58 oracle-pinned; reducer-owned telemetry cases deferred to ui/reducer |
 | ui/needs_you | ui/needs_you.py | test_needs_you_real.py | verified | 13 tests; Textual pilot cases skipped w/ reasons |
 | ui/palette | ui/palette.py | test_ui_palette.py | verified | 13 tests; widget/pilot cases skipped w/ reasons |
 | ui/plan_panel | ui/plan_panel.py | test_ui_plan_panel.py | verified | all 7 cases, exact glyphs/widths |
@@ -117,7 +117,14 @@ Python backend behind `serve`.
 | ui/app_support | ui/app_support.py | test_ui_app_support.py | todo | |
 | ui/app (composition root) | ui/app.py | test_ui_snapshots.py, flow tests | todo | maps onto rust-mvp main.rs/app.rs |
 | ui/runtime_adapter | ui/runtime_adapter.py | test_runtime_adapter_*.py | todo | Rust side = CoreClientRuntime; Textual-thread specifics n/a |
-| ui/term_probe, config_view, config_admin, directory_admin, session_ops_view, session_ops_controller, command_context, demo_wiring | various | various | todo | assess during layer 4; some may be n/a (Textual-specific) |
+| ui/term_probe | ui/term_probe.py | test_ui_term_probe.py | verified | patch_legacy_alt_named_keys n/a (Textual XTermParser surgery); crossterm alt+enter check flagged for integration |
+| ui/config_view | ui/config_view.py | test_ui_config_view.py | verified | all 7 cases; spans oracle-verified incl. 'no None configured' quirk |
+| ui/directory_admin | ui/directory_admin.py | test_ui_directory_admin.py | verified | all 5 cases; host trait flattens adapter/allocator; persistence stays behind protocol |
+| ui/session_ops_view | ui/session_ops_view.py | test_ui_session_ops_view.py | verified | all 14 cases + format_time_ago oracle (incl. 0y quirk); input structs mirror unported kernel session_ops/session_manager types (re-export when those port) |
+| ui/command_context | ui/command_context.py | test_command_context_contract.py, test_command_context_app.py | verified | contract enforced by compiler (AppCommandContext: &dyn CommandContext); CommandHost trait = the app-assembly surface |
+| ui/config_admin | ui/config_admin.py | test_ui_config_admin.py | todo | needs config_view (landed) |
+| ui/session_ops_controller | ui/session_ops_controller.py | test_ui_session_ops_controller.py | todo | needs session_ops_view (landed) |
+| ui/demo_wiring | ui/demo_wiring.py | (demo flow tests) | todo | needs reducer |
 
 ## Layer 5 — Integration
 
