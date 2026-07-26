@@ -72,8 +72,8 @@ impl Runtime for CoreClientRuntime {
     fn submit(&mut self, prompt: String) {
         self.send(protocol::submit(&prompt));
     }
-    fn answer_approval(&mut self, granted: bool) {
-        self.send(protocol::approve(granted));
+    fn answer_approval(&mut self, ticket_id: &str, choice: &str) {
+        self.send(protocol::approve(ticket_id, choice));
     }
     fn interrupt(&mut self) {
         self.send(protocol::interrupt());
@@ -107,11 +107,14 @@ mod tests {
             if let Msg::Rt(ev) = msg {
                 let is_complete = matches!(ev, UiEvent::TurnComplete { .. });
                 app.on_event(ev);
-                // The UI answers the parked approval over the same protocol.
+                // The UI answers the parked approval over the same protocol,
+                // routing the broker ticket id + an "Allow" choice back.
                 if app.state == TurnState::AwaitingApproval && !answered {
                     answered = true;
+                    let ticket = app.pending_ticket.take().unwrap_or_default();
+                    assert_eq!(ticket, "approval-1", "ticket id carried over the wire");
                     app.state = TurnState::Running;
-                    rt.answer_approval(true);
+                    rt.answer_approval(&ticket, "Allow once");
                 }
                 if is_complete {
                     completed = true;
@@ -126,8 +129,8 @@ mod tests {
 
         let transcript: String = format!("{:?}", app.blocks);
         assert!(transcript.contains("Add a health check endpoint"), "user line");
-        assert!(transcript.contains("Read 3 files"), "tool line");
+        assert!(transcript.contains("Read 3 files"), "tool line (from tool_post)");
         assert!(transcript.contains("/health"), "streamed answer");
-        assert!((app.tallies.cost - 0.0123).abs() < 1e-9, "priced from backend usage");
+        assert!(transcript.contains("files: 1"), "turn rule from prompt_complete yield");
     }
 }

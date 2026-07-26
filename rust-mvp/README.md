@@ -65,8 +65,18 @@ cargo test --release           # reducer + render + SSE + cross-process protocol
 cargo test --release snapshot -- --nocapture   # print a rendered frame
 ```
 
-`AMPLIFIER_SERVE_CMD` overrides the backend command (point it at the real kernel
-`serve` mode once it exists).
+`AMPLIFIER_SERVE_CMD` overrides the backend command. The **real** backend now
+exists — `amplifier-newtui serve` (`src/amplifier_app_newtui/kernel/serve.py`)
+wraps the live `RealRuntime` + `ApprovalBroker` and speaks this exact wire, so:
+
+```sh
+AMPLIFIER_SERVE_CMD="uv run amplifier-newtui serve" cargo run --release
+```
+
+drives the Rust UI from a real session with **zero changes to amplifier-core**.
+`backend/serve_mock.py` emits the same vocabulary offline (no key, no core) so the
+cross-process test — a full interactive turn incl. an approval answered by ticket
+id — runs anywhere.
 
 ## What it does NOT do (out of MVP scope)
 Real bundle loading, subagent lanes, rewind, persistence, and tool-use over a real

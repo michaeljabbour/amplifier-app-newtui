@@ -10,8 +10,9 @@ pub enum UiEvent {
     Narration(String),
     /// A durable tool record (Channel B).
     ToolLine { summary: String, ok: bool },
-    /// A tool wants approval; the turn parks until answered.
-    ApprovalRequired { action: String },
+    /// A tool wants approval; the turn parks until answered. `ticket_id` routes
+    /// the answer back to the broker (real vocabulary: `approval.required`).
+    ApprovalRequired { ticket_id: String, action: String },
     /// Live streaming answer (Channel A): open, deltas, close.
     StreamStart,
     StreamDelta(String),

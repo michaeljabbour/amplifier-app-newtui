@@ -99,19 +99,19 @@ fn handle_key(app: &mut App, runtime: &mut dyn Runtime, key: KeyEvent) {
     }
 
     match app.state {
-        TurnState::AwaitingApproval => match key.code {
-            KeyCode::Char('y') => {
+        TurnState::AwaitingApproval => {
+            let choice = match key.code {
+                KeyCode::Char('y') => Some("Allow once"),
+                KeyCode::Char('n') | KeyCode::Esc => Some("Deny"),
+                _ => None,
+            };
+            if let Some(choice) = choice {
+                let ticket = app.pending_ticket.take().unwrap_or_default();
                 app.state = TurnState::Running;
                 app.pending_action = None;
-                runtime.answer_approval(true);
+                runtime.answer_approval(&ticket, choice);
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                app.state = TurnState::Running;
-                app.pending_action = None;
-                runtime.answer_approval(false);
-            }
-            _ => {}
-        },
+        }
         _ => match key.code {
             KeyCode::BackTab => app.mode = app.mode.next(),
             KeyCode::Enter => {
@@ -208,7 +208,7 @@ mod tests {
             UiEvent::PromptSubmit("Add a health check endpoint".into()),
             UiEvent::Narration("Thinking…".into()),
             UiEvent::ToolLine { summary: "Read 3 files · ran 2 commands".into(), ok: true },
-            UiEvent::ApprovalRequired { action: "write_file src/health.py".into() },
+            UiEvent::ApprovalRequired { ticket_id: "t1".into(), action: "write_file src/health.py".into() },
         ] {
             app.on_event(ev);
         }

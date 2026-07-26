@@ -50,44 +50,50 @@ def read_op() -> dict | None:
         return {}
 
 
-def run_turn(prompt: str) -> None:
-    """A scripted turn — the shape a real kernel turn produces, incl. an
-    approval that PARKS until the UI answers over the protocol."""
-    event("prompt_submit", text=prompt)
+def run_turn(prompt: str) -> str:
+    """A scripted turn in the REAL event vocabulary (kernel/events.py kinds),
+    incl. an approval that PARKS until the UI answers over the protocol. This is
+    exactly what kernel/serve.py emits from a live RealRuntime turn."""
+    event("prompt_submit", prompt=prompt, mode="chat")
     time.sleep(DELAY)
-    event("narration", text="Thinking…")
+    event("notification", message="Thinking…", level="info")
     time.sleep(DELAY)
-    event("tool_line", summary="Read 3 files · ran 2 commands", ok=True)
+    event("tool_post", tool_name="read_files", result={"summary": "Read 3 files · ran 2 commands"})
     time.sleep(DELAY)
 
-    # Park on approval: emit the request, then block for the UI's decision.
-    event("approval_required", action="write_file src/health.py")
+    # Park on approval: emit the ticket-bearing record (the one `run` can't), then
+    # block for the UI's decision routed back by ticket id.
+    _emit({"schema_version": 1, "type": "approval.required",
+           "ticket_id": "approval-1", "prompt": "write_file src/health.py",
+           "options": ["Allow once", "Allow always", "Deny"]})
     decision = read_op() or {}
-    granted = bool(decision.get("granted")) if decision.get("op") == "approve" else False
+    granted = str(decision.get("choice", "")).startswith("Allow") if decision.get("op") == "approve" else False
 
     if not granted:
-        event("notice", text="Denied — continuing without the write")
-        event("tool_line", summary="write_file src/health.py (denied)", ok=False)
-        event("stream_start")
-        for w in "Understood — I left the endpoint out.".split():
-            event("stream_delta", text=w + " ")
+        event("notification", message="Denied — continuing without the write", level="warn")
+        event("tool_error", tool_name="write_file", error_type="denied")
+        response = "Understood — I left the endpoint out."
+        event("stream_block_start", block_type="text")
+        for w in response.split():
+            event("stream_block_delta", text=w + " ")
             time.sleep(DELAY)
-        event("stream_end")
-        event("turn_complete", files=0, added=0, removed=0, tokens=640, cost=0.0041)
-        return
+        event("stream_block_end")
+        event("prompt_complete", response=response, files_changed=0, diffstat="")
+        return response
 
-    event("tool_line", summary="Changed 1 file  (+18/−0)", ok=True)
+    event("tool_post", tool_name="write_file", result={"summary": "Changed 1 file  (+18/−0)"})
     time.sleep(DELAY)
-    event("stream_start")
-    answer = (
+    response = (
         "I've added a `/health` endpoint that returns 200 with a JSON status "
         "body, wired it into the router, and covered it with a test."
     )
-    for w in answer.split():
-        event("stream_delta", text=w + " ")
+    event("stream_block_start", block_type="text")
+    for w in response.split():
+        event("stream_block_delta", text=w + " ")
         time.sleep(DELAY)
-    event("stream_end")
-    event("turn_complete", files=1, added=18, removed=0, tokens=1240, cost=0.0123)
+    event("stream_block_end")
+    event("prompt_complete", response=response, files_changed=1, diffstat="+18/−0")
+    return response
 
 
 def main() -> None:
@@ -102,7 +108,9 @@ def main() -> None:
         if op is None:  # stdin closed → shut down
             break
         if op.get("op") == "submit":
-            run_turn(str(op.get("text", "")))
+            response = run_turn(str(op.get("text", "")))
+            _emit({"schema_version": 1, "type": "turn.completed",
+                   "session_id": "core-01", "response": response})
         elif op.get("op") == "interrupt":
             event("notice", text="interrupted")
         # other ops ignored in the mock

@@ -13,8 +13,15 @@ use std::time::Duration;
 /// whether events come from a script, an HTTP stream, or (later) amplifier-core.
 pub trait Runtime {
     fn submit(&mut self, prompt: String);
-    fn answer_approval(&mut self, _granted: bool) {}
+    /// Answer a parked approval by ticket id with a broker choice string
+    /// (`"Allow once"` / `"Allow always"` / `"Deny"`).
+    fn answer_approval(&mut self, _ticket_id: &str, _choice: &str) {}
     fn interrupt(&mut self) {}
+}
+
+/// Broker convention: a choice grants iff it is an "Allow"-family string.
+pub fn is_allow(choice: &str) -> bool {
+    choice.starts_with("Allow")
 }
 
 pub struct DemoRuntime {
@@ -48,7 +55,10 @@ impl DemoRuntime {
             beat(260);
 
             // A signature interaction: the write asks for approval and the turn parks.
-            send(UiEvent::ApprovalRequired { action: "write_file src/health.py".into() });
+            send(UiEvent::ApprovalRequired {
+                ticket_id: "demo-1".into(),
+                action: "write_file src/health.py".into(),
+            });
             let granted = arx.recv().unwrap_or(false);
             if !granted {
                 send(UiEvent::Notice("Denied — continuing without the write".into()));
@@ -85,9 +95,9 @@ impl Runtime for DemoRuntime {
         self.run_turn(prompt);
     }
     /// Answer the currently-parked approval (routes back into the worker thread).
-    fn answer_approval(&mut self, granted: bool) {
+    fn answer_approval(&mut self, _ticket_id: &str, choice: &str) {
         if let Some(tx) = self.approval_tx.take() {
-            let _ = tx.send(granted);
+            let _ = tx.send(is_allow(choice));
         }
     }
 }

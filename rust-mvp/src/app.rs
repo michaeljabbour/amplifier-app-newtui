@@ -19,6 +19,7 @@ pub struct App {
     pub tallies: Tallies,
     pub state: TurnState,
     pub pending_action: Option<String>,
+    pub pending_ticket: Option<String>,
     pub notice: Option<String>,
     pub spinner: usize,
     pub scroll: u16,
@@ -39,6 +40,7 @@ impl App {
             tallies: Tallies::default(),
             state: TurnState::Idle,
             pending_action: None,
+            pending_ticket: None,
             notice: None,
             spinner: 0,
             scroll: 0,
@@ -78,9 +80,10 @@ impl App {
             }
             UiEvent::Narration(text) => self.blocks.push(Block::Narration(text)),
             UiEvent::ToolLine { summary, ok } => self.blocks.push(Block::Tool { summary, ok }),
-            UiEvent::ApprovalRequired { action } => {
+            UiEvent::ApprovalRequired { ticket_id, action } => {
                 self.state = TurnState::AwaitingApproval;
                 self.pending_action = Some(action);
+                self.pending_ticket = Some(ticket_id);
             }
             UiEvent::StreamStart => self.live = Some(String::new()),
             UiEvent::StreamDelta(d) => {
