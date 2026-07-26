@@ -242,3 +242,38 @@ def test_branch_rejects_bad_name(store: SessionStore) -> None:
     ok, detail = sm.branch(store, "parent", [], name="bad/name")
     assert not ok
     assert "letters" in detail
+
+
+def test_find_across_projects_prefix_match(tmp_path: Path) -> None:
+    """A session id prefix resolves in ANY project's store, with its
+    working_dir — the backstop for a bare 'no session found' when the user is in
+    a different directory (sessions are stored per project/cwd)."""
+    import json
+
+    home = tmp_path / ".amplifier"
+    a = home / "projects" / "-Users-x-projA" / "sessions" / "abc12345-0000-0000-0000-000000000001"
+    a.mkdir(parents=True)
+    (a / METADATA_FILENAME).write_text(json.dumps({"working_dir": "/Users/x/projA"}))
+    b = home / "projects" / "-Users-x-projB" / "sessions" / "def67890-0000-0000-0000-000000000002"
+    b.mkdir(parents=True)
+    (b / METADATA_FILENAME).write_text(json.dumps({"working_dir": "/Users/x/projB"}))
+
+    assert sm.find_across_projects("abc12", amplifier_home=home) == [
+        ("abc12345-0000-0000-0000-000000000001", "/Users/x/projA")
+    ]
+    assert sm.find_across_projects("zzz", amplifier_home=home) == []
+
+
+def test_find_across_projects_degrades(tmp_path: Path) -> None:
+    """Missing working_dir → ""; missing/empty home → [] (never raises)."""
+    import json
+
+    home = tmp_path / ".amplifier"
+    s = home / "projects" / "-p" / "sessions" / "aaaa1111-0000-0000-0000-000000000000"
+    s.mkdir(parents=True)
+    (s / METADATA_FILENAME).write_text(json.dumps({"turn_count": 3}))  # no working_dir
+    assert sm.find_across_projects("aaaa", amplifier_home=home) == [
+        ("aaaa1111-0000-0000-0000-000000000000", "")
+    ]
+    assert sm.find_across_projects("aaaa", amplifier_home=tmp_path / "nope") == []
+    assert sm.find_across_projects("", amplifier_home=home) == []

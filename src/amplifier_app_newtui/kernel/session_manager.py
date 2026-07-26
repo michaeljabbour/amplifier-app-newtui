@@ -37,6 +37,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from .persistence import METADATA_FILENAME, TRANSCRIPT_FILENAME, SessionStore
@@ -175,6 +176,43 @@ def list_summaries(store: SessionStore, *, limit: int | None = None) -> list[Ses
 def resolve(store: SessionStore, partial_id: str) -> str:
     """Resolve a partial id to one full id (raises like ``find_session``)."""
     return store.find_session(partial_id)
+
+
+def find_across_projects(
+    partial_id: str, amplifier_home: Path | None = None
+) -> list[tuple[str, str]]:
+    """Search EVERY project's session store for a (prefix) id match.
+
+    Sessions live per working directory (``~/.amplifier/projects/<slug>/
+    sessions/``), so a bare ``resume <id>`` only sees the current dir's
+    project — a user who ``cd``'d elsewhere gets a bare "no session found"
+    even though the session exists. This backstops that error with an
+    actionable cross-project hint. Returns ``(full_id, working_dir)`` pairs
+    (working_dir ``""`` when the metadata predates the field). Pure/offline —
+    best-effort, never raises on a malformed store."""
+    import json
+
+    partial = partial_id.strip()
+    root = (amplifier_home or (Path.home() / ".amplifier")) / "projects"
+    out: list[tuple[str, str]] = []
+    if not partial or not root.is_dir():
+        return out
+    for project in sorted(root.iterdir()):
+        sessions = project / "sessions"
+        if not sessions.is_dir():
+            continue
+        for entry in sessions.iterdir():
+            if not (entry.is_dir() and entry.name.startswith(partial)):
+                continue
+            working_dir = ""
+            meta = entry / METADATA_FILENAME
+            if meta.is_file():
+                try:
+                    working_dir = str(json.loads(meta.read_text()).get("working_dir") or "")
+                except (OSError, ValueError):
+                    working_dir = ""
+            out.append((entry.name, working_dir))
+    return out
 
 
 def rename(store: SessionStore, session_id: str, name: str) -> tuple[bool, str]:

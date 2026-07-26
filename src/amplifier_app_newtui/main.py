@@ -479,6 +479,7 @@ def run(
             resume_id = session_manager.resolve(_session_store(), resume)
         except FileNotFoundError:
             click.echo(f"no session found matching '{resume}'", err=True)
+            _echo_cross_project_hint(resume)
             raise SystemExit(1) from None
         except ValueError as error:
             click.echo(str(error), err=True)
@@ -575,6 +576,24 @@ def _session_store():  # noqa: ANN202 — SessionStore (lazy import keeps --demo
     from .kernel.persistence import SessionStore
 
     return SessionStore()
+
+
+def _echo_cross_project_hint(partial: str) -> None:
+    """After a per-project 'no session found', point to the session if it lives
+    in another project. Sessions are stored per working directory, so a bare
+    ``resume <id>`` only sees the current dir's project — this makes the error
+    actionable instead of a dead end."""
+    from .kernel import session_manager
+
+    matches = session_manager.find_across_projects(partial)
+    if not matches:
+        return
+    click.echo("  it exists in another project — resume it from there:", err=True)
+    for full_id, working_dir in matches[:3]:
+        location = working_dir or "(directory unknown)"
+        click.echo(f"    cd {location} && amplifier-newtui resume {full_id[:8]}", err=True)
+    if len(matches) > 3:
+        click.echo(f"    …and {len(matches) - 3} more", err=True)
 
 
 def _pick_session_id(limit: int) -> str | None:
