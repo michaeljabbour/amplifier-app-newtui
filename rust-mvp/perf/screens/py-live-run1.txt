@@ -1,0 +1,36 @@
+                               amplifier-app-newtui — Amplifier — ready — newtui — 39df6c                               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                     ··    _   _···_··   ·    __ ·___ · __·· ··__· _·                                   
+                                   ·         ··    __ \      ·  ·  _··_·   · · ·_·  _                                   
+                                    /· ·   ··   / /·/ / /    /  · /·   · /·  ··   /_· /                                 
+                                   ··· ·/ ·  · /  ····  _· _  ··  ·/  / ·   · ·· _· ··                                  
+                                ·_/    /··  ··/ /    ·_ _· __ / ·   /·· /·  ··/ · · ·                                   
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+█ [auto] ❯ Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )                                 
+ mode auto · auto read,write · asks if risky · bundle newtui · claude-fable-5 · 39df6c · $0.00                          
+                                                                ↑ history · ctrl+j newline · ctrl-r rewind · / commands 

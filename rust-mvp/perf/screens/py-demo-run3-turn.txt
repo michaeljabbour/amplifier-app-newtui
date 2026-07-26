@@ -1,0 +1,36 @@
+                               amplifier-app-newtui — Amplifier — ready — anchors — e07d                                
+                                                                                                                        
+ ❯ [auto] explain what this repo is in simple terms                                                                   ▂ 
+ ● Reading the repo layout and entry points to ground the summary.                                                      
+   ● Ran 2 shell commands · click to expand                                                                             
+                                                                                                                        
+ This repo is the command-line app for Amplifier. If amplifier-core is the engine, this is the                          
+ dashboard and steering wheel: the amplifier command starts sessions, configures providers, loads                       
+ bundles, and renders this UI.                                                                                          
+                                                                                                                        
+ ─────────────────────────────────────────────────────────────────────── 6.1s · 83.9k tok, 91% cached · $0.17 · answer  
+                                                                                                                        
+ ❯ [auto] Add a health check endpoint                                                                                   
+                                                                                                                        
+ · Refactor session store (8s · ↓ 3.8k tok)                                                                             
+   ✔ Audit persistence paths                                                                                            
+   ✔ Migrate history to durable store                                                                                   
+   ✔ Verify and push                                                                                                    
+ ● Mapping every read and write against the current session store.                                                      
+   ● Ran 1 shell command · click to expand                                                                              
+ ● History paths found in three modules. Moving them behind one durable interface.                                      
+   ● Ran 1 shell command · click to expand                                                                              
+ ● Tests green. Preparing the push.                                                                                     
+   ● Ran 1 shell command · click to expand                                                                              
+                                                                                                                        
+ Session store refactor is in: history behind one durable interface, tests pass, branch pushed. Ready                   
+ for review.                                                                                                            
+ ✳ Goal: durable session store. Next: open PR against main.                                                             
+                                                                                                                        
+ ──────────────────────────────────────────────────── 9s · 4.5k tok, 88% cached · $0.13 · 3 files · +142/−38 · tests ✔  
+                                                                                                        agents 1 done   
+─────────────────────────────────────                                                                                   
+  Plan 3/3                                                                                                              
+█ [auto] ❯ Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )                                 
+ mode auto · auto read,write · asks if risky · bundle anchors · gpt-5.5 · e07d · $0.70 ▲                                
+                                                                ↑ history · ctrl+j newline · ctrl-r rewind · / commands 

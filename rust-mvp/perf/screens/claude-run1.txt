@@ -1,0 +1,36 @@
+
+╭─── Claude Code v2.1.220 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                 │ Tips for getting started                                                           │
+│          Welcome back!          │ Run /init to create a CLAUDE.md file with instructions for Claude                  │
+│                                 │ ────────────────────────────────────────────────────────────────────────────────── │
+│            ▗ ▗   ▖ ▖            │ What's new                                                                         │
+│                                 │ Bug fixes and reliability improvements                                             │
+│              ▘▘ ▝▝              │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus model — 1M context, f… │
+│                                 │ Added `sandbox.network.strictAllowlist` setting to deny non-allowlisted hosts for… │
+│   Fable 5 · API Usage Billing   │ /release-notes for more                                                            │
+│   ~/dev/amplifier-app-newtui    │                                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+ ⚠ ANTHROPIC_API_KEY overriding saved Console key · unset it or /logout to clear the saved key
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                       ● high · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "refactor main.py"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

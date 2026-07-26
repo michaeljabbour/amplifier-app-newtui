@@ -1,0 +1,36 @@
+amplifier-app-newtui — Amplifier — ready — newtui — core-01                                                             
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[auto] ❯ Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )
+mode auto · auto read,write · asks if risky · bundle newtui · claude-sonnet-4-5 · core-01 · $0.00                       
+                                                                 ↑ history · ctrl+j newline · ctrl-r rewind · / commands

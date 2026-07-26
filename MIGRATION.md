@@ -140,6 +140,17 @@ Python backend behind `serve`.
 
 **Layers 4/5/6 status: COMPLETE.** Final: 1066 lib + 12 bin tests green (+1 ignored live test), clippy zero warnings, Python suite 2295 green.
 
+## Performance validation (2026-07-26)
+
+Forge-PTY benchmark (rust-mvp/PERFORMANCE.md, raw logs in rust-mvp/perf/): Rust first
+paint 1–5 ms internal (wall measurements at the ~570 ms harness floor) vs 1.0–1.6 s for
+the Python Textual app; UI RSS 4 MB vs ~90 MB; mock-protocol handshake <50 ms. Live
+boots are dominated by the shared Python backend (18–34 s, network-bound) for BOTH
+clients — the client swap does not change backend cost. amplifier-cli (~15 s boot,
+219 MB), codex (~0.9 s to update gate, 50 MB), claude (~2.6 s, 603 MB) recorded as
+environmental reference points only. Demo turn timings are not engine-comparable
+(different scripted turns).
+
 ## Log / caveats
 
 - 2026-07-26: wave 1 (8 independent model units, 7 worktree porters) integrated: 81 unit tests ported+green, clippy clean, full suite 86 passing. deps: +regex, +serde.

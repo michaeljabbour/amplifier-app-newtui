@@ -1,0 +1,36 @@
+amplifier-app-newtui — Amplifier — ready — anchors — e07d                                                               
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[auto] ❯ Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )
+mode auto · auto read,write · asks if risky · bundle anchors · gpt-5.5 · e07d · $0.40                                   
+                                                                 ↑ history · ctrl+j newline · ctrl-r rewind · / commands
