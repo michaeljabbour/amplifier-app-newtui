@@ -2,7 +2,7 @@
 
 End-to-end over DemoRuntime + Pilot: every turn rule records a
 checkpoint; ctrl-r opens the picker on the newest checkpoint with
-``‹ rewind › tN · $<cost> · <label>`` and ‹/› clamped navigation;
+``‹ rewind · pick a turn · turn N · $<cost> · <label>`` and ‹/› clamped navigation;
 clicking a turn rule opens the picker at that checkpoint; Enter forks —
 ledger and transcript trim to the checkpoint (confirm-then-trim).
 """
@@ -59,7 +59,7 @@ async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
         assert app.rewind.display
         # Newest selected by default; exact strip text.
         assert app.rewind.label_text == rewind_line(checkpoints[1])
-        assert app.rewind.label_text.startswith("rewind › t2 · $")
+        assert app.rewind.label_text.startswith("rewind · pick a turn · turn 2 · $")
 
         # ‹ / › navigate, clamped at both ends.
         await pilot.press("left")
@@ -77,7 +77,7 @@ async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
         assert not app.rewind.display
         assert app.footer_bar.state.context == "idle"
         assert footer_right_text(app.footer_bar.state) == (
-            "↑ history · ctrl+j newline · / commands"
+            "↑ history · ctrl+j newline · ctrl-r rewind · / commands"
         )
 
 
