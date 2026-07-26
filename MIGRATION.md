@@ -76,7 +76,7 @@ Python backend behind `serve`.
 | Unit | Python source | Python tests pinned | Status | Caveats |
 |---|---|---|---|---|
 | commands/registry | commands/registry.py | test_commands_registry.py | verified | all 21 cases; CommandContext Protocol → trait (forward-ref members Box<dyn Any> until doctor/improve integrate); errors carry exact CPython/pydantic-validator messages |
-| commands/builtin | commands/builtin.py | test_commands_builtin.py | todo | |
+| commands/builtin | commands/builtin.py | test_commands_builtin.py | verified | all 22 cases; BUILTIN_COMMANDS tuple → builtin_commands() fn; /doctor install probe = current_exe (no importlib.metadata analogue); skills.rs tests now use real build_registry |
 | commands/context | commands/context.py | test_commands_context.py | verified | segment math f64 op-order identical, 9 rows oracle-pinned bit-for-bit; app-level context tests belong to ui layer |
 | commands/copy | commands/copy.py | test_commands_copy.py | verified | all 7 cases, exact redaction strings |
 | commands/doctor | commands/doctor.py | test_commands_doctor.py | verified | all 19 cases; importlib probe → injected probe fn; AnchorsPinStatus → trait (kernel/updater not ported — test-local mirror pins exact strings); +serde_yaml dep |
@@ -85,30 +85,32 @@ Python backend behind `serve`.
 | commands/permissions | commands/permissions.py | test_commands_permissions.py | verified | all 11 cases; exact CPython list.remove message; frozen-mutation pin is compile-time |
 | commands/skills | commands/skills.py | test_commands_skills.py | verified | all 8 cases; tests use minimal build_registry stand-in until commands/builtin lands (then switch to real one) |
 
+**Layer 3 status: COMPLETE — 9/9 commands units verified.**
+
 ## Layer 4 — ui/ (ratatui rebuild)
 
 | Unit | Python source | Python tests pinned | Status | Caveats |
 |---|---|---|---|---|
 | ui/reducer | ui/reducer.py | test_ui_reducer_*.py | todo | grow existing rust-mvp app.rs/event.rs |
-| ui/lane_reducer | ui/lane_reducer.py | test_ui_lane_reducer.py | todo | |
+| ui/lane_reducer | ui/lane_reducer.py | test_ui_lane_reducer.py | verified | all 13 cases + oracle; LaneReducer OWNS registry/allocator — sharing decision deferred to ui/reducer port |
 | ui/segments | ui/segments.py | (oracle-pinned) | verified | markup emitters byte-identical to Textual escape (oracle); to_ratatui_line replaces to_rich_text; link painting → app-assembly OSC 8 |
-| ui/transcript_render | ui/transcript_render.py | test_ui_transcript_render.py, test_ui_render_*.py | todo | |
+| ui/transcript_render | ui/transcript_render.py | test_ui_transcript_render.py, test_ui_render_*.py | verified | 53 tests; answer_spans-fed cases use oracle-pinned span dumps (rewire to live_tail now that it landed — parity-pass item); unknown-kind TypeError → exhaustive enum |
 | ui/transcript (view) | ui/transcript.py | test_ui_transcript_view.py | todo | |
-| ui/live_tail | ui/live_tail.py | test_ui_transcript_live_tail.py | todo | |
-| ui/composer | ui/composer.py | test_ui_composer.py | todo | |
+| ui/live_tail | ui/live_tail.py | test_ui_transcript_live_tail.py | verified | 26 tests; span pipeline oracle-verified byte-identical on 17-case corpus; timers/paint/consolidate message → return values for app assembly; lookaround italics regex rewritten lookaround-free |
+| ui/composer | ui/composer.py | test_ui_composer.py, test_ui_prompt_history.py | verified | 28 tests; ImageAttachment local stand-in (kernel/clipboard unported); mention regex lookbehind-free, oracle-verified; selection/clipboard model is app-assembly |
 | ui/approval_bar | ui/approval_bar.py | test_ui_approval.py, test_ui_approval_wrap.py | verified | 20 tests; messages → KeyOutcome/ApprovalMsg return values; wrap decision at width 80 oracle-checked; colors await themes wiring at assembly |
-| ui/footer | ui/footer.py | test_ui_footer.py | todo | |
+| ui/footer | ui/footer.py | test_ui_footer.py | verified | 24 tests; fit-ladder + wrap thresholds oracle-checked at 5 widths; pass content width (terminal-2) at assembly |
 | ui/keymap | ui/keymap.py | test_ui_keymap.py | verified | all 15 cases 1:1 |
 | ui/lanes_panel | ui/lanes_panel.py | test_ui_lanes.py, test_ui_lanes_needs_you.py | todo | |
 | ui/needs_you | ui/needs_you.py | test_needs_you_real.py | verified | 13 tests; Textual pilot cases skipped w/ reasons |
 | ui/palette | ui/palette.py | test_ui_palette.py | verified | 13 tests; widget/pilot cases skipped w/ reasons |
-| ui/plan_panel | ui/plan_panel.py | test_ui_plan_panel.py | todo | |
+| ui/plan_panel | ui/plan_panel.py | test_ui_plan_panel.py | verified | all 7 cases, exact glyphs/widths |
 | ui/queued_strip | ui/queued_strip.py | test_ui_rewind_queued.py (queued cases) | verified | 4 tests |
 | ui/rewind_strip | ui/rewind_strip.py | test_ui_rewind.py | verified | 13 tests |
 | ui/notices | ui/notices.py | test_ui_chrome.py (NoticeSlot cases) | verified | 9 tests |
 | ui/notifications | ui/notifications.py | test_ui_notifications.py | verified | 15 tests, pure port |
 | ui/themes | ui/themes.py | test_ui_themes.py | verified | exact hex tables |
-| ui/splash | ui/splash.py | test_ui_splash.py | todo | |
+| ui/splash | ui/splash.py | test_ui_splash.py | verified | 13 tests; CPython MT19937 replicated — dissolve frames byte-identical |
 | ui/motion | ui/motion.py | (oracle-pinned) | verified | shimmer_band pinned vs live Python for 5 lengths; timers are app-assembly |
 | ui/chrome | ui/chrome.py | test_ui_chrome.py | verified | 12 tests; TitleBar reactive watchers → setters + terminal-title dedupe; spinner timer is app-assembly |
 | ui/file_mentions | ui/file_mentions.py | test_ui_file_mentions.py | verified | 4 tests; MentionHost trait replaces Textual widget plumbing |

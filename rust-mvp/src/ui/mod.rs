@@ -3,6 +3,13 @@
 //! footer. Colors are theme tokens, not literals scattered through logic.
 
 pub mod approval_bar;
+pub mod composer;
+pub mod footer;
+pub mod lane_reducer;
+pub mod live_tail;
+pub mod plan_panel;
+pub mod splash;
+pub mod transcript_render;
 pub mod chrome;
 pub mod file_mentions;
 pub mod keymap;

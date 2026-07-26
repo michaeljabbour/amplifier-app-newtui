@@ -126,9 +126,7 @@ pub fn register_skill_commands<S: SkillLike>(
 // ---------------------------------------------------------------------------
 // Tests — port of tests/test_commands_skills.py (all cases). The fake
 // context mirrors tests/conftest.py's FakeCommandContext; `build_registry`
-// stands in for commands/builtin.py's seed (not yet ported) with just the
-// built-ins these tests collide with (/mode, /status, /skill), using the
-// real builtin descriptions and handler behaviors.
+// is the real commands/builtin.py seed.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -139,6 +137,7 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::*;
+    use crate::commands::builtin::build_registry;
     use crate::model::blocks::{BlockIdAllocator, TranscriptBlock};
     use crate::model::queues::{NeedsYouQueue, SteeringQueue};
     use crate::model::trust::DenialLog;
@@ -171,51 +170,6 @@ mod tests {
             description: description.to_string(),
             shortcut: shortcut.to_string(),
         }
-    }
-
-    /// Minimal stand-in for `commands.builtin.build_registry()` — the
-    /// builtin module is a later unit; these are the three seeded rows the
-    /// pinned tests touch, with their real descriptions and handlers.
-    fn build_registry() -> CommandRegistry {
-        let mode: CommandHandler = Arc::new(|ctx: &dyn CommandContext, args: &str| {
-            if args.trim().is_empty() {
-                ctx.cycle_mode();
-            } else {
-                ctx.set_mode(args.trim());
-            }
-        });
-        let status: CommandHandler =
-            Arc::new(|ctx: &dyn CommandContext, _args: &str| ctx.show_status());
-        let skill: CommandHandler =
-            Arc::new(|ctx: &dyn CommandContext, args: &str| ctx.load_skill(args.trim()));
-        CommandRegistry::with_specs([
-            CommandSpec::new(
-                CommandGroup::During,
-                "/mode",
-                "cycle or jump posture: chat, plan, brainstorm, build, auto",
-                "built-in",
-                mode,
-            )
-            .unwrap()
-            .with_key_action("cycle_mode"),
-            CommandSpec::new(
-                CommandGroup::During,
-                "/status",
-                "session status: model, mode, messages, cost",
-                "built-in",
-                status,
-            )
-            .unwrap(),
-            CommandSpec::new(
-                CommandGroup::During,
-                "/skill",
-                "load a skill by name: /skill <name>",
-                "skill",
-                skill,
-            )
-            .unwrap(),
-        ])
-        .expect("seed registry builds")
     }
 
     /// Port of `tests/conftest.py::FakeCommandContext` — records every

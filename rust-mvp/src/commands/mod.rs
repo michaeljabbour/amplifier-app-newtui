@@ -2,6 +2,7 @@
 //! command specs, parsing, and block-building handlers. Dispatch side
 //! effects stay with the app shell / backend.
 
+pub mod builtin;
 pub mod context;
 pub mod doctor;
 pub mod copy;
