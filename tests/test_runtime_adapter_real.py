@@ -147,6 +147,7 @@ class FakeRealRuntime:
         self.bundle_name = "fake-bundle"
         self.model_name = "fake/model-1"
         self.session_short = "abc12345"
+        self.session_id = "abc12345deadbeef"
         self.banner = ("Fake Banner", "subtitle")
         self.session_cost_start = Decimal("1.25")
         self.turn_base = 3

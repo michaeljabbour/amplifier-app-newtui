@@ -51,7 +51,21 @@ async def _launch_tui(
         adapter = RealRuntimeAdapter(bundle=bundle, resume_id=resume_id)
     app = NewTuiApp(adapter, kitty_protocol=probe_kitty_protocol())
     await app.run_async()
+    _print_resume_hint(getattr(adapter, "session_id", ""))
     return app.return_code or 0
+
+
+def _print_resume_hint(session_id: str) -> None:
+    """On TUI exit, tell the user how to get back into this session.
+
+    Mirrors amplifier-app-cli's farewell banner with the CORRECT newtui
+    commands (S4 / #148): real sessions carry a stored id; demo sessions
+    do not, so the hint is skipped when there is nothing to resume.
+    """
+    if not session_id:
+        return
+    click.echo(f"resume this session: amplifier-newtui resume {session_id}")
+    click.echo("list sessions:       amplifier-newtui sessions")
 
 
 async def _run_once(
@@ -881,6 +895,13 @@ def session_fork(session_id: str, directive: str, new_name: str) -> None:
         raise SystemExit(1)
     click.echo(f"forked {resolved[:8]} → {detail}")
     click.echo(f"resume to run the directive: amplifier-newtui resume {detail[:8]}")
+
+
+# ``session resume <id>`` — alias to the top-level ``resume`` command, so both
+# amplifier-app-cli spellings work (``resume`` interactive + ``session resume
+# <id>``). Registering the same Command object reuses the one handler rather
+# than forking the logic (S4 / #148).
+session.add_command(resume, "resume")
 
 
 @main.command()
