@@ -165,9 +165,16 @@ async def serve(
                 elif kind == "interrupt":
                     asyncio.create_task(runtime.interrupt())  # noqa: RUF006 — fire-and-forget
         finally:
-            pump.cancel()
+            # Let an in-flight turn finish (the pump keeps draining its events) so
+            # a piped one-shot `submit` completes cleanly on stdin EOF; only then
+            # stop the pump and tear down. An interactive client that wants to
+            # abort sends `interrupt` rather than closing the pipe.
             if turn is not None and not turn.done():
-                turn.cancel()
+                try:
+                    await turn
+                except Exception:  # noqa: BLE001 — a failed turn already emitted its record
+                    pass
+            pump.cancel()
             try:
                 await runtime.cleanup()
             except Exception:  # noqa: BLE001 — best-effort teardown
