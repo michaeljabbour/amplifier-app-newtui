@@ -75,14 +75,14 @@ Python backend behind `serve`.
 
 | Unit | Python source | Python tests pinned | Status | Caveats |
 |---|---|---|---|---|
-| commands/registry | commands/registry.py | test_commands_registry.py | todo | |
+| commands/registry | commands/registry.py | test_commands_registry.py | verified | all 21 cases; CommandContext Protocol → trait (forward-ref members Box<dyn Any> until doctor/improve integrate); errors carry exact CPython/pydantic-validator messages |
 | commands/builtin | commands/builtin.py | test_commands_builtin.py | todo | |
-| commands/context | commands/context.py | test_commands_context.py | todo | |
-| commands/copy | commands/copy.py | test_commands_copy.py | todo | |
+| commands/context | commands/context.py | test_commands_context.py | verified | segment math f64 op-order identical, 9 rows oracle-pinned bit-for-bit; app-level context tests belong to ui layer |
+| commands/copy | commands/copy.py | test_commands_copy.py | verified | all 7 cases, exact redaction strings |
 | commands/doctor | commands/doctor.py | test_commands_doctor.py | todo | |
-| commands/export | commands/export.py | test_commands_export.py | todo | |
-| commands/improve | commands/improve.py | test_commands_improve.py | todo | |
-| commands/permissions | commands/permissions.py | test_commands_permissions.py | todo | |
+| commands/export | commands/export.py | test_commands_export.py | verified | injectable datetime → ExportStamp struct; now() stamps UTC vs Python local (filename only) |
+| commands/improve | commands/improve.py | test_commands_improve.py | verified | all 10 cases; Counter insertion order preserved via ask_order Vec |
+| commands/permissions | commands/permissions.py | test_commands_permissions.py | verified | all 11 cases; exact CPython list.remove message; frozen-mutation pin is compile-time |
 | commands/skills | commands/skills.py | test_commands_skills.py | todo | |
 
 ## Layer 4 — ui/ (ratatui rebuild)
