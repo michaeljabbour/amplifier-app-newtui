@@ -28,11 +28,29 @@ impl CoreClientRuntime {
             .args(&cmd[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
 
         let stdout = child.stdout.take().expect("child stdout");
+        let stderr = child.stderr.take().expect("child stderr");
         let stdin = child.stdin.take().expect("child stdin");
+
+        // serve keeps its protocol stream clean by redirecting boot/module
+        // chatter to stderr; forward it so the splash can show what's loading.
+        let chatter_tx = tx.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if chatter_tx.send(Msg::BootChatter(line.to_string())).is_err() {
+                    break;
+                }
+            }
+        });
 
         thread::spawn(move || {
             let reader = BufReader::new(stdout);

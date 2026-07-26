@@ -39,7 +39,7 @@ fn main() -> io::Result<()> {
     //   default   → CoreClientRuntime: client of a backend process over the
     //               protocol (the canonical shape; drop-in for amplifier-core)
     let args: Vec<String> = std::env::args().collect();
-    let mut app = if args.iter().any(|a| a == "--demo") {
+    let mut app = if args.iter().any(|a| a == "--demo" || a == "demo") {
         demo_app(&tx)
     } else if args.iter().any(|a| a == "--direct") {
         match LiveRuntime::from_env(tx.clone()) {
@@ -89,6 +89,7 @@ fn main() -> io::Result<()> {
             Msg::Term(CEvent::Resize(w, h)) => app.on_resize(w, h),
             Msg::Term(_) => {}
             Msg::Rt(ev) => app.handle_wire(ev),
+            Msg::BootChatter(line) => app.on_boot_chatter(&line),
             Msg::Tick => app.tick(),
         }
         if app.should_quit() {
@@ -176,7 +177,9 @@ fn spawn_input_reader(tx: Sender<Msg>) {
 
 fn spawn_ticker(tx: Sender<Msg>) {
     thread::spawn(move || loop {
-        thread::sleep(Duration::from_millis(120));
+        // Faster than the quickest animation (splash 50ms); each animation
+        // gates itself on its own cadence inside App::tick.
+        thread::sleep(Duration::from_millis(25));
         if tx.send(Msg::Tick).is_err() {
             break;
         }

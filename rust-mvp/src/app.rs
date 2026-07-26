@@ -563,6 +563,12 @@ pub struct App {
     /// Core version learned over the protocol (`""` until it lands).
     pub core_version: RefCell<String>,
     kitty_protocol: bool,
+    /// Per-animation cadence clocks: the loop tick fires faster than any single
+    /// animation, so each advances only when its own interval elapsed
+    /// (splash 0.05s, lane shimmer 0.08s, title spinner 0.26s — Python parity).
+    last_splash_frame: std::cell::Cell<f64>,
+    last_motion_frame: std::cell::Cell<f64>,
+    last_spinner_frame: std::cell::Cell<f64>,
 }
 
 impl App {
@@ -610,6 +616,9 @@ impl App {
             allocator: RefCell::new(BlockIdAllocator::starting_at(APP_ID_RANGE_START)),
             core_version: RefCell::new(String::new()),
             kitty_protocol,
+            last_splash_frame: std::cell::Cell::new(0.0),
+            last_motion_frame: std::cell::Cell::new(0.0),
+            last_spinner_frame: std::cell::Cell::new(0.0),
         }
     }
 
@@ -1470,18 +1479,36 @@ impl App {
         if ui.transcript.compaction_pending() {
             ui.transcript.compact_history();
         }
-        if ui.title.running() {
+        if ui.title.running() && now - self.last_spinner_frame.get() >= crate::ui::chrome::SPINNER_INTERVAL {
+            self.last_spinner_frame.set(now);
             let _ = ui.title.advance_spinner();
         }
-        if ui.lanes_panel.motion_running() {
+        if ui.lanes_panel.motion_running()
+            && now - self.last_motion_frame.get() >= crate::ui::lanes_panel::LANE_MOTION_INTERVAL_SECONDS
+        {
+            self.last_motion_frame.set(now);
             ui.lanes_panel.advance_motion();
         }
         let (width, height) = (ui.term_width as usize, ui.term_height as usize);
-        if let Some(splash) = ui.splash.as_mut() {
-            let _ = splash.advance(width, height.saturating_sub(4));
+        if ui.splash.is_some() && now - self.last_splash_frame.get() >= crate::ui::splash::FRAME_SECONDS {
+            self.last_splash_frame.set(now);
+            if let Some(splash) = ui.splash.as_mut() {
+                let _ = splash.advance(width, height.saturating_sub(4));
+            }
         }
         drop(ui);
         self.settle_after_event();
+    }
+
+    /// Backend boot chatter (the serve process's stderr): while the splash is
+    /// up, show the latest line as the boot status so slow module loads are
+    /// visible — the Rust analogue of the Python app's `boot_progress` phases.
+    pub fn on_boot_chatter(&mut self, line: &str) {
+        let mut ui = self.ui.borrow_mut();
+        if let Some(splash) = ui.splash.as_mut() {
+            let text: String = line.chars().take(72).collect();
+            let _ = splash.set_status(&text);
+        }
     }
 
     /// The footer's frozen paint state, derived per frame.
