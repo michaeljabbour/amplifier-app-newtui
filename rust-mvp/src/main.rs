@@ -2,15 +2,7 @@
 //! events, and spinner ticks all arrive as `Msg` on a single channel — the Rust
 //! analogue of the app-loop queue in `ui/app.py`.
 
-mod app;
-mod core_client;
-mod event;
-mod live;
-mod message;
-mod model;
-mod protocol;
-mod runtime;
-mod ui;
+use amplifier_newtui_rs::{app, core_client, live, message, runtime, ui};
 
 use app::{App, TurnState};
 use core_client::CoreClientRuntime;
@@ -191,7 +183,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::UiEvent;
+    use amplifier_newtui_rs::event::UiEvent;
     use ratatui::backend::TestBackend;
 
     /// Headless render smoke test — the analogue of the Python app's Pilot tests.
