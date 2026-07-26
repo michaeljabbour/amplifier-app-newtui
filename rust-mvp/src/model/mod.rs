@@ -7,6 +7,7 @@ pub mod formatting;
 pub mod injection;
 pub mod lanes;
 pub mod modes;
+pub mod native_modes;
 pub mod queues;
 pub mod redaction;
 pub mod terminal;

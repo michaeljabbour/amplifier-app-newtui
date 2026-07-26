@@ -37,7 +37,9 @@ Port order respects intra-layer deps: wave 1 = independent units; then turn → 
 | model/blocks | model/blocks.py | test_model_blocks.py | verified | TranscriptBlock = serde internally-tagged enum (exact `kind` literals); pydantic range validators approximated by unsigned types (upper bounds unchecked); frozen → immutability by convention; wire shape oracle-pinned vs model_dump_json |
 | model/modes | model/modes.py | test_model_modes_trust.py | verified | MODE_PROFILES dict → const table in cycle order; negative-modulo cycle wrap oracle-verified |
 | model/lanes | model/lanes.py | test_model_turn_queues_lanes.py, test_model_lane_steering.py | verified | kwargs → RegisterOptions/LaneUpdate structs; accessors return owned clones; Field(ge=0) via unsigned types; fuzzy routing + labels oracle-pinned (test_model_lane_steering.py targets queues unit, already ported) |
-| model/native_modes | model/native_modes.py | test_model_native_modes.py | todo | needs modes, trust |
+| model/native_modes | model/native_modes.py | test_model_native_modes.py | verified | add/remove/clear return new instances (identity pin → value-equality pin); notice strings oracle-pinned verbatim |
+
+**Layer 1 status: COMPLETE — 13/13 units verified, 140 lib tests + 3 bin tests green, clippy clean.**
 
 ## Layer 2 — kernel pure logic
 
