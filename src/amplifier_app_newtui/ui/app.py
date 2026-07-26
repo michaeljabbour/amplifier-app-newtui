@@ -51,7 +51,7 @@ from ..model.blocks import (
     UserLine,
 )
 from ..model.lanes import LaneRegistry
-from ..model.modes import DEFAULT_MODE, ModeProfile, cycle_mode, get_mode
+from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
 from ..model.turn import OutcomeLedger
 from . import app_support, keymap, notifications
@@ -152,7 +152,13 @@ class NewTuiApp(App[None]):
 
     BINDINGS = app_support.global_bindings()
 
-    def __init__(self, adapter: RuntimeAdapter, *, kitty_protocol: bool = True) -> None:
+    def __init__(
+        self,
+        adapter: RuntimeAdapter,
+        *,
+        kitty_protocol: bool = True,
+        initial_mode: str | None = None,
+    ) -> None:
         super().__init__()
         register_themes(self)  # before first stylesheet parse (NOTES: chrome)
         self.theme = theme_id(DEFAULT_THEME)
@@ -164,7 +170,9 @@ class NewTuiApp(App[None]):
         self.lanes = LaneRegistry()
         self.journal = ApprovalJournal()
         self.permissions = PermissionSurface()
-        self._mode: ModeProfile = get_mode(DEFAULT_MODE)
+        # ``initial_mode`` seeds the opening interaction posture (the launcher's
+        # --mode override); None / unknown ids fall back to DEFAULT_MODE.
+        self._mode: ModeProfile = get_mode(initial_mode)
         self._commands = build_registry()
         self._ctx = AppCommandContext(self)
         self.session_ops = SessionOpsController(self)
