@@ -42,7 +42,8 @@ use crate::commands::permissions::PermissionSurface;
 use crate::commands::registry::{CommandRegistry, CommandSpec};
 use crate::kernel::events as ev;
 use crate::model::blocks::{
-    Answer, BlockIdAllocator, Segment, StyleToken, TodoItem, TranscriptBlock, UserLine,
+    Answer, BlockIdAllocator, EvidenceBlock, Segment, StyleToken, TodoItem, TranscriptBlock,
+    UserLine,
 };
 use crate::model::lanes::LaneRegistry;
 use crate::model::modes::{cycle_mode, get_mode, ModeProfile};
@@ -59,7 +60,7 @@ use crate::ui::app_support::{
     APPROVAL_NOTICE_DURATION, QUEUED_NOTICE,
 };
 use crate::ui::approval_bar::{ApprovalBar, ApprovalMsg, KeyOutcome, DEFAULT_OPTIONS};
-use crate::ui::chrome::TitleBar;
+use crate::ui::chrome::{TitleBar, TitleChanged};
 use crate::ui::command_context::{AppCommandContext, CommandHost};
 use crate::ui::composer::{Composer, ComposerMessage};
 use crate::ui::config_admin::{self, ConfigAdminHost};
@@ -73,6 +74,7 @@ use crate::ui::keymap::Context;
 use crate::ui::lanes_panel::{LanesMsg, LanesPanel};
 use crate::ui::live_tail::LiveTail;
 use crate::ui::notices::NoticeSlot;
+use crate::ui::notifications::Reason;
 use crate::ui::palette::{PaletteMessage, PaletteStrip};
 use crate::ui::plan_panel::PlanPanel;
 use crate::ui::queued_strip::QueuedStrip;
@@ -85,7 +87,8 @@ use crate::ui::session_ops_view::{
 };
 use crate::ui::splash::BootSplash;
 use crate::ui::themes::{theme, Theme, DEFAULT_THEME, THEME_TOKENS};
-use crate::ui::transcript::TranscriptView;
+use crate::ui::transcript::{TranscriptMsg, TranscriptView};
+use crate::ui::FrameLayout;
 
 /// App-side block ids mint from a disjoint range so they can never collide
 /// with the reducer-owned allocator (`b1`, `b2`, …). See module docs.
@@ -181,6 +184,19 @@ pub struct UiState {
     pub live_tail_deadline: Option<f64>,
     /// Transcript resize-reflow debounce deadline (monotonic).
     pub reflow_deadline: Option<f64>,
+    /// Wheel-scroll offset honored while the tail anchor is released
+    /// (`transcript.follow()` false); clamped to content at draw time.
+    pub transcript_scroll: usize,
+    /// Turn-start timestamp (monotonic) — the attention bell's elapsed basis.
+    pub turn_started_at: Option<f64>,
+    /// The attention bell should ring (`\x07`); the main loop drains it.
+    /// Python rings only via the driver-safe `App.bell`; neither client
+    /// models terminal focus, so this follows the same observable rule
+    /// (turn ≥ ATTENTION_MIN_TURN_SECONDS, deferrals always).
+    pub bell_pending: bool,
+    /// The native terminal title to emit (OSC), already deduped by
+    /// `TitleBar::repaint`; the main loop drains it.
+    pub pending_title: Option<String>,
 }
 
 impl UiState {
@@ -223,6 +239,19 @@ impl UiState {
             turn_queues_pending: false,
             live_tail_deadline: None,
             reflow_deadline: None,
+            transcript_scroll: 0,
+            turn_started_at: None,
+            bell_pending: false,
+            pending_title: None,
+        }
+    }
+
+    /// Park a [`TitleChanged`] for the main loop's OSC-title writer (the
+    /// Rust rendering of Python forwarding `TitleChanged` to
+    /// `write_terminal_title`; dedupe already happened in `TitleBar`).
+    pub fn note_title(&mut self, changed: Option<TitleChanged>) {
+        if let Some(changed) = changed {
+            self.pending_title = Some(changed.terminal_title);
         }
     }
 
@@ -364,15 +393,27 @@ impl ReducerHost for Shell {
         let mut ui = self.0.borrow_mut();
         ui.turn_active = true;
         ui.composer.running = true;
-        ui.title.set_running(true);
+        ui.turn_started_at = Some(monotonic()); // attention-bell elapsed basis
+        let changed = ui.title.set_running(true);
+        ui.note_title(changed);
     }
 
     fn turn_finished(&mut self) {
         let mut ui = self.0.borrow_mut();
         ui.turn_active = false;
         ui.composer.running = false;
-        ui.title.set_running(false);
+        let changed = ui.title.set_running(false);
+        ui.note_title(changed);
         ui.turn_queues_pending = true; // drained once end-of-turn events settle (§5)
+        // Attention signal (Python `_notify_attention("turn_finished")`):
+        // ring after long turns only — policy + rationale in
+        // app_support::attention_bell_needed. Caveat: Python's rung 1 is the
+        // driver-safe `App.bell`; neither client knows terminal focus, so
+        // the rule is purely elapsed-time-based here too.
+        let elapsed = ui.turn_started_at.take().map_or(0.0, |at| monotonic() - at);
+        if app_support::attention_bell_needed(Reason::TurnFinished, elapsed, None) {
+            ui.bell_pending = true;
+        }
     }
 
     fn lanes_changed(&mut self) {
@@ -562,6 +603,8 @@ pub struct App {
     pub allocator: RefCell<BlockIdAllocator>,
     /// Core version learned over the protocol (`""` until it lands).
     pub core_version: RefCell<String>,
+    /// Last frame's hit-testing geometry, written by [`crate::ui::draw`].
+    pub layout: RefCell<FrameLayout>,
     kitty_protocol: bool,
     /// Per-animation cadence clocks: the loop tick fires faster than any single
     /// animation, so each advances only when its own interval elapsed
@@ -615,6 +658,7 @@ impl App {
             denial_log: Mutex::new(DenialLog::new()),
             allocator: RefCell::new(BlockIdAllocator::starting_at(APP_ID_RANGE_START)),
             core_version: RefCell::new(String::new()),
+            layout: RefCell::new(FrameLayout::default()),
             kitty_protocol,
             last_splash_frame: std::cell::Cell::new(0.0),
             last_motion_frame: std::cell::Cell::new(0.0),
@@ -659,8 +703,10 @@ impl App {
         ui.bundle = bundle.to_string();
         ui.model_name = model.to_string();
         ui.session_short = session_short.to_string();
-        ui.title.set_bundle(bundle.to_string());
-        ui.title.set_session_short(session_short.to_string());
+        let changed = ui.title.set_bundle(bundle.to_string());
+        ui.note_title(changed);
+        let changed = ui.title.set_session_short(session_short.to_string());
+        ui.note_title(changed);
         ui.composer.seed_history(history);
         ui.file_mentions.set_files(files);
         for notice in notices {
@@ -774,7 +820,9 @@ impl App {
 
     fn sync_title(&mut self) {
         let state = self.reducer.title_state();
-        self.ui.borrow_mut().title.set_state_text(state);
+        let mut ui = self.ui.borrow_mut();
+        let changed = ui.title.set_state_text(state);
+        ui.note_title(changed);
     }
 
     fn sync_rewind_checkpoints(&mut self) {
@@ -815,6 +863,11 @@ impl App {
                         ..DeferOptions::default()
                     },
                 );
+            }
+            // A deferred decision blocks on the human: always worth
+            // notifying (Python `_notify_attention("decision_deferred")`).
+            if app_support::attention_bell_needed(Reason::DecisionDeferred, 0.0, None) {
+                self.ui.borrow_mut().bell_pending = true;
             }
         }
     }
@@ -986,6 +1039,211 @@ impl App {
             bar.update_wrap(width as usize);
         }
         ui.sync_plan_surfaces();
+    }
+
+    // -- mouse -------------------------------------------------------------------
+    //
+    // Hit-testing runs against the [`FrameLayout`] the last `ui::draw`
+    // recorded, so clicks map to exactly what is on screen. The ported
+    // units own the semantics (`BlockWidget::click`, `ApprovalBar::click`,
+    // `LanesPanel::on_click`, `TranscriptView::on_mouse_scroll_*`).
+
+    fn rect_contains(rect: ratatui::layout::Rect, x: u16, y: u16) -> bool {
+        x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+    }
+
+    /// Mouse wheel over the transcript (Python `on_mouse_scroll_up/_down`):
+    /// wheel-up releases the tail-follow anchor; wheel-down re-arms it once
+    /// the view is back at the bottom.
+    pub fn on_mouse_scroll(&mut self, up: bool, x: u16, y: u16) {
+        let (rect, total) = {
+            let layout = self.layout.borrow();
+            (layout.transcript, layout.transcript_total_lines)
+        };
+        if !Self::rect_contains(rect, x, y) {
+            return;
+        }
+        /// Textual's default vertical wheel sensitivity (lines per notch).
+        const WHEEL_STEP: usize = 2;
+        let bottom = total.saturating_sub(rect.height as usize);
+        let mut ui = self.ui.borrow_mut();
+        let current = if ui.transcript.follow() {
+            bottom
+        } else {
+            ui.transcript_scroll.min(bottom)
+        };
+        if up {
+            ui.transcript_scroll = current.saturating_sub(WHEEL_STEP);
+            ui.transcript.on_mouse_scroll_up();
+        } else {
+            let next = (current + WHEEL_STEP).min(bottom);
+            ui.transcript_scroll = next;
+            ui.transcript.on_mouse_scroll_down(next >= bottom);
+        }
+    }
+
+    /// A left-button press at screen (x, y).
+    pub fn on_mouse_down(&mut self, x: u16, y: u16) {
+        let layout = self.layout.borrow().clone();
+
+        // Approval option chips / the composer's [mode] badge (chunk 7).
+        if Self::rect_contains(layout.input, x, y) {
+            let row = (y - layout.input.y) as usize;
+            let col = (x - layout.input.x) as usize;
+            let approval_open = self.ui.borrow().approval.is_some();
+            if approval_open {
+                // Python `on_approval_bar_option_clicked`: select + confirm.
+                let hit = {
+                    let ui = self.ui.borrow();
+                    ui.approval
+                        .as_ref()
+                        .and_then(|bar| crate::ui::approval_hit(bar, col, row))
+                };
+                if let Some(index) = hit {
+                    let msg = {
+                        let mut ui = self.ui.borrow_mut();
+                        ui.approval.as_mut().map(|bar| bar.click(index))
+                    };
+                    if let Some(ApprovalMsg::Resolved { ticket_id, choice }) = msg {
+                        self.resolve_approval(&ticket_id, &choice);
+                    }
+                }
+            } else if row == 0 && col < layout.mode_badge_width as usize {
+                // Python `ModeBadge.on_click` → the app cycles the mode.
+                self.ui.borrow_mut().composer.badge_clicked();
+                self.drain_composer_messages();
+            }
+            return;
+        }
+
+        // Footer waiting badge (Python `FooterBar.WaitingBadgeClicked` →
+        // `action_show_needs_you`, the ctrl+y action).
+        if Self::rect_contains(layout.footer, x, y) {
+            if y == layout.footer.y {
+                if let Some((start, end)) = layout.badge_span {
+                    if x >= start && x < end {
+                        self.show_needs_you();
+                    }
+                }
+            }
+            return;
+        }
+
+        // Lanes panel rows (Python `_LaneRow.on_click`): focus that lane.
+        if Self::rect_contains(layout.lanes, x, y) {
+            let row = (y - layout.lanes.y) as usize;
+            let msg = layout
+                .lane_rows
+                .get(row)
+                .copied()
+                .flatten()
+                .and_then(|index| self.ui.borrow().lanes_panel.on_click(index));
+            if let Some(LanesMsg::FocusLane { name, session_id }) = msg {
+                self.focus_lane(&name, &session_id);
+            }
+            return;
+        }
+
+        // Transcript blocks: map screen y → content line → (block, row) and
+        // route through `BlockWidget::click` (Python `on_click`).
+        if Self::rect_contains(layout.transcript, x, y) {
+            let line = layout.transcript_scroll + (y - layout.transcript.y) as usize;
+            let Some((block_id, row)) = layout.block_at_line(line) else {
+                return;
+            };
+            let msg = {
+                let mut ui = self.ui.borrow_mut();
+                ui.transcript
+                    .get_widget_mut(&block_id)
+                    .and_then(|widget| widget.as_block_mut())
+                    .and_then(|widget| widget.click(row as isize, monotonic()))
+            };
+            if let Some(msg) = msg {
+                self.handle_transcript_msg(msg);
+            }
+        }
+    }
+
+    /// Dispatch a transcript widget message (the Python `on_<message>`
+    /// handlers of `ui/app.py`, minus keyboard-focus juggling — the
+    /// composer always holds the keyboard in this client).
+    fn handle_transcript_msg(&mut self, msg: TranscriptMsg) {
+        match msg {
+            TranscriptMsg::ToolLineToggled { block_id, .. } => {
+                self.ui.borrow_mut().transcript.on_tool_line_toggled(&block_id);
+            }
+            TranscriptMsg::DelegateSummaryToggled { block_id, expanded } => {
+                let mut ui = self.ui.borrow_mut();
+                ui.transcript.on_delegate_summary_toggled(&block_id);
+                // Drill-down v1 (ambient-progress D5): an expanded summary
+                // opens the lanes panel.
+                if expanded {
+                    ui.lanes_panel.show_panel();
+                }
+            }
+            TranscriptMsg::ThinkingToggled { block_id, .. } => {
+                self.ui.borrow_mut().transcript.on_thinking_toggled(&block_id);
+            }
+            TranscriptMsg::CopyCodeFence { text, .. } => {
+                let _ = app_support::os_clipboard_copy(&text);
+                self.ui.borrow_mut().show_notice(
+                    &format!("copied code · {} chars", text.chars().count()),
+                    None,
+                );
+            }
+            TranscriptMsg::ShowEvidence { links, .. } => {
+                if links.is_empty() {
+                    self.ui
+                        .borrow_mut()
+                        .show_notice("no evidence recorded for this answer", None);
+                    return;
+                }
+                let mut ui = self.ui.borrow_mut();
+                // Repeat clicks must not stack duplicate evidence blocks.
+                let last = ui
+                    .transcript
+                    .block_ids()
+                    .last()
+                    .and_then(|id| ui.transcript.get_block(id));
+                let duplicate = matches!(
+                    &last,
+                    Some(TranscriptBlock::Evidence(existing)) if existing.links == links
+                );
+                if !duplicate {
+                    let id = self.allocator.borrow_mut().next_id();
+                    let _ = ui
+                        .transcript
+                        .append(EvidenceBlock::new(id, links).into(), monotonic());
+                }
+                // Mockup revealEvidence ends with this exact notice.
+                ui.show_notice("evidence revealed · every claim traces to a tool call", None);
+            }
+            TranscriptMsg::OpenRewind { checkpoint_id } => {
+                let index = self
+                    .reducer
+                    .ledger
+                    .checkpoints()
+                    .iter()
+                    .position(|checkpoint| checkpoint.id == checkpoint_id);
+                self.open_rewind_strip(index);
+            }
+            TranscriptMsg::ExpandEvidenceClaim { .. }
+            | TranscriptMsg::CloseEvidence { .. }
+            | TranscriptMsg::LaneFocusChanged { .. } => {
+                // Keyboard-focus paths of focused evidence blocks — the
+                // click path never emits these.
+            }
+        }
+    }
+
+    /// Drain the pending native-terminal title (main loop OSC writer).
+    pub fn take_pending_title(&self) -> Option<String> {
+        self.ui.borrow_mut().pending_title.take()
+    }
+
+    /// Drain the pending attention bell (main loop `\x07` writer).
+    pub fn take_bell(&self) -> bool {
+        std::mem::take(&mut self.ui.borrow_mut().bell_pending)
     }
 
     fn drain_composer_messages(&mut self) {
@@ -1481,7 +1739,8 @@ impl App {
         }
         if ui.title.running() && now - self.last_spinner_frame.get() >= crate::ui::chrome::SPINNER_INTERVAL {
             self.last_spinner_frame.set(now);
-            let _ = ui.title.advance_spinner();
+            let changed = ui.title.advance_spinner();
+            ui.note_title(changed);
         }
         if ui.lanes_panel.motion_running()
             && now - self.last_motion_frame.get() >= crate::ui::lanes_panel::LANE_MOTION_INTERVAL_SECONDS

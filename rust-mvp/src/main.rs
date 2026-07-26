@@ -9,7 +9,9 @@ use amplifier_newtui_rs::{app, core_client, live, message, runtime, ui};
 use app::{App, DemoAdapter};
 use core_client::CoreClientRuntime;
 use crossterm::event as cterm;
-use crossterm::event::{Event as CEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event as CEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -33,6 +35,10 @@ fn main() -> io::Result<()> {
     spawn_input_reader(tx.clone());
     spawn_ticker(tx.clone());
 
+    // Probe the hosting terminal once so the advertised queue chord matches
+    // what it actually delivers (shift+enter vs alt+enter — ui/term_probe).
+    let kitty_protocol = ui::term_probe::probe_kitty_protocol(None);
+
     // Runtime selection:
     //   --demo    → scripted in-process DemoRuntime (real event vocabulary)
     //   --direct  → LiveRuntime (illustrative UI-calls-provider shortcut, not
@@ -41,7 +47,7 @@ fn main() -> io::Result<()> {
     //               protocol (the canonical shape; drop-in for amplifier-core)
     let args: Vec<String> = std::env::args().collect();
     let mut app = if args.iter().any(|a| a == "--demo" || a == "demo") {
-        demo_app(&tx)
+        demo_app(&tx, kitty_protocol)
     } else if args.iter().any(|a| a == "--direct") {
         match LiveRuntime::from_env(tx.clone()) {
             Ok(rt) => {
@@ -50,10 +56,10 @@ fn main() -> io::Result<()> {
                 adapter.base_mut().bundle_name = "newtui".into();
                 adapter.base_mut().model_name = model;
                 adapter.base_mut().session_short = live::LIVE_SESSION_ID.into();
-                App::new(Box::new(adapter), true, None, None)
+                App::new(Box::new(adapter), kitty_protocol, None, None)
             }
             Err(_) => {
-                let app = demo_app(&tx);
+                let app = demo_app(&tx, kitty_protocol);
                 app.ui
                     .borrow_mut()
                     .show_notice("no ANTHROPIC_API_KEY — scripted demo", None);
@@ -62,9 +68,14 @@ fn main() -> io::Result<()> {
         }
     } else {
         match CoreClientRuntime::spawn(&backend_command(), tx.clone()) {
-            Ok(rt) => App::new(Box::new(ClientRuntimeAdapter::new(Box::new(rt))), true, None, None),
+            Ok(rt) => App::new(
+                Box::new(ClientRuntimeAdapter::new(Box::new(rt))),
+                kitty_protocol,
+                None,
+                None,
+            ),
             Err(e) => {
-                let app = demo_app(&tx);
+                let app = demo_app(&tx, kitty_protocol);
                 app.ui
                     .borrow_mut()
                     .show_notice(&format!("backend spawn failed ({e}) — scripted demo"), None);
@@ -78,6 +89,7 @@ fn main() -> io::Result<()> {
     let size = terminal.size()?;
     app.on_resize(size.width, size.height);
     terminal.draw(|f| ui::draw(f, &app))?;
+    flush_chrome(&mut terminal, &app)?;
     perf.mark("first_draw");
 
     while let Ok(msg) = rx.recv() {
@@ -89,6 +101,14 @@ fn main() -> io::Result<()> {
             }
             Msg::Term(CEvent::Paste(payload)) => app.on_paste(&payload),
             Msg::Term(CEvent::Resize(w, h)) => app.on_resize(w, h),
+            Msg::Term(CEvent::Mouse(mouse)) => match mouse.kind {
+                MouseEventKind::ScrollUp => app.on_mouse_scroll(true, mouse.column, mouse.row),
+                MouseEventKind::ScrollDown => app.on_mouse_scroll(false, mouse.column, mouse.row),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    app.on_mouse_down(mouse.column, mouse.row)
+                }
+                _ => {}
+            },
             Msg::Term(_) => {}
             Msg::Rt(ev) => {
                 if matches!(ev, amplifier_newtui_rs::protocol::WireEvent::SessionStarted { .. }) {
@@ -103,9 +123,33 @@ fn main() -> io::Result<()> {
             break;
         }
         terminal.draw(|f| ui::draw(f, &app))?;
+        flush_chrome(&mut terminal, &app)?;
     }
 
     restore_terminal(&mut terminal)
+}
+
+/// Emit the native-terminal side effects the app parked this frame: the
+/// OSC window/tab title (Python `write_terminal_title`, already deduped by
+/// `TitleBar`) and the attention bell (Python's driver-safe `App.bell`).
+fn flush_chrome(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &App) -> io::Result<()> {
+    use std::io::Write as _;
+    let title = app.take_pending_title();
+    let bell = app.take_bell();
+    if title.is_none() && !bell {
+        return Ok(());
+    }
+    if let Some(title) = title {
+        write!(
+            terminal.backend_mut(),
+            "{}",
+            ui::chrome::terminal_title_sequence(&title)
+        )?;
+    }
+    if bell {
+        write!(terminal.backend_mut(), "\x07")?;
+    }
+    std::io::Write::flush(terminal.backend_mut())
 }
 
 /// Opt-in boot-milestone log: `AMPLIFIER_PERF_LOG=<path>` appends JSONL lines
@@ -131,10 +175,10 @@ impl PerfLog {
     }
 }
 
-fn demo_app(tx: &Sender<Msg>) -> App {
+fn demo_app(tx: &Sender<Msg>, kitty_protocol: bool) -> App {
     let wiring = Rc::new(RefCell::new(DemoWiring::new()));
     let adapter = DemoAdapter::new(Box::new(DemoRuntime::new(tx.clone())), Rc::clone(&wiring));
-    App::new(Box::new(adapter), true, None, Some(wiring))
+    App::new(Box::new(adapter), kitty_protocol, None, Some(wiring))
 }
 
 /// Crossterm key event → Textual chord name (the grammar the ported units
@@ -220,11 +264,13 @@ fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     // Bracketed paste keeps multi-line pastes atomic (the composer's stub
-    // collapse + duplicate fence depend on whole-paste delivery).
+    // collapse + duplicate fence depend on whole-paste delivery). Mouse
+    // capture feeds wheel scrolling + block/chip/badge/lane clicks.
     execute!(
         stdout,
         EnterAlternateScreen,
-        cterm::EnableBracketedPaste
+        cterm::EnableBracketedPaste,
+        cterm::EnableMouseCapture
     )?;
     Terminal::new(CrosstermBackend::new(stdout))
 }
@@ -233,6 +279,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        cterm::DisableMouseCapture,
         cterm::DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
@@ -921,7 +968,7 @@ status body, wired it into the router, and covered it with a test.";
     #[test]
     fn test_flow_demo_scripted_turn_end_to_end() {
         let (tx, rx) = channel::<Msg>();
-        let mut app = demo_app(&tx);
+        let mut app = demo_app(&tx, true);
         app.boot();
         app.on_resize(100, 32);
         assert!(app.ui.borrow().splash.is_none(), "demo identity known at boot");
@@ -951,6 +998,235 @@ status body, wired it into the router, and covered it with a test.";
         let text = draw_text(&app, 100, 32);
         assert!(text.contains("Read 3 files · ran 2 shell commands"), "digest:\n{text}");
         assert!(text.contains("/health"), "answer:\n{text}");
+    }
+
+    // ------------------------------------------------------------------
+    // Mouse wiring (hit-testing against the FrameLayout recorded by draw;
+    // each test names the Python case it adapts).
+    // ------------------------------------------------------------------
+
+    /// Draw once and return the recorded frame layout.
+    fn layout_after_draw(app: &App, width: u16, height: u16) -> amplifier_newtui_rs::ui::FrameLayout {
+        let _ = draw_text(app, width, height);
+        app.layout.borrow().clone()
+    }
+
+    // Adapts tests/test_ui_transcript_view.py::test_tool_line_click_toggles_
+    // body_in_place: a click on the tool line's summary row expands the body
+    // in place (same block id); a second click collapses it.
+    #[test]
+    fn test_tool_line_click_toggles_body_in_place() {
+        use amplifier_newtui_rs::model::blocks::{ToolLine, TranscriptBlock};
+        let (mut app, _ops) = test_app();
+        let tool = ToolLine {
+            body: vec!["$ pytest -q".into(), "42 passed".into()],
+            ..ToolLine::new("t-1", "✔ bash · pytest -q")
+        };
+        let _ = app.ui.borrow_mut().transcript.append(tool.into(), 0.0);
+
+        let layout = layout_after_draw(&app, 100, 32);
+        let (_, start, len) = layout
+            .block_lines
+            .iter()
+            .find(|(id, _, _)| id == "t-1")
+            .cloned()
+            .expect("tool line laid out");
+        assert_eq!(len, 1, "collapsed tool line is one row");
+        let y = layout.transcript.y + (start - layout.transcript_scroll) as u16;
+        app.on_mouse_down(layout.transcript.x, y);
+
+        let block = app.ui.borrow().transcript.get_block("t-1").unwrap();
+        let TranscriptBlock::ToolLine(tool) = block else {
+            panic!("still a tool line");
+        };
+        assert!(tool.expanded, "click expanded the body in place");
+        let text = draw_text(&app, 100, 32);
+        assert!(text.contains("42 passed"), "body rows visible:\n{text}");
+
+        // Second click on the same summary row collapses it again.
+        let layout = layout_after_draw(&app, 100, 32);
+        let (_, start, len) = layout
+            .block_lines
+            .iter()
+            .find(|(id, _, _)| id == "t-1")
+            .cloned()
+            .expect("tool line laid out");
+        assert!(len > 1, "expanded tool line grew rows");
+        let y = layout.transcript.y + (start - layout.transcript_scroll) as u16;
+        app.on_mouse_down(layout.transcript.x, y);
+        let block = app.ui.borrow().transcript.get_block("t-1").unwrap();
+        let TranscriptBlock::ToolLine(tool) = block else {
+            panic!("still a tool line");
+        };
+        assert!(!tool.expanded, "second click collapsed it");
+    }
+
+    // Adapts tests/test_ui_approval.py::test_click_confirms_that_option:
+    // clicking the Deny chip selects AND confirms that option by ticket.
+    #[test]
+    fn test_click_confirms_that_option() {
+        let (mut app, ops) = test_app();
+        reach_approval(&mut app);
+        let layout = layout_after_draw(&app, 100, 32);
+        let col = (0..layout.input.width as usize)
+            .find(|col| {
+                let ui = app.ui.borrow();
+                ui.approval
+                    .as_ref()
+                    .and_then(|bar| ui::approval_hit(bar, *col, 1))
+                    == Some(2)
+            })
+            .expect("deny chip x-range");
+        app.on_mouse_down(layout.input.x + col as u16, layout.input.y + 1);
+        assert!(app.ui.borrow().approval.is_none(), "bar closes on resolve");
+        assert!(
+            ops.borrow().contains(&"approve:approval-1:Deny".to_string()),
+            "clicked option confirmed by ticket: {:?}",
+            ops.borrow()
+        );
+    }
+
+    // Adapts tests/test_ui_footer.py::test_footer_badge_shows_and_click_
+    // posts_message (the click half): clicking the orange waiting badge
+    // runs the same action as ctrl+y — the needs-you listing mounts.
+    #[test]
+    fn test_footer_badge_shows_and_click_posts_message() {
+        use amplifier_newtui_rs::model::queues::DeferOptions;
+        let (mut app, _ops) = test_app();
+        let _ = app
+            .needs_you
+            .defer("Deploy to prod?", "risky", DeferOptions::default());
+        let blocks_before = app.ui.borrow().transcript.block_ids().len();
+
+        let layout = layout_after_draw(&app, 140, 32);
+        let (start, end) = layout.badge_span.expect("waiting badge painted inline");
+        let text = draw_text(&app, 140, 32);
+        assert!(text.contains("1 decision waiting · ctrl-y"), "badge:\n{text}");
+
+        app.on_mouse_down((start + end) / 2, layout.footer.y);
+        let ui = app.ui.borrow();
+        assert_eq!(
+            ui.transcript.block_ids().len(),
+            blocks_before + 1,
+            "needs-you listing mounted"
+        );
+        drop(ui);
+        let text = draw_text(&app, 140, 32);
+        assert!(text.contains("Deploy to prod?"), "listing shows the ask:\n{text}");
+    }
+
+    // Adapts tests/test_flow_modes.py::test_mode_badge_click_cycles: a click
+    // on the composer's [mode] badge cycles the posture, exactly like
+    // shift+tab (auto → chat at boot).
+    #[test]
+    fn test_mode_badge_click_cycles() {
+        let (mut app, _ops) = test_app();
+        assert_eq!(app.ui.borrow().mode.id.as_str(), "auto");
+        let layout = layout_after_draw(&app, 100, 32);
+        assert!(layout.mode_badge_width > 0, "badge painted");
+        app.on_mouse_down(layout.input.x, layout.input.y);
+        let ui = app.ui.borrow();
+        assert_eq!(ui.mode.id.as_str(), "chat", "badge click cycled the mode");
+        let trust = ui.mode.trust_str;
+        assert_eq!(ui.notices.current(), Some(format!("mode chat · {trust}").as_str()));
+        drop(ui);
+        // A click past the badge is composer body, not the badge.
+        let layout = layout_after_draw(&app, 100, 32);
+        app.on_mouse_down(layout.input.x + layout.mode_badge_width, layout.input.y);
+        assert_eq!(app.ui.borrow().mode.id.as_str(), "chat", "no second cycle");
+    }
+
+    // Adapts ui/transcript.py's follow-anchor cases through the mouse layer
+    // (test_tail_follow_sticks_to_bottom_until_user_scrolls_up): wheel-up
+    // over the transcript releases the anchor and scrolls up; wheel-down
+    // re-arms it only once the view is back at the bottom.
+    #[test]
+    fn test_wheel_up_releases_follow_and_wheel_down_at_bottom_rearms() {
+        use amplifier_newtui_rs::model::blocks::{Answer, Segment};
+        let (mut app, _ops) = test_app();
+        reach_approval(&mut app);
+        app.on_key("enter");
+        finish_granted_turn(&mut app);
+        // Pad history so the content is comfortably taller than the view.
+        for index in 0..8 {
+            let answer = Answer::new(
+                format!("fill-{index}"),
+                vec![Segment::new(format!("history line {index}"))],
+            );
+            let _ = app.ui.borrow_mut().transcript.append(answer.into(), 0.0);
+        }
+
+        let layout = layout_after_draw(&app, 100, 12);
+        let rect = layout.transcript;
+        let visible = rect.height as usize;
+        assert!(
+            layout.transcript_total_lines > visible + 4,
+            "content taller than the viewport: total={} visible={}",
+            layout.transcript_total_lines,
+            visible
+        );
+        let bottom = layout.transcript_total_lines - visible;
+        assert!(app.ui.borrow().transcript.follow());
+        assert_eq!(layout.transcript_scroll, bottom, "anchored at the bottom");
+
+        // Wheel up twice: anchor releases; the view walks up 2 lines/notch.
+        app.on_mouse_scroll(true, rect.x, rect.y);
+        assert!(!app.ui.borrow().transcript.follow(), "wheel-up released the anchor");
+        app.on_mouse_scroll(true, rect.x, rect.y);
+        assert_eq!(layout_after_draw(&app, 100, 12).transcript_scroll, bottom - 4);
+
+        // Wheel down while still above the bottom: no re-arm yet.
+        app.on_mouse_scroll(false, rect.x, rect.y);
+        assert!(!app.ui.borrow().transcript.follow(), "not at the bottom yet");
+        assert_eq!(layout_after_draw(&app, 100, 12).transcript_scroll, bottom - 2);
+
+        // Wheel down to the bottom: the anchor re-arms.
+        app.on_mouse_scroll(false, rect.x, rect.y);
+        assert!(app.ui.borrow().transcript.follow(), "back at bottom re-arms follow");
+        assert_eq!(layout_after_draw(&app, 100, 12).transcript_scroll, bottom);
+
+        // A wheel outside the transcript region is ignored.
+        app.on_mouse_scroll(true, layout.footer.x, layout.footer.y);
+        assert!(app.ui.borrow().transcript.follow(), "footer wheel does not scroll");
+    }
+
+    // Adapts the lanes-panel click half of tests/test_ui_lanes.py: a click
+    // on a lane row focuses that lane's transcript (Python _LaneRow.on_click
+    // → FocusLane), without moving the selection highlight.
+    #[test]
+    fn test_lanes_panel_row_click_focuses_lane() {
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("fan out"));
+        app.handle_wire(wire(ev::UIEvent::ToolPre(ev::ToolPre {
+            session_id: SESSION.into(),
+            ts: 100.5,
+            tool_name: "delegate".into(),
+            tool_call_id: "d1".into(),
+            tool_input: obj(json!({"agent": "researcher", "instruction": "dig in"})),
+            ..ev::ToolPre::default()
+        })));
+        app.handle_wire(wire(ev::UIEvent::AgentSpawned(ev::AgentSpawned {
+            session_id: SESSION.into(),
+            ts: 101.0,
+            agent: "researcher".into(),
+            sub_session_id: "s1".into(),
+            parent_session_id: SESSION.into(),
+            ..ev::AgentSpawned::default()
+        })));
+        assert!(app.ui.borrow().lanes_panel.display(), "panel auto-opened");
+
+        let layout = layout_after_draw(&app, 100, 32);
+        let row = layout
+            .lane_rows
+            .iter()
+            .position(|index| *index == Some(0))
+            .expect("lane row laid out");
+        assert!(layout.lane_rows[0].is_none(), "row 0 is the header");
+        app.on_mouse_down(layout.lanes.x, layout.lanes.y + row as u16);
+        assert!(
+            app.ui.borrow().transcript.focused_lane().is_some(),
+            "row click focused the lane"
+        );
     }
 
     /// Prints a real rendered frame (run: `cargo test -- --nocapture snapshot`).

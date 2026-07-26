@@ -61,6 +61,80 @@ use crate::ui::transcript_render::render_block;
 /// Rows the open palette strip may occupy (rows beyond scroll are clipped).
 const PALETTE_MAX_ROWS: usize = 10;
 
+// ---------------------------------------------------------------------------
+// Frame layout — the per-frame geometry [`draw`] computed, kept for exact
+// mouse hit-testing (the ratatui analogue of Textual's widget tree).
+// ---------------------------------------------------------------------------
+
+/// One frame's hit-testing geometry. [`draw`] rebuilds it every frame and
+/// stores it on the [`App`]; `App::on_mouse_*` reads it so a click maps to
+/// exactly what was painted (never a re-derivation that could drift).
+#[derive(Clone, Debug, Default)]
+pub struct FrameLayout {
+    /// Inner transcript text rect (the region minus its 1-cell gutter).
+    pub transcript: Rect,
+    /// Total content lines built for the transcript paragraph.
+    pub transcript_total_lines: usize,
+    /// The scroll offset applied this frame.
+    pub transcript_scroll: usize,
+    /// Per mounted block: (block id, first content line, line count).
+    pub block_lines: Vec<(String, usize, usize)>,
+    /// Lanes strip rect (zero-sized while closed).
+    pub lanes: Rect,
+    /// Per lanes-strip relative row: the lane index (None = header/tail).
+    pub lane_rows: Vec<Option<usize>>,
+    /// Composer / approval-bar rect.
+    pub input: Rect,
+    /// Cell width of the composer's `[mode]` badge (0 while the approval
+    /// bar replaces the composer).
+    pub mode_badge_width: u16,
+    /// Footer rect.
+    pub footer: Rect,
+    /// Waiting-badge x span (start, end-exclusive) on the footer's first
+    /// row, when the `N decisions waiting · ctrl-y` badge is painted inline.
+    pub badge_span: Option<(u16, u16)>,
+}
+
+impl FrameLayout {
+    /// Map a transcript content line to (block id, block-local row) — the
+    /// screen-y → `BlockWidget::click(row)` half of hit-testing.
+    pub fn block_at_line(&self, line: usize) -> Option<(String, usize)> {
+        self.block_lines.iter().find_map(|(id, start, len)| {
+            (line >= *start && line < start + len).then(|| (id.clone(), line - start))
+        })
+    }
+}
+
+/// Which approval option chip a click at (col, row) inside the approval
+/// bar lands on. Row 0 is the label+prompt head line; the chips sit on row
+/// 1 (one per row when wrapped). X-ranges reuse the rendered chip widths:
+/// each chip paints as ``" {option_text} "`` (`ApprovalBar::render_lines`).
+pub fn approval_hit(bar: &crate::ui::approval_bar::ApprovalBar, col: usize, row: usize) -> Option<usize> {
+    if row == 0 {
+        return None;
+    }
+    let chips: Vec<usize> = bar
+        .option_texts()
+        .iter()
+        .map(|text| Span::raw(format!(" {text} ")).width())
+        .collect();
+    if bar.is_wrapped() {
+        let index = row - 1;
+        return (index < chips.len() && col < chips[index]).then_some(index);
+    }
+    if row != 1 {
+        return None;
+    }
+    let mut start = 0usize;
+    for (index, width) in chips.iter().enumerate() {
+        if col >= start && col < start + width {
+            return Some(index);
+        }
+        start += width;
+    }
+    None
+}
+
 type ColorTable = HashMap<StyleToken, Color>;
 
 fn seg(text: impl Into<String>, token: StyleToken) -> BlockSegment {
@@ -115,6 +189,7 @@ fn strip_markup(markup: &str) -> String {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
+    let mut layout = FrameLayout::default();
     let ui = app.ui.borrow();
     let colors = &ui.colors;
     let area = f.area();
@@ -182,12 +257,12 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(area);
 
     draw_title(f, chunks[0], &ui, colors);
-    draw_transcript_region(f, chunks[1], &ui, colors);
+    draw_transcript_region(f, chunks[1], &ui, colors, &mut layout);
     if palette_rows > 0 {
         draw_palette(f, chunks[2], &palette_rows_all, colors);
     }
     if strip_rows > 0 {
-        draw_bottom_strip(f, chunks[3], &ui, &plan_lines, colors);
+        draw_bottom_strip(f, chunks[3], &ui, &plan_lines, colors, &mut layout);
     }
     if rewind_rows > 0 {
         draw_rewind(f, chunks[4], &ui, colors);
@@ -202,12 +277,17 @@ pub fn draw(f: &mut Frame, app: &App) {
     if !mention_lines.is_empty() {
         draw_mentions(f, chunks[6], &mention_lines, colors);
     }
+    layout.input = chunks[7];
     if ui.approval.is_some() {
         f.render_widget(Paragraph::new(approval_lines), chunks[7]);
     } else {
+        layout.mode_badge_width =
+            ratatui::text::Span::raw(ui.composer.badge_text()).width() as u16;
         draw_composer(f, chunks[7], &ui, colors);
     }
-    draw_footer(f, chunks[8], &footer_state, colors);
+    layout.footer = chunks[8];
+    draw_footer(f, chunks[8], &footer_state, colors, &mut layout);
+    *app.layout.borrow_mut() = layout;
 }
 
 fn draw_title(f: &mut Frame, area: Rect, ui: &crate::app::UiState, colors: &ColorTable) {
@@ -232,6 +312,7 @@ fn draw_transcript_region(
     area: Rect,
     ui: &crate::app::UiState,
     colors: &ColorTable,
+    layout: &mut FrameLayout,
 ) {
     // Boot splash overlays the whole region while active.
     if let Some(splash) = ui.splash.as_ref() {
@@ -260,9 +341,13 @@ fn draw_transcript_region(
             lines.push(Line::default());
         }
         first = false;
+        let start = lines.len();
         for line in render_block(&block, width.max(20)) {
             lines.push(to_ratatui_line(&line, Some(colors)));
         }
+        layout
+            .block_lines
+            .push((block.id().to_string(), start, lines.len() - start));
     }
 
     // Live tail (region two): the mutable streaming peek under history.
@@ -274,21 +359,24 @@ fn draw_transcript_region(
         }
     }
 
-    // Tail anchor: keep the newest rows visible (transcript.follow()).
+    // Tail anchor: keep the newest rows visible (transcript.follow());
+    // released anchor honors the wheel-scroll offset (clamped to content).
     let visible = area.height as usize;
+    let bottom = lines.len().saturating_sub(visible);
     let scroll = if ui.transcript.follow() {
-        lines.len().saturating_sub(visible)
+        bottom
     } else {
-        0
-    } as u16;
-    f.render_widget(
-        Paragraph::new(lines).scroll((scroll, 0)),
-        Rect {
-            x: area.x + 1,
-            width: area.width.saturating_sub(2),
-            ..area
-        },
-    );
+        ui.transcript_scroll.min(bottom)
+    };
+    let inner = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    layout.transcript = inner;
+    layout.transcript_total_lines = lines.len();
+    layout.transcript_scroll = scroll;
+    f.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
 
     // Transient notice: bottom-right overlay on the region's last row.
     if let Some(notice) = ui.notices.current() {
@@ -345,6 +433,7 @@ fn draw_bottom_strip(
     ui: &crate::app::UiState,
     plan_lines: &[Line<'static>],
     colors: &ColorTable,
+    layout: &mut FrameLayout,
 ) {
     let plan_width = if plan_lines.is_empty() {
         0
@@ -358,12 +447,14 @@ fn draw_bottom_strip(
     if ui.lanes_panel.display() && lanes_area.width > 0 {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(to_ratatui_line(&ui.lanes_panel.header_segments(), Some(colors)));
+        layout.lane_rows.push(None); // header row
         let tail_after = ui.lanes_panel.tail_row_index();
         for index in 0..ui.lanes_panel.records().len() {
             let row = ui
                 .lanes_panel
                 .row_segments(index, Some(lanes_area.width.saturating_sub(2) as usize));
             lines.push(to_ratatui_line(&row, Some(colors)));
+            layout.lane_rows.push(Some(index));
             if tail_after == Some(index) {
                 let tail = strip_markup(&ui.lanes_panel.tail_markup());
                 for tail_line in tail.lines() {
@@ -371,9 +462,11 @@ fn draw_bottom_strip(
                         &[seg(tail_line.to_string(), StyleToken::Dim)],
                         Some(colors),
                     ));
+                    layout.lane_rows.push(None);
                 }
             }
         }
+        layout.lanes = lanes_area;
         f.render_widget(Paragraph::new(lines), lanes_area);
     }
     if !plan_lines.is_empty() {
@@ -458,6 +551,7 @@ fn draw_footer(
     area: Rect,
     state: &crate::ui::footer::FooterState,
     colors: &ColorTable,
+    layout: &mut FrameLayout,
 ) {
     let width = area.width as usize;
     let wrap = footer_wrap(state, width);
@@ -465,6 +559,12 @@ fn draw_footer(
     let waiting = footer_waiting_text(state);
     if !waiting.is_empty() && !wrap.badge_wrapped {
         left.push(seg(" · ", StyleToken::Dimmer));
+        let badge_start = to_ratatui_line(&left, Some(colors)).width();
+        let badge_width = ratatui::text::Span::raw(waiting.as_str()).width();
+        layout.badge_span = Some((
+            area.x + badge_start as u16,
+            area.x + (badge_start + badge_width) as u16,
+        ));
         left.push(seg(waiting.clone(), StyleToken::Orange));
     }
     let right = footer_right_text(state);
@@ -505,5 +605,78 @@ fn draw_footer(
                 right_rect,
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hit-testing math tests (the pure decision halves of the mouse wiring;
+// the click flows themselves are exercised in main.rs's flow tests).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::approval_bar::ApprovalBar;
+
+    // Adapts tests/test_ui_approval.py::test_click_confirms_that_option's
+    // geometry half: each chip paints " {text} ", so the x-ranges are the
+    // cumulative rendered chip widths on the options row (row 1).
+    #[test]
+    fn test_approval_chip_x_ranges_follow_rendered_widths() {
+        let bar = ApprovalBar::new(
+            "t1",
+            "write_file src/health.py",
+            vec!["Allow once".into(), "Allow always".into(), "Deny".into()],
+        )
+        .unwrap();
+        // Chips: " › Allow once " (14) · " Allow always " (14) · " Deny " (6).
+        assert_eq!(approval_hit(&bar, 0, 1), Some(0));
+        assert_eq!(approval_hit(&bar, 13, 1), Some(0));
+        assert_eq!(approval_hit(&bar, 14, 1), Some(1));
+        assert_eq!(approval_hit(&bar, 27, 1), Some(1));
+        assert_eq!(approval_hit(&bar, 28, 1), Some(2));
+        assert_eq!(approval_hit(&bar, 33, 1), Some(2));
+        assert_eq!(approval_hit(&bar, 34, 1), None, "past the last chip");
+        assert_eq!(approval_hit(&bar, 0, 0), None, "head line is not a chip");
+        assert_eq!(approval_hit(&bar, 0, 2), None, "no third row unwrapped");
+    }
+
+    // The wrapped (#122) stack: one full-width chip row per option.
+    #[test]
+    fn test_approval_chip_rows_when_wrapped() {
+        let mut bar = ApprovalBar::new(
+            "t1",
+            "a very long prompt that cannot share a row with the chips",
+            vec!["Allow once".into(), "Allow always".into(), "Deny".into()],
+        )
+        .unwrap();
+        bar.update_wrap(40);
+        assert!(bar.is_wrapped());
+        assert_eq!(approval_hit(&bar, 0, 1), Some(0));
+        assert_eq!(approval_hit(&bar, 0, 2), Some(1));
+        assert_eq!(approval_hit(&bar, 2, 3), Some(2));
+        assert_eq!(approval_hit(&bar, 30, 3), None, "past the chip's width");
+        assert_eq!(approval_hit(&bar, 0, 4), None, "below the last chip");
+    }
+
+    // The screen-y → (block, block-local row) mapping the transcript click
+    // path uses (adapts the hit-testing implicit in Textual's widget tree).
+    #[test]
+    fn test_block_at_line_maps_content_lines_to_block_rows() {
+        let layout = FrameLayout {
+            block_lines: vec![
+                ("b1".into(), 0, 2),
+                ("b2".into(), 3, 1), // one margin row between b1 and b2
+                ("b3".into(), 5, 4),
+            ],
+            ..FrameLayout::default()
+        };
+        assert_eq!(layout.block_at_line(0), Some(("b1".into(), 0)));
+        assert_eq!(layout.block_at_line(1), Some(("b1".into(), 1)));
+        assert_eq!(layout.block_at_line(2), None, "margin rows hit nothing");
+        assert_eq!(layout.block_at_line(3), Some(("b2".into(), 0)));
+        assert_eq!(layout.block_at_line(4), None);
+        assert_eq!(layout.block_at_line(8), Some(("b3".into(), 3)));
+        assert_eq!(layout.block_at_line(9), None, "below the last block");
     }
 }
