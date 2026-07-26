@@ -243,6 +243,27 @@ def test_resume_unknown_id_exits_nonzero(scratch: SessionStore) -> None:
     assert "no session found" in result.output
 
 
+def test_resume_hints_at_cross_project_session(scratch: SessionStore, tmp_path: Path) -> None:
+    """A ``resume <id>`` that misses the current dir but exists in another
+    project points the user at the dir it lives in (per-dir store confusion)."""
+    other_dir = tmp_path / "elsewhere"
+    other_dir.mkdir()
+    other = SessionStore(project_dir=other_dir)
+    other.save(
+        "beefcafe",
+        [],
+        {"session_id": "beefcafe", "bundle": "newtui", "working_dir": str(other_dir)},
+    )
+    # cwd (scratch) has a different, unrelated session — the id is not here.
+    _seed(scratch, "cafef00d")
+    result = CliRunner().invoke(main, ["resume", "beef"])
+    assert result.exit_code == 1
+    assert "no session found" in result.output
+    assert "another project" in result.output
+    assert f"cd {other_dir}" in result.output
+    assert "resume beefcafe" in result.output
+
+
 # -- session resume (alias to top-level resume) ----------------------------
 
 
