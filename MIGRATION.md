@@ -91,7 +91,7 @@ Python backend behind `serve`.
 
 | Unit | Python source | Python tests pinned | Status | Caveats |
 |---|---|---|---|---|
-| ui/reducer | ui/reducer.py | test_ui_reducer_*.py | todo | grow existing rust-mvp app.rs/event.rs |
+| ui/reducer | ui/reducer.py | test_ui_reducer_*.py (7 files) + lane_summary + lanes_telemetry reducer cases | verified | 81 tests; owns LaneReducer<ReplayGate<H>> (one id sequence/registry); Python latent KeyError in _tool_error degraded to fallback ToolLine (commented); foundation-fork e2e case not portable (external pkg) |
 | ui/lane_reducer | ui/lane_reducer.py | test_ui_lane_reducer.py | verified | all 13 cases + oracle; LaneReducer OWNS registry/allocator — sharing decision deferred to ui/reducer port |
 | ui/segments | ui/segments.py | (oracle-pinned) | verified | markup emitters byte-identical to Textual escape (oracle); to_ratatui_line replaces to_rich_text; link painting → app-assembly OSC 8 |
 | ui/transcript_render | ui/transcript_render.py | test_ui_transcript_render.py, test_ui_render_*.py | verified | 53 tests; answer_spans-fed cases use oracle-pinned span dumps (rewire to live_tail now that it landed — parity-pass item); unknown-kind TypeError → exhaustive enum |
@@ -122,8 +122,8 @@ Python backend behind `serve`.
 | ui/directory_admin | ui/directory_admin.py | test_ui_directory_admin.py | verified | all 5 cases; host trait flattens adapter/allocator; persistence stays behind protocol |
 | ui/session_ops_view | ui/session_ops_view.py | test_ui_session_ops_view.py | verified | all 14 cases + format_time_ago oracle (incl. 0y quirk); input structs mirror unported kernel session_ops/session_manager types (re-export when those port) |
 | ui/command_context | ui/command_context.py | test_command_context_contract.py, test_command_context_app.py | verified | contract enforced by compiler (AppCommandContext: &dyn CommandContext); CommandHost trait = the app-assembly surface |
-| ui/config_admin | ui/config_admin.py | test_ui_config_admin.py | todo | needs config_view (landed) |
-| ui/session_ops_controller | ui/session_ops_controller.py | test_ui_session_ops_controller.py | todo | needs session_ops_view (landed) |
+| ui/config_admin | ui/config_admin.py | test_ui_config_admin.py | verified | all 8 cases; config_ops save contract pinned via oracle (scope-path/deep-merge stays backend) |
+| ui/session_ops_controller | ui/session_ops_controller.py | test_ui_session_ops_controller.py | verified | all 26 cases; run_worker async → sync SessionOpsAdapter trait; mcp_config touchpoints live on SessionOpsHost |
 | ui/demo_wiring | ui/demo_wiring.py | (demo flow tests) | todo | needs reducer |
 
 ## Layer 5 — Integration

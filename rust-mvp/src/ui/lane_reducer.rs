@@ -35,7 +35,10 @@ pub const LANE_TAIL_NOTIFY_SECONDS: f64 = 0.05;
 const LANE_TAIL_MAX_CHARS: usize = 2_000;
 
 /// Per-lane focus-transcript cap; oldest activity rows drop first.
-const LANE_TRANSCRIPT_MAX_BLOCKS: usize = 400;
+///
+/// `pub` because the turn reducer re-exports it (Python
+/// `ui/reducer.py` re-exports `_LANE_TRANSCRIPT_MAX_BLOCKS`).
+pub const LANE_TRANSCRIPT_MAX_BLOCKS: usize = 400;
 
 /// Stored focus transcripts; the oldest lane's is evicted past this.
 const LANE_TRANSCRIPT_MAX_LANES: usize = 32;
@@ -164,6 +167,16 @@ impl<H: LaneTailHost> LaneReducer<H> {
 
     pub fn host_mut(&mut self) -> &mut H {
         &mut self.host
+    }
+
+    /// The shared block-id allocator (Python: one `BlockIdAllocator`
+    /// instance passed to both the turn reducer and this unit).
+    ///
+    /// The turn reducer owns this `LaneReducer` and mints its own block
+    /// ids through the same counter here, so ids stay one monotonic
+    /// sequence across root-transcript and lane-transcript blocks.
+    pub fn ids_mut(&mut self) -> &mut BlockIdAllocator {
+        &mut self.ids
     }
 
     // -- delegated brief retention -------------------------------------------
