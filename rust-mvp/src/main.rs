@@ -28,6 +28,7 @@ use ui::demo_wiring::DemoWiring;
 use ui::runtime_adapter::ClientRuntimeAdapter;
 
 fn main() -> io::Result<()> {
+    let perf = PerfLog::from_env();
     let (tx, rx) = channel::<Msg>();
     spawn_input_reader(tx.clone());
     spawn_ticker(tx.clone());
@@ -77,6 +78,7 @@ fn main() -> io::Result<()> {
     let size = terminal.size()?;
     app.on_resize(size.width, size.height);
     terminal.draw(|f| ui::draw(f, &app))?;
+    perf.mark("first_draw");
 
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -88,7 +90,12 @@ fn main() -> io::Result<()> {
             Msg::Term(CEvent::Paste(payload)) => app.on_paste(&payload),
             Msg::Term(CEvent::Resize(w, h)) => app.on_resize(w, h),
             Msg::Term(_) => {}
-            Msg::Rt(ev) => app.handle_wire(ev),
+            Msg::Rt(ev) => {
+                if matches!(ev, amplifier_newtui_rs::protocol::WireEvent::SessionStarted { .. }) {
+                    perf.mark("session_started");
+                }
+                app.handle_wire(ev);
+            }
             Msg::BootChatter(line) => app.on_boot_chatter(&line),
             Msg::Tick => app.tick(),
         }
@@ -99,6 +106,29 @@ fn main() -> io::Result<()> {
     }
 
     restore_terminal(&mut terminal)
+}
+
+/// Opt-in boot-milestone log: `AMPLIFIER_PERF_LOG=<path>` appends JSONL lines
+/// `{"event":..., "ms": <since process start>}` — used by perf/bench.py to
+/// validate startup performance without instrumenting the render path.
+struct PerfLog {
+    start: std::time::Instant,
+    path: Option<String>,
+}
+
+impl PerfLog {
+    fn from_env() -> Self {
+        Self { start: std::time::Instant::now(), path: std::env::var("AMPLIFIER_PERF_LOG").ok() }
+    }
+
+    fn mark(&self, event: &str) {
+        let Some(path) = &self.path else { return };
+        let ms = self.start.elapsed().as_secs_f64() * 1000.0;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write as _;
+            let _ = writeln!(f, "{{\"event\":\"{event}\",\"ms\":{ms:.1}}}");
+        }
+    }
 }
 
 fn demo_app(tx: &Sender<Msg>) -> App {
