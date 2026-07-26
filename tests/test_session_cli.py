@@ -304,11 +304,20 @@ def test_launch_tui_prints_hint_on_exit(monkeypatch: pytest.MonkeyPatch) -> None
     import amplifier_app_newtui.ui.term_probe as probe_mod
 
     class FakeAdapter:
-        def __init__(self, *, bundle: str | None = None, resume_id: str | None = None) -> None:
+        def __init__(
+            self,
+            *,
+            bundle: str | None = None,
+            resume_id: str | None = None,
+            provider_override: str | None = None,
+            model_override: str | None = None,
+        ) -> None:
             self.session_id = "feedface5678"
 
     class FakeApp:
-        def __init__(self, adapter: object, *, kitty_protocol: bool) -> None:
+        def __init__(
+            self, adapter: object, *, kitty_protocol: bool, initial_mode: str | None = None
+        ) -> None:
             self.return_code = 0
 
         async def run_async(self) -> None:
