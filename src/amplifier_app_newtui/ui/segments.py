@@ -55,15 +55,19 @@ def segment_style(segment: Segment) -> str:
 def segment_markup(segment: Segment) -> str:
     """One segment as Textual content markup (text escaped, style by token).
 
-    A segment carrying a ``link`` nests a ``[link=…]`` tag so the terminal
-    paints a real OSC 8 hyperlink (Textual emits the escape); the URL is
-    kept clean of ``]`` at the source so it never breaks the markup.
+    A segment carrying a ``link`` nests a ``[link="…"]`` tag so the terminal
+    paints a real OSC 8 hyperlink (Textual emits the escape). The URL is
+    QUOTED: an unquoted ``[link=https://…]`` breaks Textual's markup parser on
+    the ``://`` ("Expected markup value") — which crashed transcript rendering
+    (e.g. resuming a session whose answer contained a PR link). A stray ``"`` in
+    the URL is escaped so the quoting itself can't be broken.
     """
     if not segment.text:
         return ""
     body = escape(segment.text)
     if segment.link:
-        body = f"[link={segment.link}]{body}[/link]"
+        safe_link = segment.link.replace('"', "%22")
+        body = f'[link="{safe_link}"]{body}[/link]'
     return f"[{segment_style(segment)}]{body}[/]"
 
 

@@ -670,6 +670,22 @@ class TestAnswerMarkdown:
         plain = answer_spans("[tool.uv.sources] stays")
         assert "".join(s.text for s in plain) == "[tool.uv.sources] stays"
 
+    def test_link_url_is_quoted_and_parses(self) -> None:
+        """Regression (Samuel, resume crash): a link URL containing ``://``
+        (and ``#``) must not break Textual's markup parser. An unquoted
+        ``[link=https://…]`` raised MarkupError ("Expected markup value") and
+        crashed transcript rendering when resuming a session whose answer held a
+        PR link. The URL must be quoted, and the markup must parse cleanly."""
+        from amplifier_app_newtui.model.blocks import Segment
+        from amplifier_app_newtui.ui.segments import segment_markup
+
+        url = "https://github.com/microsoft/amplifier-app-team-pulse/pull/304"
+        markup = segment_markup(Segment(text="team-pulse#304", style_token="teal", link=url))
+        assert f'[link="{url}"]' in markup  # quoted, not bare [link=https://…]
+        # The exact path that crashed: Textual parsing this markup. Must not raise.
+        content = Content.from_markup(markup)
+        assert "team-pulse#304" in content.plain
+
     def test_wide_table_falls_back_to_definition_list(self) -> None:
         """Padded grids shred when cells exceed the terminal width (user
         screenshot: the /about run's Piece/Location table) — wide tables
