@@ -58,8 +58,10 @@ class RewindHost(App[None]):
 
 
 def test_rewind_label_exact_string() -> None:
-    assert rewind_label(CHECKPOINTS[2]) == "t3 · $1.12 · plan ready"
-    assert rewind_line(CHECKPOINTS[0]) == "rewind › t1 · $0.18 · store refactor · shipped"
+    assert rewind_label(CHECKPOINTS[2]) == "turn 3 · $1.12 · plan ready"
+    assert rewind_line(CHECKPOINTS[0]) == (
+        "rewind · pick a turn · turn 1 · $0.18 · store refactor · shipped"
+    )
 
 
 def test_hint_strings() -> None:
@@ -80,7 +82,7 @@ async def test_opens_on_newest_checkpoint_by_default() -> None:
         await pilot.pause()
         assert strip.display
         assert strip.index == 2
-        assert strip.label_text == "rewind › t3 · $1.12 · plan ready"
+        assert strip.label_text == "rewind · pick a turn · turn 3 · $1.12 · plan ready"
 
 
 @pytest.mark.asyncio
@@ -90,7 +92,9 @@ async def test_opens_at_clicked_rule_checkpoint() -> None:
         strip = app.query_one(RewindStrip)
         strip.show_checkpoints(CHECKPOINTS, index=0)
         await pilot.pause()
-        assert strip.label_text == "rewind › t1 · $0.18 · store refactor · shipped"
+        assert strip.label_text == (
+            "rewind · pick a turn · turn 1 · $0.18 · store refactor · shipped"
+        )
 
 
 @pytest.mark.asyncio
@@ -106,7 +110,7 @@ async def test_arrow_navigation_is_clamped() -> None:
         assert strip.index == 0
         await pilot.press("right", "right", "right", "right")  # clamped at newest
         assert strip.index == 2
-        assert strip.label_text == "rewind › t3 · $1.12 · plan ready"
+        assert strip.label_text == "rewind · pick a turn · turn 3 · $1.12 · plan ready"
 
 
 @pytest.mark.asyncio

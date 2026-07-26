@@ -192,7 +192,7 @@ FOOTER_HINTS: dict[str, str] = {
     "palette": "↑↓ select · enter run · esc close",
     "mention": "↑↓ select · enter/tab insert · esc close",
     "running": "esc interrupt · enter steer · shift+enter queue",
-    "idle": "↑ history · ctrl+j newline · / commands",
+    "idle": "↑ history · ctrl+j newline · ctrl-r rewind · / commands",
 }
 
 

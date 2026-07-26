@@ -74,7 +74,7 @@ def test_footer_hints_exact_spec_strings() -> None:
     assert FOOTER_HINTS["palette"] == "↑↓ select · enter run · esc close"
     assert FOOTER_HINTS["mention"] == "↑↓ select · enter/tab insert · esc close"
     assert FOOTER_HINTS["running"] == "esc interrupt · enter steer · shift+enter queue"
-    assert FOOTER_HINTS["idle"] == "↑ history · ctrl+j newline · / commands"
+    assert FOOTER_HINTS["idle"] == "↑ history · ctrl+j newline · ctrl-r rewind · / commands"
 
 
 def test_composer_placeholder_exact() -> None:

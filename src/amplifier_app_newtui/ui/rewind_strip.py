@@ -3,7 +3,7 @@
 A bordered orange strip docked ABOVE the composer, opened by ctrl-r /
 ``/rewind`` / clicking a turn rule:
 
-``‹ rewind › tN · $X.XX · <label> › [enter fork] [esc close]``
+``‹ rewind · pick a turn · turn N · $X.XX · <label> › [enter fork] [esc close]``
 
 - ``‹`` / ``›`` (click or ``←``/``→``) navigate checkpoints, clamped at
   the ends (mockup ``Math.max/Math.min`` — no wrap-around).
@@ -34,13 +34,24 @@ CLOSE_HINT = "esc close"
 
 
 def rewind_label(checkpoint: Checkpoint) -> str:
-    """``tN · $X.XX · <label>`` — the picker's checkpoint description."""
-    return f"{checkpoint.id} · ${checkpoint.cost_at:.2f} · {checkpoint.label}"
+    """``turn N · $X.XX · <label>`` — the picker's checkpoint description.
+
+    The turn is spelled out (``turn 3``, not the cryptic ``t3``) so the
+    marker reads legibly (S5 discoverability: users could not tell what
+    ``t3`` meant).
+    """
+    return f"turn {checkpoint.turn_id} · ${checkpoint.cost_at:.2f} · {checkpoint.label}"
 
 
 def rewind_line(checkpoint: Checkpoint) -> str:
-    """The strip's center text: ``rewind › tN · $X.XX · <label>``."""
-    return f"rewind {GLYPH_REWIND_RIGHT} {rewind_label(checkpoint)}"
+    """The strip's center text: ``rewind · pick a turn · turn N · $X.XX · <label>``.
+
+    The ``pick a turn`` phrase turns the strip into a self-explaining
+    header: it names the feature (``rewind``), states the action, then
+    shows the currently selected turn — flanked by the ‹ › nav glyphs and
+    the ``enter fork`` / ``esc close`` chips the strip composes alongside.
+    """
+    return f"rewind · pick a turn · {rewind_label(checkpoint)}"
 
 
 class RewindStrip(Horizontal):
