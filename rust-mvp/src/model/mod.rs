@@ -1,5 +1,6 @@
 //! Pure domain state — mirrors the Python app's `model/` layer (no rendering here).
 
+pub mod blocks;
 pub mod config;
 pub mod evidence;
 pub mod formatting;
