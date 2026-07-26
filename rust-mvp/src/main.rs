@@ -604,6 +604,117 @@ status body, wired it into the router, and covered it with a test.";
         assert!(text.contains("I left the endpoint out"), "denied answer:\n{text}");
     }
 
+    // DESIGN-SPEC §7 parity: opening an approval posts the exact notice
+    // `approval required · choose below the transcript` while the bar
+    // replaces the composer.
+    #[test]
+    fn test_flow_approval_open_posts_exact_notice() {
+        let (mut app, _ops) = test_app();
+        reach_approval(&mut app);
+        let ui = app.ui.borrow();
+        assert!(ui.approval.is_some(), "bar replaces composer");
+        assert_eq!(
+            ui.notices.current(),
+            Some("approval required · choose below the transcript")
+        );
+    }
+
+    // DESIGN-SPEC §7.3 parity (Python `app_support.mount_approval`): an
+    // approval arriving while a lane is focused auto-returns to the parent
+    // transcript with the `back to parent · approval required` notice.
+    #[test]
+    fn test_flow_approval_while_lane_focused_auto_returns_to_parent() {
+        let (mut app, _ops) = test_app();
+        // Fan the turn out to one delegate so a lane transcript exists.
+        app.handle_wire(prompt_submit("fan out"));
+        app.handle_wire(wire(ev::UIEvent::ToolPre(ev::ToolPre {
+            session_id: SESSION.into(),
+            ts: 100.5,
+            tool_name: "delegate".into(),
+            tool_call_id: "d1".into(),
+            tool_input: obj(json!({"agent": "researcher", "instruction": "dig in"})),
+            ..ev::ToolPre::default()
+        })));
+        app.handle_wire(wire(ev::UIEvent::AgentSpawned(ev::AgentSpawned {
+            session_id: SESSION.into(),
+            ts: 101.0,
+            agent: "researcher".into(),
+            sub_session_id: "s1".into(),
+            parent_session_id: SESSION.into(),
+            ..ev::AgentSpawned::default()
+        })));
+
+        // Focus the lane through the public key path: the panel auto-opened
+        // at fan-out; Enter on the empty composer focuses the selected lane
+        // (spec §8 focus).
+        assert!(app.ui.borrow().lanes_panel.display(), "lanes panel auto-opened");
+        app.on_key("enter");
+        assert!(
+            app.ui.borrow().transcript.focused_lane().is_some(),
+            "lane focused before the approval arrives"
+        );
+
+        app.handle_wire(WireEvent::Approval {
+            ticket_id: "approval-9".into(),
+            prompt: "write_file src/notes.md".into(),
+            options: vec!["Allow once".into(), "Allow always".into(), "Deny".into()],
+        });
+
+        let ui = app.ui.borrow();
+        assert!(
+            ui.transcript.focused_lane().is_none(),
+            "auto-returned to the parent transcript"
+        );
+        assert!(ui.approval.is_some(), "bar still opened");
+        assert_eq!(
+            ui.notices.current(),
+            Some("back to parent · approval required"),
+            "auto-return notice overwrites the approval notice and stays"
+        );
+    }
+
+    // DESIGN-SPEC §5 parity: Enter while a turn runs STEERS this turn
+    // (kernel steering queue + the exact notice); a second steer queues a
+    // FULL next-turn message instead (queued strip + `· q1` footer badge).
+    #[test]
+    fn test_flow_steer_running_enter_steers_then_second_steer_queues() {
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("first turn"));
+        assert!(app.ui.borrow().turn_active);
+
+        type_text(&mut app, "focus on the tests");
+        app.on_key("enter");
+        assert_eq!(
+            app.steering.pending_steers().len(),
+            1,
+            "running Enter queues a steer, not a submit"
+        );
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("steer queued · shift+enter queues a full next-turn message")
+        );
+        assert!(
+            !app.ui.borrow().queued_strip.display(),
+            "a steer is not a queued next-turn message"
+        );
+
+        // Second steer while one is pending → queue a full message (§5).
+        type_text(&mut app, "and update the docs");
+        app.on_key("enter");
+        assert_eq!(app.steering.pending_steers().len(), 1, "still one steer");
+        let ui = app.ui.borrow();
+        assert_eq!(
+            ui.queued_strip.queued(),
+            Some("and update the docs"),
+            "second steer became the queued next-turn message"
+        );
+        drop(ui);
+        assert!(
+            footer_left_text(&app.footer_state()).contains("q1"),
+            "footer queue badge"
+        );
+    }
+
     // Adapts tests/test_flow_modes.py: boot posture is auto (§4 amendment);
     // shift+tab walks chat → plan → brainstorm → build → auto with the
     // exact `mode <id> · <trust>` notice and the footer mode segment.

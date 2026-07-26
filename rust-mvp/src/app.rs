@@ -690,11 +690,29 @@ impl App {
                     options
                 };
                 let mut ui = self.ui.borrow_mut();
+                // Spec §7.3 (Python `app_support.mount_approval`): an approval
+                // arriving while a lane is focused auto-returns to the parent
+                // transcript; the approval notice lands first and the
+                // auto-return notice overwrites it and stays.
+                let lane_was_focused = ui.transcript.focused_lane().is_some();
+                if lane_was_focused {
+                    let _ = ui.transcript.restore_main(monotonic());
+                    ui.lanes_panel.set_focused(None);
+                }
+                // The approval bar owns the keyboard (spec §7): an open
+                // palette strip would otherwise steal the arrow keys.
+                ui.palette.apply_filter(None);
                 if let Ok(mut bar) = ApprovalBar::new(ticket_id, prompt, options) {
                     bar.update_wrap(ui.term_width as usize);
                     ui.approval = Some(bar);
                 }
                 ui.show_notice(APPROVAL_NOTICE, Some(APPROVAL_NOTICE_DURATION));
+                if lane_was_focused {
+                    ui.show_notice(
+                        "back to parent · approval required",
+                        Some(APPROVAL_NOTICE_DURATION),
+                    );
+                }
                 drop(ui);
                 self.settle_after_event();
             }

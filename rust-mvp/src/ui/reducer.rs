@@ -4348,6 +4348,65 @@ mod tests {
         assert_eq!(digest.summary, "Ran 1 shell command");
     }
 
+    /// DESIGN-SPEC §3 (live activity tree): "up to 3 recent ops render …
+    /// beneath the working line (the in-flight op is dim, settled ops
+    /// dimmer)" — the ring is capped at 3, newest last, with exactly the
+    /// in-flight op flagged running.
+    #[test]
+    fn test_live_activity_tree_caps_at_three_recent_ops() {
+        let mut reducer = make_reducer("auto");
+        reducer.handle(&prompt_submit("s", "big burst", 100.0));
+        for i in 0..5 {
+            let call = format!("t{i}");
+            let path = format!("src/file{i}.py");
+            reducer.handle(&tool_pre(
+                "s",
+                &call,
+                "read_file",
+                json!({ "path": path }),
+                101.0 + i as f64,
+            ));
+            reducer.handle(&tool_post(
+                "s",
+                &call,
+                "read_file",
+                json!({ "path": path }),
+                json!({"output": "ok"}),
+                101.5 + i as f64,
+            ));
+        }
+        // A sixth op stays in flight.
+        reducer.handle(&tool_pre(
+            "s",
+            "t9",
+            "bash",
+            json!({"command": "uv run pytest -q"}),
+            107.0,
+        ));
+
+        let working = reducer
+            .host()
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                TranscriptBlock::WorkingStatus(w) => Some(w.clone()),
+                _ => None,
+            })
+            .expect("working line");
+        let branches = &working.activity_lines;
+        assert_eq!(branches.len(), 3, "tree capped at 3 recent ops");
+        let newest = branches.last().expect("a branch");
+        assert!(newest.running, "in-flight op is the newest branch");
+        assert!(newest.text.contains("uv run pytest -q"), "was {:?}", newest.text);
+        assert!(
+            branches[..2].iter().all(|b| !b.running),
+            "settled ops are dim history"
+        );
+        // Newest-last order: the settled slots hold the most recent reads.
+        assert!(branches[0].text.contains("file3"), "was {:?}", branches[0].text);
+        assert!(branches[1].text.contains("file4"), "was {:?}", branches[1].text);
+    }
+
     /// Pins Python `test_mixed_tool_burst_collapses_to_one_humanized_digest`.
     ///
     /// A run of many tools between answers is ONE line — not one per tool

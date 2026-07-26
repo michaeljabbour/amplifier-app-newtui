@@ -130,13 +130,15 @@ Python backend behind `serve`.
 
 | Unit | Status | Caveats |
 |---|---|---|
-| Rust UI ↔ `amplifier-newtui serve` live end-to-end (real model turn; approvals by ticket id) | todo | flow previously demoed with rust-mvp CoreClientRuntime |
+| Rust UI ↔ `amplifier-newtui serve` live end-to-end (real model turn; approvals by ticket id) | verified | 2026-07-26: live turn through the assembled reducer pipeline — real answer "pong", session_cost $1.1459575 from real usage records; approval round-trip proven with `serve --mode build` (ticket approval-1 answered "Allow once" over stdin; ping.txt written). Pinned as #[ignore] core_client::live_serve_end_to_end (run with --ignored; ~$1.15/turn from fresh-session cache write) |
 
 ## Layer 6 — Parity pass
 
 | Unit | Status | Caveats |
 |---|---|---|
-| One test per DESIGN-SPEC behavior | todo | enumerate from docs/DESIGN-SPEC at layer start |
+| One test per DESIGN-SPEC behavior | verified | 48 behaviors enumerated at checkbox granularity in rust-mvp/PARITY.md: 40 covered by existing named Rust tests, 4 added this pass (activity-tail cap 3, approval-open notice, steer-then-queue client half, approval-while-lane-focused auto-return — the last also fixed an unwired assembly gap mirroring mount_approval), 4 n/a (architecture property, backend-only, mouse unwired) |
+
+**Layers 4/5/6 status: COMPLETE.** Final: 1066 lib + 12 bin tests green (+1 ignored live test), clippy zero warnings, Python suite 2295 green.
 
 ## Log / caveats
 

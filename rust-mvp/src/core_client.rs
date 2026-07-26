@@ -167,6 +167,101 @@ mod tests {
         assert!(text.contains("$0.01"), "footer cost from exact Decimal:\n{text}");
     }
 
+    /// LIVE end-to-end against the REAL Python backend (`uv run
+    /// amplifier-newtui serve`, which wraps RealRuntime → real model calls).
+    /// Ignored by default so CI/normal runs never touch the network; run it
+    /// explicitly with:
+    ///
+    ///   cargo test live_serve_end_to_end -- --ignored --nocapture
+    ///
+    /// Override the backend command with AMPLIFIER_SERVE_CMD (executed via
+    /// `sh -c` from the repo root, one directory above this crate).
+    #[test]
+    #[ignore = "live: spawns the real Python backend and makes a real model call"]
+    fn live_serve_end_to_end() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("rust-mvp lives inside the repo")
+            .to_path_buf();
+        let serve_cmd = std::env::var("AMPLIFIER_SERVE_CMD")
+            .unwrap_or_else(|_| "uv run amplifier-newtui serve".to_string());
+        let shell = format!("cd '{}' && exec {}", repo_root.display(), serve_cmd);
+        let cmd = vec!["/bin/sh".to_string(), "-c".to_string(), shell];
+
+        let (tx, rx) = channel::<Msg>();
+        let rt = CoreClientRuntime::spawn(&cmd, tx).expect("spawn live backend");
+
+        let adapter = ClientRuntimeAdapter::new(Box::new(rt));
+        let mut app = App::new(Box::new(adapter), true, None, None);
+        app.boot();
+
+        // RealRuntime boot (foundation + modules) can take a while cold.
+        match rx
+            .recv_timeout(Duration::from_secs(300))
+            .expect("session.started from live backend")
+        {
+            Msg::Rt(ev) => app.handle_wire(ev),
+            _ => panic!("expected wire event"),
+        }
+        assert!(app.ui.borrow().splash.is_none(), "splash dissolves on identity");
+        assert!(!app.ui.borrow().bundle.is_empty(), "real bundle name landed");
+        assert!(!app.ui.borrow().model_name.is_empty(), "real model name landed");
+
+        app.submit_prompt("Reply with exactly the word: pong");
+
+        // Drive the assembled pipeline until the live turn completes.
+        // turn_active flips true on the backend's prompt_submit event and
+        // false again when the turn finishes. If the backend parks on an
+        // approval (not expected for this prompt, but the posture decides),
+        // answer it from the real approval-bar path.
+        let mut answered_approval = false;
+        let mut saw_active = false;
+        loop {
+            let msg = rx
+                .recv_timeout(Duration::from_secs(180))
+                .expect("live event stream stalled before turn completion");
+            if let Msg::Rt(ev) = msg {
+                app.handle_wire(ev);
+                if app.ui.borrow().approval.is_some() {
+                    answered_approval = true;
+                    app.on_key("enter"); // "Allow once" is the default selection
+                }
+                if app.ui.borrow().turn_active {
+                    saw_active = true;
+                }
+                if saw_active && !app.ui.borrow().turn_active {
+                    break;
+                }
+            }
+        }
+
+        // Real usage/cost tallies from provider_response_usage events.
+        assert!(app.reducer.total_tokens > 0, "output tokens tallied from live usage");
+        assert!(
+            app.reducer.session_cost > Decimal::ZERO,
+            "session cost priced from live usage (got {})",
+            app.reducer.session_cost
+        );
+
+        // The real answer landed as a durable transcript block.
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("Reply with exactly the word: pong"),
+            "user line rendered:\n{text}"
+        );
+        assert!(
+            text.to_lowercase().contains("pong"),
+            "durable answer from the real model rendered:\n{text}"
+        );
+
+        eprintln!(
+            "LIVE OK — cost=${} tokens={} approval_round_trip={}",
+            app.reducer.session_cost, app.reducer.total_tokens, answered_approval
+        );
+    }
+
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
         let mut s = String::new();
         for y in 0..buf.area.height {
