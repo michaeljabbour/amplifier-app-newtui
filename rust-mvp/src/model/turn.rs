@@ -225,7 +225,11 @@ impl std::error::Error for TurnError {}
 /// cache hit NN%`, the footer `▲` yield glyph (last turn shipped) and
 /// the rewind picker's checkpoint list. Mutable by design — one instance
 /// per session, fed by the turn lifecycle.
-#[derive(Debug, Default)]
+// `Clone` is assembly glue: the app keeps a `Mutex<OutcomeLedger>` mirror
+// for the `CommandHost` surface (the reducer owns the authoritative copy by
+// value — Python shared one object; Rust syncs by clone around command
+// dispatch).
+#[derive(Clone, Debug, Default)]
 pub struct OutcomeLedger {
     turns: Vec<LedgerTurn>,
 }

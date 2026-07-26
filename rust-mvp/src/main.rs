@@ -1,24 +1,31 @@
 //! Composition root + event loop. One asyncio-free loop: terminal input, runtime
-//! events, and spinner ticks all arrive as `Msg` on a single channel — the Rust
-//! analogue of the app-loop queue in `ui/app.py`.
+//! events, and heartbeat ticks all arrive as `Msg` on a single channel — the Rust
+//! analogue of the app-loop queue in `ui/app.py`. Key events convert to Textual
+//! chord names and dispatch through the assembled `App` (keymap contexts,
+//! composer semantics, approval bar, ESC_CHAIN).
 
 use amplifier_newtui_rs::{app, core_client, live, message, runtime, ui};
 
-use app::{App, TurnState};
+use app::{App, DemoAdapter};
 use core_client::CoreClientRuntime;
-use live::LiveRuntime;
-use runtime::Runtime;
 use crossterm::event as cterm;
 use crossterm::event::{Event as CEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use live::LiveRuntime;
 use message::Msg;
+use ratatui::prelude::*;
 use runtime::DemoRuntime;
+use std::cell::RefCell;
 use std::io::{self, Stdout};
+use std::rc::Rc;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
 use std::time::Duration;
-use ratatui::prelude::*;
+use ui::demo_wiring::DemoWiring;
+use ui::runtime_adapter::ClientRuntimeAdapter;
 
 fn main() -> io::Result<()> {
     let (tx, rx) = channel::<Msg>();
@@ -26,55 +33,65 @@ fn main() -> io::Result<()> {
     spawn_ticker(tx.clone());
 
     // Runtime selection:
-    //   --demo    → scripted in-process DemoRuntime
-    //   --direct  → LiveRuntime (illustrative UI-calls-provider shortcut, not the
-    //               target architecture; falls back to demo without a key)
+    //   --demo    → scripted in-process DemoRuntime (real event vocabulary)
+    //   --direct  → LiveRuntime (illustrative UI-calls-provider shortcut, not
+    //               the target architecture; falls back to demo without a key)
     //   default   → CoreClientRuntime: client of a backend process over the
     //               protocol (the canonical shape; drop-in for amplifier-core)
     let args: Vec<String> = std::env::args().collect();
-    let (mut runtime, mut app): (Box<dyn Runtime>, App) = if args.iter().any(|a| a == "--demo") {
-        (Box::new(DemoRuntime::new(tx.clone())), App::new("newtui", "demo-01"))
+    let mut app = if args.iter().any(|a| a == "--demo") {
+        demo_app(&tx)
     } else if args.iter().any(|a| a == "--direct") {
         match LiveRuntime::from_env(tx.clone()) {
             Ok(rt) => {
-                let mut app = App::new("newtui", "live-01");
-                app.notice = Some(format!("direct · {}", rt.model()));
-                (Box::new(rt), app)
+                let model = rt.model().to_string();
+                let mut adapter = ClientRuntimeAdapter::new(Box::new(rt));
+                adapter.base_mut().bundle_name = "newtui".into();
+                adapter.base_mut().model_name = model;
+                adapter.base_mut().session_short = live::LIVE_SESSION_ID.into();
+                App::new(Box::new(adapter), true, None, None)
             }
             Err(_) => {
-                let mut app = App::new("newtui", "demo-01");
-                app.notice = Some("no ANTHROPIC_API_KEY — scripted demo".into());
-                (Box::new(DemoRuntime::new(tx.clone())), app)
+                let app = demo_app(&tx);
+                app.ui
+                    .borrow_mut()
+                    .show_notice("no ANTHROPIC_API_KEY — scripted demo", None);
+                app
             }
         }
     } else {
         match CoreClientRuntime::spawn(&backend_command(), tx.clone()) {
-            Ok(rt) => {
-                let mut app = App::new("newtui", "core-01");
-                app.notice = Some("core · via serve protocol".into());
-                (Box::new(rt), app)
-            }
+            Ok(rt) => App::new(Box::new(ClientRuntimeAdapter::new(Box::new(rt))), true, None, None),
             Err(e) => {
-                let mut app = App::new("newtui", "demo-01");
-                app.notice = Some(format!("backend spawn failed ({e}) — scripted demo"));
-                (Box::new(DemoRuntime::new(tx.clone())), app)
+                let app = demo_app(&tx);
+                app.ui
+                    .borrow_mut()
+                    .show_notice(&format!("backend spawn failed ({e}) — scripted demo"), None);
+                app
             }
         }
     };
+    app.boot();
 
     let mut terminal = setup_terminal()?;
+    let size = terminal.size()?;
+    app.on_resize(size.width, size.height);
     terminal.draw(|f| ui::draw(f, &app))?;
 
     while let Ok(msg) = rx.recv() {
         match msg {
             Msg::Term(CEvent::Key(k)) if k.kind == KeyEventKind::Press => {
-                handle_key(&mut app, runtime.as_mut(), k);
+                if let Some(name) = key_name(&k) {
+                    app.on_key(&name);
+                }
             }
+            Msg::Term(CEvent::Paste(payload)) => app.on_paste(&payload),
+            Msg::Term(CEvent::Resize(w, h)) => app.on_resize(w, h),
             Msg::Term(_) => {}
-            Msg::Rt(ev) => app.on_event(ev),
+            Msg::Rt(ev) => app.handle_wire(ev),
             Msg::Tick => app.tick(),
         }
-        if app.should_quit {
+        if app.should_quit() {
             break;
         }
         terminal.draw(|f| ui::draw(f, &app))?;
@@ -83,51 +100,50 @@ fn main() -> io::Result<()> {
     restore_terminal(&mut terminal)
 }
 
-fn handle_key(app: &mut App, runtime: &mut dyn Runtime, key: KeyEvent) {
-    // Global quit.
-    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        app.should_quit = true;
-        return;
-    }
+fn demo_app(tx: &Sender<Msg>) -> App {
+    let wiring = Rc::new(RefCell::new(DemoWiring::new()));
+    let adapter = DemoAdapter::new(Box::new(DemoRuntime::new(tx.clone())), Rc::clone(&wiring));
+    App::new(Box::new(adapter), true, None, Some(wiring))
+}
 
-    match app.state {
-        TurnState::AwaitingApproval => {
-            let choice = match key.code {
-                KeyCode::Char('y') => Some("Allow once"),
-                KeyCode::Char('n') | KeyCode::Esc => Some("Deny"),
-                _ => None,
-            };
-            if let Some(choice) = choice {
-                let ticket = app.pending_ticket.take().unwrap_or_default();
-                app.state = TurnState::Running;
-                app.pending_action = None;
-                runtime.answer_approval(&ticket, choice);
+/// Crossterm key event → Textual chord name (the grammar the ported units
+/// speak: `"enter"`, `"shift+tab"`, `"ctrl+t"`, single chars insert
+/// themselves). `None` for chords the app has no binding for.
+fn key_name(key: &KeyEvent) -> Option<String> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    Some(match key.code {
+        KeyCode::Enter => {
+            if ctrl {
+                "ctrl+enter".into()
+            } else if alt {
+                "alt+enter".into()
+            } else if shift {
+                "shift+enter".into()
+            } else {
+                "enter".into()
             }
         }
-        _ => match key.code {
-            KeyCode::BackTab => app.mode = app.mode.next(),
-            KeyCode::Enter => {
-                let text = app.composer.trim().to_string();
-                let prompt = if text.is_empty() {
-                    "Add a health check endpoint to the service".to_string()
-                } else {
-                    text
-                };
-                app.composer.clear();
-                if app.state == TurnState::Idle {
-                    runtime.submit(prompt);
-                }
+        KeyCode::BackTab => "shift+tab".into(),
+        KeyCode::Tab => {
+            if shift {
+                "shift+tab".into()
+            } else {
+                "tab".into()
             }
-            KeyCode::Char(c) => app.composer.push(c),
-            KeyCode::Backspace => {
-                app.composer.pop();
-            }
-            KeyCode::Up => app.scroll = app.scroll.saturating_sub(1),
-            KeyCode::Down => app.scroll = app.scroll.saturating_add(1),
-            KeyCode::Esc if app.state == TurnState::Running => runtime.interrupt(),
-            _ => {}
-        },
-    }
+        }
+        KeyCode::Esc => "escape".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Up => "up".into(),
+        KeyCode::Down => "down".into(),
+        KeyCode::Left => "left".into(),
+        KeyCode::Right => "right".into(),
+        KeyCode::Char(c) if ctrl => format!("ctrl+{}", c.to_ascii_lowercase()),
+        KeyCode::Char(c) if alt => format!("alt+{}", c.to_ascii_lowercase()),
+        KeyCode::Char(c) => c.to_string(),
+        _ => return None,
+    })
 }
 
 /// The backend to spawn for the default (core-client) runtime. Overridable with
@@ -170,108 +186,273 @@ fn spawn_ticker(tx: Sender<Msg>) {
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Bracketed paste keeps multi-line pastes atomic (the composer's stub
+    // collapse + duplicate fence depend on whole-paste delivery).
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        cterm::EnableBracketedPaste
+    )?;
     Terminal::new(CrosstermBackend::new(stdout))
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        cterm::DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()
 }
+
+// ---------------------------------------------------------------------------
+// Headless flow tests — TestBackend renditions of the Python Pilot suites.
+// Each test names the Python file it adapts.
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use amplifier_newtui_rs::event::UiEvent;
-    use amplifier_newtui_rs::kernel::events::ProviderResponseUsage;
+    use amplifier_newtui_rs::kernel::events as ev;
+    use amplifier_newtui_rs::model::queues::{LaneSteeringQueue, NeedsYouQueue, SteeringQueue};
+    use amplifier_newtui_rs::model::terminal::TerminalSurface;
+    use amplifier_newtui_rs::model::trust::DenialLog;
+    use amplifier_newtui_rs::protocol::WireEvent;
+    use amplifier_newtui_rs::ui::app_support::QUEUED_NOTICE;
+    use amplifier_newtui_rs::ui::footer::{footer_left_text, footer_right_text, footer_wrap};
+    use amplifier_newtui_rs::ui::runtime_adapter::{RuntimeAdapter, RuntimeAdapterBase};
     use ratatui::backend::TestBackend;
     use rust_decimal::Decimal;
+    use serde_json::{json, Map, Value};
     use std::str::FromStr;
+    use std::sync::Mutex;
 
-    /// Headless render smoke test — the analogue of the Python app's Pilot tests.
-    /// Drives a full scripted turn's events through the reducer and asserts the
-    /// pure `draw` produces the expected transcript, with zero real terminal.
-    #[test]
-    fn renders_a_full_turn_headless() {
-        let mut app = App::new("newtui", "demo-01");
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
+    // -- offline test adapter: records the ops the app routes to the runtime --
 
-        // Replay a turn including the approval → answer → stream → complete arc.
-        for ev in [
-            UiEvent::PromptSubmit("Add a health check endpoint".into()),
-            UiEvent::Narration("Thinking…".into()),
-            UiEvent::ToolLine { summary: "Read 3 files · ran 2 commands".into(), ok: true },
-            UiEvent::ApprovalRequired { ticket_id: "t1".into(), action: "write_file src/health.py".into() },
-        ] {
-            app.on_event(ev);
+    struct TestAdapter {
+        base: RuntimeAdapterBase,
+        ops: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl TestAdapter {
+        fn new(ops: Rc<RefCell<Vec<String>>>) -> Self {
+            let mut base = RuntimeAdapterBase::new();
+            base.bundle_name = "newtui".into();
+            base.model_name = "claude-sonnet-4-5".into();
+            base.session_short = "core-01".into();
+            Self { base, ops }
         }
-        assert_eq!(app.state, TurnState::AwaitingApproval);
+    }
 
-        // Approve, then stream the answer — with the provider usage event a
-        // real serve turn emits (1200 in / 340 out / 800 cache-read /
-        // 100 cache-write on claude-sonnet-4-5 → exactly $0.00924 on the
-        // fallback pricing table, oracle-checked against Python cost_of).
-        app.state = TurnState::Running;
-        app.on_event(UiEvent::StreamStart);
-        for w in "I've added a /health endpoint.".split_inclusive(' ') {
-            app.on_event(UiEvent::StreamDelta(w.into()));
+    impl RuntimeAdapter for TestAdapter {
+        fn steering(&self) -> &SteeringQueue {
+            &self.base.steering
         }
-        app.on_event(UiEvent::StreamEnd);
-        app.on_event(UiEvent::Usage(ProviderResponseUsage {
-            session_id: "demo-01".into(),
-            input_tokens: 1200,
-            output_tokens: 340,
-            cache_read: 800,
-            cache_write: 100,
+        fn lane_steering(&self) -> &LaneSteeringQueue {
+            &self.base.lane_steering
+        }
+        fn needs_you(&self) -> &NeedsYouQueue {
+            &self.base.needs_you
+        }
+        fn denial_log(&self) -> &Mutex<DenialLog> {
+            &self.base.denial_log
+        }
+        fn terminal(&self) -> &TerminalSurface {
+            &self.base.terminal
+        }
+        fn bundle_name(&self) -> String {
+            self.base.bundle_name.clone()
+        }
+        fn model_name(&self) -> String {
+            self.base.model_name.clone()
+        }
+        fn session_short(&self) -> String {
+            self.base.session_short.clone()
+        }
+        fn submit(&mut self, text: &str, _a: &[ui::composer::ImageAttachment]) {
+            self.ops.borrow_mut().push(format!("submit:{text}"));
+        }
+        fn interrupt(&mut self) -> bool {
+            self.ops.borrow_mut().push("interrupt".into());
+            true
+        }
+        fn answer_approval(&mut self, ticket_id: &str, choice: &str) {
+            self.ops
+                .borrow_mut()
+                .push(format!("approve:{ticket_id}:{choice}"));
+        }
+        fn config_view(&mut self) -> amplifier_newtui_rs::model::config::ConfigSnapshotView {
+            RuntimeAdapter::config_view(&mut self.base)
+        }
+        fn config_toggle(&mut self, c: &str, n: &str, e: bool) -> (bool, String) {
+            RuntimeAdapter::config_toggle(&mut self.base, c, n, e)
+        }
+        fn config_set(&mut self, p: &str, v: &str) -> (bool, String) {
+            RuntimeAdapter::config_set(&mut self.base, p, v)
+        }
+        fn config_diff(&mut self) -> Vec<amplifier_newtui_rs::model::config::ConfigChange> {
+            RuntimeAdapter::config_diff(&mut self.base)
+        }
+        fn config_save(&mut self, scope: &str) -> (bool, String) {
+            RuntimeAdapter::config_save(&mut self.base, scope)
+        }
+    }
+
+    fn test_app() -> (App, Rc<RefCell<Vec<String>>>) {
+        let ops = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(TestAdapter::new(Rc::clone(&ops))),
+            true,
+            None,
+            None,
+        );
+        app.boot();
+        app.on_resize(100, 32);
+        (app, ops)
+    }
+
+    const SESSION: &str = "core-01";
+
+    fn obj(v: Value) -> Map<String, Value> {
+        match v {
+            Value::Object(m) => m,
+            _ => Map::new(),
+        }
+    }
+
+    fn wire(event: ev::UIEvent) -> WireEvent {
+        WireEvent::Event(event)
+    }
+
+    fn prompt_submit(text: &str) -> WireEvent {
+        wire(ev::UIEvent::PromptSubmit(ev::PromptSubmit {
+            session_id: SESSION.into(),
+            ts: 100.0,
+            prompt: text.into(),
+            ..ev::PromptSubmit::default()
+        }))
+    }
+
+    fn tool_pair(index: usize, tool: &str, input: Value, result: Value) -> Vec<WireEvent> {
+        let call_id = format!("call-{index}");
+        vec![
+            wire(ev::UIEvent::ToolPre(ev::ToolPre {
+                session_id: SESSION.into(),
+                ts: 101.0,
+                tool_name: tool.into(),
+                tool_call_id: call_id.clone(),
+                tool_input: obj(input.clone()),
+                ..ev::ToolPre::default()
+            })),
+            wire(ev::UIEvent::ToolPost(ev::ToolPost {
+                session_id: SESSION.into(),
+                ts: 101.5,
+                tool_name: tool.into(),
+                tool_call_id: call_id,
+                tool_input: obj(input),
+                result: obj(result),
+                ..ev::ToolPost::default()
+            })),
+        ]
+    }
+
+    fn usage(input: i64, output: i64, cache_read: i64, cache_write: i64) -> WireEvent {
+        wire(ev::UIEvent::ProviderResponseUsage(ev::ProviderResponseUsage {
+            session_id: SESSION.into(),
+            ts: 102.0,
+            input_tokens: input,
+            output_tokens: output,
+            cache_read,
+            cache_write,
             model: "claude-sonnet-4-5".into(),
-            ..ProviderResponseUsage::default()
-        }));
-        app.on_event(UiEvent::TurnComplete { files: 1, added: 18, removed: 0, tokens: 0, cost: 0.0 });
-
-        assert_eq!(app.state, TurnState::Idle);
-        assert_eq!(app.tallies.tokens, 340);
-        assert_eq!(app.tallies.cost, Decimal::from_str("0.00924").unwrap());
-
-        terminal.draw(|f| ui::draw(f, &app)).unwrap();
-        let text = buffer_text(terminal.backend().buffer());
-
-        assert!(text.contains("Add a health check endpoint"), "user line missing");
-        assert!(text.contains("Read 3 files"), "tool line missing");
-        assert!(text.contains("/health endpoint"), "streamed answer missing");
-        assert!(text.contains("files 1 · +18/−0"), "turn rule missing");
-        assert!(text.contains("chat · 340 tok · $0.0092"), "footer shows non-zero usage cost");
+            ..ev::ProviderResponseUsage::default()
+        }))
     }
 
-    #[test]
-    fn shift_tab_cycles_modes() {
-        let mut app = App::new("newtui", "demo-01");
-        assert_eq!(app.mode.label(), "chat");
-        app.mode = app.mode.next();
-        assert_eq!(app.mode.label(), "plan");
+    fn stream(answer: &str) -> Vec<WireEvent> {
+        let mut events = vec![wire(ev::UIEvent::StreamBlockStart(ev::StreamBlockStart {
+            session_id: SESSION.into(),
+            ts: 103.0,
+            ..ev::StreamBlockStart::default()
+        }))];
+        for word in answer.split_inclusive(' ') {
+            events.push(wire(ev::UIEvent::StreamBlockDelta(ev::StreamBlockDelta {
+                session_id: SESSION.into(),
+                ts: 103.1,
+                text: word.into(),
+                ..ev::StreamBlockDelta::default()
+            })));
+        }
+        events.push(wire(ev::UIEvent::StreamBlockEnd(ev::StreamBlockEnd {
+            session_id: SESSION.into(),
+            ts: 103.9,
+            ..ev::StreamBlockEnd::default()
+        })));
+        events
     }
 
-    /// Prints a real rendered frame (run: `cargo test -- --nocapture snapshot`).
-    #[test]
-    fn snapshot() {
-        let mut app = App::new("newtui", "demo-01");
-        for ev in [
-            UiEvent::PromptSubmit("Add a health check endpoint to the service".into()),
-            UiEvent::Narration("Thinking…".into()),
-            UiEvent::ToolLine { summary: "Read 3 files · ran 2 commands".into(), ok: true },
-            UiEvent::ToolLine { summary: "Changed 1 file  (+18/−0)".into(), ok: true },
-            UiEvent::StreamStart,
-        ] {
-            app.on_event(ev);
+    fn prompt_complete(response: &str, files: i64, diffstat: &str) -> WireEvent {
+        wire(ev::UIEvent::PromptComplete(ev::PromptComplete {
+            session_id: SESSION.into(),
+            ts: 104.0,
+            response: response.into(),
+            files_changed: files,
+            diffstat: diffstat.into(),
+            ..ev::PromptComplete::default()
+        }))
+    }
+
+    const ANSWER: &str = "I've added a `/health` endpoint that returns 200 with a JSON \
+status body, wired it into the router, and covered it with a test.";
+
+    /// Feed a full serve-shaped turn up to (and including) the parked
+    /// approval record.
+    fn reach_approval(app: &mut App) {
+        app.handle_wire(prompt_submit("Add a health check endpoint"));
+        app.handle_wire(wire(ev::UIEvent::Notification(ev::Notification {
+            session_id: SESSION.into(),
+            ts: 100.5,
+            message: "Thinking…".into(),
+            ..ev::Notification::default()
+        })));
+        for (i, (tool, input)) in [
+            ("read_file", json!({"path": "src/app.py"})),
+            ("read_file", json!({"path": "src/router.py"})),
+            ("read_file", json!({"path": "tests/test_app.py"})),
+            ("bash", json!({"command": "pytest -q"})),
+            ("bash", json!({"command": "ruff check ."})),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for event in tool_pair(i, tool, input, json!({"status": "ok"})) {
+                app.handle_wire(event);
+            }
         }
-        for w in "I've added a `/health` endpoint that returns 200 with a JSON status body and covered it with a test.".split_inclusive(' ') {
-            app.on_event(UiEvent::StreamDelta(w.into()));
+        app.handle_wire(usage(1200, 340, 800, 100));
+        app.handle_wire(WireEvent::Approval {
+            ticket_id: "approval-1".into(),
+            prompt: "write_file src/health.py".into(),
+            options: vec!["Allow once".into(), "Allow always".into(), "Deny".into()],
+        });
+    }
+
+    /// Feed the granted-branch close-out (write, stream, usage, complete).
+    fn finish_granted_turn(app: &mut App) {
+        for event in tool_pair(
+            9,
+            "write_file",
+            json!({"path": "src/health.py"}),
+            json!({"status": "ok"}),
+        ) {
+            app.handle_wire(event);
         }
-        app.state = TurnState::Running;
-        let mut terminal = Terminal::new(TestBackend::new(78, 18)).unwrap();
-        terminal.draw(|f| ui::draw(f, &app)).unwrap();
-        println!("\n{}", buffer_text(terminal.backend().buffer()));
+        for event in stream(ANSWER) {
+            app.handle_wire(event);
+        }
+        app.handle_wire(usage(900, 120, 0, 0));
+        app.handle_wire(prompt_complete(ANSWER, 1, "+18/−0"));
     }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
@@ -283,5 +464,358 @@ mod tests {
             s.push('\n');
         }
         s
+    }
+
+    fn draw_text(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| ui::draw(f, app)).unwrap();
+        buffer_text(terminal.backend().buffer())
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            app.on_key(&ch.to_string());
+        }
+    }
+
+    // Adapts tests/test_ui_snapshots.py + the pre-assembly
+    // `renders_a_full_turn_headless`: prompt submit → narration/tool digest
+    // → approval open → approve by ticket → streamed answer → turn rule,
+    // with the exact Decimal session cost in the footer.
+    #[test]
+    fn test_ui_snapshots_full_turn_renders_headless() {
+        let (mut app, ops) = test_app();
+        reach_approval(&mut app);
+
+        {
+            let ui = app.ui.borrow();
+            let bar = ui.approval.as_ref().expect("approval bar open");
+            assert_eq!(bar.ticket_id, "approval-1");
+            assert_eq!(bar.prompt, "write_file src/health.py");
+            assert!(ui.turn_active, "turn parked, still active");
+        }
+        // Approve by ticket: Enter confirms the default "Allow once".
+        app.on_key("enter");
+        assert!(app.ui.borrow().approval.is_none(), "bar closes on resolve");
+        assert!(
+            ops.borrow().contains(&"approve:approval-1:Allow once".to_string()),
+            "answer routed by ticket id: {:?}",
+            ops.borrow()
+        );
+
+        finish_granted_turn(&mut app);
+        assert!(!app.ui.borrow().turn_active, "turn closed out");
+
+        // Exact money: $0.00924 + $0.0045 (kernel::cost fallback table,
+        // oracle-checked against Python cost_of).
+        assert_eq!(
+            app.reducer.session_cost,
+            Decimal::from_str("0.01374").unwrap()
+        );
+
+        let text = draw_text(&app, 100, 32);
+        assert!(text.contains("Add a health check endpoint"), "user line:\n{text}");
+        assert!(
+            text.contains("Read 3 files · ran 2 shell commands"),
+            "burst digest:\n{text}"
+        );
+        assert!(text.contains("/health"), "streamed answer made durable:\n{text}");
+        assert!(text.contains("+18/−0"), "turn rule diffstat:\n{text}");
+        assert!(text.contains("$0.01"), "footer cost:\n{text}");
+        // The journal recorded the ask (approval → /improve evidence).
+        assert_eq!(app.journal.lock().unwrap().tallies().len(), 1);
+    }
+
+    // Adapts tests/test_flow_approval.py: arrows/tab cycle the selection,
+    // shift+tab cycles the SELECTION (never the mode) while the bar owns
+    // the keyboard, esc denies, and the denied write renders the durable
+    // ⊘ blocked line while the turn continues to its close-out.
+    #[test]
+    fn test_flow_approval_arrows_cycle_and_esc_denies_with_blocked_line() {
+        let (mut app, ops) = test_app();
+        reach_approval(&mut app);
+
+        assert_eq!(
+            app.ui.borrow().approval.as_ref().unwrap().option_texts(),
+            vec!["› Allow once", "Allow always", "Deny"]
+        );
+        assert_eq!(app.ui.borrow().footer_context().as_str(), "approval");
+        assert_eq!(
+            footer_right_text(&app.footer_state()),
+            "arrows select · enter confirm · esc deny"
+        );
+
+        app.on_key("right");
+        assert_eq!(
+            app.ui.borrow().approval.as_ref().unwrap().option_texts(),
+            vec!["Allow once", "› Allow always", "Deny"]
+        );
+        app.on_key("tab");
+        assert_eq!(
+            app.ui.borrow().approval.as_ref().unwrap().option_texts(),
+            vec!["Allow once", "Allow always", "› Deny"]
+        );
+        // Shift+tab cycles the selection — it must NOT cycle the mode.
+        let mode_before = app.ui.borrow().mode.id;
+        app.on_key("shift+tab");
+        assert_eq!(app.ui.borrow().mode.id, mode_before);
+        assert_eq!(
+            app.ui.borrow().approval.as_ref().unwrap().option_texts(),
+            vec!["› Allow once", "Allow always", "Deny"]
+        );
+
+        // Esc = Deny (spec §7).
+        app.on_key("escape");
+        assert!(
+            ops.borrow().contains(&"approve:approval-1:Deny".to_string()),
+            "esc denies by ticket: {:?}",
+            ops.borrow()
+        );
+
+        // The denied write arrives as a denied tool:post → durable ⊘ line;
+        // the turn continues to a no-ship close-out.
+        for event in tool_pair(
+            9,
+            "write_file",
+            json!({"path": "src/health.py"}),
+            json!({
+                "status": "denied",
+                "reason": "denied by user",
+                "continuation": "continuing without the write",
+            }),
+        ) {
+            app.handle_wire(event);
+        }
+        let denied = "Understood — I left the endpoint out.";
+        for event in stream(denied) {
+            app.handle_wire(event);
+        }
+        app.handle_wire(usage(600, 80, 0, 0));
+        app.handle_wire(prompt_complete(denied, 0, ""));
+        assert!(!app.ui.borrow().turn_active);
+
+        let text = draw_text(&app, 100, 32);
+        assert!(text.contains('⊘'), "blocked glyph:\n{text}");
+        assert!(text.contains("denied by user"), "deny reason:\n{text}");
+        assert!(
+            text.contains("continuing without the write"),
+            "deny-and-continue note:\n{text}"
+        );
+        assert!(text.contains("I left the endpoint out"), "denied answer:\n{text}");
+    }
+
+    // Adapts tests/test_flow_modes.py: boot posture is auto (§4 amendment);
+    // shift+tab walks chat → plan → brainstorm → build → auto with the
+    // exact `mode <id> · <trust>` notice and the footer mode segment.
+    #[test]
+    fn test_flow_modes_shift_tab_cycles_with_notice() {
+        let (mut app, _ops) = test_app();
+        assert_eq!(app.ui.borrow().mode.id.as_str(), "auto");
+        assert!(app.ui.borrow().composer.has_class("mode-auto"));
+
+        for expected in ["chat", "plan", "brainstorm", "build", "auto"] {
+            app.on_key("shift+tab");
+            let ui = app.ui.borrow();
+            assert_eq!(ui.mode.id.as_str(), expected);
+            let trust = ui.mode.trust_str;
+            assert_eq!(
+                ui.notices.current(),
+                Some(format!("mode {expected} · {trust}").as_str())
+            );
+            assert!(ui.composer.has_class(&format!("mode-{expected}")));
+            drop(ui);
+            assert!(
+                footer_left_text(&app.footer_state())
+                    .starts_with(&format!("mode {expected}")),
+                "footer mode segment"
+            );
+        }
+    }
+
+    // Adapts tests/test_flow_interrupt.py: esc while running requests the
+    // interrupt (the notice waits for close-out); the settled turn carries
+    // the italic `Interrupted. Goal: …` recap, the `· interrupted` rule,
+    // and the `turn interrupted · context saved` end notice.
+    #[test]
+    fn test_flow_interrupt_esc_requests_break_then_recap_and_rule() {
+        let (mut app, ops) = test_app();
+        app.handle_wire(prompt_submit("refactor the session store"));
+        assert!(app.ui.borrow().turn_active);
+
+        app.on_key("escape");
+        assert!(
+            ops.borrow().contains(&"interrupt".to_string()),
+            "esc routed the interrupt: {:?}",
+            ops.borrow()
+        );
+        // Esc only requests the break — the notice waits for close-out.
+        assert_ne!(
+            app.ui.borrow().notices.current(),
+            Some("turn interrupted · context saved")
+        );
+
+        app.handle_wire(wire(ev::UIEvent::CancelCompleted(ev::CancelCompleted {
+            session_id: SESSION.into(),
+            ts: 105.0,
+            ..ev::CancelCompleted::default()
+        })));
+        app.handle_wire(prompt_complete("", 0, ""));
+
+        assert!(!app.ui.borrow().turn_active);
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("turn interrupted · context saved")
+        );
+        let text = draw_text(&app, 100, 32);
+        assert!(text.contains("Interrupted. Goal:"), "recap line:\n{text}");
+        assert!(text.contains("interrupted"), "interrupted rule:\n{text}");
+        // Nothing shipped.
+        assert!(!app.reducer.ledger.last_shipped());
+    }
+
+    // Adapts tests/test_flow_palette.py: "/" opens the palette strip with
+    // grouped rows; the live filter narrows; Enter runs the matched
+    // builtin (here /theme — cycles slate → graphite) and closes the
+    // filter with the composer cleared.
+    #[test]
+    fn test_flow_palette_slash_opens_and_builtin_runs() {
+        let (mut app, _ops) = test_app();
+        app.on_key("/");
+        assert!(app.ui.borrow().palette.is_open());
+        let text = draw_text(&app, 100, 32);
+        assert!(text.contains("DURING"), "group headers show unfiltered:\n{text}");
+
+        type_text(&mut app, "theme");
+        {
+            let ui = app.ui.borrow();
+            assert_eq!(ui.palette.filter_text(), Some("/theme"));
+            assert_eq!(
+                ui.palette.selected_command().map(|spec| spec.name.clone()),
+                Some("/theme".to_string())
+            );
+        }
+        app.on_key("enter");
+        let ui = app.ui.borrow();
+        assert_eq!(ui.theme_name, "graphite", "builtin ran and cycled the theme");
+        assert_eq!(ui.notices.current(), Some("theme graphite"));
+        assert!(!ui.palette.is_open(), "filter cleared after run");
+        assert_eq!(ui.composer.text(), "", "composer cleared");
+        // The command echoed as a ❯ user line.
+        drop(ui);
+        let text = draw_text(&app, 100, 32);
+        assert!(text.contains("/theme"), "command echo:\n{text}");
+    }
+
+    // Adapts tests/test_flow_steer_queue.py: shift+enter mid-turn queues
+    // the FULL next-turn message (queued strip + `· q1` footer + notice);
+    // at close-out the queue drains into the next submitted turn.
+    #[test]
+    fn test_flow_steer_queue_shift_enter_queues_and_drains_at_turn_end() {
+        let (mut app, ops) = test_app();
+        app.handle_wire(prompt_submit("first turn"));
+        assert!(app.ui.borrow().turn_active);
+
+        type_text(&mut app, "also update the docs");
+        app.on_key("shift+enter");
+        {
+            let ui = app.ui.borrow();
+            assert!(ui.queued_strip.display(), "queued strip shows");
+            assert_eq!(
+                ui.queued_strip.queued(),
+                Some("also update the docs"),
+                "queued text kept verbatim"
+            );
+            assert_eq!(ui.notices.current(), Some(QUEUED_NOTICE));
+        }
+        assert!(
+            footer_left_text(&app.footer_state()).contains("q1"),
+            "footer queue badge"
+        );
+        let text = draw_text(&app, 100, 32);
+        assert!(text.contains("queued"), "queued strip rendered:\n{text}");
+
+        // Turn end → the queue drains into the next submitted turn.
+        app.handle_wire(prompt_complete("done", 0, ""));
+        assert!(
+            ops.borrow()
+                .contains(&"submit:also update the docs".to_string()),
+            "queued message drained as the next turn: {:?}",
+            ops.borrow()
+        );
+        let ui = app.ui.borrow();
+        assert!(!ui.queued_strip.display(), "strip cleared after drain");
+        assert_eq!(ui.notices.current(), Some("queued message picked up"));
+    }
+
+    // Adapts tests/test_ui_snapshots.py's narrow-width golden: at 40 cols
+    // the footer hints wrap to their own full-width second row instead of
+    // clipping (mockup flex-wrap).
+    #[test]
+    fn test_ui_snapshots_footer_wraps_at_narrow_width() {
+        let (mut app, _ops) = test_app();
+        app.on_resize(40, 20);
+        let state = app.footer_state();
+        assert!(footer_wrap(&state, 40).wrapped, "narrow width wraps the hints");
+        let text = draw_text(&app, 40, 20);
+        let rows: Vec<&str> = text.lines().collect();
+        let last = rows[rows.len() - 1];
+        let second_last = rows[rows.len() - 2];
+        assert!(
+            last.contains("history") || last.contains("rewind"),
+            "hints on their own row:\n{text}"
+        );
+        assert!(
+            second_last.contains("mode auto"),
+            "left segment on the row above:\n{text}"
+        );
+    }
+
+    // The `--demo` composition end-to-end: DemoAdapter + DemoRuntime play
+    // the scripted turn (real event vocabulary) through the assembled
+    // reducer, including the parked approval answered from the bar. The
+    // demo session carries the $0.40 scripted cost baseline (DemoWiring).
+    #[test]
+    fn test_flow_demo_scripted_turn_end_to_end() {
+        let (tx, rx) = channel::<Msg>();
+        let mut app = demo_app(&tx);
+        app.boot();
+        app.on_resize(100, 32);
+        assert!(app.ui.borrow().splash.is_none(), "demo identity known at boot");
+        assert_eq!(app.ui.borrow().bundle, "anchors");
+        app.submit_prompt("Add a health check endpoint");
+
+        let mut answered = false;
+        while let Ok(msg) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            if let Msg::Rt(ev) = msg {
+                app.handle_wire(ev);
+                if app.ui.borrow().approval.is_some() && !answered {
+                    answered = true;
+                    app.on_key("enter"); // Allow once
+                }
+                if answered && !app.ui.borrow().turn_active {
+                    break;
+                }
+            }
+        }
+        assert!(answered, "demo turn parked on the approval");
+        assert!(!app.ui.borrow().turn_active, "demo turn closed out");
+        // $0.40 baseline + $0.00924 + $0.0045 priced usage.
+        assert_eq!(
+            app.reducer.session_cost,
+            Decimal::from_str("0.41374").unwrap()
+        );
+        let text = draw_text(&app, 100, 32);
+        assert!(text.contains("Read 3 files · ran 2 shell commands"), "digest:\n{text}");
+        assert!(text.contains("/health"), "answer:\n{text}");
+    }
+
+    /// Prints a real rendered frame (run: `cargo test -- --nocapture snapshot`).
+    #[test]
+    fn snapshot() {
+        let (mut app, _ops) = test_app();
+        reach_approval(&mut app);
+        app.on_key("enter");
+        finish_granted_turn(&mut app);
+        println!("\n{}", draw_text(&app, 100, 32));
     }
 }

@@ -1,228 +1,2093 @@
-//! The reducer — mirrors `ui/reducer.py`. A stateful `UiEvent → mutation`
-//! translator that never draws; `ui.rs` renders purely from this state.
+//! The composition root: the assembled ratatui App (ADR-0007's `NewTuiApp`).
+//!
+//! Rust rendering of `src/amplifier_app_newtui/ui/app.py`: the app consumes
+//! the runtime's wire events through [`TranscriptReducer`], owns only
+//! interaction state (running, mode, palette filter, open strips, queued
+//! message, approval head), and the ported units own their own state.
+//!
+//! Layout (DESIGN-SPEC §2, top → bottom): TitleBar / TranscriptView /
+//! LiveTail / NoticeSlot / overlay strips (palette · lanes · plan · rewind ·
+//! queued · file-mentions) / composer-or-approval-bar / FooterBar — painted
+//! by `ui::draw` as a pure function of this state.
+//!
+//! # Assembly notes (deviations from the Python shape, all deliberate)
+//!
+//! - The reducer OWNS its host ([`Shell`]) by value, so the mutable UI state
+//!   lives in one `Rc<RefCell<UiState>>` shared between the reducer host and
+//!   the [`App`] (single-threaded event loop; never crosses threads).
+//! - The reducer owns the authoritative `OutcomeLedger` and block-id
+//!   allocator. The app keeps a `Mutex<OutcomeLedger>` MIRROR for the
+//!   `CommandHost` surface (synced by clone around command dispatch) and its
+//!   own allocator in a disjoint id range (`b1000000+`) — Python shared one
+//!   allocator object; the ported reducer does not expose its own.
+//! - The shared interaction queues (steering / needs-you / lane-steering /
+//!   denial log) are owned by the App, NOT read out of the adapter (the
+//!   adapter sits behind a `RefCell` for its `&mut` ops, and `CommandHost`
+//!   returns plain references). The adapter's internal queue copies are
+//!   deliberately unused.
 
-use crate::event::UiEvent;
-use crate::kernel::cost::CostTracker;
-use crate::model::{Block, Mode, Tallies};
-use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use ratatui::style::Color;
 use rust_decimal::Decimal;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TurnState {
-    Idle,
-    Running,
-    AwaitingApproval,
+use crate::commands::builtin::build_registry;
+use crate::commands::context::ContextUsage;
+use crate::commands::improve::ApprovalJournal;
+use crate::commands::permissions::PermissionSurface;
+use crate::commands::registry::{CommandRegistry, CommandSpec};
+use crate::kernel::events as ev;
+use crate::model::blocks::{
+    Answer, BlockIdAllocator, Segment, StyleToken, TodoItem, TranscriptBlock, UserLine,
+};
+use crate::model::lanes::LaneRegistry;
+use crate::model::modes::{cycle_mode, get_mode, ModeProfile};
+use crate::model::native_modes::posture_conflict_notice;
+use crate::model::queues::{
+    DeferOptions, LaneSteeringQueue, MessageKind, NeedsYouQueue, SteeringQueue,
+};
+use crate::model::trust::DenialLog;
+use crate::model::turn::{Checkpoint, OutcomeLedger};
+use crate::protocol::WireEvent;
+use crate::runtime::Runtime;
+use crate::ui::app_support::{
+    self, resolve_esc, EscAction, EscFlags, EscSequence, PlanSurface, APPROVAL_NOTICE,
+    APPROVAL_NOTICE_DURATION, QUEUED_NOTICE,
+};
+use crate::ui::approval_bar::{ApprovalBar, ApprovalMsg, KeyOutcome, DEFAULT_OPTIONS};
+use crate::ui::chrome::TitleBar;
+use crate::ui::command_context::{AppCommandContext, CommandHost};
+use crate::ui::composer::{Composer, ComposerMessage};
+use crate::ui::config_admin::{self, ConfigAdminHost};
+use crate::ui::demo_wiring::{DemoWiring, DEMO_BUNDLE, DEMO_MODEL, DEMO_SESSION_SHORT};
+use crate::ui::directory_admin::{self, DirectoryAdminHost, DirectoryEntry, DirectoryKind};
+use crate::ui::file_mentions::{
+    close_file_mentions, handle_file_mention_intent, FileMentionStrip, MentionHost,
+};
+use crate::ui::footer::FooterState;
+use crate::ui::keymap::Context;
+use crate::ui::lanes_panel::{LanesMsg, LanesPanel};
+use crate::ui::live_tail::LiveTail;
+use crate::ui::notices::NoticeSlot;
+use crate::ui::palette::{PaletteMessage, PaletteStrip};
+use crate::ui::plan_panel::PlanPanel;
+use crate::ui::queued_strip::QueuedStrip;
+use crate::ui::reducer::{ReducerHost, ReducerOptions, TranscriptReducer};
+use crate::ui::rewind_strip::{RewindMsg, RewindStrip};
+use crate::ui::runtime_adapter::{RuntimeAdapter, RuntimeAdapterBase};
+use crate::ui::session_ops_controller::{SessionOpsAdapter, SessionOpsController, SessionOpsHost};
+use crate::ui::session_ops_view::{
+    sessions_spans, CompactionConfig, ModelListing, SkillInfo, StatusInfo,
+};
+use crate::ui::splash::BootSplash;
+use crate::ui::themes::{theme, Theme, DEFAULT_THEME, THEME_TOKENS};
+use crate::ui::transcript::TranscriptView;
+
+/// App-side block ids mint from a disjoint range so they can never collide
+/// with the reducer-owned allocator (`b1`, `b2`, …). See module docs.
+const APP_ID_RANGE_START: u64 = 1_000_000;
+
+/// Monotonic clock in fractional seconds, anchored at first use.
+pub fn monotonic() -> f64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
+
+/// Wall clock (the event `ts` domain).
+pub fn wall_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// All fourteen §1 tokens of `name`'s theme resolved to ratatui colors —
+/// the ONE token → color table `segments::to_ratatui_line` consumes.
+pub fn token_colors(theme_name: &str) -> HashMap<StyleToken, Color> {
+    let Some(theme): Option<Theme> = theme(theme_name) else {
+        return HashMap::new();
+    };
+    build_color_table(&theme)
+}
+
+fn build_color_table(theme: &Theme) -> HashMap<StyleToken, Color> {
+    let tokens = [
+        StyleToken::BgPage,
+        StyleToken::BgTerm,
+        StyleToken::BgChrome,
+        StyleToken::BgTab,
+        StyleToken::Fg,
+        StyleToken::Bright,
+        StyleToken::Dim,
+        StyleToken::Dimmer,
+        StyleToken::Green,
+        StyleToken::Orange,
+        StyleToken::Red,
+        StyleToken::Blue,
+        StyleToken::Teal,
+        StyleToken::Rule,
+    ];
+    tokens
+        .into_iter()
+        .filter_map(|token| theme.color(token.as_str()).map(|color| (token, color)))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// UiState — the mutable UI surface, shared by the reducer host and the App
+// ---------------------------------------------------------------------------
+
+pub struct UiState {
+    pub transcript: TranscriptView,
+    pub live_tail: LiveTail,
+    pub notices: NoticeSlot,
+    pub lanes_panel: LanesPanel,
+    pub plan_panel: PlanPanel,
+    pub plan_items: Vec<TodoItem>,
+    pub queued_strip: QueuedStrip,
+    pub file_mentions: FileMentionStrip,
+    pub rewind: RewindStrip,
+    pub palette: PaletteStrip<CommandSpec>,
+    pub composer: Composer,
+    pub title: TitleBar,
+    pub approval: Option<ApprovalBar>,
+    pub mode: &'static ModeProfile,
+    pub permissions: PermissionSurface,
+    pub native_modes: Vec<String>,
+    pub theme_name: String,
+    pub colors: HashMap<StyleToken, Color>,
+    pub splash: Option<BootSplash>,
+    pub turn_active: bool,
+    pub should_quit: bool,
+    pub esc: EscSequence,
+    pub term_width: u16,
+    pub term_height: u16,
+    /// Session identity (protocol `session.started` / adapter banner).
+    pub bundle: String,
+    pub model_name: String,
+    pub session_short: String,
+    // -- cross-callback flags the App settles after each event ------------
+    /// `lanes_changed` fired — the App re-feeds the lanes panel.
+    pub lanes_dirty: bool,
+    /// Deferred decisions from `decision_deferred` (message, decision_id).
+    pub pending_deferrals: Vec<(String, String)>,
+    /// End-of-turn queue duties pending (drained once events settle).
+    pub turn_queues_pending: bool,
+    /// Live-tail trailing repaint deadline (monotonic; `LiveTail::feed`).
+    pub live_tail_deadline: Option<f64>,
+    /// Transcript resize-reflow debounce deadline (monotonic).
+    pub reflow_deadline: Option<f64>,
+}
+
+impl UiState {
+    fn new(kitty_protocol: bool, initial_mode: Option<&str>, specs: Vec<CommandSpec>) -> Self {
+        let mode = get_mode(initial_mode);
+        let mut composer = Composer::new(kitty_protocol);
+        composer.set_mode(mode);
+        let theme_name = DEFAULT_THEME.to_string();
+        let colors = token_colors(&theme_name);
+        UiState {
+            transcript: TranscriptView::new(),
+            live_tail: LiveTail::new(),
+            notices: NoticeSlot::new(),
+            lanes_panel: LanesPanel::new(),
+            plan_panel: PlanPanel::new(),
+            plan_items: Vec::new(),
+            queued_strip: QueuedStrip::new(),
+            file_mentions: FileMentionStrip::new(),
+            rewind: RewindStrip::new(),
+            palette: PaletteStrip::new(specs),
+            composer,
+            title: TitleBar::new(),
+            approval: None,
+            mode,
+            permissions: PermissionSurface::default(),
+            native_modes: Vec::new(),
+            theme_name,
+            colors,
+            splash: Some(BootSplash::new()),
+            turn_active: false,
+            should_quit: false,
+            esc: EscSequence::new(),
+            term_width: 80,
+            term_height: 24,
+            bundle: String::new(),
+            model_name: String::new(),
+            session_short: String::new(),
+            lanes_dirty: false,
+            pending_deferrals: Vec::new(),
+            turn_queues_pending: false,
+            live_tail_deadline: None,
+            reflow_deadline: None,
+        }
+    }
+
+    /// Python `NewTuiApp.show_notice`: the approval bar owns its
+    /// explanatory notice while open.
+    pub fn show_notice(&mut self, text: &str, duration: Option<f64>) {
+        if self.approval.is_some() && !text.contains("approval required") {
+            return;
+        }
+        self.notices.show_notice(text, duration);
+    }
+
+    /// Python `set_mode_by_id` (minus the async native-mode bridge, which
+    /// has no wire op — see caveats).
+    pub fn set_mode_by_id(&mut self, mode_id: &str, notify: bool) {
+        self.mode = get_mode(Some(mode_id));
+        self.permissions.set_mode(self.mode.id.as_str());
+        self.composer.set_mode(self.mode);
+        if notify {
+            let notice = self.mode.notice();
+            self.show_notice(&notice, None);
+        }
+        let conflict = posture_conflict_notice(self.mode.id.as_str(), &self.native_modes);
+        if !conflict.is_empty() {
+            self.show_notice(&conflict, None);
+        }
+    }
+
+    /// Python `set_theme_by_name` (`/theme`, DESIGN-SPEC §1).
+    pub fn set_theme_by_name(&mut self, name: &str) {
+        let names: Vec<&str> = THEME_TOKENS.iter().map(|(n, _)| *n).collect();
+        let mut name = name.to_string();
+        if name.is_empty() {
+            let index = names
+                .iter()
+                .position(|n| *n == self.theme_name)
+                .map(|i| i as i64)
+                .unwrap_or(-1);
+            name = names[((index + 1) as usize) % names.len()].to_string();
+        }
+        if !names.contains(&name.as_str()) {
+            let list = names.join(", ");
+            self.show_notice(&format!("unknown theme · {name} · themes: {list}"), None);
+            return;
+        }
+        self.theme_name = name.clone();
+        self.colors = token_colors(&name);
+        self.show_notice(&format!("theme {name}"), None);
+    }
+
+    /// Python `footer_context`.
+    pub fn footer_context(&self) -> Context {
+        if self.approval.is_some() {
+            return Context::Approval;
+        }
+        if self.transcript.focused_lane().is_some() {
+            return Context::LaneFocus;
+        }
+        if self.palette.is_open() {
+            return Context::Palette;
+        }
+        if self.turn_active {
+            return Context::Running;
+        }
+        Context::Idle
+    }
+
+    /// Responsive plan ladder (design D2): panel wide, footer count narrow.
+    fn sync_plan_surfaces(&mut self) {
+        match app_support::plan_surface(&self.plan_items, self.term_width as usize) {
+            PlanSurface::Panel { .. } => {
+                self.plan_panel.update_plan(self.plan_items.clone());
+                self.plan_panel.show_panel();
+            }
+            PlanSurface::Hidden => {
+                self.plan_panel.update_plan(self.plan_items.clone());
+                self.plan_panel.hide_panel();
+            }
+        }
+    }
+}
+
+impl MentionHost for UiState {
+    fn file_mentions(&mut self) -> &mut FileMentionStrip {
+        &mut self.file_mentions
+    }
+
+    fn clear_palette_filter(&mut self) {
+        self.palette.apply_filter(None);
+    }
+
+    fn set_composer_mention_open(&mut self, open: bool) {
+        self.composer.mention_open = open;
+    }
+
+    fn apply_file_mention(&mut self, path: &str) {
+        self.composer.apply_file_mention(path);
+    }
+
+    fn focus_composer_input(&mut self) {
+        // The composer always holds keyboard focus in this client.
+    }
+}
+
+/// The [`ReducerHost`] the reducer owns — a shared handle onto [`UiState`].
+pub struct Shell(pub Rc<RefCell<UiState>>);
+
+impl ReducerHost for Shell {
+    fn mode_id(&self) -> String {
+        self.0.borrow().mode.id.as_str().to_string()
+    }
+
+    fn append_block(&mut self, block: TranscriptBlock) {
+        let mut ui = self.0.borrow_mut();
+        let _ = ui.transcript.append(block, monotonic());
+    }
+
+    fn replace_block(&mut self, block: TranscriptBlock) {
+        let mut ui = self.0.borrow_mut();
+        // Python: `except KeyError: append` — an unknown id appends.
+        if ui.transcript.replace(block.clone(), monotonic()).is_err() {
+            let _ = ui.transcript.append(block, monotonic());
+        }
+    }
+
+    fn remove_block(&mut self, block_id: &str) {
+        let _ = self.0.borrow_mut().transcript.remove_block(block_id);
+    }
+
+    fn show_notice(&mut self, text: &str) {
+        self.0.borrow_mut().show_notice(text, None);
+    }
+
+    fn set_mode_by_id(&mut self, mode_id: &str, notify: bool) {
+        self.0.borrow_mut().set_mode_by_id(mode_id, notify);
+    }
+
+    fn turn_started(&mut self) {
+        let mut ui = self.0.borrow_mut();
+        ui.turn_active = true;
+        ui.composer.running = true;
+        ui.title.set_running(true);
+    }
+
+    fn turn_finished(&mut self) {
+        let mut ui = self.0.borrow_mut();
+        ui.turn_active = false;
+        ui.composer.running = false;
+        ui.title.set_running(false);
+        ui.turn_queues_pending = true; // drained once end-of-turn events settle (§5)
+    }
+
+    fn lanes_changed(&mut self) {
+        self.0.borrow_mut().lanes_dirty = true;
+    }
+
+    fn plan_changed(&mut self, items: &[TodoItem]) {
+        let mut ui = self.0.borrow_mut();
+        ui.plan_items = items.to_vec();
+        ui.sync_plan_surfaces();
+    }
+
+    fn approval_opened(&mut self, _prompt: &str, _options: &[String]) {
+        // Presentation runs off the ticket-bearing wire record
+        // (`App::handle_wire`), mirroring Python's `present_approval`.
+    }
+
+    fn decision_deferred(&mut self, message: &str, decision_id: &str) {
+        self.0
+            .borrow_mut()
+            .pending_deferrals
+            .push((message.to_string(), decision_id.to_string()));
+    }
+
+    fn stream_opened(&mut self, block_type: &str) {
+        let mut ui = self.0.borrow_mut();
+        let now = monotonic();
+        ui.transcript.set_streaming(true, now);
+        ui.live_tail.open_stream(block_type, now);
+    }
+
+    fn stream_delta(&mut self, text: &str) {
+        let mut ui = self.0.borrow_mut();
+        let deadline = ui.live_tail.feed(text, monotonic());
+        if let Some(delay) = deadline {
+            ui.live_tail_deadline = Some(monotonic() + delay);
+        }
+    }
+
+    fn stream_closed(&mut self) {
+        let mut ui = self.0.borrow_mut();
+        // Durable text arrives on Channel B (`prompt_complete.response` /
+        // content_block_end); the tail's consolidation artifact is
+        // discarded (never reconstruct one channel from the other).
+        let _ = ui.live_tail.consolidate("live-tail-discard");
+        ui.live_tail_deadline = None;
+        ui.transcript.set_streaming(false, monotonic());
+    }
+
+    fn lane_tail_updated(&mut self, text: &str) {
+        self.0.borrow_mut().lanes_panel.show_lane_tail(text);
+    }
+
+    fn lane_tail_cleared(&mut self) {
+        self.0.borrow_mut().lanes_panel.clear_lane_tail();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Demo adapter — RuntimeAdapterBase + DemoRuntime + DemoWiring data hooks
+// ---------------------------------------------------------------------------
+
+/// `--demo` adapter: the base contract over the scripted [`Runtime`], with
+/// [`DemoWiring`]'s pure data hooks (deferred decisions, decision
+/// narrations, scripted lane transcripts, evidence, the $0.40 session-cost
+/// baseline). The Python demo's full scripted turns (`kernel/demo.py`) are
+/// unported — `turn_spec` stays `None` and the runtime plays the
+/// real-vocabulary script in `runtime.rs`.
+pub struct DemoAdapter {
+    pub base: RuntimeAdapterBase,
+    runtime: Box<dyn Runtime>,
+    wiring: Rc<RefCell<DemoWiring>>,
+}
+
+impl DemoAdapter {
+    pub fn new(runtime: Box<dyn Runtime>, wiring: Rc<RefCell<DemoWiring>>) -> Self {
+        let mut base = RuntimeAdapterBase::new();
+        base.bundle_name = DEMO_BUNDLE.to_string();
+        base.model_name = DEMO_MODEL.to_string();
+        base.session_short = DEMO_SESSION_SHORT.to_string();
+        base.session_cost_start = wiring.borrow().session_cost_start();
+        Self { base, runtime, wiring }
+    }
+}
+
+impl RuntimeAdapter for DemoAdapter {
+    fn steering(&self) -> &SteeringQueue {
+        &self.base.steering
+    }
+    fn lane_steering(&self) -> &LaneSteeringQueue {
+        &self.base.lane_steering
+    }
+    fn needs_you(&self) -> &NeedsYouQueue {
+        &self.base.needs_you
+    }
+    fn denial_log(&self) -> &Mutex<DenialLog> {
+        &self.base.denial_log
+    }
+    fn terminal(&self) -> &crate::model::terminal::TerminalSurface {
+        &self.base.terminal
+    }
+    fn bundle_name(&self) -> String {
+        self.base.bundle_name.clone()
+    }
+    fn model_name(&self) -> String {
+        self.base.model_name.clone()
+    }
+    fn session_short(&self) -> String {
+        self.base.session_short.clone()
+    }
+    fn session_cost_start(&self) -> Decimal {
+        self.base.session_cost_start
+    }
+    fn start(&mut self, ready: &mut dyn FnMut()) {
+        self.wiring.borrow_mut().mark_seed_played();
+        ready();
+    }
+    fn submit(&mut self, text: &str, _attachments: &[crate::ui::composer::ImageAttachment]) {
+        self.wiring.borrow_mut().record_submit(text);
+        self.runtime.submit(text.to_string());
+    }
+    fn interrupt(&mut self) -> bool {
+        self.runtime.interrupt();
+        true
+    }
+    fn answer_approval(&mut self, ticket_id: &str, choice: &str) {
+        self.wiring.borrow_mut().record_approval_choice(choice);
+        self.runtime.answer_approval(ticket_id, choice);
+    }
+    fn lane_blocks(
+        &mut self,
+        name: &str,
+        session_id: &str,
+        allocator: &mut BlockIdAllocator,
+    ) -> Option<Vec<TranscriptBlock>> {
+        self.wiring.borrow().lane_blocks(name, session_id, allocator)
+    }
+    fn evidence_links(
+        &mut self,
+        answer_text: &str,
+    ) -> Vec<crate::model::evidence::EvidenceLink> {
+        self.wiring.borrow().evidence_links(answer_text)
+    }
+    fn deferred_decision(
+        &mut self,
+        message: &str,
+        decision_id: &str,
+    ) -> (String, String, Vec<String>, String, String) {
+        self.wiring.borrow().deferred_decision(message, decision_id)
+    }
+    fn decision_narration(&mut self, choice: &str, action: &str) -> String {
+        self.wiring.borrow().decision_narration(choice, action)
+    }
+    fn config_view(&mut self) -> crate::model::config::ConfigSnapshotView {
+        RuntimeAdapter::config_view(&mut self.base)
+    }
+    fn config_toggle(&mut self, category: &str, name: &str, enable: bool) -> (bool, String) {
+        RuntimeAdapter::config_toggle(&mut self.base, category, name, enable)
+    }
+    fn config_set(&mut self, path: &str, value: &str) -> (bool, String) {
+        RuntimeAdapter::config_set(&mut self.base, path, value)
+    }
+    fn config_diff(&mut self) -> Vec<crate::model::config::ConfigChange> {
+        RuntimeAdapter::config_diff(&mut self.base)
+    }
+    fn config_save(&mut self, scope: &str) -> (bool, String) {
+        RuntimeAdapter::config_save(&mut self.base, scope)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
 
 pub struct App {
-    pub blocks: Vec<Block>,
-    pub live: Option<String>, // the single mutable streaming region (LiveTail)
-    pub composer: String,
-    pub mode: Mode,
-    pub tallies: Tallies,
-    /// Session/turn money ledger (`kernel::cost`): prices every
-    /// `provider_response_usage` event against the active pricing table
-    /// (provider `cost_usd` authoritative), mirroring the Python app's
-    /// runtime-status aggregation. `tallies` is its footer projection.
-    pub cost_tracker: CostTracker,
-    pub state: TurnState,
-    pub pending_action: Option<String>,
-    pub pending_ticket: Option<String>,
-    pub notice: Option<String>,
-    pub spinner: usize,
-    pub scroll: u16,
-    pub should_quit: bool,
-    pub bundle: String,
-    pub session: String,
+    pub ui: Rc<RefCell<UiState>>,
+    pub reducer: TranscriptReducer<Shell>,
+    pub adapter: RefCell<Box<dyn RuntimeAdapter>>,
+    pub commands: CommandRegistry,
+    pub journal: Mutex<ApprovalJournal>,
+    /// Command-facing mirror of the reducer-owned ledger (module docs).
+    pub ledger: Mutex<OutcomeLedger>,
+    pub steering: SteeringQueue,
+    pub lane_steering: LaneSteeringQueue,
+    pub needs_you: NeedsYouQueue,
+    pub denial_log: Mutex<DenialLog>,
+    pub allocator: RefCell<BlockIdAllocator>,
+    /// Core version learned over the protocol (`""` until it lands).
+    pub core_version: RefCell<String>,
+    kitty_protocol: bool,
 }
-
-const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 impl App {
-    pub fn new(bundle: &str, session: &str) -> Self {
-        let mut app = Self {
-            blocks: Vec::new(),
-            live: None,
-            composer: String::new(),
-            mode: Mode::Chat,
-            tallies: Tallies::default(),
-            cost_tracker: CostTracker::new(),
-            state: TurnState::Idle,
-            pending_action: None,
-            pending_ticket: None,
-            notice: None,
-            spinner: 0,
-            scroll: 0,
-            should_quit: false,
-            bundle: bundle.into(),
-            session: session.into(),
+    pub fn new(
+        adapter: Box<dyn RuntimeAdapter>,
+        kitty_protocol: bool,
+        initial_mode: Option<&str>,
+        demo_wiring: Option<Rc<RefCell<DemoWiring>>>,
+    ) -> Self {
+        // Python `keymap.validate()` at construction: a malformed table is
+        // a programming error, caught at boot rather than at dispatch.
+        crate::ui::keymap::validate(&crate::ui::keymap::KEYMAP).expect("keymap table valid");
+        let commands = build_registry();
+        let ui = Rc::new(RefCell::new(UiState::new(
+            kitty_protocol,
+            initial_mode,
+            commands.specs(),
+        )));
+        let options = ReducerOptions {
+            session_cost_start: adapter.session_cost_start(),
+            evidence_lookup: demo_wiring.map(|wiring| {
+                Box::new(move |answer: &str| wiring.borrow().evidence_links(answer))
+                    as Box<dyn Fn(&str) -> Vec<crate::model::evidence::EvidenceLink>>
+            }),
+            ..ReducerOptions::default()
         };
-        app.blocks.push(Block::SessionBanner {
-            bundle: bundle.into(),
-            session: session.into(),
-        });
-        app.blocks.push(Block::Narration(
-            "Demo session — press Enter to run a scripted turn. Shift+Tab cycles mode. Ctrl+C quits.".into(),
-        ));
-        app
-    }
-
-    pub fn spinner_frame(&self) -> &'static str {
-        SPINNER[self.spinner % SPINNER.len()]
-    }
-
-    pub fn state_label(&self) -> &'static str {
-        match self.state {
-            TurnState::Idle => "idle",
-            TurnState::Running => "working",
-            TurnState::AwaitingApproval => "needs you",
+        let reducer = TranscriptReducer::with_options(
+            Shell(Rc::clone(&ui)),
+            BlockIdAllocator::new(),
+            OutcomeLedger::new(),
+            LaneRegistry::new(),
+            options,
+        );
+        App {
+            ui,
+            reducer,
+            adapter: RefCell::new(adapter),
+            commands,
+            journal: Mutex::new(ApprovalJournal::new()),
+            ledger: Mutex::new(OutcomeLedger::new()),
+            steering: SteeringQueue::new(),
+            lane_steering: LaneSteeringQueue::new(),
+            needs_you: NeedsYouQueue::new(),
+            denial_log: Mutex::new(DenialLog::new()),
+            allocator: RefCell::new(BlockIdAllocator::starting_at(APP_ID_RANGE_START)),
+            core_version: RefCell::new(String::new()),
+            kitty_protocol,
         }
     }
 
-    /// The reducer: fold a normalized runtime event into UI state.
-    pub fn on_event(&mut self, ev: UiEvent) {
-        match ev {
-            UiEvent::PromptSubmit(text) => {
-                self.blocks.push(Block::User(text));
-                self.state = TurnState::Running;
-                self.notice = None;
-                // Turn boundary: reset per-turn usage (session totals kept),
-                // mirroring runtime_status's root prompt:submit handling.
-                self.cost_tracker.start_turn();
+    /// Boot the runtime (Python `_boot_runtime`): start the adapter; when it
+    /// already knows its session identity (demo), announce ready now —
+    /// protocol sessions announce on the `session.started` record instead.
+    pub fn boot(&mut self) {
+        {
+            let mut adapter = self.adapter.borrow_mut();
+            adapter.start(&mut || {});
+        }
+        let identity = {
+            let adapter = self.adapter.borrow_mut();
+            (
+                adapter.bundle_name(),
+                adapter.model_name(),
+                adapter.session_short(),
+            )
+        };
+        if !identity.2.is_empty() {
+            self.announce_ready(&identity.0, &identity.1, &identity.2);
+        }
+    }
+
+    /// Session identity landed: dissolve the splash, fill the chrome, seed
+    /// prompt history and `@file` completion.
+    fn announce_ready(&mut self, bundle: &str, model: &str, session_short: &str) {
+        let (history, files, notices) = {
+            let mut adapter = self.adapter.borrow_mut();
+            (
+                adapter.prompt_history(),
+                adapter.workspace_files(),
+                adapter.startup_notices(),
+            )
+        };
+        let mut ui = self.ui.borrow_mut();
+        ui.splash = None;
+        ui.bundle = bundle.to_string();
+        ui.model_name = model.to_string();
+        ui.session_short = session_short.to_string();
+        ui.title.set_bundle(bundle.to_string());
+        ui.title.set_session_short(session_short.to_string());
+        ui.composer.seed_history(history);
+        ui.file_mentions.set_files(files);
+        for notice in notices {
+            ui.show_notice(&notice, None);
+        }
+    }
+
+    // -- wire events ---------------------------------------------------------
+
+    pub fn handle_wire(&mut self, event: WireEvent) {
+        match event {
+            WireEvent::SessionStarted {
+                session_id,
+                bundle,
+                model,
+            } => {
+                let short: String = session_id.chars().take(7).collect();
+                self.announce_ready(&bundle, &model, &short);
             }
-            UiEvent::Narration(text) => self.blocks.push(Block::Narration(text)),
-            UiEvent::ToolLine { summary, ok } => self.blocks.push(Block::Tool { summary, ok }),
-            UiEvent::ApprovalRequired { ticket_id, action } => {
-                self.state = TurnState::AwaitingApproval;
-                self.pending_action = Some(action);
-                self.pending_ticket = Some(ticket_id);
-            }
-            UiEvent::StreamStart => self.live = Some(String::new()),
-            UiEvent::StreamDelta(d) => {
-                if let Some(buf) = self.live.as_mut() {
-                    buf.push_str(&d);
-                }
-            }
-            UiEvent::StreamEnd => {
-                if let Some(buf) = self.live.take() {
-                    self.blocks.push(Block::Answer(buf));
-                }
-            }
-            UiEvent::Usage(usage) => {
-                // Live tallies per provider response — session cost is exact
-                // Decimal via kernel::cost (provider cost_usd authoritative,
-                // else the pricing table); tokens count the ↓ output figure.
-                self.cost_tracker.record(&usage);
-                self.tallies.tokens += usage.output_tokens.max(0) as u64;
-                self.tallies.cost = self.cost_tracker.session_cost();
-            }
-            UiEvent::TurnComplete { files, added, removed, tokens, cost } => {
-                // Scripted runtimes carry the turn's figures on the event
-                // itself; the serve protocol carries zeros here because the
-                // real numbers already arrived as usage events.
-                if let Some(scripted) = Decimal::from_f64(cost).filter(|c| *c > Decimal::ZERO) {
-                    self.cost_tracker.seed(scripted);
-                }
-                self.tallies.tokens += tokens;
-                self.tallies.cost = self.cost_tracker.session_cost();
-                let turn = self.cost_tracker.end_turn();
-                let rule_cost = if cost > 0.0 {
-                    cost
+            WireEvent::Approval {
+                ticket_id,
+                prompt,
+                options,
+            } => {
+                // Reducer state first (approval_opened), then presentation
+                // (Python: broker present_approval + the runtime event).
+                self.reducer
+                    .handle(&ev::UIEvent::ApprovalRequired(ev::ApprovalRequired {
+                        prompt: prompt.clone(),
+                        options: options.clone(),
+                        ..ev::ApprovalRequired::default()
+                    }));
+                let options = if options.is_empty() {
+                    DEFAULT_OPTIONS.iter().map(|s| s.to_string()).collect()
                 } else {
-                    turn.cost.to_f64().unwrap_or(0.0)
+                    options
                 };
-                self.blocks.push(Block::TurnRule { files, added, removed, cost: rule_cost });
-                self.state = TurnState::Idle;
+                let mut ui = self.ui.borrow_mut();
+                if let Ok(mut bar) = ApprovalBar::new(ticket_id, prompt, options) {
+                    bar.update_wrap(ui.term_width as usize);
+                    ui.approval = Some(bar);
+                }
+                ui.show_notice(APPROVAL_NOTICE, Some(APPROVAL_NOTICE_DURATION));
+                drop(ui);
+                self.settle_after_event();
             }
-            UiEvent::Notice(n) => self.notice = Some(n),
+            WireEvent::Event(event) => {
+                self.reducer.handle(&event);
+                self.settle_after_event();
+            }
         }
     }
 
+    /// Post-event duties (Python `_consume_events` after `reducer.handle`).
+    fn settle_after_event(&mut self) {
+        self.sync_lanes_panel();
+        self.sync_title();
+        self.sync_rewind_checkpoints();
+        self.drain_deferrals();
+        self.drain_turn_queues();
+    }
+
+    fn sync_lanes_panel(&mut self) {
+        let dirty = { std::mem::take(&mut self.ui.borrow_mut().lanes_dirty) };
+        if !dirty {
+            return;
+        }
+        // A finished delegate never reaches another step boundary: drop its
+        // undelivered steers so no stale ▸ badge pins to a done lane (#39).
+        for record in self.reducer.lanes().lanes() {
+            if record.lane.state == crate::model::lanes::LaneStateName::Done
+                && self.lane_steering.queued_count(&record.session_id) > 0
+            {
+                let _ = self.lane_steering.drain(&record.session_id);
+            }
+        }
+        let records = self.reducer.lanes().lanes();
+        let tailed = self.reducer.lanes().tail_lane();
+        let counts = self.lane_steering.counts();
+        let mut ui = self.ui.borrow_mut();
+        let was_open = ui.lanes_panel.display();
+        ui.lanes_panel.update_lanes(
+            &records,
+            tailed.as_ref().map(|record| record.session_id.as_str()),
+            Some(&counts),
+        );
+        // Mockup runAgentsTurn: the panel opens automatically at fan-out
+        // and STAYS visible on ✔ done (retracts on ctrl-t / esc).
+        if self.reducer.lanes().active_count() > 0 && !was_open {
+            ui.lanes_panel.show_panel();
+        }
+    }
+
+    fn sync_title(&mut self) {
+        let state = self.reducer.title_state();
+        self.ui.borrow_mut().title.set_state_text(state);
+    }
+
+    fn sync_rewind_checkpoints(&mut self) {
+        let checkpoints: Vec<Checkpoint> = self
+            .reducer
+            .ledger
+            .checkpoints()
+            .into_iter()
+            .cloned()
+            .collect();
+        self.ui.borrow_mut().rewind.sync_checkpoints(&checkpoints);
+    }
+
+    /// Park deferred decisions the reducer flagged (Python
+    /// `decision_deferred`): kernel-parked ids are already in the queue;
+    /// message-only deferrals derive their item through the adapter.
+    fn drain_deferrals(&mut self) {
+        let pending = { std::mem::take(&mut self.ui.borrow_mut().pending_deferrals) };
+        for (message, decision_id) in pending {
+            let parked = !decision_id.is_empty()
+                && self
+                    .needs_you
+                    .items()
+                    .iter()
+                    .any(|item| item.decision_id == decision_id);
+            if !parked {
+                let (question, reason, choices, highlight, action) = self
+                    .adapter
+                    .borrow_mut()
+                    .deferred_decision(&message, &decision_id);
+                let _ = self.needs_you.defer(
+                    &question,
+                    &reason,
+                    DeferOptions {
+                        choices,
+                        highlight,
+                        action,
+                        ..DeferOptions::default()
+                    },
+                );
+            }
+        }
+    }
+
+    /// Run the deferred turn-end queue duties once (Python
+    /// `drain_turn_queues` + `finish_turn_queues`): the queued next-turn
+    /// message becomes the next submitted turn.
+    fn drain_turn_queues(&mut self) {
+        let pending = {
+            let mut ui = self.ui.borrow_mut();
+            if !ui.turn_queues_pending || ui.turn_active {
+                return;
+            }
+            ui.turn_queues_pending = false;
+            true
+        };
+        if !pending {
+            return;
+        }
+        // Leftover steers are discarded at turn end (mockup §5); the one
+        // queued next-turn message becomes the next submitted turn.
+        let _ = self.steering.drain_steers();
+        if let Some(message) = self.steering.consume_next_turn_message() {
+            {
+                let mut ui = self.ui.borrow_mut();
+                ui.queued_strip.clear_queued();
+                ui.show_notice("queued message picked up", None);
+            }
+            self.adapter.borrow_mut().submit_queued(&message.text);
+        }
+    }
+
+    // -- keys ------------------------------------------------------------------
+
+    /// One key press, in Textual chord names (`"enter"`, `"shift+tab"`,
+    /// `"ctrl+t"`, single chars insert themselves).
+    pub fn on_key(&mut self, key: &str) {
+        // Global quit chords (Textual stock ctrl+q + app-cli parity ctrl+d).
+        if key == "ctrl+q" || key == "ctrl+d" {
+            self.ui.borrow_mut().should_quit = true;
+            return;
+        }
+        // ctrl+c: interrupt/kill convention (terminal selections are not
+        // modeled — the copy-selection branch never has a selection here).
+        if key == "ctrl+c" {
+            let running = self.ui.borrow().turn_active;
+            if running {
+                self.interrupt_turn();
+                self.ui.borrow_mut().show_notice("interrupting… (ctrl+c)", None);
+            } else {
+                self.ui.borrow_mut().should_quit = true;
+            }
+            return;
+        }
+
+        // The approval bar owns the keyboard while open (spec §7).
+        let approval_outcome = {
+            let mut ui = self.ui.borrow_mut();
+            ui.approval.as_mut().map(|bar| bar.handle_key(key))
+        };
+        if let Some(outcome) = approval_outcome {
+            match outcome {
+                KeyOutcome::Emit(ApprovalMsg::Resolved { ticket_id, choice }) => {
+                    self.resolve_approval(&ticket_id, &choice);
+                }
+                KeyOutcome::Emit(ApprovalMsg::Deferred { ticket_id }) => {
+                    self.defer_approval(&ticket_id);
+                }
+                KeyOutcome::Handled | KeyOutcome::Ignored => {}
+            }
+            return;
+        }
+
+        // Global chords (all suppressed under the approval bar above).
+        match key {
+            "shift+tab" => {
+                self.action_cycle_mode_impl();
+                return;
+            }
+            "ctrl+p" => {
+                let mut ui = self.ui.borrow_mut();
+                let trust = ui.mode.trust_str;
+                ui.show_notice(&format!("trust · {trust} · edit via /permissions"), None);
+                return;
+            }
+            "ctrl+t" => {
+                self.toggle_lanes();
+                return;
+            }
+            "ctrl+o" => {
+                self.cycle_tail();
+                return;
+            }
+            "ctrl+g" => {
+                self.toggle_thinking();
+                return;
+            }
+            "ctrl+l" => {
+                self.run_slash_command("/ledger");
+                return;
+            }
+            "ctrl+y" => {
+                self.show_needs_you();
+                return;
+            }
+            "ctrl+r" => {
+                self.open_rewind_strip(None);
+                return;
+            }
+            _ => {}
+        }
+
+        // Rewind strip navigation while open (keymap `rewind` context).
+        let rewind_open = self.ui.borrow().rewind.display();
+        if rewind_open {
+            match key {
+                "left" => {
+                    self.ui.borrow_mut().rewind.nav(-1);
+                    return;
+                }
+                "right" => {
+                    self.ui.borrow_mut().rewind.nav(1);
+                    return;
+                }
+                "enter" => {
+                    let msg = self.ui.borrow_mut().rewind.fork();
+                    if let Some(RewindMsg::ForkRequested { checkpoint_id }) = msg {
+                        self.handle_fork(&checkpoint_id);
+                    }
+                    return;
+                }
+                _ => {} // printable keys type through to the composer below
+            }
+        }
+
+        // Palette arrows while open (mockup: arrows cycle the palette).
+        let palette_arrows = {
+            let ui = self.ui.borrow();
+            ui.palette.is_open() && (key == "up" || key == "down")
+        };
+        if palette_arrows {
+            let delta = if key == "up" { -1 } else { 1 };
+            self.ui.borrow_mut().palette.move_selection(delta);
+            return;
+        }
+
+        // Everything else is composer input.
+        self.ui.borrow_mut().composer.handle_key(key);
+        self.drain_composer_messages();
+    }
+
+    /// A bracketed paste arrived.
+    pub fn on_paste(&mut self, payload: &str) {
+        self.ui.borrow_mut().composer.handle_paste(payload);
+        self.drain_composer_messages();
+    }
+
+    pub fn on_resize(&mut self, width: u16, height: u16) {
+        let mut ui = self.ui.borrow_mut();
+        ui.term_width = width;
+        ui.term_height = height;
+        // Feed the live width to the kernel's width-aware surface hint (#35).
+        self.adapter.borrow().terminal().set_cols(i64::from(width));
+        let now = monotonic();
+        if let Some(delay) = ui.transcript.on_resize(width.saturating_sub(2) as usize, now) {
+            ui.reflow_deadline = Some(now + delay);
+        }
+        if let Some(bar) = ui.approval.as_mut() {
+            bar.update_wrap(width as usize);
+        }
+        ui.sync_plan_surfaces();
+    }
+
+    fn drain_composer_messages(&mut self) {
+        let messages = { self.ui.borrow_mut().composer.drain_messages() };
+        for message in messages {
+            match message {
+                ComposerMessage::Submit { text, .. } => self.on_submit(&text),
+                ComposerMessage::Steer { text } => self.on_steer(&text),
+                ComposerMessage::QueueMessage { text } => self.on_queue_message(&text),
+                ComposerMessage::OpenPalette { filter } => {
+                    let mut ui = self.ui.borrow_mut();
+                    close_file_mentions(&mut *ui);
+                    ui.palette.apply_filter(Some(&filter));
+                }
+                ComposerMessage::PaletteFilterCleared => {
+                    self.ui.borrow_mut().palette.apply_filter(None);
+                }
+                ComposerMessage::EscPressed => self.handle_esc(),
+                ComposerMessage::Mention(intent) => {
+                    let mut ui = self.ui.borrow_mut();
+                    handle_file_mention_intent(&mut *ui, &intent);
+                }
+                ComposerMessage::NavKey { delta } => {
+                    let mut ui = self.ui.borrow_mut();
+                    if ui.lanes_panel.display() {
+                        ui.lanes_panel.move_selection(delta);
+                    }
+                }
+                ComposerMessage::EnterEmpty => {
+                    let msg = {
+                        let ui = self.ui.borrow();
+                        if ui.lanes_panel.display() {
+                            ui.lanes_panel.focus_selected()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(LanesMsg::FocusLane { name, session_id }) = msg {
+                        self.focus_lane(&name, &session_id);
+                    }
+                }
+                ComposerMessage::CycleModeRequested => self.action_cycle_mode_impl(),
+                ComposerMessage::PasteImage => {
+                    // kernel/clipboard is an unported unit — honest no-image.
+                    self.ui.borrow_mut().show_notice("no image in clipboard", None);
+                }
+            }
+        }
+        // Palette rows can also emit run/close messages (click paths);
+        // drain them so state never wedges.
+        let palette_msgs = { self.ui.borrow_mut().palette.take_messages() };
+        for msg in palette_msgs {
+            if let PaletteMessage::CommandRun(spec) = msg {
+                {
+                    let mut ui = self.ui.borrow_mut();
+                    ui.composer.clear();
+                    ui.palette.apply_filter(None);
+                }
+                self.run_registry_command(&spec.name);
+            }
+        }
+    }
+
+    /// Idle Enter (Python `on_composer_submit`).
+    fn on_submit(&mut self, text: &str) {
+        self.adapter.borrow_mut().record_prompt(text);
+        let selected = {
+            let mut ui = self.ui.borrow_mut();
+            close_file_mentions(&mut *ui);
+            let selected = if ui.palette.is_open() {
+                ui.palette.selected_command().cloned()
+            } else {
+                None
+            };
+            ui.palette.apply_filter(None);
+            selected
+        };
+        if text.starts_with('/') {
+            if self.run_slash_command(text) {
+                return;
+            }
+            if let Some(spec) = selected {
+                self.run_registry_command(&spec.name);
+                return;
+            }
+            let name = text.split_whitespace().next().unwrap_or(text).to_string();
+            self.ui
+                .borrow_mut()
+                .show_notice(&format!("unknown command: {name} · / lists commands"), None);
+            return;
+        }
+        self.submit_prompt(text);
+    }
+
+    /// Running Enter (Python `on_composer_steer`).
+    ///
+    /// NOTE (honest gap): steers are queued in the shared SteeringQueue and
+    /// echoed as a notice, but the wire protocol has no steer op yet — a
+    /// live backend never consumes them mid-turn.
+    fn on_steer(&mut self, text: &str) {
+        self.adapter.borrow_mut().record_prompt(text);
+        let selected = {
+            let mut ui = self.ui.borrow_mut();
+            close_file_mentions(&mut *ui);
+            if ui.palette.is_open() {
+                ui.palette.selected_command().cloned()
+            } else {
+                None
+            }
+        };
+        if let Some(spec) = selected {
+            self.ui.borrow_mut().palette.apply_filter(None);
+            if !self.run_slash_command(text) {
+                self.run_registry_command(&spec.name);
+            }
+            return;
+        }
+        // A focused lane targets THAT delegate (issue #39).
+        let focused = { self.ui.borrow().transcript.focused_lane().map(str::to_string) };
+        if let Some(focused) = focused {
+            if let Some(record) = self.reducer.lanes().get(&focused) {
+                if record.lane.state != crate::model::lanes::LaneStateName::Done {
+                    match self.lane_steering.enqueue(&record.session_id, text) {
+                        Ok(_) => {
+                            let name = record.lane.name.clone();
+                            let mut ui = self.ui.borrow_mut();
+                            ui.show_notice(&format!("steer queued for {name}"), None);
+                            ui.lanes_dirty = true;
+                            drop(ui);
+                            self.sync_lanes_panel();
+                        }
+                        Err(error) => {
+                            self.ui.borrow_mut().show_notice(&error.to_string(), None);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        if !self.steering.pending_steers().is_empty() {
+            self.queue_message(text); // second steer queues (spec §5)
+            return;
+        }
+        match self.steering.enqueue(text, MessageKind::Steer) {
+            Ok(_) => self.ui.borrow_mut().show_notice(
+                "steer queued · shift+enter queues a full next-turn message",
+                None,
+            ),
+            Err(error) => self.ui.borrow_mut().show_notice(&error.to_string(), None),
+        }
+    }
+
+    /// Shift+Enter (Python `on_composer_queue_message`).
+    fn on_queue_message(&mut self, text: &str) {
+        self.adapter.borrow_mut().record_prompt(text);
+        let selected = {
+            let mut ui = self.ui.borrow_mut();
+            close_file_mentions(&mut *ui);
+            if ui.palette.is_open() {
+                ui.palette.selected_command().cloned()
+            } else {
+                None
+            }
+        };
+        if let Some(spec) = selected {
+            self.ui.borrow_mut().palette.apply_filter(None);
+            if !self.run_slash_command(text) {
+                self.run_registry_command(&spec.name);
+            }
+            return;
+        }
+        let running = self.ui.borrow().turn_active;
+        if !running {
+            self.submit_prompt(text);
+            return;
+        }
+        self.queue_message(text);
+    }
+
+    fn queue_message(&mut self, text: &str) {
+        match self.steering.enqueue(text, MessageKind::NextTurn) {
+            Ok(_) => {
+                let mut ui = self.ui.borrow_mut();
+                ui.queued_strip.show_queued(text);
+                ui.show_notice(QUEUED_NOTICE, None);
+            }
+            Err(error) => {
+                self.ui.borrow_mut().show_notice(&error.to_string(), None);
+            }
+        }
+    }
+
+    pub fn submit_prompt(&mut self, text: &str) {
+        let splash = self.ui.borrow().splash.is_some();
+        if splash {
+            // Mid-boot submits keep the supervisor's words (Python parity).
+            let mut ui = self.ui.borrow_mut();
+            ui.composer.insert_text(text);
+            ui.show_notice("session still starting · message kept in the composer", None);
+            return;
+        }
+        self.adapter.borrow_mut().submit(text, &[]);
+    }
+
+    pub fn interrupt_turn(&mut self) {
+        self.adapter.borrow_mut().interrupt();
+    }
+
+    // -- approvals ---------------------------------------------------------------
+
+    fn resolve_approval(&mut self, ticket_id: &str, choice: &str) {
+        let prompt = {
+            let mut ui = self.ui.borrow_mut();
+            let prompt = ui.approval.as_ref().map(|bar| bar.prompt.clone());
+            ui.approval = None;
+            prompt
+        };
+        if let Some(prompt) = prompt {
+            let _ = self
+                .journal
+                .lock()
+                .unwrap()
+                .record_ask(&prompt, choice != "Deny", "");
+        }
+        self.adapter.borrow_mut().answer_approval(ticket_id, choice);
+    }
+
+    /// ctrl-y on the approval bar: park the live ticket WITHOUT answering
+    /// it (deny-and-continue, ADR-0007 resolution 5).
+    fn defer_approval(&mut self, ticket_id: &str) {
+        let parked = {
+            let mut ui = self.ui.borrow_mut();
+            let bar = ui.approval.take();
+            bar.map(|bar| (bar.prompt, bar.options))
+        };
+        let Some((prompt, options)) = parked else { return };
+        let _ = ticket_id; // broker routing is backend-side over the wire
+        let question = prompt.trim().to_string();
+        if !question.is_empty() {
+            let _ = self.needs_you.defer(
+                &question,
+                "deferred approval",
+                DeferOptions {
+                    choices: options,
+                    action: question.clone(),
+                    ..DeferOptions::default()
+                },
+            );
+        }
+        self.ui.borrow_mut().show_notice(
+            "decision deferred to queue · answer later with ctrl-y",
+            None,
+        );
+    }
+
+    // -- actions -------------------------------------------------------------------
+
+    fn action_cycle_mode_impl(&mut self) {
+        let next = {
+            let ui = self.ui.borrow();
+            cycle_mode(Some(ui.mode.id.as_str()), 1)
+        };
+        self.ui.borrow_mut().set_mode_by_id(next.id.as_str(), true);
+    }
+
+    fn toggle_lanes(&mut self) {
+        let open = self.ui.borrow().lanes_panel.display();
+        if open {
+            self.ui.borrow_mut().lanes_panel.hide_panel();
+            return;
+        }
+        let records = self.reducer.lanes().lanes();
+        let counts = self.lane_steering.counts();
+        let mut ui = self.ui.borrow_mut();
+        ui.lanes_panel.update_lanes(&records, None, Some(&counts));
+        ui.lanes_panel.show_panel();
+    }
+
+    fn cycle_tail(&mut self) {
+        let record = self.reducer.lanes_mut().cycle_tail_focus();
+        match record {
+            None => self
+                .ui
+                .borrow_mut()
+                .show_notice("no running lanes to tail", None),
+            Some(record) => {
+                self.ui.borrow_mut().lanes_dirty = true;
+                self.sync_lanes_panel();
+                self.reducer.repaint_lane_tail();
+                let name = record.lane.name;
+                self.ui.borrow_mut().show_notice(&format!("tail · {name}"), None);
+            }
+        }
+    }
+
+    /// ctrl+g: expand/collapse thinking (issue #129).
+    fn toggle_thinking(&mut self) {
+        let toggled = {
+            let mut ui = self.ui.borrow_mut();
+            let target = ui
+                .transcript
+                .blocks()
+                .into_iter()
+                .rev()
+                .find_map(|block| match block {
+                    TranscriptBlock::Thinking(thinking) if !thinking.text.is_empty() => {
+                        Some(thinking)
+                    }
+                    _ => None,
+                });
+            match target {
+                Some(mut thinking) => {
+                    thinking.expanded = !thinking.expanded;
+                    let expanded = thinking.expanded;
+                    let _ = ui.transcript.replace(thinking.into(), monotonic());
+                    Some(expanded)
+                }
+                None => None,
+            }
+        };
+        match toggled {
+            Some(true) => self.ui.borrow_mut().show_notice("thinking · expanded", None),
+            Some(false) => self.ui.borrow_mut().show_notice("thinking · collapsed", None),
+            None => {
+                let mut ui = self.ui.borrow_mut();
+                let revealed = ui.live_tail.toggle_reveal(monotonic());
+                let notice = if revealed {
+                    "thinking · shown"
+                } else {
+                    "thinking · hidden"
+                };
+                ui.show_notice(notice, None);
+            }
+        }
+    }
+
+    fn show_needs_you(&mut self) {
+        let pending = self.needs_you.pending();
+        let block = app_support::needs_you_block(&pending, &mut self.allocator.borrow_mut());
+        match block {
+            None => self
+                .ui
+                .borrow_mut()
+                .show_notice("no decisions waiting", None),
+            Some(block) => {
+                let mut ui = self.ui.borrow_mut();
+                let _ = ui.transcript.append(block.into(), monotonic());
+            }
+        }
+    }
+
+    pub fn open_rewind_strip(&mut self, index: Option<usize>) {
+        let checkpoints: Vec<Checkpoint> = self
+            .reducer
+            .ledger
+            .checkpoints()
+            .into_iter()
+            .cloned()
+            .collect();
+        if checkpoints.is_empty() {
+            self.ui
+                .borrow_mut()
+                .show_notice("no rewind checkpoints yet", None);
+            return;
+        }
+        self.ui.borrow_mut().rewind.show_checkpoints(&checkpoints, index);
+    }
+
+    /// Confirm-then-trim rewind (ADR-0007 §Rewind): the adapter confirms
+    /// the fork, then the mirror + reducer ledger + transcript trim.
+    fn handle_fork(&mut self, checkpoint_id: &str) {
+        {
+            *self.ledger.lock().unwrap() = self.reducer.ledger.clone();
+        }
+        let result = {
+            let mut ledger = self.ledger.lock().unwrap();
+            self.adapter.borrow_mut().fork(checkpoint_id, &mut ledger)
+        };
+        match result {
+            Ok(()) => {
+                self.reducer.ledger = self.ledger.lock().unwrap().clone();
+                {
+                    let mut ui = self.ui.borrow_mut();
+                    app_support::trim_after_checkpoint(&mut ui.transcript, checkpoint_id);
+                    ui.show_notice(&format!("forked at {checkpoint_id}"), None);
+                }
+                self.sync_rewind_checkpoints();
+            }
+            Err(error) => {
+                self.ui.borrow_mut().show_notice(&error.to_string(), None);
+            }
+        }
+    }
+
+    fn focus_lane(&mut self, name: &str, session_id: &str) {
+        let blocks = {
+            let mut adapter = self.adapter.borrow_mut();
+            adapter.lane_blocks(name, session_id, &mut self.allocator.borrow_mut())
+        };
+        let key = if session_id.is_empty() { name } else { session_id };
+        let blocks = blocks.or_else(|| self.reducer.lane_transcript(key));
+        let Some(blocks) = blocks else {
+            self.ui
+                .borrow_mut()
+                .show_notice(&format!("no transcript for lane · {name}"), None);
+            return;
+        };
+        let mut ui = self.ui.borrow_mut();
+        ui.lanes_panel.set_focused(Some(name));
+        let _ = ui.transcript.focus_lane(key, blocks, monotonic());
+    }
+
+    fn handle_esc(&mut self) {
+        let action = {
+            let mut ui = self.ui.borrow_mut();
+            let flags = EscFlags {
+                lane_focus: ui.transcript.focused_lane().is_some(),
+                palette: ui.palette.filter_text().is_some(),
+                rewind: ui.rewind.display(),
+                lanes: ui.lanes_panel.display(),
+                running: ui.turn_active,
+            };
+            resolve_esc(flags, &mut ui.esc, monotonic())
+        };
+        match action {
+            Some(EscAction::LaneUnfocus) => {
+                let mut ui = self.ui.borrow_mut();
+                let _ = ui.transcript.restore_main(monotonic());
+                ui.lanes_panel.set_focused(None);
+            }
+            Some(EscAction::ClosePalette) => {
+                self.ui.borrow_mut().palette.apply_filter(None);
+            }
+            Some(EscAction::CloseRewind) => {
+                let _ = self.ui.borrow_mut().rewind.close_strip();
+            }
+            Some(EscAction::CloseLanes) => {
+                self.ui.borrow_mut().lanes_panel.hide_panel();
+            }
+            Some(EscAction::InterruptRunning) => self.interrupt_turn(),
+            Some(EscAction::OpenRewind) => self.open_rewind_strip(None),
+            None => {}
+        }
+    }
+
+    // -- commands --------------------------------------------------------------
+
+    /// Parse-and-run a slash command through the ONE registry; the ledger
+    /// mirror syncs around dispatch (module docs).
+    pub fn run_slash_command(&mut self, text: &str) -> bool {
+        {
+            *self.ledger.lock().unwrap() = self.reducer.ledger.clone();
+        }
+        let ran = {
+            let ctx = AppCommandContext::new(self);
+            self.commands.parse_and_run(&ctx, text)
+        };
+        self.reducer.ledger = self.ledger.lock().unwrap().clone();
+        ran
+    }
+
+    fn run_registry_command(&mut self, name: &str) {
+        {
+            *self.ledger.lock().unwrap() = self.reducer.ledger.clone();
+        }
+        {
+            let ctx = AppCommandContext::new(self);
+            let _ = self.commands.run(name, &ctx, "");
+        }
+        self.reducer.ledger = self.ledger.lock().unwrap().clone();
+    }
+
+    // -- timers ------------------------------------------------------------------
+
+    /// The app-loop heartbeat: reducer tick (working line / lane clocks),
+    /// notice expiry, live-tail trailing paint, resize-reflow debounce,
+    /// pending history compaction, splash/spinner/motion frames.
     pub fn tick(&mut self) {
-        if self.state == TurnState::Running {
-            self.spinner = self.spinner.wrapping_add(1);
+        self.reducer.tick(wall_now());
+        let now = monotonic();
+        let mut ui = self.ui.borrow_mut();
+        ui.notices.tick();
+        if ui.live_tail_deadline.is_some_and(|deadline| now >= deadline) {
+            ui.live_tail_deadline = None;
+            ui.live_tail.fire_timer(now);
+        }
+        if ui.reflow_deadline.is_some_and(|deadline| now >= deadline) {
+            ui.reflow_deadline = None;
+            ui.transcript.debounce_fired(now);
+        }
+        if ui.transcript.compaction_pending() {
+            ui.transcript.compact_history();
+        }
+        if ui.title.running() {
+            let _ = ui.title.advance_spinner();
+        }
+        if ui.lanes_panel.motion_running() {
+            ui.lanes_panel.advance_motion();
+        }
+        let (width, height) = (ui.term_width as usize, ui.term_height as usize);
+        if let Some(splash) = ui.splash.as_mut() {
+            let _ = splash.advance(width, height.saturating_sub(4));
+        }
+        drop(ui);
+        self.settle_after_event();
+    }
+
+    /// The footer's frozen paint state, derived per frame.
+    pub fn footer_state(&self) -> FooterState {
+        let ui = self.ui.borrow();
+        let (plan_done, plan_total) =
+            app_support::plan_footer_counts(&ui.plan_items, ui.plan_panel.display());
+        let model = ui
+            .model_name
+            .rsplit('/')
+            .next()
+            .unwrap_or(&ui.model_name)
+            .to_string();
+        FooterState {
+            mode_id: ui.mode.id,
+            native_modes: ui.native_modes.clone(),
+            bundle: ui.bundle.clone(),
+            model,
+            session_short: ui.session_short.clone(),
+            cost: self.reducer.live_session_cost(),
+            cost_estimated: self.reducer.live_cost_estimated(),
+            shipped: self.reducer.ledger.last_shipped(),
+            queued: self.steering.pending_next_turn().len() as u64,
+            waiting: self.needs_you.pending_count() as u64,
+            plan_done: plan_done as u64,
+            plan_total: plan_total as u64,
+            context: ui.footer_context(),
+            kitty_protocol: self.kitty_protocol,
+        }
+    }
+
+    pub fn should_quit(&self) -> bool {
+        self.ui.borrow().should_quit
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CommandHost — the commands ↔ app boundary (all members)
+// ---------------------------------------------------------------------------
+
+impl App {
+    fn ops_starting(&self) -> bool {
+        if self.ui.borrow().splash.is_some() {
+            self.ui.borrow_mut().show_notice(
+                "session still starting · try again once the banner lands",
+                None,
+            );
+            return true;
+        }
+        false
+    }
+}
+
+impl CommandHost for App {
+    fn ledger(&self) -> &Mutex<OutcomeLedger> {
+        &self.ledger
+    }
+
+    fn denial_log(&self) -> &Mutex<DenialLog> {
+        &self.denial_log
+    }
+
+    fn steering(&self) -> &SteeringQueue {
+        &self.steering
+    }
+
+    fn needs_you(&self) -> &NeedsYouQueue {
+        &self.needs_you
+    }
+
+    fn session_cost(&self) -> Decimal {
+        self.reducer.session_cost
+    }
+
+    fn session_short(&self) -> String {
+        self.ui.borrow().session_short.clone()
+    }
+
+    fn bundle_name(&self) -> String {
+        self.ui.borrow().bundle.clone()
+    }
+
+    fn next_block_id(&self) -> String {
+        self.allocator.borrow_mut().next_id()
+    }
+
+    fn context_usage(&self) -> ContextUsage {
+        let window = self.adapter.borrow_mut().compaction().max_tokens;
+        let memory = (self.reducer.memory_tokens.max(0) as u64).min(window);
+        let tools = (self.reducer.tool_tokens.max(0) as u64).min(window - memory);
+        ContextUsage {
+            conversation: (self.reducer.total_tokens.max(0) as u64)
+                .min(window - memory - tools),
+            tools,
+            memory,
+            window,
+        }
+    }
+
+    fn journal(&self) -> &Mutex<ApprovalJournal> {
+        &self.journal
+    }
+
+    fn transcript_blocks(&self) -> Vec<TranscriptBlock> {
+        self.ui.borrow().transcript.blocks()
+    }
+
+    fn core_version(&self) -> String {
+        self.core_version.borrow().clone()
+    }
+
+    fn echo_user_line(&self, text: &str) {
+        let mut ui = self.ui.borrow_mut();
+        let mode = ui.mode.id.as_str().to_string();
+        let id = self.allocator.borrow_mut().next_id();
+        let _ = ui.transcript.append(
+            UserLine {
+                mode,
+                ..UserLine::new(id, text.to_string())
+            }
+            .into(),
+            monotonic(),
+        );
+    }
+
+    fn append_block(&self, block: TranscriptBlock) {
+        let _ = self.ui.borrow_mut().transcript.append(block, monotonic());
+    }
+
+    fn show_notice(&self, text: &str) {
+        self.ui.borrow_mut().show_notice(text, None);
+    }
+
+    fn action_cycle_mode(&self) {
+        let next = {
+            let ui = self.ui.borrow();
+            cycle_mode(Some(ui.mode.id.as_str()), 1)
+        };
+        self.ui.borrow_mut().set_mode_by_id(next.id.as_str(), true);
+    }
+
+    fn set_mode_by_id(&self, mode_id: &str) {
+        self.ui.borrow_mut().set_mode_by_id(mode_id, true);
+    }
+
+    fn set_theme_by_name(&self, name: &str) {
+        self.ui.borrow_mut().set_theme_by_name(name);
+    }
+
+    fn action_toggle_lanes(&self) {
+        // `/tasks` from a command handler (immutable receiver): panel data
+        // was already synced by the last lanes_changed; toggle display.
+        let mut ui = self.ui.borrow_mut();
+        if ui.lanes_panel.display() {
+            ui.lanes_panel.hide_panel();
+        } else {
+            ui.lanes_panel.show_panel();
+        }
+    }
+
+    fn action_open_rewind(&self) {
+        let checkpoints: Vec<Checkpoint> = self
+            .reducer
+            .ledger
+            .checkpoints()
+            .into_iter()
+            .cloned()
+            .collect();
+        let mut ui = self.ui.borrow_mut();
+        if checkpoints.is_empty() {
+            ui.show_notice("no rewind checkpoints yet", None);
+            return;
+        }
+        ui.rewind.show_checkpoints(&checkpoints, None);
+    }
+
+    fn open_permissions(&self) {
+        let mut ui = self.ui.borrow_mut();
+        let block = app_support::permissions_block(
+            &ui.permissions,
+            ui.mode.trust_str,
+            &mut self.allocator.borrow_mut(),
+        );
+        let _ = ui.transcript.append(block.into(), monotonic());
+    }
+
+    fn manage_directories(&self, kind: &str, args: &str) {
+        let mut host = AdminHost { app: self };
+        directory_admin::manage(&mut host, kind, args);
+    }
+
+    fn exit(&self) {
+        self.ui.borrow_mut().should_quit = true;
+    }
+
+    fn copy_to_clipboard(&self, text: &str) {
+        // OS clipboard tool (pbcopy/wl-copy/xclip) — OSC 52 emission is a
+        // terminal-writer concern the draw loop does not implement yet.
+        let _ = app_support::os_clipboard_copy(text);
+    }
+
+    fn show_native_modes(&self) {
+        if self.ops_starting() {
+            return;
+        }
+        let catalog = self.adapter.borrow_mut().list_native_modes();
+        let ui_width = self.ui.borrow().term_width as usize;
+        let active = self.ui.borrow().native_modes.clone();
+        let active_refs: Vec<&str> = active.iter().map(String::as_str).collect();
+        let active_line = if active.is_empty() {
+            String::new()
+        } else {
+            format!(" · active: {}", active.join(", "))
+        };
+        let mut spans = vec![
+            Segment {
+                style_token: StyleToken::Blue,
+                ..Segment::new("· ")
+            },
+            Segment {
+                style_token: StyleToken::Bright,
+                bold: true,
+                ..Segment::new("Modes")
+            },
+            Segment {
+                style_token: StyleToken::Dim,
+                ..Segment::new(format!(
+                    "  postures: chat plan brainstorm build auto · shift+tab cycles · trust layer{active_line}\n"
+                ))
+            },
+        ];
+        let native = app_support::native_modes_segments(&catalog, ui_width, &active_refs);
+        if native.is_empty() {
+            spans.push(Segment {
+                style_token: StyleToken::Dimmer,
+                ..Segment::new("  no bundle-composed modes (demo or minimal session)")
+            });
+        } else {
+            spans.extend(native);
+        }
+        let id = self.allocator.borrow_mut().next_id();
+        let _ = self
+            .ui
+            .borrow_mut()
+            .transcript
+            .append(Answer::new(id, spans).into(), monotonic());
+    }
+
+    fn activate_native_mode(&self, name: Option<&str>) {
+        match name {
+            None => {
+                let _ = self.adapter.borrow_mut().set_native_mode(None);
+                let mut ui = self.ui.borrow_mut();
+                ui.native_modes.clear();
+                ui.show_notice("mode off · native (bundle)", None);
+            }
+            Some(name) => {
+                let (ok, detail) = self.adapter.borrow_mut().set_native_mode(Some(name));
+                let mut ui = self.ui.borrow_mut();
+                if ok {
+                    ui.native_modes.retain(|active| active != name);
+                    ui.native_modes.push(name.to_string());
+                    ui.show_notice(&format!("mode {name} · native (bundle)"), None);
+                    let conflict =
+                        posture_conflict_notice(ui.mode.id.as_str(), &ui.native_modes);
+                    if !conflict.is_empty() {
+                        ui.show_notice(&conflict, None);
+                    }
+                } else if detail.is_empty() {
+                    ui.show_notice(&format!("no such mode · {name}"), None);
+                } else {
+                    ui.show_notice(&detail, None);
+                }
+            }
+        }
+    }
+
+    fn deactivate_native_mode(&self, name: &str) {
+        let active = self.ui.borrow().native_modes.clone();
+        if !active.iter().any(|n| n == name) {
+            self.ui
+                .borrow_mut()
+                .show_notice(&format!("mode not active · {name}"), None);
+            return;
+        }
+        let remaining: Vec<String> = active.into_iter().filter(|n| n != name).collect();
+        let primary = remaining.last().map(String::as_str);
+        let (ok, detail) = self.adapter.borrow_mut().set_native_mode(primary);
+        let mut ui = self.ui.borrow_mut();
+        if ok {
+            ui.native_modes = remaining;
+            let tail = match ui.native_modes.last() {
+                Some(promoted) => format!(" · now {promoted}"),
+                None => String::new(),
+            };
+            ui.show_notice(&format!("mode -{name} · native (bundle){tail}"), None);
+        } else if detail.is_empty() {
+            ui.show_notice(&format!("could not deactivate · {name}"), None);
+        } else {
+            ui.show_notice(&detail, None);
+        }
+    }
+
+    // -- in-session ops (SessionOpsController, issue #31) --------------------
+
+    fn show_status(&self) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).show_status();
+    }
+
+    fn show_model(&self, arg: &str) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).show_model(arg);
+    }
+
+    fn apply_effort(&self, arg: &str) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).apply_effort(arg);
+    }
+
+    fn compact_context(&self, focus: &str) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).compact_context(focus);
+    }
+
+    fn clear_context(&self) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).clear_context();
+    }
+
+    fn show_tools(&self) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).show_tools();
+    }
+
+    fn show_agents(&self) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).show_agents();
+    }
+
+    fn show_diff(&self, arg: &str) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).show_diff(arg);
+    }
+
+    fn show_skills(&self) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).show_skills();
+    }
+
+    fn load_skill(&self, name: &str) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).load_skill(name);
+    }
+
+    fn manage_mcp(&self, args: &str) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).manage_mcp(args);
+    }
+
+    fn load_bundle(&self, args: &str) {
+        let host = self.ops_host();
+        SessionOpsController::new(&host).load_bundle(args);
+    }
+
+    fn manage_config(&self, args: &str) {
+        let mut host = AdminHost { app: self };
+        config_admin::manage(&mut host, args);
+    }
+
+    // -- stored-session lifecycle --------------------------------------------
+
+    fn rename_session(&self, name: &str) {
+        if name.trim().is_empty() {
+            self.ui.borrow_mut().show_notice("usage: /rename <new name>", None);
+            return;
+        }
+        if self.ops_starting() {
+            return;
+        }
+        let (ok, detail) = self.adapter.borrow_mut().rename_session(name.trim());
+        let notice = if ok {
+            format!("session renamed · {detail}")
+        } else {
+            detail
+        };
+        self.ui.borrow_mut().show_notice(&notice, None);
+    }
+
+    fn show_sessions(&self) {
+        let summaries = self.adapter.borrow_mut().session_summaries();
+        let current = self.ui.borrow().session_short.clone();
+        let id = self.allocator.borrow_mut().next_id();
+        let spans = sessions_spans(&summaries, &current);
+        let _ = self
+            .ui
+            .borrow_mut()
+            .transcript
+            .append(Answer::new(id, spans).into(), monotonic());
+    }
+
+    fn branch_session(&self, name: &str) {
+        if self.ops_starting() {
+            return;
+        }
+        let (ok, detail) = self.adapter.borrow_mut().branch_session(name.trim());
+        let notice = if ok {
+            let id: String = detail.chars().take(12).collect();
+            let short: String = detail.chars().take(8).collect();
+            format!("branch created · {id} · resume: amplifier-newtui resume {short}")
+        } else {
+            detail
+        };
+        self.ui.borrow_mut().show_notice(&notice, None);
+    }
+
+    fn fork_session(&self, directive: &str) {
+        if directive.trim().is_empty() {
+            self.ui.borrow_mut().show_notice("usage: /fork <directive>", None);
+            return;
+        }
+        if self.ops_starting() {
+            return;
+        }
+        let (ok, detail) = self
+            .adapter
+            .borrow_mut()
+            .fork_with_directive(directive.trim());
+        let notice = if ok {
+            let id: String = detail.chars().take(12).collect();
+            let short: String = detail.chars().take(8).collect();
+            format!(
+                "fork primed · {id} · resume runs the directive: amplifier-newtui resume {short}"
+            )
+        } else {
+            detail
+        };
+        self.ui.borrow_mut().show_notice(&notice, None);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SessionOps / admin host views (per-call adapters over the RefCells)
+// ---------------------------------------------------------------------------
+
+struct OpsAdapterView<'a>(&'a RefCell<Box<dyn RuntimeAdapter>>);
+
+impl SessionOpsAdapter for OpsAdapterView<'_> {
+    fn bundle_name(&self) -> String {
+        self.0.borrow_mut().bundle_name()
+    }
+    fn session_short(&self) -> String {
+        self.0.borrow_mut().session_short()
+    }
+    fn compaction(&self) -> CompactionConfig {
+        self.0.borrow_mut().compaction()
+    }
+    fn status(&self) -> StatusInfo {
+        self.0.borrow_mut().status()
+    }
+    fn set_model(&self, model: &str) -> (bool, String) {
+        self.0.borrow_mut().set_model(model)
+    }
+    fn list_models(&self) -> ModelListing {
+        self.0.borrow_mut().list_models()
+    }
+    fn set_effort(&self, level: &str) -> (bool, String) {
+        self.0.borrow_mut().set_effort(level)
+    }
+    fn get_effort(&self) -> Option<String> {
+        self.0.borrow_mut().get_effort()
+    }
+    fn compact(&self, focus: &str) -> (bool, String) {
+        self.0.borrow_mut().compact(focus)
+    }
+    fn clear_context(&self) -> (bool, u64) {
+        self.0.borrow_mut().clear_context()
+    }
+    fn list_tools(&self) -> Vec<String> {
+        self.0.borrow_mut().list_tools()
+    }
+    fn list_agents(&self) -> Vec<String> {
+        self.0.borrow_mut().list_agents()
+    }
+    fn diff(&self, staged: bool) -> Option<String> {
+        self.0.borrow_mut().diff(staged)
+    }
+    fn list_skills(&self) -> Vec<SkillInfo> {
+        self.0.borrow_mut().list_skills()
+    }
+    fn load_skill(&self, name: &str) -> (bool, String) {
+        self.0.borrow_mut().load_skill(name)
+    }
+    fn mcp_tools(&self) -> Vec<String> {
+        self.0.borrow_mut().mcp_tools()
+    }
+    fn deferred_bundles(&self) -> Vec<String> {
+        self.0.borrow_mut().deferred_bundles()
+    }
+    fn load_deferred_bundle(&self, name: &str) -> (bool, String) {
+        self.0.borrow_mut().load_deferred_bundle(name)
+    }
+}
+
+struct OpsHost<'a> {
+    app: &'a App,
+    adapter: OpsAdapterView<'a>,
+}
+
+impl App {
+    fn ops_host(&self) -> OpsHost<'_> {
+        OpsHost {
+            app: self,
+            adapter: OpsAdapterView(&self.adapter),
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::kernel::events::ProviderResponseUsage;
-    use std::str::FromStr;
-
-    fn dec(text: &str) -> Decimal {
-        Decimal::from_str(text).unwrap()
+impl SessionOpsHost for OpsHost<'_> {
+    fn adapter(&self) -> &dyn SessionOpsAdapter {
+        &self.adapter
     }
-
-    fn usage(input: i64, output: i64, cache_read: i64, cache_write: i64) -> ProviderResponseUsage {
-        ProviderResponseUsage {
-            session_id: "core-01".into(),
-            input_tokens: input,
-            output_tokens: output,
-            cache_read,
-            cache_write,
-            model: "claude-sonnet-4-5".into(),
-            ..ProviderResponseUsage::default()
-        }
+    fn next_block_id(&self) -> String {
+        self.app.allocator.borrow_mut().next_id()
     }
-
-    /// N usage events → exact token totals and exact Decimal cost from the
-    /// kernel::cost fallback pricing table. Expected costs are oracle-checked
-    /// against the real Python `kernel.cost.cost_of`:
-    ///   (1200, 340, 800, 100, "claude-sonnet-4-5") → Decimal("0.00924")
-    ///   (900, 120, 0, 0, "claude-sonnet-4-5")      → Decimal("0.0045")
-    #[test]
-    fn usage_events_accumulate_exact_tokens_and_cost() {
-        let mut app = App::new("newtui", "core-01");
-        app.on_event(UiEvent::PromptSubmit("go".into()));
-
-        app.on_event(UiEvent::Usage(usage(1200, 340, 800, 100)));
-        assert_eq!(app.tallies.tokens, 340);
-        assert_eq!(app.tallies.cost, dec("0.00924"));
-
-        app.on_event(UiEvent::Usage(usage(900, 120, 0, 0)));
-        assert_eq!(app.tallies.tokens, 460);
-        assert_eq!(app.tallies.cost, dec("0.01374"));
-        assert_eq!(app.cost_tracker.turn().cost, dec("0.01374"));
-
-        // Serve-protocol turn close-out carries zeros; the tallies keep the
-        // usage-derived figures and the turn rule shows the priced turn cost.
-        app.on_event(UiEvent::TurnComplete { files: 1, added: 18, removed: 0, tokens: 0, cost: 0.0 });
-        assert_eq!(app.tallies.tokens, 460);
-        assert_eq!(app.tallies.cost, dec("0.01374"));
-        let rule = format!("{:?}", app.blocks.last().unwrap());
-        assert!(rule.contains("0.01374"), "turn rule priced from usage: {rule}");
-
-        // A new turn resets per-turn usage but keeps the session totals.
-        app.on_event(UiEvent::PromptSubmit("next".into()));
-        assert_eq!(app.cost_tracker.turn().cost, dec("0"));
-        assert_eq!(app.tallies.cost, dec("0.01374"));
+    fn mode_id(&self) -> String {
+        self.app.ui.borrow().mode.id.as_str().to_string()
     }
-
-    /// A provider-reported `cost_usd` is authoritative over the table
-    /// (oracle: Python cost_of returns exactly Decimal("0.0123") for it).
-    #[test]
-    fn provider_reported_cost_usd_is_authoritative() {
-        let mut app = App::new("newtui", "core-01");
-        app.on_event(UiEvent::PromptSubmit("go".into()));
-        let mut u = usage(10, 5, 0, 0);
-        u.model = String::new(); // no table entry — cost_usd still prices it
-        u.cost_usd = Some(dec("0.0123"));
-        app.on_event(UiEvent::Usage(u));
-        assert_eq!(app.tallies.cost, dec("0.0123"));
-        assert_eq!(app.tallies.tokens, 5);
+    fn session_cost(&self) -> Decimal {
+        self.app.reducer.session_cost
     }
+    fn splash_active(&self) -> bool {
+        self.app.ui.borrow().splash.is_some()
+    }
+    fn append_block(&self, block: TranscriptBlock) {
+        let _ = self
+            .app
+            .ui
+            .borrow_mut()
+            .transcript
+            .append(block, monotonic());
+    }
+    fn show_notice(&self, text: &str) {
+        self.app.ui.borrow_mut().show_notice(text, None);
+    }
+    fn refresh_status(&self) {
+        // The draw loop derives title/footer from state each frame.
+    }
+    // kernel.mcp_config is an unported server-side unit; the store is not
+    // wired — listing is empty, mutations are honest no-ops.
+    fn mcp_servers(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn add_mcp_stdio_server(&self, _name: &str, _command: &str, _args: &[String]) {}
+    fn remove_mcp_server(&self, _name: &str) -> bool {
+        false
+    }
+}
 
-    /// The scripted demo runtime carries cost/tokens on TurnComplete itself;
-    /// those still land in the session tallies (no usage events emitted).
-    #[test]
-    fn demo_turn_complete_still_tallies() {
-        let mut app = App::new("newtui", "demo-01");
-        app.on_event(UiEvent::PromptSubmit("go".into()));
-        app.on_event(UiEvent::TurnComplete { files: 1, added: 18, removed: 0, tokens: 1240, cost: 0.0123 });
-        assert_eq!(app.tallies.tokens, 1240);
-        assert_eq!(app.tallies.cost, dec("0.0123"));
-        assert_eq!(app.state, TurnState::Idle);
+/// `/config` + `/dirs` admin host (both traits share the same four app
+/// touchpoints, so one view serves both).
+struct AdminHost<'a> {
+    app: &'a App,
+}
+
+impl ConfigAdminHost for AdminHost<'_> {
+    fn config_view(&mut self) -> crate::model::config::ConfigSnapshotView {
+        self.app.adapter.borrow_mut().config_view()
+    }
+    fn config_toggle(&mut self, category: &str, name: &str, enable: bool) -> (bool, String) {
+        self.app.adapter.borrow_mut().config_toggle(category, name, enable)
+    }
+    fn config_set(&mut self, path: &str, value: &str) -> (bool, String) {
+        self.app.adapter.borrow_mut().config_set(path, value)
+    }
+    fn config_diff(&mut self) -> Vec<crate::model::config::ConfigChange> {
+        self.app.adapter.borrow_mut().config_diff()
+    }
+    fn config_save(&mut self, scope: &str) -> (bool, String) {
+        self.app.adapter.borrow_mut().config_save(scope)
+    }
+    fn next_id(&mut self) -> String {
+        self.app.allocator.borrow_mut().next_id()
+    }
+    fn append_block(&mut self, block: Answer) {
+        let _ = self
+            .app
+            .ui
+            .borrow_mut()
+            .transcript
+            .append(block.into(), monotonic());
+    }
+    fn show_notice(&mut self, text: &str, duration: Option<f64>) {
+        self.app.ui.borrow_mut().show_notice(text, duration);
+    }
+}
+
+impl DirectoryAdminHost for AdminHost<'_> {
+    fn directory_entries(&mut self, kind: DirectoryKind) -> Vec<DirectoryEntry> {
+        self.app.adapter.borrow_mut().directory_entries(kind)
+    }
+    fn update_directory(
+        &mut self,
+        kind: DirectoryKind,
+        operation: &str,
+        path: &str,
+    ) -> (bool, String) {
+        self.app
+            .adapter
+            .borrow_mut()
+            .update_directory(kind, operation, path)
+    }
+    fn next_id(&mut self) -> String {
+        self.app.allocator.borrow_mut().next_id()
+    }
+    fn append_block(&mut self, block: Answer) {
+        let _ = self
+            .app
+            .ui
+            .borrow_mut()
+            .transcript
+            .append(block.into(), monotonic());
+    }
+    fn show_notice(&mut self, text: &str, duration: Option<f64>) {
+        self.app.ui.borrow_mut().show_notice(text, duration);
     }
 }

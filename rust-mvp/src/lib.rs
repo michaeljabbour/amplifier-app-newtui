@@ -5,7 +5,6 @@
 pub mod app;
 pub mod commands;
 pub mod core_client;
-pub mod event;
 pub mod kernel;
 pub mod live;
 pub mod message;

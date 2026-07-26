@@ -69,6 +69,16 @@ def usage_event(event_id: str, **fields) -> None:
     )
 
 
+def tool_call(index: int, tool: str, tool_input: dict, result: dict | None = None) -> None:
+    """One tool:pre/tool:post pair, correlated by tool_call_id exactly as the
+    real runtime emits them (the reducer folds them into its burst digest)."""
+    call_id = f"call-{index}"
+    event("tool_pre", tool_name=tool, tool_call_id=call_id, tool_input=tool_input)
+    time.sleep(DELAY)
+    event("tool_post", tool_name=tool, tool_call_id=call_id,
+          tool_input=tool_input, result=result or {"status": "ok"})
+
+
 def run_turn(prompt: str) -> str:
     """A scripted turn in the REAL event vocabulary (kernel/events.py kinds),
     incl. an approval that PARKS until the UI answers over the protocol. This is
@@ -77,7 +87,12 @@ def run_turn(prompt: str) -> str:
     time.sleep(DELAY)
     event("notification", message="Thinking…", level="info")
     time.sleep(DELAY)
-    event("tool_post", tool_name="read_files", result={"summary": "Read 3 files · ran 2 commands"})
+    # 3 file reads + 2 shell commands → digest "Read 3 files · ran 2 shell commands".
+    tool_call(1, "read_file", {"path": "src/app.py"})
+    tool_call(2, "read_file", {"path": "src/router.py"})
+    tool_call(3, "read_file", {"path": "tests/test_app.py"})
+    tool_call(4, "bash", {"command": "pytest -q"})
+    tool_call(5, "bash", {"command": "ruff check ."})
     time.sleep(DELAY)
     # First provider response of the turn (the planning/tool round).
     usage_event("ev-usage-1", input_tokens=1200, output_tokens=340,
@@ -94,7 +109,11 @@ def run_turn(prompt: str) -> str:
 
     if not granted:
         event("notification", message="Denied — continuing without the write", level="warn")
-        event("tool_error", tool_name="write_file", error_type="denied")
+        # The denied write is a tool:pre/post pair whose post carries the
+        # denial (status/reason/continuation) — the durable ⊘ blocked line.
+        tool_call(6, "write_file", {"path": "src/health.py"},
+                  {"status": "denied", "reason": "denied by user",
+                   "continuation": "continuing without the write"})
         response = "Understood — I left the endpoint out."
         event("stream_block_start", block_type="text")
         for w in response.split():
@@ -105,7 +124,9 @@ def run_turn(prompt: str) -> str:
         event("prompt_complete", response=response, files_changed=0, diffstat="")
         return response
 
-    event("tool_post", tool_name="write_file", result={"summary": "Changed 1 file  (+18/−0)"})
+    tool_call(6, "write_file",
+              {"path": "src/health.py",
+               "content": "def health():\n    return {\"status\": \"ok\"}\n"})
     time.sleep(DELAY)
     response = (
         "I've added a `/health` endpoint that returns 200 with a JSON status "

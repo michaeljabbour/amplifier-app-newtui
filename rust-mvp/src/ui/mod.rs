@@ -1,6 +1,11 @@
-//! Pure rendering — mirrors `ui/transcript.py`'s `render_block`. `draw` is a pure
-//! function of `App` state: title bar, transcript, live tail, composer/approval,
-//! footer. Colors are theme tokens, not literals scattered through logic.
+//! Top-level draw: a pure function of the assembled [`App`] state.
+//!
+//! Layout (DESIGN-SPEC §2, top → bottom): TitleBar / TranscriptView /
+//! LiveTail / NoticeSlot overlay / palette · lanes+plan · rewind · queued ·
+//! file-mentions strips / composer-or-approval-bar / FooterBar. Every color
+//! resolves from the active theme's token table (`ui/themes`), never a
+//! literal; block text renders through the ported `transcript_render` +
+//! `segments::to_ratatui_line`.
 
 pub mod app_support;
 pub mod approval_bar;
@@ -36,165 +41,469 @@ pub mod rewind_strip;
 pub mod segments;
 pub mod themes;
 
-use crate::app::{App, TurnState};
-use crate::model::Block;
-use ratatui::prelude::*;
-use ratatui::widgets::{Block as WBlock, Borders, Paragraph, Wrap};
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
-// Theme tokens (the one place hex/ansi lives — cf. ui/themes.py).
-const ACCENT: Color = Color::Rgb(122, 162, 247);
-const MUTED: Color = Color::Rgb(120, 128, 148);
-const OK: Color = Color::Rgb(158, 206, 106);
-const WARN: Color = Color::Rgb(224, 175, 104);
-const USER: Color = Color::Rgb(187, 194, 207);
+use ratatui::prelude::*;
+use ratatui::widgets::Paragraph;
+use regex::Regex;
+
+use crate::app::App;
+use crate::model::blocks::{Segment as BlockSegment, StyleToken};
+use crate::ui::file_mentions::MentionStyle;
+use crate::ui::footer::{footer_left_segments, footer_right_text, footer_waiting_text, footer_wrap};
+use crate::ui::live_tail::streaming_spans;
+use crate::ui::palette::{command_row_cells, command_row_tokens, group_header_text, PaletteRow};
+use crate::ui::segments::to_ratatui_line;
+use crate::ui::transcript::block_margin_top;
+use crate::ui::transcript_render::render_block;
+
+/// Rows the open palette strip may occupy (rows beyond scroll are clipped).
+const PALETTE_MAX_ROWS: usize = 10;
+
+type ColorTable = HashMap<StyleToken, Color>;
+
+fn seg(text: impl Into<String>, token: StyleToken) -> BlockSegment {
+    BlockSegment {
+        style_token: token,
+        ..BlockSegment::new(text)
+    }
+}
+
+/// `StyleToken` from a token *name* (palette/rewind rows carry names).
+fn parse_token(name: &str) -> StyleToken {
+    match name {
+        "bright" => StyleToken::Bright,
+        "dim" => StyleToken::Dim,
+        "dimmer" => StyleToken::Dimmer,
+        "teal" => StyleToken::Teal,
+        "green" => StyleToken::Green,
+        "orange" => StyleToken::Orange,
+        "red" => StyleToken::Red,
+        "blue" => StyleToken::Blue,
+        "rule" => StyleToken::Rule,
+        _ => StyleToken::Fg,
+    }
+}
+
+/// Split a flat segment run (which may embed `\n`) into per-row lines.
+fn segments_to_rows(spans: &[BlockSegment]) -> Vec<Vec<BlockSegment>> {
+    let mut rows: Vec<Vec<BlockSegment>> = vec![Vec::new()];
+    for span in spans {
+        let mut parts = span.text.split('\n').peekable();
+        while let Some(part) = parts.next() {
+            if !part.is_empty() {
+                rows.last_mut().expect("non-empty").push(BlockSegment {
+                    text: part.to_string(),
+                    ..span.clone()
+                });
+            }
+            if parts.peek().is_some() {
+                rows.push(Vec::new());
+            }
+        }
+    }
+    rows
+}
+
+/// Strip Textual content markup down to plain text (the lane tail is the
+/// one surface still carrying markup — styling is dropped, text kept).
+fn strip_markup(markup: &str) -> String {
+    static TAG_RE: OnceLock<Regex> = OnceLock::new();
+    let re = TAG_RE.get_or_init(|| Regex::new(r"\[[^\]]*\]").expect("static regex"));
+    re.replace_all(markup, "").replace("\\[", "[")
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
+    let ui = app.ui.borrow();
+    let colors = &ui.colors;
+    let area = f.area();
+    let width = area.width as usize;
+
+    // -- bottom-up height budget ------------------------------------------------
+    let footer_state = app.footer_state();
+    let wrap = footer_wrap(&footer_state, width);
+    let footer_rows: u16 = if wrap.wrapped { 2 } else { 1 };
+
+    let approval_lines: Vec<Line<'static>> = ui
+        .approval
+        .as_ref()
+        .map(|bar| bar.render_lines())
+        .unwrap_or_default();
+    let input_rows = if ui.approval.is_some() {
+        approval_lines.len().max(1) as u16
+    } else {
+        ui.composer.text().lines().count().clamp(1, 6) as u16
+    };
+
+    let mention_lines = if ui.file_mentions.is_open() {
+        ui.file_mentions.render_lines()
+    } else {
+        Vec::new()
+    };
+    let queued_rows: u16 = if ui.queued_strip.display() { 1 } else { 0 };
+    let rewind_rows: u16 = if ui.rewind.display() { 1 } else { 0 };
+
+    let lanes_open = ui.lanes_panel.display();
+    let lane_rows = if lanes_open {
+        // header + one row per lane + optional tail line
+        1 + ui.lanes_panel.records().len()
+            + usize::from(ui.lanes_panel.tail_row_index().is_some())
+    } else {
+        0
+    };
+    let plan_lines = if ui.plan_panel.display() {
+        ui.plan_panel.render(Some(colors))
+    } else {
+        Vec::new()
+    };
+    let strip_rows = lane_rows.max(plan_lines.len()) as u16;
+
+    let palette_rows_all = if ui.palette.is_open() {
+        ui.palette.rows()
+    } else {
+        Vec::new()
+    };
+    let palette_rows: u16 = palette_rows_all.len().min(PALETTE_MAX_ROWS) as u16;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title bar
-            Constraint::Min(3),    // transcript + live tail
-            Constraint::Length(3), // composer / approval bar
-            Constraint::Length(1), // footer
+            Constraint::Length(1),                          // title bar
+            Constraint::Min(3),                             // transcript + live tail
+            Constraint::Length(palette_rows),               // palette strip
+            Constraint::Length(strip_rows),                 // lanes + plan strip
+            Constraint::Length(rewind_rows),                // rewind strip
+            Constraint::Length(queued_rows),                // queued strip
+            Constraint::Length(mention_lines.len() as u16), // @file strip
+            Constraint::Length(input_rows),                 // composer / approval
+            Constraint::Length(footer_rows),                // footer
         ])
-        .split(f.area());
+        .split(area);
 
-    title_bar(f, chunks[0], app);
-    transcript(f, chunks[1], app);
-    if app.state == TurnState::AwaitingApproval {
-        approval_bar(f, chunks[2], app);
+    draw_title(f, chunks[0], &ui, colors);
+    draw_transcript_region(f, chunks[1], &ui, colors);
+    if palette_rows > 0 {
+        draw_palette(f, chunks[2], &palette_rows_all, colors);
+    }
+    if strip_rows > 0 {
+        draw_bottom_strip(f, chunks[3], &ui, &plan_lines, colors);
+    }
+    if rewind_rows > 0 {
+        draw_rewind(f, chunks[4], &ui, colors);
+    }
+    if queued_rows > 0 {
+        let text = ui.queued_strip.text();
+        f.render_widget(
+            Paragraph::new(to_ratatui_line(&[seg(text, StyleToken::Orange)], Some(colors))),
+            chunks[5],
+        );
+    }
+    if !mention_lines.is_empty() {
+        draw_mentions(f, chunks[6], &mention_lines, colors);
+    }
+    if ui.approval.is_some() {
+        f.render_widget(Paragraph::new(approval_lines), chunks[7]);
     } else {
-        composer(f, chunks[2], app);
+        draw_composer(f, chunks[7], &ui, colors);
     }
-    footer(f, chunks[3], app);
+    draw_footer(f, chunks[8], &footer_state, colors);
 }
 
-fn title_bar(f: &mut Frame, area: Rect, app: &App) {
-    let spin = if app.state == TurnState::Running {
-        format!("{} ", app.spinner_frame())
-    } else {
-        "★ ".to_string()
-    };
-    let line = Line::from(vec![
-        Span::styled(spin, Style::default().fg(ACCENT)),
-        Span::styled(
-            format!("{} — {} — {}", app.state_label(), app.bundle, app.session),
-            Style::default().fg(USER).add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(Color::Rgb(26, 28, 38))), area);
-}
-
-fn transcript(f: &mut Frame, area: Rect, app: &App) {
-    let mut lines: Vec<Line> = Vec::new();
-    for block in &app.blocks {
-        render_block(&mut lines, block);
-    }
-    if let Some(live) = &app.live {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(live.clone(), Style::default().fg(USER)),
-            Span::styled("▌", Style::default().fg(ACCENT)),
-        ]));
-    }
-    let para = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((app.scroll, 0));
-    f.render_widget(para, area);
-}
-
-/// The per-kind renderer — one arm per block variant (cf. `_render_*`).
-fn render_block(out: &mut Vec<Line>, block: &Block) {
-    match block {
-        Block::SessionBanner { bundle, session } => {
-            out.push(Line::from(Span::styled(
-                format!("┌─ session {}  ·  bundle {} ", session, bundle),
-                Style::default().fg(MUTED),
-            )));
-        }
-        Block::User(text) => {
-            out.push(Line::from(vec![
-                Span::styled("› ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                Span::styled(text.clone(), Style::default().fg(USER).add_modifier(Modifier::BOLD)),
-            ]));
-        }
-        Block::Narration(text) => {
-            out.push(Line::from(Span::styled(
-                format!("  {}", text),
-                Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
-            )));
-        }
-        Block::Tool { summary, ok } => {
-            let (glyph, color) = if *ok { ("✓", OK) } else { ("✗", WARN) };
-            out.push(Line::from(vec![
-                Span::styled(format!("  {} ", glyph), Style::default().fg(color)),
-                Span::styled(summary.clone(), Style::default().fg(MUTED)),
-            ]));
-        }
-        Block::Answer(text) => {
-            out.push(Line::from(Span::styled(text.clone(), Style::default().fg(USER))));
-            out.push(Line::from(""));
-        }
-        Block::TurnRule { files, added, removed, cost } => {
-            out.push(Line::from(Span::styled(
-                format!("└─ files {} · +{}/−{} · ${:.4}", files, added, removed, cost),
-                Style::default().fg(MUTED),
-            )));
-            out.push(Line::from(""));
-        }
-    }
-}
-
-fn composer(f: &mut Frame, area: Rect, app: &App) {
-    let hint = if app.state == TurnState::Running { " (Enter steers)" } else { "" };
-    let block = WBlock::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(MUTED))
-        .title(Span::styled(format!(" compose{} ", hint), Style::default().fg(MUTED)));
-    let text = if app.composer.is_empty() {
-        Span::styled("type a message…", Style::default().fg(MUTED).add_modifier(Modifier::DIM))
-    } else {
-        Span::styled(format!("{}▏", app.composer), Style::default().fg(USER))
-    };
-    f.render_widget(Paragraph::new(Line::from(text)).block(block), area);
-}
-
-fn approval_bar(f: &mut Frame, area: Rect, app: &App) {
-    let action = app.pending_action.clone().unwrap_or_default();
-    let block = WBlock::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(WARN))
-        .title(Span::styled(" approval required ", Style::default().fg(WARN).add_modifier(Modifier::BOLD)));
-    let line = Line::from(vec![
-        Span::styled(format!("{}   ", action), Style::default().fg(USER)),
-        Span::styled("[y]", Style::default().fg(OK).add_modifier(Modifier::BOLD)),
-        Span::styled(" allow   ", Style::default().fg(MUTED)),
-        Span::styled("[n]", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
-        Span::styled(" deny", Style::default().fg(MUTED)),
-    ]);
-    f.render_widget(Paragraph::new(line).block(block), area);
-}
-
-fn footer(f: &mut Frame, area: Rect, app: &App) {
-    let left = format!(
-        " {} · {} tok · ${:.4}",
-        app.mode.label(),
-        app.tallies.tokens,
-        app.tallies.cost
+fn draw_title(f: &mut Frame, area: Rect, ui: &crate::app::UiState, colors: &ColorTable) {
+    let spans: Vec<BlockSegment> = ui
+        .title
+        .title_spans()
+        .into_iter()
+        .map(|(text, token)| seg(text, token.unwrap_or(StyleToken::Dim)))
+        .collect();
+    let bg = colors
+        .get(&StyleToken::BgChrome)
+        .copied()
+        .unwrap_or(Color::Reset);
+    f.render_widget(
+        Paragraph::new(to_ratatui_line(&spans, Some(colors))).style(Style::default().bg(bg)),
+        area,
     );
-    let right = match app.state {
-        TurnState::AwaitingApproval => "y allow · n deny",
-        TurnState::Running => "esc interrupt",
-        TurnState::Idle => "enter send · shift+tab mode · ctrl+c quit",
+}
+
+fn draw_transcript_region(
+    f: &mut Frame,
+    area: Rect,
+    ui: &crate::app::UiState,
+    colors: &ColorTable,
+) {
+    // Boot splash overlays the whole region while active.
+    if let Some(splash) = ui.splash.as_ref() {
+        let rows = splash.rows();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let pad = (area.height as usize).saturating_sub(rows.len() + 1) / 2;
+        for _ in 0..pad {
+            lines.push(Line::default());
+        }
+        for row in &rows {
+            lines.push(to_ratatui_line(row, Some(colors)));
+        }
+        if !splash.status().is_empty() {
+            lines.push(Line::from(splash.status().to_string()));
+        }
+        f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+        return;
+    }
+
+    let width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut first = true;
+    for block in ui.transcript.blocks() {
+        let margin = if first { 0 } else { block_margin_top(&block) };
+        for _ in 0..margin {
+            lines.push(Line::default());
+        }
+        first = false;
+        for line in render_block(&block, width.max(20)) {
+            lines.push(to_ratatui_line(&line, Some(colors)));
+        }
+    }
+
+    // Live tail (region two): the mutable streaming peek under history.
+    let tail_source = ui.live_tail.visible_source();
+    if !tail_source.is_empty() {
+        lines.push(Line::default());
+        for row in segments_to_rows(&streaming_spans(&tail_source)) {
+            lines.push(to_ratatui_line(&row, Some(colors)));
+        }
+    }
+
+    // Tail anchor: keep the newest rows visible (transcript.follow()).
+    let visible = area.height as usize;
+    let scroll = if ui.transcript.follow() {
+        lines.len().saturating_sub(visible)
+    } else {
+        0
+    } as u16;
+    f.render_widget(
+        Paragraph::new(lines).scroll((scroll, 0)),
+        Rect {
+            x: area.x + 1,
+            width: area.width.saturating_sub(2),
+            ..area
+        },
+    );
+
+    // Transient notice: bottom-right overlay on the region's last row.
+    if let Some(notice) = ui.notices.current() {
+        let text = format!(" {notice} ");
+        let w = text.chars().count().min(area.width as usize) as u16;
+        let rect = Rect {
+            x: area.x + area.width.saturating_sub(w + 2),
+            y: area.y + area.height.saturating_sub(1),
+            width: w,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(to_ratatui_line(&[seg(text, StyleToken::Dim)], Some(colors))),
+            rect,
+        );
+    }
+}
+
+fn draw_palette(
+    f: &mut Frame,
+    area: Rect,
+    rows: &[PaletteRow<crate::commands::registry::CommandSpec>],
+    colors: &ColorTable,
+) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for row in rows.iter().take(PALETTE_MAX_ROWS) {
+        match row {
+            PaletteRow::GroupHeader { group } => {
+                lines.push(to_ratatui_line(
+                    &[seg(group_header_text(group), StyleToken::Dimmer)],
+                    Some(colors),
+                ));
+            }
+            PaletteRow::Command { spec, selected, .. } => {
+                let (name, desc, tag) = command_row_cells(spec);
+                let (name_token, desc_token, tag_token) = command_row_tokens(*selected);
+                let marker = if *selected { "› " } else { "  " };
+                let spans = vec![
+                    seg(marker, StyleToken::Teal),
+                    seg(format!("{name}  "), parse_token(name_token)),
+                    seg(format!("{desc}  "), parse_token(desc_token)),
+                    seg(tag, parse_token(tag_token)),
+                ];
+                lines.push(to_ratatui_line(&spans, Some(colors)));
+            }
+        }
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_bottom_strip(
+    f: &mut Frame,
+    area: Rect,
+    ui: &crate::app::UiState,
+    plan_lines: &[Line<'static>],
+    colors: &ColorTable,
+) {
+    let plan_width = if plan_lines.is_empty() {
+        0
+    } else {
+        crate::ui::plan_panel::PLAN_PANEL_WIDTH as u16
     };
-    let notice = app.notice.clone().unwrap_or_default();
-    let spans = vec![
-        Span::styled(left, Style::default().fg(ACCENT)),
-        Span::styled(format!("   {}", notice), Style::default().fg(WARN)),
-        Span::styled(
-            format!("{:>width$}", right, width = (area.width as usize).saturating_sub(40)),
-            Style::default().fg(MUTED),
-        ),
+    let lanes_area = Rect {
+        width: area.width.saturating_sub(plan_width),
+        ..area
+    };
+    if ui.lanes_panel.display() && lanes_area.width > 0 {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(to_ratatui_line(&ui.lanes_panel.header_segments(), Some(colors)));
+        let tail_after = ui.lanes_panel.tail_row_index();
+        for index in 0..ui.lanes_panel.records().len() {
+            let row = ui
+                .lanes_panel
+                .row_segments(index, Some(lanes_area.width.saturating_sub(2) as usize));
+            lines.push(to_ratatui_line(&row, Some(colors)));
+            if tail_after == Some(index) {
+                let tail = strip_markup(&ui.lanes_panel.tail_markup());
+                for tail_line in tail.lines() {
+                    lines.push(to_ratatui_line(
+                        &[seg(tail_line.to_string(), StyleToken::Dim)],
+                        Some(colors),
+                    ));
+                }
+            }
+        }
+        f.render_widget(Paragraph::new(lines), lanes_area);
+    }
+    if !plan_lines.is_empty() {
+        let plan_area = Rect {
+            x: area.x + area.width.saturating_sub(plan_width),
+            width: plan_width,
+            ..area
+        };
+        f.render_widget(Paragraph::new(plan_lines.to_vec()), plan_area);
+    }
+}
+
+fn draw_rewind(f: &mut Frame, area: Rect, ui: &crate::app::UiState, colors: &ColorTable) {
+    let spans: Vec<BlockSegment> = ui
+        .rewind
+        .segments()
+        .into_iter()
+        .map(|(token, text)| seg(text, parse_token(token)))
+        .collect();
+    f.render_widget(Paragraph::new(to_ratatui_line(&spans, Some(colors))), area);
+}
+
+fn draw_mentions(
+    f: &mut Frame,
+    area: Rect,
+    rows: &[Vec<crate::ui::file_mentions::MentionSpan>],
+    colors: &ColorTable,
+) {
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .map(|row| {
+            let spans: Vec<BlockSegment> = row
+                .iter()
+                .map(|span| {
+                    let (token, bold, bg) = match span.style {
+                        MentionStyle::Hint => (StyleToken::Dimmer, false, None),
+                        MentionStyle::Sigil => (StyleToken::Green, true, None),
+                        MentionStyle::Path => (StyleToken::Fg, false, None),
+                        MentionStyle::PathSelected => {
+                            (StyleToken::Bright, false, Some(StyleToken::BgTab))
+                        }
+                    };
+                    BlockSegment {
+                        style_token: token,
+                        bold,
+                        bg_token: bg,
+                        ..BlockSegment::new(span.text.clone())
+                    }
+                })
+                .collect();
+            to_ratatui_line(&spans, Some(colors))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_composer(f: &mut Frame, area: Rect, ui: &crate::app::UiState, colors: &ColorTable) {
+    let badge_token = ui.mode.color_token;
+    let mut spans = vec![
+        seg(format!("{} ", ui.composer.badge_text()), badge_token),
+        seg("❯ ", StyleToken::Green),
     ];
-    f.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(26, 28, 38))), area);
+    let text = ui.composer.text();
+    if text.is_empty() {
+        spans.push(seg(
+            ui.composer.input().placeholder.to_string(),
+            StyleToken::Dimmer,
+        ));
+    } else {
+        spans.push(seg(text.to_string(), StyleToken::Bright));
+        spans.push(seg("▎", StyleToken::Dim));
+    }
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for row in segments_to_rows(&spans) {
+        lines.push(to_ratatui_line(&row, Some(colors)));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_footer(
+    f: &mut Frame,
+    area: Rect,
+    state: &crate::ui::footer::FooterState,
+    colors: &ColorTable,
+) {
+    let width = area.width as usize;
+    let wrap = footer_wrap(state, width);
+    let mut left = footer_left_segments(state, width);
+    let waiting = footer_waiting_text(state);
+    if !waiting.is_empty() && !wrap.badge_wrapped {
+        left.push(seg(" · ", StyleToken::Dimmer));
+        left.push(seg(waiting.clone(), StyleToken::Orange));
+    }
+    let right = footer_right_text(state);
+    let bg = colors
+        .get(&StyleToken::BgChrome)
+        .copied()
+        .unwrap_or(Color::Reset);
+    let style = Style::default().bg(bg);
+    if wrap.wrapped && area.height >= 2 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(area);
+        f.render_widget(
+            Paragraph::new(to_ratatui_line(&left, Some(colors))).style(style),
+            rows[0],
+        );
+        f.render_widget(
+            Paragraph::new(to_ratatui_line(&[seg(right, StyleToken::Dim)], Some(colors)))
+                .style(style)
+                .alignment(Alignment::Right),
+            rows[1],
+        );
+    } else {
+        let left_line = to_ratatui_line(&left, Some(colors));
+        let left_width = left_line.width() as u16;
+        f.render_widget(Paragraph::new(left_line).style(style), area);
+        let right_rect = Rect {
+            x: area.x + left_width.min(area.width),
+            width: area.width.saturating_sub(left_width),
+            ..area
+        };
+        if right_rect.width > 0 {
+            f.render_widget(
+                Paragraph::new(to_ratatui_line(&[seg(right, StyleToken::Dim)], Some(colors)))
+                    .style(style)
+                    .alignment(Alignment::Right),
+                right_rect,
+            );
+        }
+    }
 }

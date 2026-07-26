@@ -1,79 +1,113 @@
 //! Live provider runtime — a real turn against the Anthropic Messages API,
 //! streamed, in pure Rust. No Python, no amplifier-core. This is the seam where
-//! a real engine plugs in; today it talks to the provider directly.
+//! a real engine plugs in; today it talks to the provider directly. It is an
+//! illustrative shortcut, NOT the target architecture (that is
+//! `core_client.rs`); it now speaks the same normalized kernel vocabulary so
+//! the assembled reducer renders it (pricing via `kernel::cost`, answer made
+//! durable through `prompt_complete.response`).
 //!
-//! The SSE→`UiEvent` normalization (`SseNormalizer`) is the actual integration
+//! The SSE→UIEvent normalization (`SseNormalizer`) is the actual integration
 //! logic and is unit-tested offline against captured stream fixtures, so it is
 //! verified even without a key or network.
 
-use crate::event::UiEvent;
+use crate::kernel::events as ev;
 use crate::message::Msg;
+use crate::protocol::WireEvent;
 use crate::runtime::Runtime;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Approximate provider pricing (USD per 1M tokens) — the app's `kernel/cost.py`
-/// has the authoritative live table; this is a static fallback for the MVP.
-fn price_for(model: &str) -> (f64, f64) {
-    if model.contains("opus") {
-        (15.0, 75.0)
-    } else if model.contains("haiku") {
-        (0.80, 4.0)
-    } else {
-        (3.0, 15.0) // sonnet family (default)
-    }
+fn now_ts() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
-/// Stateful SSE decoder: fold Anthropic stream events into normalized `UiEvent`s.
+/// Stateful SSE decoder: fold Anthropic stream events into normalized
+/// kernel [`ev::UIEvent`]s. Cost is NOT computed here — the usage event is
+/// priced by `kernel::cost` in the reducer, exactly like serve traffic.
 pub struct SseNormalizer {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    in_price: f64,
-    out_price: f64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    model: String,
+    session_id: String,
+    answer: String,
 }
 
 impl SseNormalizer {
-    pub fn new(model: &str) -> Self {
-        let (in_price, out_price) = price_for(model);
-        Self { input_tokens: 0, output_tokens: 0, in_price, out_price }
+    pub fn new(model: &str, session_id: &str) -> Self {
+        Self {
+            input_tokens: 0,
+            output_tokens: 0,
+            model: model.to_string(),
+            session_id: session_id.to_string(),
+            answer: String::new(),
+        }
+    }
+
+    /// The accumulated answer text (becomes `prompt_complete.response`).
+    pub fn answer(&self) -> &str {
+        &self.answer
     }
 
     /// One parsed `data:` JSON object → zero or more UI events.
-    pub fn on_data(&mut self, v: &Value) -> Vec<UiEvent> {
+    pub fn on_data(&mut self, v: &Value) -> Vec<ev::UIEvent> {
+        let session = self.session_id.clone();
         match v["type"].as_str().unwrap_or("") {
             "message_start" => {
-                self.input_tokens = v["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
-                vec![UiEvent::StreamStart]
+                self.input_tokens = v["message"]["usage"]["input_tokens"].as_i64().unwrap_or(0);
+                vec![ev::UIEvent::StreamBlockStart(ev::StreamBlockStart {
+                    session_id: session,
+                    ts: now_ts(),
+                    ..ev::StreamBlockStart::default()
+                })]
             }
             "content_block_delta" => {
                 if v["delta"]["type"].as_str() == Some("text_delta") {
                     if let Some(t) = v["delta"]["text"].as_str() {
-                        return vec![UiEvent::StreamDelta(t.to_string())];
+                        self.answer.push_str(t);
+                        return vec![ev::UIEvent::StreamBlockDelta(ev::StreamBlockDelta {
+                            session_id: session,
+                            ts: now_ts(),
+                            text: t.to_string(),
+                            ..ev::StreamBlockDelta::default()
+                        })];
                     }
                 }
                 vec![]
             }
             "message_delta" => {
-                if let Some(o) = v["usage"]["output_tokens"].as_u64() {
+                if let Some(o) = v["usage"]["output_tokens"].as_i64() {
                     self.output_tokens = o;
                 }
                 vec![]
             }
             "message_stop" => {
-                let cost = self.input_tokens as f64 / 1e6 * self.in_price
-                    + self.output_tokens as f64 / 1e6 * self.out_price;
                 vec![
-                    UiEvent::StreamEnd,
-                    UiEvent::TurnComplete {
-                        files: 0,
-                        added: 0,
-                        removed: 0,
-                        tokens: self.input_tokens + self.output_tokens,
-                        cost,
-                    },
+                    ev::UIEvent::StreamBlockEnd(ev::StreamBlockEnd {
+                        session_id: session.clone(),
+                        ts: now_ts(),
+                        ..ev::StreamBlockEnd::default()
+                    }),
+                    ev::UIEvent::ProviderResponseUsage(ev::ProviderResponseUsage {
+                        session_id: session.clone(),
+                        ts: now_ts(),
+                        input_tokens: self.input_tokens,
+                        output_tokens: self.output_tokens,
+                        model: self.model.clone(),
+                        ..ev::ProviderResponseUsage::default()
+                    }),
+                    ev::UIEvent::PromptComplete(ev::PromptComplete {
+                        session_id: session,
+                        ts: now_ts(),
+                        response: self.answer.clone(),
+                        ..ev::PromptComplete::default()
+                    }),
                 ]
             }
             _ => vec![],
@@ -87,6 +121,8 @@ pub struct LiveRuntime {
     model: String,
     api_key: String,
 }
+
+pub const LIVE_SESSION_ID: &str = "live-01";
 
 impl LiveRuntime {
     /// Build from environment; errors (falls back to demo) if no key is present.
@@ -119,7 +155,14 @@ impl Runtime for LiveRuntime {
             .lock()
             .unwrap()
             .push(json!({"role": "user", "content": prompt}));
-        let _ = self.tx.send(Msg::Rt(UiEvent::PromptSubmit(prompt)));
+        let _ = self.tx.send(Msg::Rt(WireEvent::Event(ev::UIEvent::PromptSubmit(
+            ev::PromptSubmit {
+                session_id: LIVE_SESSION_ID.into(),
+                ts: now_ts(),
+                prompt,
+                ..ev::PromptSubmit::default()
+            },
+        ))));
 
         let tx = self.tx.clone();
         let history = self.history.clone();
@@ -127,8 +170,8 @@ impl Runtime for LiveRuntime {
         let api_key = self.api_key.clone();
 
         thread::spawn(move || {
-            let send = |e: UiEvent| {
-                let _ = tx.send(Msg::Rt(e));
+            let send = |e: ev::UIEvent| {
+                let _ = tx.send(Msg::Rt(WireEvent::Event(e)));
             };
             let messages = history.lock().unwrap().clone();
             let body = json!({
@@ -148,14 +191,23 @@ impl Runtime for LiveRuntime {
             let resp = match resp {
                 Ok(r) => r,
                 Err(e) => {
-                    send(UiEvent::Notice(format!("request failed: {e}")));
-                    send(UiEvent::TurnComplete { files: 0, added: 0, removed: 0, tokens: 0, cost: 0.0 });
+                    send(ev::UIEvent::Notification(ev::Notification {
+                        session_id: LIVE_SESSION_ID.into(),
+                        ts: now_ts(),
+                        message: format!("request failed: {e}"),
+                        level: "warn".into(),
+                        ..ev::Notification::default()
+                    }));
+                    send(ev::UIEvent::PromptComplete(ev::PromptComplete {
+                        session_id: LIVE_SESSION_ID.into(),
+                        ts: now_ts(),
+                        ..ev::PromptComplete::default()
+                    }));
                     return;
                 }
             };
 
-            let mut norm = SseNormalizer::new(&model);
-            let mut answer = String::new();
+            let mut norm = SseNormalizer::new(&model, LIVE_SESSION_ID);
             let reader = BufReader::new(resp.into_reader());
             for line in reader.lines() {
                 let Ok(line) = line else { break };
@@ -164,18 +216,15 @@ impl Runtime for LiveRuntime {
                     continue;
                 }
                 if let Ok(v) = serde_json::from_str::<Value>(data) {
-                    for ev in norm.on_data(&v) {
-                        if let UiEvent::StreamDelta(ref d) = ev {
-                            answer.push_str(d);
-                        }
-                        send(ev);
+                    for event in norm.on_data(&v) {
+                        send(event);
                     }
                 }
             }
             history
                 .lock()
                 .unwrap()
-                .push(json!({"role": "assistant", "content": answer}));
+                .push(json!({"role": "assistant", "content": norm.answer().to_string()}));
         });
     }
 }
@@ -183,10 +232,12 @@ impl Runtime for LiveRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::UiEvent;
 
-    /// Feed a captured Anthropic SSE stream through the normalizer and assert it
-    /// produces the right event arc + priced cost — fully offline, no key/network.
+    /// Feed a captured Anthropic SSE stream through the normalizer and assert
+    /// it produces the right normalized event arc — fully offline, no
+    /// key/network. Adapted from the pre-assembly test: the normalizer now
+    /// emits kernel UIEvents and no longer computes f64 cost itself (the
+    /// usage event is priced exactly by `kernel::cost` downstream).
     #[test]
     fn normalizes_a_captured_stream() {
         let fixture = [
@@ -199,31 +250,45 @@ mod tests {
             r#"{"type":"message_stop"}"#,
         ];
 
-        let mut norm = SseNormalizer::new("claude-sonnet-4-5");
+        let mut norm = SseNormalizer::new("claude-sonnet-4-5", "live-01");
         let mut events = Vec::new();
         for line in fixture {
             let v: Value = serde_json::from_str(line).unwrap();
             events.extend(norm.on_data(&v));
         }
 
-        // Expected arc: StreamStart, two text deltas, StreamEnd, TurnComplete.
-        assert!(matches!(events[0], UiEvent::StreamStart));
+        // Expected arc: stream start, two text deltas, stream end, usage,
+        // prompt_complete carrying the full answer.
+        assert!(matches!(events[0], ev::UIEvent::StreamBlockStart(_)));
         let text: String = events
             .iter()
             .filter_map(|e| match e {
-                UiEvent::StreamDelta(d) => Some(d.clone()),
+                ev::UIEvent::StreamBlockDelta(d) => Some(d.text.clone()),
                 _ => None,
             })
             .collect();
         assert_eq!(text, "Hello, world");
-        assert!(matches!(events[events.len() - 2], UiEvent::StreamEnd));
-        match events.last().unwrap() {
-            UiEvent::TurnComplete { tokens, cost, .. } => {
-                assert_eq!(*tokens, 52); // 40 in + 12 out
-                // 40/1e6*3 + 12/1e6*15 = 0.00012 + 0.00018 = 0.0003
-                assert!((cost - 0.0003).abs() < 1e-9, "cost was {cost}");
-            }
-            other => panic!("expected TurnComplete, got {other:?}"),
-        }
+        assert!(matches!(events[events.len() - 3], ev::UIEvent::StreamBlockEnd(_)));
+        let ev::UIEvent::ProviderResponseUsage(usage) = &events[events.len() - 2] else {
+            panic!("expected usage, got {:?}", events[events.len() - 2]);
+        };
+        assert_eq!(usage.input_tokens, 40);
+        assert_eq!(usage.output_tokens, 12);
+        assert_eq!(usage.model, "claude-sonnet-4-5");
+        // Priced downstream via the ported kernel::cost fallback table —
+        // (40, 12, 0, 0, "claude-sonnet-4-5") → exactly $0.0003 (the same
+        // figure the old inline f64 math produced, now exact Decimal).
+        use crate::kernel::cost::CostTracker;
+        let mut tracker = CostTracker::new();
+        tracker.start_turn();
+        tracker.record(usage);
+        assert_eq!(
+            tracker.session_cost(),
+            rust_decimal::Decimal::from_str_exact("0.0003").unwrap()
+        );
+        let ev::UIEvent::PromptComplete(done) = events.last().unwrap() else {
+            panic!("expected prompt_complete, got {:?}", events.last());
+        };
+        assert_eq!(done.response, "Hello, world");
     }
 }
