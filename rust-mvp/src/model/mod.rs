@@ -1,5 +1,14 @@
 //! Pure domain state — mirrors the Python app's `model/` layer (no rendering here).
 
+pub mod config;
+pub mod evidence;
+pub mod formatting;
+pub mod injection;
+pub mod queues;
+pub mod redaction;
+pub mod terminal;
+pub mod trust;
+
 /// The five interaction modes, cycled with Shift+Tab (as in the real app).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {

@@ -25,14 +25,14 @@ Port order respects intra-layer deps: wave 1 = independent units; then turn → 
 
 | Unit | Python source | Python tests pinned | Status | Caveats |
 |---|---|---|---|---|
-| model/evidence | model/evidence.py | test_model_blocks.py (EvidenceLink uses) | todo | |
-| model/formatting | model/formatting.py | test_model_formatting.py | todo | |
-| model/trust | model/trust.py | test_model_modes_trust.py | todo | |
-| model/config | model/config.py | test_model_config.py | todo | |
-| model/injection | model/injection.py | test_model_injection.py | todo | |
-| model/redaction | model/redaction.py | test_model_redaction.py | todo | |
-| model/terminal | model/terminal.py | test_model_terminal.py | todo | |
-| model/queues | model/queues.py | test_model_turn_queues_lanes.py | todo | |
+| model/evidence | model/evidence.py | test_model_blocks.py (EvidenceLink uses) | verified | pydantic frozen/extra=forbid → serde deny_unknown_fields; direct construction cannot fail |
+| model/formatting | model/formatting.py | test_model_formatting.py | verified | round-half-even edges (9950, 999500, 1050) oracle-checked vs real Python |
+| model/trust | model/trust.py | test_model_modes_trust.py | verified | ValueError → Result<_, TrustValueError> (exact messages); casefold→to_lowercase (ASCII-identical); strings/thresholds oracle-checked |
+| model/config | model/config.py | test_model_config.py | verified | py_repr diverges from Python repr at extreme float magnitudes; typed diff equality (no True==1); underscore/unicode numeric literals parse as Str |
+| model/injection | model/injection.py | test_model_injection.py | verified | regex crate (no backtracking) oracle-diffed byte-for-byte on all pinned payloads; str/bytes/Display typed entry points; +regex dep |
+| model/redaction | model/redaction.py | test_model_redaction.py | verified | serde_json::Value instead of arbitrary objects; 23-case differential oracle matched byte-for-byte |
+| model/terminal | model/terminal.py | test_model_terminal.py | verified | duck-typed clamp → set_cols(i64)/set_cols_str; junk input falls back to 80 |
+| model/queues | model/queues.py | test_model_turn_queues_lanes.py | verified | ValueError/KeyError → QueueError w/ exact Python messages; listener closures → ListenerId; counts() HashMap unordered |
 | model/turn | model/turn.py | test_model_turn_queues_lanes.py | todo | needs formatting |
 | model/blocks | model/blocks.py | test_model_blocks.py | todo | needs evidence, turn |
 | model/modes | model/modes.py | test_model_modes_trust.py | todo | needs blocks |
@@ -125,4 +125,5 @@ Python backend behind `serve`.
 
 ## Log / caveats
 
+- 2026-07-26: wave 1 (8 independent model units, 7 worktree porters) integrated: 81 unit tests ported+green, clippy clean, full suite 86 passing. deps: +regex, +serde.
 - 2026-07-26: tracker created; rust-mvp baseline: 5 tests passing, clippy not yet part of gate.
