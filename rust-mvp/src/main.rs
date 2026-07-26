@@ -3,14 +3,17 @@
 //! analogue of the app-loop queue in `ui/app.py`.
 
 mod app;
+mod core_client;
 mod event;
 mod live;
 mod message;
 mod model;
+mod protocol;
 mod runtime;
 mod ui;
 
 use app::{App, TurnState};
+use core_client::CoreClientRuntime;
 use live::LiveRuntime;
 use runtime::Runtime;
 use crossterm::event as cterm;
@@ -30,21 +33,38 @@ fn main() -> io::Result<()> {
     spawn_input_reader(tx.clone());
     spawn_ticker(tx.clone());
 
-    // Runtime selection: `--demo` forces the scripted runtime; otherwise go live
-    // if a key is present, else fall back to demo with a notice.
-    let force_demo = std::env::args().any(|a| a == "--demo");
-    let (mut runtime, mut app): (Box<dyn Runtime>, App) = if force_demo {
+    // Runtime selection:
+    //   --demo    → scripted in-process DemoRuntime
+    //   --direct  → LiveRuntime (illustrative UI-calls-provider shortcut, not the
+    //               target architecture; falls back to demo without a key)
+    //   default   → CoreClientRuntime: client of a backend process over the
+    //               protocol (the canonical shape; drop-in for amplifier-core)
+    let args: Vec<String> = std::env::args().collect();
+    let (mut runtime, mut app): (Box<dyn Runtime>, App) = if args.iter().any(|a| a == "--demo") {
         (Box::new(DemoRuntime::new(tx.clone())), App::new("newtui", "demo-01"))
-    } else {
+    } else if args.iter().any(|a| a == "--direct") {
         match LiveRuntime::from_env(tx.clone()) {
             Ok(rt) => {
                 let mut app = App::new("newtui", "live-01");
-                app.notice = Some(format!("live · {}", rt.model()));
+                app.notice = Some(format!("direct · {}", rt.model()));
                 (Box::new(rt), app)
             }
             Err(_) => {
                 let mut app = App::new("newtui", "demo-01");
-                app.notice = Some("no ANTHROPIC_API_KEY — scripted demo (use --demo to silence)".into());
+                app.notice = Some("no ANTHROPIC_API_KEY — scripted demo".into());
+                (Box::new(DemoRuntime::new(tx.clone())), app)
+            }
+        }
+    } else {
+        match CoreClientRuntime::spawn(&backend_command(), tx.clone()) {
+            Ok(rt) => {
+                let mut app = App::new("newtui", "core-01");
+                app.notice = Some("core · via serve protocol".into());
+                (Box::new(rt), app)
+            }
+            Err(e) => {
+                let mut app = App::new("newtui", "demo-01");
+                app.notice = Some(format!("backend spawn failed ({e}) — scripted demo"));
                 (Box::new(DemoRuntime::new(tx.clone())), app)
             }
         }
@@ -112,10 +132,26 @@ fn handle_key(app: &mut App, runtime: &mut dyn Runtime, key: KeyEvent) {
             }
             KeyCode::Up => app.scroll = app.scroll.saturating_sub(1),
             KeyCode::Down => app.scroll = app.scroll.saturating_add(1),
-            KeyCode::Esc if app.state == TurnState::Running => { /* interrupt hook point */ }
+            KeyCode::Esc if app.state == TurnState::Running => runtime.interrupt(),
             _ => {}
         },
     }
+}
+
+/// The backend to spawn for the default (core-client) runtime. Overridable with
+/// `AMPLIFIER_SERVE_CMD`; defaults to this repo's Python `serve` shim, which in
+/// turn wraps amplifier-core's existing API (core untouched).
+fn backend_command() -> Vec<String> {
+    if let Ok(cmd) = std::env::var("AMPLIFIER_SERVE_CMD") {
+        let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+        if !parts.is_empty() {
+            return parts;
+        }
+    }
+    vec![
+        "python3".to_string(),
+        format!("{}/backend/serve_mock.py", env!("CARGO_MANIFEST_DIR")),
+    ]
 }
 
 fn spawn_input_reader(tx: Sender<Msg>) {

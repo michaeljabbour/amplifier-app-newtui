@@ -14,6 +14,7 @@ use std::time::Duration;
 pub trait Runtime {
     fn submit(&mut self, prompt: String);
     fn answer_approval(&mut self, _granted: bool) {}
+    fn interrupt(&mut self) {}
 }
 
 pub struct DemoRuntime {
