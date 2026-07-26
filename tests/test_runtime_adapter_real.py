@@ -119,6 +119,8 @@ class FakeRealRuntime:
         *,
         bundle: str | None,
         resume_id: str | None,
+        provider_override: str | None,
+        model_override: str | None,
         queue: Any,
         steering: Any,
         lane_steering: Any,
@@ -133,6 +135,8 @@ class FakeRealRuntime:
         self.kwargs: dict[str, Any] = {
             "bundle": bundle,
             "resume_id": resume_id,
+            "provider_override": provider_override,
+            "model_override": model_override,
             "queue": queue,
             "steering": steering,
             "lane_steering": lane_steering,

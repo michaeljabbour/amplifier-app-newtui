@@ -478,10 +478,21 @@ class RealRuntimeAdapter(RuntimeAdapter):
     with ``call_soon_threadsafe`` on the app loop.
     """
 
-    def __init__(self, *, bundle: str | None = None, resume_id: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        bundle: str | None = None,
+        resume_id: str | None = None,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+    ) -> None:
         super().__init__()
         self._bundle = bundle
         self._resume_id = resume_id
+        # Per-launch, ephemeral overrides threaded into RealRuntime's plan seam
+        # (never persisted): provider promotes/selects, model sets its default.
+        self._provider_override = provider_override
+        self._model_override = model_override
         self._runtime: Any = None
         self._presented: str | None = None
         self._app_loop: asyncio.AbstractEventLoop | None = None
@@ -550,6 +561,8 @@ class RealRuntimeAdapter(RuntimeAdapter):
             runtime = RealRuntime(
                 bundle=self._bundle,
                 resume_id=self._resume_id,
+                provider_override=self._provider_override,
+                model_override=self._model_override,
                 queue=_AppLoopQueue(self.queue, self._app_loop),  # type: ignore[arg-type]
                 steering=self.steering,
                 lane_steering=self.lane_steering,

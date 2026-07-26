@@ -34,7 +34,13 @@ from . import __version__
 
 
 async def _launch_tui(
-    *, demo: bool, bundle: str | None = None, resume_id: str | None = None
+    *,
+    demo: bool,
+    bundle: str | None = None,
+    resume_id: str | None = None,
+    mode: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> int:
     from .ui.app import NewTuiApp
     from .ui.term_probe import patch_legacy_alt_named_keys, probe_kitty_protocol
@@ -48,8 +54,16 @@ async def _launch_tui(
     else:
         from .ui.runtime_adapter import RealRuntimeAdapter
 
-        adapter = RealRuntimeAdapter(bundle=bundle, resume_id=resume_id)
-    app = NewTuiApp(adapter, kitty_protocol=probe_kitty_protocol())
+        # Per-invocation overrides ride the same ephemeral seam as ``run``:
+        # --provider/--model mutate only the resolved in-memory plan; --mode
+        # seeds the interaction posture. None of them touch a settings scope.
+        adapter = RealRuntimeAdapter(
+            bundle=bundle,
+            resume_id=resume_id,
+            provider_override=provider,
+            model_override=model,
+        )
+    app = NewTuiApp(adapter, kitty_protocol=probe_kitty_protocol(), initial_mode=mode)
     await app.run_async()
     return app.return_code or 0
 
@@ -234,6 +248,39 @@ def _resolve_run_prompt(prompt: str | None) -> str:
     raise click.UsageError("Prompt required (pass PROMPT or pipe content on stdin)")
 
 
+def _is_interactive_terminal() -> bool:
+    """True when both stdin and stdout are TTYs (a real interactive shell).
+
+    The single predicate for "can we take over the screen?" — used to decide
+    whether a bare ``run`` (no prompt, nothing piped) should launch the
+    full-screen TUI instead of erroring.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _validate_overrides(model: str | None, provider: str | None, mode: str | None) -> None:
+    """Guard the per-invocation ``--model``/``--provider``/``--mode`` overrides.
+
+    Shared by the headless ``run`` command and the interactive launcher so both
+    entry points enforce the same rules: ``--model`` without ``--provider`` is
+    ambiguous (which provider hosts it?) and refused early, and ``--mode`` must
+    name a real interaction mode rather than silently falling back to default.
+    Exits nonzero with a message on any violation (never returns an error).
+    """
+    from .model.modes import MODE_PROFILES
+
+    if model is not None and provider is None:
+        click.echo(
+            "Error: --model requires --provider (name the provider that hosts the model)",
+            err=True,
+        )
+        raise SystemExit(1)
+    if mode is not None and mode not in MODE_PROFILES:
+        valid = ", ".join(MODE_PROFILES)
+        click.echo(f"Error: unknown mode '{mode}' · valid modes: {valid}", err=True)
+        raise SystemExit(1)
+
+
 async def _first_run_gate() -> int | None:
     """Launch-time provider gate (app-cli's ``check_first_run`` wiring).
 
@@ -272,22 +319,82 @@ async def _first_run_gate() -> int | None:
     return 0
 
 
+def _interactive_launch(
+    *,
+    demo: bool,
+    bundle: str | None,
+    resume_id: str | None = None,
+    mode: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> int:
+    """Run the first-run provider gate (real sessions), then boot the TUI.
+
+    The single path every interactive entry point funnels through so the gate
+    and the per-invocation overrides stay consistent. Returns the process exit
+    code; ``--demo`` skips the gate (fully offline).
+    """
+    if not demo:
+        gate = asyncio.run(_first_run_gate())
+        if gate is not None:
+            return gate
+    return asyncio.run(
+        _launch_tui(
+            demo=demo,
+            bundle=bundle,
+            resume_id=resume_id,
+            mode=mode,
+            provider=provider,
+            model=model,
+        )
+    )
+
+
 @click.group(invoke_without_command=True)
 @click.option(
     "--demo", is_flag=True, help="Run the scripted DemoRuntime instead of a real session."
 )
 @click.option("--bundle", default=None, help="Bundle name or URI (default: settings/bundled).")
+@click.option(
+    "--provider",
+    "-p",
+    default=None,
+    help="Provider override for THIS launch only (not persisted to settings).",
+)
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model override for THIS launch only (requires --provider; not persisted).",
+)
+@click.option(
+    "--mode",
+    "mode",
+    default=None,
+    help="Interaction mode to start in (chat, plan, brainstorm, build, auto).",
+)
 @click.version_option(__version__, prog_name="amplifier-newtui")
 @click.pass_context
-def main(ctx: click.Context, demo: bool, bundle: str | None) -> None:
-    """Amplifier full-screen TUI (v3 Cohesive)."""
+def main(
+    ctx: click.Context,
+    demo: bool,
+    bundle: str | None,
+    provider: str | None,
+    model: str | None,
+    mode: str | None,
+) -> None:
+    """Amplifier full-screen TUI (v3 Cohesive).
+
+    ``--provider``/``--model`` override the resolved plan for THIS launch only
+    (never written to a settings scope); ``--mode`` seeds the interaction
+    posture the TUI opens in. Same ephemeral semantics as the ``run`` command.
+    """
     if ctx.invoked_subcommand is not None:
         return
-    if not demo:
-        gate = asyncio.run(_first_run_gate())
-        if gate is not None:
-            raise SystemExit(gate)
-    raise SystemExit(asyncio.run(_launch_tui(demo=demo, bundle=bundle)))
+    _validate_overrides(model, provider, mode)
+    raise SystemExit(
+        _interactive_launch(demo=demo, bundle=bundle, mode=mode, provider=provider, model=model)
+    )
 
 
 @main.command()
@@ -339,23 +446,15 @@ def run(
     ``--model``/``--provider`` override the resolved plan for THIS invocation
     only (never written to a settings scope); ``--mode`` seeds the interaction
     posture; ``--resume`` seeds the run from a stored session's context.
-    """
-    from .model.modes import MODE_PROFILES
 
-    # --model without --provider is ambiguous (which provider hosts it?) --
-    # match the reference CLI and refuse early (amplifier-app-cli run.py).
-    if model is not None and provider is None:
-        click.echo(
-            "Error: --model requires --provider (name the provider that hosts the model)",
-            err=True,
-        )
-        raise SystemExit(1)
-    # --mode must name a real interaction mode; unknown ids fail loud rather
-    # than silently falling back to the default posture.
-    if mode is not None and mode not in MODE_PROFILES:
-        valid = ", ".join(MODE_PROFILES)
-        click.echo(f"Error: unknown mode '{mode}' · valid modes: {valid}", err=True)
-        raise SystemExit(1)
+    With NO prompt on an interactive terminal (nothing piped, default text
+    output), ``run`` launches the full-screen TUI with these same overrides
+    instead of erroring — so ``run -p ... -m ... --mode chat`` opens a chat
+    session. Piped/non-interactive/JSON invocations stay prompt-required.
+    """
+    # Shared with the interactive launcher: --model requires --provider, and
+    # --mode must name a real interaction mode (both fail loud, nonzero exit).
+    _validate_overrides(model, provider, mode)
     # --resume resolves a (possibly partial) id to one stored session up front,
     # so an unknown/ambiguous id errors clearly before any boot work begins.
     resume_id: str | None = None
@@ -370,6 +469,21 @@ def run(
         except ValueError as error:
             click.echo(str(error), err=True)
             raise SystemExit(1) from None
+    # A bare `run` on a TTY (no prompt, nothing piped, plain text output) means
+    # "start a session" — boot the interactive TUI with the same overrides
+    # rather than refusing. Headless use (piped stdin, non-TTY, or a JSON
+    # output format) stays prompt-required so scripts fail loud as before.
+    if prompt is None and output_format == "text" and _is_interactive_terminal():
+        raise SystemExit(
+            _interactive_launch(
+                demo=False,
+                bundle=bundle,
+                resume_id=resume_id,
+                mode=mode,
+                provider=provider,
+                model=model,
+            )
+        )
     resolved_prompt = _resolve_run_prompt(prompt)
     raise SystemExit(
         asyncio.run(
