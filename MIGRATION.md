@@ -35,8 +35,8 @@ Port order respects intra-layer deps: wave 1 = independent units; then turn → 
 | model/queues | model/queues.py | test_model_turn_queues_lanes.py | verified | ValueError/KeyError → QueueError w/ exact Python messages; listener closures → ListenerId; counts() HashMap unordered |
 | model/turn | model/turn.py | test_model_turn_queues_lanes.py | verified | Decimal cost arithmetic via rust_decimal (banker's rounding oracle-pinned); pydantic Field(ge/le) runtime validation not replicated; trim_to → Result |
 | model/blocks | model/blocks.py | test_model_blocks.py | verified | TranscriptBlock = serde internally-tagged enum (exact `kind` literals); pydantic range validators approximated by unsigned types (upper bounds unchecked); frozen → immutability by convention; wire shape oracle-pinned vs model_dump_json |
-| model/modes | model/modes.py | test_model_modes_trust.py | todo | needs blocks |
-| model/lanes | model/lanes.py | test_model_turn_queues_lanes.py, test_model_lane_steering.py | todo | needs blocks |
+| model/modes | model/modes.py | test_model_modes_trust.py | verified | MODE_PROFILES dict → const table in cycle order; negative-modulo cycle wrap oracle-verified |
+| model/lanes | model/lanes.py | test_model_turn_queues_lanes.py, test_model_lane_steering.py | verified | kwargs → RegisterOptions/LaneUpdate structs; accessors return owned clones; Field(ge=0) via unsigned types; fuzzy routing + labels oracle-pinned (test_model_lane_steering.py targets queues unit, already ported) |
 | model/native_modes | model/native_modes.py | test_model_native_modes.py | todo | needs modes, trust |
 
 ## Layer 2 — kernel pure logic

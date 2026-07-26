@@ -5,6 +5,8 @@ pub mod config;
 pub mod evidence;
 pub mod formatting;
 pub mod injection;
+pub mod lanes;
+pub mod modes;
 pub mod queues;
 pub mod redaction;
 pub mod terminal;
