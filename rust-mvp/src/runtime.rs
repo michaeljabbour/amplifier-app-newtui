@@ -8,6 +8,14 @@ use std::sync::mpsc::{channel, Sender};
 use std::thread;
 use std::time::Duration;
 
+/// The runtime seam — the one interface the UI talks to. `DemoRuntime` (scripted)
+/// and `LiveRuntime` (real provider) both implement it, so the app is identical
+/// whether events come from a script, an HTTP stream, or (later) amplifier-core.
+pub trait Runtime {
+    fn submit(&mut self, prompt: String);
+    fn answer_approval(&mut self, _granted: bool) {}
+}
+
 pub struct DemoRuntime {
     tx: Sender<Msg>,
     /// Set each turn so the app can unblock a parked approval.
@@ -19,15 +27,8 @@ impl DemoRuntime {
         Self { tx, approval_tx: None }
     }
 
-    /// Answer the currently-parked approval (routes back into the worker thread).
-    pub fn answer_approval(&mut self, granted: bool) {
-        if let Some(tx) = self.approval_tx.take() {
-            let _ = tx.send(granted);
-        }
-    }
-
     /// Kick off a scripted turn for `prompt`.
-    pub fn submit(&mut self, prompt: String) {
+    fn run_turn(&mut self, prompt: String) {
         let tx = self.tx.clone();
         let (atx, arx) = channel::<bool>();
         self.approval_tx = Some(atx);
@@ -75,5 +76,17 @@ impl DemoRuntime {
             send(UiEvent::StreamEnd);
             send(UiEvent::TurnComplete { files: 1, added: 18, removed: 0, tokens: 1240, cost: 0.0123 });
         });
+    }
+}
+
+impl Runtime for DemoRuntime {
+    fn submit(&mut self, prompt: String) {
+        self.run_turn(prompt);
+    }
+    /// Answer the currently-parked approval (routes back into the worker thread).
+    fn answer_approval(&mut self, granted: bool) {
+        if let Some(tx) = self.approval_tx.take() {
+            let _ = tx.send(granted);
+        }
     }
 }

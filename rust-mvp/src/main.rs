@@ -4,12 +4,15 @@
 
 mod app;
 mod event;
+mod live;
 mod message;
 mod model;
 mod runtime;
 mod ui;
 
 use app::{App, TurnState};
+use live::LiveRuntime;
+use runtime::Runtime;
 use crossterm::event as cterm;
 use crossterm::event::{Event as CEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -27,16 +30,33 @@ fn main() -> io::Result<()> {
     spawn_input_reader(tx.clone());
     spawn_ticker(tx.clone());
 
-    let mut terminal = setup_terminal()?;
-    let mut app = App::new("newtui", "demo-01");
-    let mut runtime = DemoRuntime::new(tx.clone());
+    // Runtime selection: `--demo` forces the scripted runtime; otherwise go live
+    // if a key is present, else fall back to demo with a notice.
+    let force_demo = std::env::args().any(|a| a == "--demo");
+    let (mut runtime, mut app): (Box<dyn Runtime>, App) = if force_demo {
+        (Box::new(DemoRuntime::new(tx.clone())), App::new("newtui", "demo-01"))
+    } else {
+        match LiveRuntime::from_env(tx.clone()) {
+            Ok(rt) => {
+                let mut app = App::new("newtui", "live-01");
+                app.notice = Some(format!("live · {}", rt.model()));
+                (Box::new(rt), app)
+            }
+            Err(_) => {
+                let mut app = App::new("newtui", "demo-01");
+                app.notice = Some("no ANTHROPIC_API_KEY — scripted demo (use --demo to silence)".into());
+                (Box::new(DemoRuntime::new(tx.clone())), app)
+            }
+        }
+    };
 
+    let mut terminal = setup_terminal()?;
     terminal.draw(|f| ui::draw(f, &app))?;
 
     while let Ok(msg) = rx.recv() {
         match msg {
             Msg::Term(CEvent::Key(k)) if k.kind == KeyEventKind::Press => {
-                handle_key(&mut app, &mut runtime, k);
+                handle_key(&mut app, runtime.as_mut(), k);
             }
             Msg::Term(_) => {}
             Msg::Rt(ev) => app.on_event(ev),
@@ -51,7 +71,7 @@ fn main() -> io::Result<()> {
     restore_terminal(&mut terminal)
 }
 
-fn handle_key(app: &mut App, runtime: &mut DemoRuntime, key: KeyEvent) {
+fn handle_key(app: &mut App, runtime: &mut dyn Runtime, key: KeyEvent) {
     // Global quit.
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.should_quit = true;

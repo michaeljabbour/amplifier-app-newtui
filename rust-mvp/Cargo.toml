@@ -7,6 +7,8 @@ description = "Ratatui MVP of the Amplifier TUI experience — self-contained, n
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
+serde_json = "1"
+ureq = { version = "2", features = ["tls"] }
 
 [[bin]]
 name = "amplifier-newtui-rs"
