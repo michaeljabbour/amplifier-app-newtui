@@ -270,14 +270,20 @@ def _render_working_status(block: WorkingStatus, width: int) -> tuple[Line, ...]
             ),
         )
     # Single-agent pulse: the live activity tree beneath carries the ops
-    # (spec §3). Before any tool runs, fall back to the inline note
-    # (``thinking``) so the supervisor still sees the turn breathing.
+    # (spec §3). Before any tool runs, the reducer fills ``activity`` with
+    # the turn's liveness phase (``starting turn`` / ``waiting on model``
+    # / ``thinking``) so the validated silent stretches never read as a
+    # dead app; ``thinking`` remains the fallback for blocks minted with
+    # an empty note (scripted turns). Both apps share these labels
+    # verbatim (the mockup's ``1 agent`` fallback — which read as a
+    # spawned subagent when nothing was spawned — was retired for the
+    # same honest note the Rust app shows).
     pulse: list[Segment] = [Segment(text=f"{frame} ", style_token="orange")]
     pulse.extend(_shimmer_segments("working", block.motion_frame))
     if block.activity_lines:
         pulse.append(Segment(text=f" · {inner} · ", style_token="dim"))
     else:
-        note = block.activity or "1 agent"
+        note = block.activity or "thinking"
         pulse.append(Segment(text=f" · {inner} · {note} · ", style_token="dim"))
     pulse.append(
         Segment(

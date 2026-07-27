@@ -384,11 +384,15 @@ def test_working_label_shimmer_is_a_soft_multi_cell_band() -> None:
 
 
 def test_working_status_single_agent_exact() -> None:
-    # Single-agent turns always show '· 1 agent ·' (mockup runTurn line).
+    # Single-agent turns with an empty activity note show '· thinking ·' —
+    # an honest label for a turn with no activity yet (the mockup's
+    # '1 agent' read as a spawned subagent when nothing was spawned; the
+    # Rust app pins the identical string). Live turns feed the liveness
+    # phase notes through ``activity`` instead (see reducer tests).
     block = _blocks()["working"].model_copy(update={"agent_count": 1})
     line = render_block(block, 80)[0]
     assert line_plain(line) == (
-        "✳ working · 8s · ↓ 3.2k tok · 1 agent · esc to interrupt · type to steer"
+        "✳ working · 8s · ↓ 3.2k tok · thinking · esc to interrupt · type to steer"
     )
     assert render_block(block.model_copy(update={"agent_count": 0}), 80) == render_block(block, 80)
 

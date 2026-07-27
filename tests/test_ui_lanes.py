@@ -96,6 +96,28 @@ def test_lane_glyphs_and_colors_per_state() -> None:
     assert (running.glyph, running.color_token) == ("◐", "teal")
     assert (working.glyph, working.color_token) == ("■", "fg")
     assert (done.glyph, done.color_token) == ("✔", "dim")
+    # Booting reuses the running glyph (the §8 glyph set is closed).
+    booting = _record("s4", "a", "booting", "booting", 5, "0").lane
+    assert (booting.glyph, booting.color_token) == ("◐", "teal")
+
+
+def test_lane_booting_row_ends_at_elapsed_clock() -> None:
+    """A spawned-but-silent child renders ``booting · Ns`` with no zeroed
+    tokens/cost cells (which read as a hung agent), while sibling rows
+    keep the full telemetry format. Mirrored by the Rust suite
+    (ui/lanes_panel.rs test of the same name)."""
+    records = (
+        _record("s1", "researcher", "booting", "booting", 5, "0"),
+        _record("s2", "coder", "working", "migrating store", 124, "0.31", 48300),
+    )
+    lines = format_lane_lines(tuple(r.lane for r in records))
+    assert lines == (
+        "  ◐ researcher · booting         · 5s",
+        "  ■ coder      · migrating store · 2m 04s · ↓ 48.3k tokens · $0.31",
+    )
+    # A queued-steer badge still lands after the booting clock.
+    lines = format_lane_lines((records[0].lane,), queued_counts=(2,))
+    assert lines == ("  ◐ researcher · booting · 5s · ▸ 2 queued",)
 
 
 def test_empty_lanes_format_to_nothing() -> None:
