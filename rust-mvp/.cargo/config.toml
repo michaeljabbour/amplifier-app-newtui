@@ -1,4 +1,0 @@
-[alias]
-# `cargo demo` — scripted in-process demo (no backend, no network).
-demo = "run -- --demo"
-

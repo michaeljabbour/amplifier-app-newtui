@@ -1,5 +1,12 @@
 # Rust Migration Tracker
 
+> **MOVED (2026-07-27).** The Rust client no longer lives in this repo. `rust-mvp/` was
+> extracted into a standalone repo — `~/dev/amplifier-app-newtui-rust`, GitHub
+> [`michaeljabbour/amplifier-app-newtui-rust`](https://github.com/michaeljabbour/amplifier-app-newtui-rust)
+> (private) — with full history preserved via `git subtree split`. This file is frozen at
+> the split point; the ledger continues as `MIGRATION.md` in the new repo. The Rust client
+> finds this Python checkout via `AMPLIFIER_PY_CHECKOUT` or as a sibling directory.
+
 Incremental, verification-gated port of `amplifier-app-newtui` (Python/Textual) to Rust
 (ratatui) under `rust-mvp/`. Architecture: the Rust app is a pure protocol CLIENT of the
 existing Python `serve` backend (`amplifier-newtui serve`) over stdio JSON — the
@@ -207,6 +214,14 @@ both codebases' comments already claimed "thinking").
 
 ## Log / caveats
 
+- 2026-07-27: REPO SPLIT — rust-mvp/ extracted to the standalone repo
+  ~/dev/amplifier-app-newtui-rust (github michaeljabbour/amplifier-app-newtui-rust,
+  private), history preserved via `git subtree split` (37 commits). Cross-repo couplings
+  reworked there: the cost.py drift canary, the launcher's dev-checkout detection, and
+  the live serve e2e now resolve the Python checkout via AMPLIFIER_PY_CHECKOUT or the
+  sibling ../amplifier-app-newtui (loud skip / PATH fallthrough when absent). This repo's
+  Python suite has no rust-mvp dependency; kernel/serve.py remains the backend the Rust
+  client spawns. This tracker is frozen — the ledger continues in the new repo.
 - 2026-07-27: scaffolding purge (no mock/demo code on production paths). REMOVED from
   rust-mvp: src/live.rs + the `--direct` arm (the illustrative UI-calls-provider spike;
   its cost pin already covered by kernel::cost's suite), the silent fall-back-to-demo on
