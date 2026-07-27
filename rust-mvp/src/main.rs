@@ -46,8 +46,14 @@ fn main() -> io::Result<()> {
     //   default   → CoreClientRuntime: client of a backend process over the
     //               protocol (the canonical shape; drop-in for amplifier-core)
     let args: Vec<String> = std::env::args().collect();
+    // TUI-relevant launch flags (main.py's interactive/serve options):
+    // forwarded to the backend `serve` command; --mode also seeds the
+    // opening interaction posture.
+    let flags = parse_launch_flags(&args);
+    let initial_mode = flags.mode.clone();
+    let initial_mode = initial_mode.as_deref();
     let mut app = if args.iter().any(|a| a == "--demo" || a == "demo") {
-        demo_app(&tx, kitty_protocol)
+        demo_app(&tx, kitty_protocol, initial_mode)
     } else if args.iter().any(|a| a == "--direct") {
         match LiveRuntime::from_env(tx.clone()) {
             Ok(rt) => {
@@ -56,10 +62,10 @@ fn main() -> io::Result<()> {
                 adapter.base_mut().bundle_name = "newtui".into();
                 adapter.base_mut().model_name = model;
                 adapter.base_mut().session_short = live::LIVE_SESSION_ID.into();
-                App::new(Box::new(adapter), kitty_protocol, None, None)
+                App::new(Box::new(adapter), kitty_protocol, initial_mode, None)
             }
             Err(_) => {
-                let app = demo_app(&tx, kitty_protocol);
+                let app = demo_app(&tx, kitty_protocol, initial_mode);
                 app.ui
                     .borrow_mut()
                     .show_notice("no ANTHROPIC_API_KEY — scripted demo", None);
@@ -67,15 +73,24 @@ fn main() -> io::Result<()> {
             }
         }
     } else {
-        match CoreClientRuntime::spawn(&backend_command(), tx.clone()) {
-            Ok(rt) => App::new(
-                Box::new(ClientRuntimeAdapter::new(Box::new(rt))),
-                kitty_protocol,
-                None,
-                None,
-            ),
+        let env_cmd = std::env::var("AMPLIFIER_SERVE_CMD").ok();
+        let (cmd, fallback_notice) =
+            resolve_backend(env_cmd.as_deref(), repo_serve_root().as_deref(), &flags);
+        match CoreClientRuntime::spawn(&cmd, tx.clone()) {
+            Ok(rt) => {
+                let app = App::new(
+                    Box::new(ClientRuntimeAdapter::new(Box::new(rt))),
+                    kitty_protocol,
+                    initial_mode,
+                    None,
+                );
+                if let Some(notice) = fallback_notice {
+                    app.ui.borrow_mut().show_notice(&notice, None);
+                }
+                app
+            }
             Err(e) => {
-                let app = demo_app(&tx, kitty_protocol);
+                let app = demo_app(&tx, kitty_protocol, initial_mode);
                 app.ui
                     .borrow_mut()
                     .show_notice(&format!("backend spawn failed ({e}) — scripted demo"), None);
@@ -121,6 +136,7 @@ fn main() -> io::Result<()> {
                 app.handle_wire(ev);
             }
             Msg::BootChatter(line) => app.on_boot_chatter(&line),
+            Msg::BackendExited => app.on_backend_exited(),
             Msg::Tick => app.tick(),
         }
         if app.should_quit() {
@@ -130,7 +146,25 @@ fn main() -> io::Result<()> {
         flush_chrome(&mut terminal, &app)?;
     }
 
-    restore_terminal(&mut terminal)
+    restore_terminal(&mut terminal)?;
+    // Python `_print_resume_hint`: on TUI exit, echo how to get back into
+    // this session (skipped when no stored session id was learned).
+    if let Some(hint) = resume_hint(&app.resume_session_id()) {
+        println!("{hint}");
+    }
+    Ok(())
+}
+
+/// The exit farewell of main.py `_print_resume_hint`, verbatim: real
+/// sessions carry a stored id; demo sessions do not, so `None` skips it.
+fn resume_hint(session_id: &str) -> Option<String> {
+    if session_id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "resume this session: amplifier-newtui resume {session_id}\n\
+         list sessions:       amplifier-newtui sessions"
+    ))
 }
 
 /// Emit the native-terminal side effects the app parked this frame: the
@@ -179,10 +213,10 @@ impl PerfLog {
     }
 }
 
-fn demo_app(tx: &Sender<Msg>, kitty_protocol: bool) -> App {
+fn demo_app(tx: &Sender<Msg>, kitty_protocol: bool, initial_mode: Option<&str>) -> App {
     let wiring = Rc::new(RefCell::new(DemoWiring::new()));
     let adapter = DemoAdapter::new(Box::new(DemoRuntime::new(tx.clone())), Rc::clone(&wiring));
-    App::new(Box::new(adapter), kitty_protocol, None, Some(wiring))
+    App::new(Box::new(adapter), kitty_protocol, initial_mode, Some(wiring))
 }
 
 /// Crossterm key event → Textual chord name (the grammar the ported units
@@ -225,20 +259,108 @@ fn key_name(key: &KeyEvent) -> Option<String> {
     })
 }
 
-/// The backend to spawn for the default (core-client) runtime. Overridable with
-/// `AMPLIFIER_SERVE_CMD`; defaults to this repo's Python `serve` shim, which in
-/// turn wraps amplifier-core's existing API (core untouched).
-fn backend_command() -> Vec<String> {
-    if let Ok(cmd) = std::env::var("AMPLIFIER_SERVE_CMD") {
-        let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
-        if !parts.is_empty() {
-            return parts;
+/// The TUI-relevant launch flags of main.py's interactive group + `serve`
+/// subcommand: `--bundle`, `--provider`/`-p`, `--model`/`-m`, `--mode`, and
+/// `--resume <id>` (serve resolves the partial id itself). All are forwarded
+/// to the backend command; `--mode` also seeds the App's opening posture.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LaunchFlags {
+    bundle: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    mode: Option<String>,
+    resume: Option<String>,
+}
+
+/// Parse the launch flags out of `argv` (both `--flag value` and
+/// `--flag=value`, like click). Unknown args pass through untouched.
+fn parse_launch_flags(args: &[String]) -> LaunchFlags {
+    let mut flags = LaunchFlags::default();
+    let mut rest = args.iter().skip(1);
+    while let Some(arg) = rest.next() {
+        let (name, inline) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value.to_string())),
+            None => (arg.as_str(), None),
+        };
+        let slot = match name {
+            "--bundle" => &mut flags.bundle,
+            "--provider" | "-p" => &mut flags.provider,
+            "--model" | "-m" => &mut flags.model,
+            "--mode" => &mut flags.mode,
+            "--resume" => &mut flags.resume,
+            _ => continue,
+        };
+        *slot = inline.or_else(|| rest.next().cloned());
+    }
+    flags
+}
+
+/// The launch flags as backend `serve` arguments (long-form, click grammar).
+fn serve_flag_args(flags: &LaunchFlags) -> Vec<String> {
+    let mut args = Vec::new();
+    for (flag, value) in [
+        ("--bundle", &flags.bundle),
+        ("--provider", &flags.provider),
+        ("--model", &flags.model),
+        ("--mode", &flags.mode),
+        ("--resume", &flags.resume),
+    ] {
+        if let Some(value) = value {
+            args.push(flag.to_string());
+            args.push(value.clone());
         }
     }
-    vec![
-        "python3".to_string(),
-        format!("{}/backend/serve_mock.py", env!("CARGO_MANIFEST_DIR")),
-    ]
+    args
+}
+
+/// The repo root when this crate sits inside the amplifier-app-newtui
+/// checkout (`rust-mvp/` next to `src/amplifier_app_newtui/`) — the layout
+/// where the REAL `serve` backend is runnable via `uv run`.
+fn repo_serve_root() -> Option<std::path::PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent()?;
+    root.join("src/amplifier_app_newtui")
+        .is_dir()
+        .then(|| root.to_path_buf())
+}
+
+/// The backend to spawn for the default (core-client) runtime, with the
+/// launch flags appended, mirroring Python's launch order: an explicit
+/// `AMPLIFIER_SERVE_CMD` wins; otherwise the REAL `uv run amplifier-newtui
+/// serve` backend when the checkout is present (real session by default);
+/// otherwise the offline mock with an honest notice (second value).
+fn resolve_backend(
+    env_cmd: Option<&str>,
+    repo_root: Option<&std::path::Path>,
+    flags: &LaunchFlags,
+) -> (Vec<String>, Option<String>) {
+    if let Some(cmd) = env_cmd {
+        let mut parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+        if !parts.is_empty() {
+            parts.extend(serve_flag_args(flags));
+            return (parts, None);
+        }
+    }
+    if let Some(root) = repo_root {
+        // `--project` pins uv to the checkout while the session's project
+        // dir stays the user's cwd (the Python launcher's behavior).
+        let mut cmd = vec![
+            "uv".to_string(),
+            "run".to_string(),
+            "--project".to_string(),
+            root.display().to_string(),
+            "amplifier-newtui".to_string(),
+            "serve".to_string(),
+        ];
+        cmd.extend(serve_flag_args(flags));
+        return (cmd, None);
+    }
+    (
+        vec![
+            "python3".to_string(),
+            format!("{}/backend/serve_mock.py", env!("CARGO_MANIFEST_DIR")),
+        ],
+        Some("no amplifier-newtui checkout — offline mock backend (scripted turn)".to_string()),
+    )
 }
 
 fn spawn_input_reader(tx: Sender<Msg>) {
@@ -972,7 +1094,7 @@ status body, wired it into the router, and covered it with a test.";
     #[test]
     fn test_flow_demo_scripted_turn_end_to_end() {
         let (tx, rx) = channel::<Msg>();
-        let mut app = demo_app(&tx, true);
+        let mut app = demo_app(&tx, true, None);
         app.boot();
         app.on_resize(100, 32);
         assert!(app.ui.borrow().splash.is_none(), "demo identity known at boot");
@@ -1445,6 +1567,233 @@ status body, wired it into the router, and covered it with a test.";
             model: "claude-sonnet-4-5".into(),
         });
         assert!(app.ui.borrow().splash.is_none(), "identity dissolves the splash");
+    }
+
+    // ------------------------------------------------------------------
+    // Launch surface + serve-error/boot-failure plumbing.
+    // ------------------------------------------------------------------
+
+    /// A protocol-boot app: no identity yet, splash up (the state a real
+    /// `serve` spawn is in until `session.started` lands).
+    fn boot_pending_app() -> App {
+        let ops = Rc::new(RefCell::new(Vec::new()));
+        let mut adapter = TestAdapter::new(ops);
+        adapter.base.session_short = String::new();
+        let mut app = App::new(Box::new(adapter), true, None, None);
+        app.boot();
+        app.on_resize(140, 32);
+        assert!(app.ui.borrow().splash.is_some(), "splash up while booting");
+        app
+    }
+
+    /// Python `announce_boot_failure`'s exact hint line.
+    const DOCTOR_HINT: &str = "Check provider setup with `amplifier-newtui doctor`, or run \
+`--demo` for a credential-free UI. Press ctrl+d to quit.";
+
+    /// The rendered frame with all wrapping/padding whitespace collapsed —
+    /// exact-string asserts over lines the terminal width may wrap.
+    fn flat_text(app: &App) -> String {
+        draw_text(app, 140, 32)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    // Adapts tests/test_interactive_launch.py::test_app_seeds_initial_mode:
+    // `--mode plan` seeds the opening posture through App::new.
+    #[test]
+    fn test_app_seeds_initial_mode() {
+        let ops = Rc::new(RefCell::new(Vec::new()));
+        let app = App::new(Box::new(TestAdapter::new(ops)), true, Some("plan"), None);
+        assert_eq!(app.ui.borrow().mode.id.as_str(), "plan");
+        assert!(app.ui.borrow().composer.has_class("mode-plan"));
+    }
+
+    // Adapts tests/test_interactive_launch.py::test_app_defaults_to_auto_
+    // without_initial_mode.
+    #[test]
+    fn test_app_defaults_to_auto_without_initial_mode() {
+        let ops = Rc::new(RefCell::new(Vec::new()));
+        let app = App::new(Box::new(TestAdapter::new(ops)), true, None, None);
+        assert_eq!(app.ui.borrow().mode.id.as_str(), "auto");
+    }
+
+    /// Pure flag→backend-args assembly: click grammar in (`--flag value`,
+    /// `--flag=value`, short `-p`/`-m`), serve argv out, launch order
+    /// env-override → real serve (repo layout) → mock + honest notice.
+    #[test]
+    fn test_launch_flags_assemble_backend_command() {
+        let argv: Vec<String> = [
+            "amplifier-newtui-rs",
+            "--bundle",
+            "newtui",
+            "-p",
+            "anthropic",
+            "-m",
+            "claude-x",
+            "--mode=plan",
+            "--resume",
+            "core-0123",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let flags = parse_launch_flags(&argv);
+        assert_eq!(
+            flags,
+            LaunchFlags {
+                bundle: Some("newtui".into()),
+                provider: Some("anthropic".into()),
+                model: Some("claude-x".into()),
+                mode: Some("plan".into()),
+                resume: Some("core-0123".into()),
+            }
+        );
+        let forwarded = [
+            "--bundle", "newtui", "--provider", "anthropic", "--model", "claude-x", "--mode",
+            "plan", "--resume", "core-0123",
+        ];
+
+        // AMPLIFIER_SERVE_CMD wins, with the flags appended to it too.
+        let (cmd, notice) =
+            resolve_backend(Some("uv run amplifier-newtui serve"), None, &flags);
+        let expected: Vec<&str> = ["uv", "run", "amplifier-newtui", "serve"]
+            .into_iter()
+            .chain(forwarded)
+            .collect();
+        assert_eq!(cmd, expected);
+        assert!(notice.is_none());
+
+        // Repo layout → the REAL serve backend by default (uv --project).
+        let (cmd, notice) =
+            resolve_backend(None, Some(std::path::Path::new("/checkout")), &flags);
+        let expected: Vec<&str> =
+            ["uv", "run", "--project", "/checkout", "amplifier-newtui", "serve"]
+                .into_iter()
+                .chain(forwarded)
+                .collect();
+        assert_eq!(cmd, expected);
+        assert!(notice.is_none());
+
+        // No checkout → the offline mock, honestly labeled.
+        let (cmd, notice) = resolve_backend(None, None, &LaunchFlags::default());
+        assert_eq!(cmd[0], "python3");
+        assert!(cmd[1].ends_with("backend/serve_mock.py"), "mock fallback: {cmd:?}");
+        assert!(
+            notice.as_deref().is_some_and(|n| n.contains("mock")),
+            "fallback carries an honest notice: {notice:?}"
+        );
+    }
+
+    // The serve boot-failure record (`{"type":"error",...}` before
+    // session.started, exit 1) dismisses the splash immediately and renders
+    // announce_boot_failure's exact diagnosis + doctor hint + notice.
+    #[test]
+    fn test_boot_error_record_dismisses_splash_with_exact_diagnosis() {
+        let mut app = boot_pending_app();
+        app.handle_wire(WireEvent::Error {
+            error: "no provider configured".into(),
+            error_type: "RuntimeError".into(),
+        });
+        assert!(app.ui.borrow().splash.is_none(), "splash dismissed immediately");
+        assert_eq!(app.ui.borrow().notices.current(), Some("session failed to start"));
+        let text = flat_text(&app);
+        assert!(
+            text.contains("⊘ session failed to start · no provider configured"),
+            "diagnosis line:\n{text}"
+        );
+        assert!(text.contains(DOCTOR_HINT), "doctor hint:\n{text}");
+
+        // A blank error message falls back to the exception type (Python
+        // `str(error).strip() or error.__class__.__name__`).
+        let mut app = boot_pending_app();
+        app.handle_wire(WireEvent::Error {
+            error: "  ".into(),
+            error_type: "ProviderAuthError".into(),
+        });
+        let text = flat_text(&app);
+        assert!(
+            text.contains("⊘ session failed to start · ProviderAuthError"),
+            "error_type fallback:\n{text}"
+        );
+    }
+
+    // Backend stdout EOF before session.started (crash without a structured
+    // record — the old failure mode left the splash hanging forever) runs
+    // the same boot-failure diagnosis.
+    #[test]
+    fn test_backend_eof_before_identity_runs_boot_failure_diagnosis() {
+        let mut app = boot_pending_app();
+        app.on_backend_exited();
+        assert!(app.ui.borrow().splash.is_none(), "splash dismissed");
+        assert_eq!(app.ui.borrow().notices.current(), Some("session failed to start"));
+        let text = flat_text(&app);
+        assert!(
+            text.contains("⊘ session failed to start · backend exited before session.started"),
+            "EOF diagnosis:\n{text}"
+        );
+        assert!(text.contains(DOCTOR_HINT), "doctor hint:\n{text}");
+
+        // The failed backend's EOF trails its own error record: the
+        // rendered diagnosis must not be clobbered by a second notice.
+        let mut app = boot_pending_app();
+        app.handle_wire(WireEvent::Error {
+            error: "boom".into(),
+            error_type: "RuntimeError".into(),
+        });
+        app.on_backend_exited();
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("session failed to start"),
+            "error-record diagnosis stays"
+        );
+    }
+
+    // Mid-session paths: a failed turn surfaces Python's exact
+    // `turn failed · <error>` notice (`_submit_prompt`'s except-arm — the
+    // session stays live); a backend exit after identity says so honestly.
+    #[test]
+    fn test_midsession_error_and_backend_exit_notices() {
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("add a health check"));
+        app.handle_wire(WireEvent::Error {
+            error: "provider auth expired".into(),
+            error_type: "APIStatusError".into(),
+        });
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("turn failed · provider auth expired")
+        );
+        assert!(app.ui.borrow().splash.is_none(), "no boot diagnosis mid-turn");
+
+        app.on_backend_exited();
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("backend exited · session lost — ctrl+d to quit")
+        );
+    }
+
+    // Python `_print_resume_hint`: a real session id learned from
+    // session.started prints the exact two-line farewell; demo/unstarted
+    // sessions (no stored id) print nothing.
+    #[test]
+    fn test_resume_hint_exact_text_after_session_started() {
+        let mut app = boot_pending_app();
+        assert_eq!(app.resume_session_id(), "");
+        assert_eq!(resume_hint(&app.resume_session_id()), None, "no id · no hint");
+        app.handle_wire(WireEvent::SessionStarted {
+            session_id: "core-0123456789abcdef".into(),
+            bundle: "newtui".into(),
+            model: "claude-sonnet-4-5".into(),
+        });
+        assert_eq!(app.resume_session_id(), "core-0123456789abcdef", "FULL id kept");
+        assert_eq!(
+            resume_hint(&app.resume_session_id()).as_deref(),
+            Some(
+                "resume this session: amplifier-newtui resume core-0123456789abcdef\n\
+                 list sessions:       amplifier-newtui sessions"
+            )
+        );
     }
 
     /// Prints a real rendered frame (run: `cargo test -- --nocapture snapshot`).

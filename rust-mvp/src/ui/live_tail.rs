@@ -1014,6 +1014,92 @@ mod tests {
         );
     }
 
+    // -- answer markdown (tests/test_ui_transcript_render.py::TestAnswerMarkdown:
+    //    real-model block markdown must not leak raw — user report) --------------
+
+    /// Joined span text, split back into lines (the Python `_lines` helper).
+    fn lines_of(source: &str) -> Vec<String> {
+        answer_spans(source)
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>()
+            .split('\n')
+            .map(str::to_string)
+            .collect()
+    }
+
+    // Python: TestAnswerMarkdown::test_plain_text_round_trips
+    #[test]
+    fn test_plain_text_round_trips() {
+        let source = "Session store refactor is in: history durable, tests pass.\nSecond line.";
+        let text: String = answer_spans(source)
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect();
+        assert_eq!(text, source);
+    }
+
+    // Python: TestAnswerMarkdown::test_heading_strips_hashes_and_renders_bright_bold
+    #[test]
+    fn test_heading_strips_hashes_and_renders_bright_bold() {
+        let spans = answer_spans("## Third-party libraries");
+        assert_eq!(spans[0].text, "Third-party libraries");
+        assert_eq!(spans[0].style_token, StyleToken::Bright);
+        assert!(spans[0].bold);
+    }
+
+    // Python: TestAnswerMarkdown::test_pipe_table_aligns_columns_and_drops_separator
+    #[test]
+    fn test_pipe_table_aligns_columns_and_drops_separator() {
+        let source = "| Dependency | Notes |\n\
+                      |---|---|\n\
+                      | **core** | The kernel |\n\
+                      | foundation | Bundle layer |";
+        let lines = lines_of(source);
+        assert_eq!(lines[0], "Dependency │ Notes       ");
+        assert_eq!(lines[1], "───────────┼─────────────");
+        assert_eq!(lines[2], "core       │ The kernel  ");
+        assert_eq!(lines[3], "foundation │ Bundle layer");
+    }
+
+    // Python: TestAnswerMarkdown::test_wide_table_falls_back_to_definition_list
+    // (padded grids shred when cells exceed the terminal width — user
+    // screenshot: the /about run's Piece/Location table)
+    #[test]
+    fn test_wide_table_falls_back_to_definition_list() {
+        let long_a = format!(
+            "about_info() -> tuple[str, str, str, str] protocol action {}",
+            "x".repeat(60)
+        );
+        let long_b = format!("commands/registry.py (after copy_answer) {}", "y".repeat(60));
+        let source = format!("| Piece | Location |\n|---|---|\n| {long_a} | {long_b} |");
+        let text: String = answer_spans(&source)
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect();
+        assert!(!text.contains('│')); // no grid separators
+        assert!(text.contains("  Piece: ") && text.contains("  Location: "));
+        assert!(text.contains(&long_a) && text.contains(&long_b));
+        // Narrow tables keep the aligned grid.
+        let narrow = "| a | b |\n|---|---|\n| 1 | 2 |";
+        let grid: String = answer_spans(narrow)
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect();
+        assert!(grid.contains('│'));
+    }
+
+    // Python: TestAnswerMarkdown::test_heading_is_preceded_by_a_blank_line
+    #[test]
+    fn test_heading_is_preceded_by_a_blank_line() {
+        let lines = lines_of("Intro paragraph.\n## Section\nBody text.");
+        let idx = lines
+            .iter()
+            .position(|line| line == "Section")
+            .expect("the heading line renders");
+        assert_eq!(lines[idx - 1], ""); // blank line separates the heading
+    }
+
     // Python: test_visible_length_holds_back_trailing_table
     #[test]
     fn test_visible_length_holds_back_trailing_table() {

@@ -19,14 +19,20 @@
 //! What does NOT port (Textual/asyncio app-assembly mechanics, wired at
 //! app-assembly time instead):
 //! - `DemoRuntimeAdapter.start/submit/submit_queued/interrupt` — they
-//!   drive the asyncio `DemoRuntime` on the adapter's event queue.
+//!   drive the asyncio `DemoRuntime` on the adapter's event queue. The
+//!   event-producing turn scripts themselves ARE ported: see
+//!   [`crate::runtime::DemoScript`] (`kernel/demo.py`'s `DemoRuntime`).
 //! - the approval future plumbing (`_approve`/`answer_approval` ticket
 //!   futures) — only the pure `Deny → build-denied close-out` flag is
 //!   kept ([`DemoWiring::record_approval_choice`]).
 //! - `_consume_steer` / `_current_mode` (steering + live-mode hooks) and
 //!   the `/config` snapshot (`default_config_state`).
-//! - the esc-interrupt close-out (`DemoRuntime.interrupted_close` /
-//!   `interrupted_spec`) — owned by the unported runtime script.
+//!
+//! The esc-interrupt close-out ports here as [`interrupted_spec`]; the
+//! playing runtime records the live close-out on
+//! [`crate::runtime::DemoScript::interrupted_close`] and the adapter
+//! bridges it into [`DemoWiring::set_interrupted_close`] (Python
+//! `turn_spec` reads `self._runtime.interrupted_close`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -64,6 +70,15 @@ pub const DEMO_BANNER: (&str, &str) = (
 pub fn demo_session_cost_start() -> Decimal {
     Decimal::new(57, 2)
 }
+
+/// Persistent cached prefix (system prompt + memory files + tool defs)
+/// every demo provider call reads back — carried as `cache_read` on each
+/// usage event so `/context` shows the mockup's populated memory bucket
+/// (Python `DEMO_MEMORY_TOKENS`).
+pub const DEMO_MEMORY_TOKENS: i64 = 8_000;
+
+/// The verbatim broker options (Python `APPROVAL_OPTIONS`).
+pub const APPROVAL_OPTIONS: [&str; 3] = ["Allow once", "Allow always", "Deny"];
 
 /// Python `TurnKey = Literal["seed", "build", "auto", "plan", "brainstorm",
 /// "agents"]`.
@@ -188,42 +203,106 @@ pub fn build_answer(denied: bool) -> String {
 }
 
 // --------------------------------------------------------------------------
-// Script data (kernel/demo.py, mockup verbatim strings — the slice the
-// wiring's data hooks serve; runtime-script narrations stay unported)
+// Script data (kernel/demo.py, mockup verbatim strings — served both by the
+// wiring's data hooks and by the ported turn scripts in `crate::runtime`)
 // --------------------------------------------------------------------------
 
 pub const SEED_PROMPT: &str = "explain what this repo is in simple terms";
+pub const SEED_NARRATION: &str =
+    "Reading the repo layout and entry points to ground the summary.";
+pub const SEED_COMMANDS: [&str; 2] = ["ls -la", "cat pyproject.toml | head -40"];
+pub const SEED_TOOL_BODY: &str = "$ ls -la && cat pyproject.toml | head -40";
 pub const SEED_ANSWER: &str = "This repo is the **command-line app for Amplifier**. If amplifier-core is \
      the engine, this is the dashboard and steering wheel: the `amplifier` \
      command starts sessions, configures providers, loads bundles, and renders \
      this UI.";
 
+pub const STORE_PLAN_TITLE: &str = "Refactor session store";
+pub const STORE_STEPS: [&str; 3] = [
+    "Audit persistence paths",
+    "Migrate history to durable store",
+    "Verify and push",
+];
+pub const STORE_NARRATIONS: [&str; 3] = [
+    "Mapping every read and write against the current session store.",
+    "History paths found in three modules. Moving them behind one durable interface.",
+    "Tests green. Preparing the push.",
+];
+pub const STORE_COMMANDS: [&str; 3] = [
+    "grep -rn \"session_store\" amplifier/ | head -12",
+    "uv run pytest tests/store/ -q",
+    "git push origin mj/durable-store",
+];
+
 pub const BUILD_PROMPT: &str = "refactor the session store so history is durable offline and online";
+pub const PYTEST_APPROVAL_PROMPT: &str = "Run uv run pytest tests/store/ -q?";
 pub const BUILD_RECAP: &str = "Goal: durable session store. Next: open PR against main.";
 pub const BUILD_END_NOTICE: &str = "agents 1 done";
+pub const DENY_REASON: &str = "denied by user";
+pub const DENY_CONTINUATION: &str = "continuing without test run";
+/// Mockup deny line: `⊘ blocked · uv run pytest · denied by user ·
+/// continuing without test run`.
+pub const DENY_BLOCKED_CMD: &str = "uv run pytest";
 
 pub const AUTO_PROMPT: &str = "refactor the session store and push it up";
 pub const AUTO_MODE_NOTICE: &str = "mode auto · auto read,write · asks if risky";
+pub const FORCE_PUSH_COMMAND: &str = "git push --force origin main";
+pub const AUTO_BLOCK_REASON: &str = "outside user authorization";
+pub const AUTO_BLOCK_CONTINUATION: &str = "finding safer path";
+pub const AUTO_DEFER_NARRATION: &str =
+    "Force-push denied. Branch push also crosses the trust boundary; deferring \
+     the decision and finishing local verification.";
+pub const AUTO_DEFER_NOTICE: &str = "decision deferred to queue · run continues";
 pub const AUTO_ANSWER: &str = "Store refactor complete and verified locally: history behind one durable \
      interface, tests green. The push crossed the trust boundary, so it is \
      waiting in your decision queue.";
 pub const AUTO_RECAP: &str =
     "Goal: durable session store. Next: answer the deferred push decision (ctrl-y).";
 
+/// Mockup interrupt close-out: `✳ ` dimmer + this text dim italic.
+pub const INTERRUPTED_RECAP: &str =
+    "Interrupted. Goal: durable session store. Context saved; resume or restate direction.";
+
 pub const PLAN_PROMPT: &str = "how should we make session history durable?";
 pub const PLAN_MODE_NOTICE: &str = "mode plan · read-only";
+pub const PLAN_NARRATION: &str = "Reading the store modules — plan mode, no writes.";
+pub const PLAN_TITLE: &str = "Proposed plan · durable session history";
+pub const PLAN_STEPS: [&str; 3] = [
+    "Extract a SessionStore interface from the three call sites",
+    "Back it with sqlite + journal replay",
+    "Migrate history lazily on first read",
+];
 pub const PLAN_RECAP: &str = "Plan ready. shift+tab to build hands it over for execution.";
 pub const PLAN_END_NOTICE: &str = "plan mode: read-only · plan handed to build on mode switch";
 
 pub const BRAINSTORM_PROMPT: &str = "how might we make long agent runs feel supervised?";
 pub const BRAINSTORM_MODE_NOTICE: &str = "mode brainstorm · no tools";
+pub const BRAINSTORM_NARRATION: &str =
+    "No tools in brainstorm — pure divergence, cheapest turn there is.";
+pub const BRAINSTORM_IDEAS: [&str; 4] = [
+    "1 Ambient tab color: orange while running, red when a decision waits",
+    "2 A \"confidence strip\" under the plan: what the agent would bet on each step",
+    "3 Turn rules as a film strip — scrub the session like a timeline",
+    "4 Steer suggestions: the agent drafts the correction it suspects you want",
+];
 pub const BRAINSTORM_RECAP: &str = "Converge with /plan when one of these sticks.";
 
 pub const AGENTS_PROMPT: &str = "run the DTU reality check across provider docs, store, and tests";
 pub const AGENTS_MODE_NOTICE: &str = "mode build · auto read,test · ask write,net,spend";
+pub const AGENTS_NARRATION: &str =
+    "Fanning out: researcher, coder, tester. Lanes above the composer track each one.";
 pub const AGENTS_ANSWER: &str = "Reality check passed: provider docs match runtime behavior, store migration \
      verified, 41 tests green across three parallel agents.";
 pub const AGENTS_END_NOTICE: &str = "agents 3 done · click a lane to inspect its transcript";
+
+/// Scripted plan for the agents turn — feeds the plan panel (Phase 1) and
+/// the delegate summary's `Plan 4/4` fold (Phase 2).
+pub const AGENTS_PLAN_STEPS: [&str; 4] = [
+    "scan provider docs",
+    "migrate session store",
+    "run store tests",
+    "synthesize findings",
+];
 
 // --------------------------------------------------------------------------
 // Exported structured data: lanes, evidence, deferred decision
@@ -650,6 +729,38 @@ pub fn build_denied_spec() -> DemoTurnSpec {
     }
 }
 
+/// Close-out for an esc-interrupted demo turn (Python `interrupted_spec`).
+///
+/// Mockup `runTurn`: the rule is `tele + " · interrupted"` where `tele`
+/// uses the *actual* elapsed secs/toks at the break and `turnCost = 0.04 +
+/// secs * 0.01`; the checkpoint is labeled `<stem> · interrupted` and
+/// nothing ships.
+pub fn interrupted_spec(key: TurnKey, secs: i64, tokens: u64) -> DemoTurnSpec {
+    let base = demo_turn_by_key(key);
+    let cost = store_turn_cost(secs);
+    // Python `checkpoint_label.rsplit(" · ", 1)[0]`.
+    let stem = base
+        .checkpoint_label
+        .rsplit_once(" · ")
+        .map(|(stem, _)| stem)
+        .unwrap_or(&base.checkpoint_label);
+    DemoTurnSpec {
+        duration_ms: secs * 1000,
+        secs_text: format!("{secs}s"),
+        tokens,
+        cost,
+        cost_after: base.cost_after - base.cost + cost,
+        outcome: "interrupted".to_string(),
+        shipped: false,
+        rule_label: rule_label(&format!("{secs}s"), tokens, base.cached_pct, cost, "interrupted"),
+        checkpoint_label: format!("{stem} · interrupted"),
+        answer: None,
+        recap: Some(INTERRUPTED_RECAP.to_string()),
+        end_notice: None,
+        ..base.clone()
+    }
+}
+
 // --------------------------------------------------------------------------
 // demo_wiring.py: panel-line parsing → LaneSeed
 // --------------------------------------------------------------------------
@@ -799,6 +910,12 @@ pub struct DemoWiring {
     /// (Python `_prompt_alias`).
     prompt_alias: HashMap<String, TurnKey>,
     build_denied: bool,
+    /// The live-telemetry close-out of an esc-interrupted turn (Python
+    /// adapter `turn_spec` reads `self._runtime.interrupted_close`): the
+    /// playing runtime records it ([`crate::runtime::DemoScript`]), the
+    /// adapter bridges it here. Cleared at the next submit (the runtime
+    /// clears its copy at the next turn start).
+    interrupted_close: Option<DemoTurnSpec>,
 }
 
 impl DemoWiring {
@@ -837,9 +954,19 @@ impl DemoWiring {
             // one build run must not leak into a later rerun's close-out.
             self.build_denied = false;
         }
+        // Python `DemoRuntime._begin_turn` clears `interrupted_close` when
+        // the next turn starts; the submit boundary is that turn start.
+        self.interrupted_close = None;
         self.played.insert(key);
         self.prompt_alias.insert(text.to_string(), key);
         key
+    }
+
+    /// Bridge for the runtime's esc-interrupt close-out (Python adapter
+    /// `turn_spec` reads `self._runtime.interrupted_close` live; here the
+    /// adapter copies it over when the cancelled turn settles).
+    pub fn set_interrupted_close(&mut self, close: Option<DemoTurnSpec>) {
+        self.interrupted_close = close;
     }
 
     /// Python `answer_approval`'s pure part: `Deny` on the pytest ticket
@@ -850,8 +977,9 @@ impl DemoWiring {
         }
     }
 
-    /// Python `turn_spec` — minus the esc-interrupt close-out override,
-    /// which lives in the unported `DemoRuntime.interrupted_close`.
+    /// Python `turn_spec`: verbatim/aliased spec, overridden by the
+    /// esc-interrupt close-out for that same turn, then by the build-deny
+    /// close-out.
     pub fn turn_spec(&self, prompt: &str) -> Option<DemoTurnSpec> {
         let text = prompt.trim();
         let spec = demo_turns()
@@ -862,6 +990,11 @@ impl DemoWiring {
                 // userLine(text)); resolve it back to the scripted spec.
                 self.prompt_alias.get(text).map(|key| demo_turn_by_key(*key))
             })?;
+        if let Some(interrupted) = &self.interrupted_close {
+            if interrupted.key == spec.key {
+                return Some(interrupted.clone());
+            }
+        }
         if spec.key == TurnKey::Build && self.build_denied {
             return Some(build_denied_spec());
         }
@@ -1099,6 +1232,65 @@ mod tests {
             )
         );
         assert!(denied.shipped);
+    }
+
+    /// Oracle check (not a pinned pytest case): `interrupted_spec` output
+    /// for a store key and a non-store key, verified against the real
+    /// Python `kernel.demo.interrupted_spec`.
+    #[test]
+    fn oracle_interrupted_spec_matches_python() {
+        // Esc during the build turn's first command: 2 virtual seconds,
+        // two ticks (608 + 439) consumed.
+        let build = interrupted_spec(TurnKey::Build, 2, 1_047);
+        assert_eq!(build.secs_text, "2s");
+        assert_eq!(build.duration_ms, 2_000);
+        assert_eq!(build.tokens, 1_047);
+        assert_eq!(build.cost, dec("0.06"));
+        assert_eq!(build.cost_after, dec("0.63"));
+        assert_eq!(build.outcome, "interrupted");
+        assert!(!build.shipped);
+        assert_eq!(build.rule_label, "2s · 1.0k tok, 88% cached · $0.06 · interrupted");
+        assert_eq!(build.checkpoint_label, "store refactor · interrupted");
+        assert_eq!(build.checkpoint_id, "t2");
+        assert_eq!(build.answer, None);
+        assert_eq!(build.recap.as_deref(), Some(INTERRUPTED_RECAP));
+        assert_eq!(build.end_notice, None);
+        // Non-store keys reuse the same close-out formula (spec §11).
+        let plan = interrupted_spec(TurnKey::Plan, 2, 800);
+        assert_eq!(plan.cost_after, dec("0.89"));
+        assert_eq!(plan.rule_label, "2s · 0.8k tok, 93% cached · $0.06 · interrupted");
+        assert_eq!(plan.checkpoint_label, "durable-history plan · interrupted");
+        assert_eq!(plan.mode, "plan");
+        assert_eq!(plan.mode_notice.as_deref(), Some(PLAN_MODE_NOTICE));
+        assert_eq!(plan.checkpoint_id, "t4");
+    }
+
+    /// Oracle check (not a pinned pytest case): the adapter `turn_spec`
+    /// serves the runtime's interrupted close-out when its key matches the
+    /// prompt's turn, and the next submit clears it (Python `turn_spec`
+    /// reads `self._runtime.interrupted_close`; `_begin_turn` clears it).
+    #[test]
+    fn oracle_turn_spec_serves_interrupted_close_for_matching_key() {
+        let mut wiring = DemoWiring::new();
+        wiring.mark_seed_played();
+        wiring.record_submit(BUILD_PROMPT);
+        let close = interrupted_spec(TurnKey::Build, 2, 1_047);
+        wiring.set_interrupted_close(Some(close.clone()));
+        assert_eq!(wiring.turn_spec(BUILD_PROMPT), Some(close.clone()));
+        // A different turn's prompt is untouched by the close-out.
+        assert_eq!(
+            wiring.turn_spec(PLAN_PROMPT),
+            Some(demo_turn_by_key(TurnKey::Plan).clone())
+        );
+        // The interrupted close-out outranks the build-deny close-out.
+        wiring.record_approval_choice("Deny");
+        assert_eq!(wiring.turn_spec(BUILD_PROMPT), Some(close));
+        // The next submit starts a new turn — the close-out is cleared.
+        wiring.record_submit(BUILD_PROMPT);
+        assert_eq!(
+            wiring.turn_spec(BUILD_PROMPT),
+            Some(demo_turn_by_key(TurnKey::Build).clone())
+        );
     }
 
     // -- lanes (tests/test_kernel_demo_data.py) -----------------------------

@@ -2797,7 +2797,9 @@ mod tests {
         tail_updates: Vec<String>,
         tail_cleared: usize,
         approvals: Vec<String>,
-        deferred: Vec<String>,
+        /// `(message, decision_id)` pairs — the id must survive the trip so
+        /// the app can resolve the kernel-parked NeedsYouQueue item.
+        deferred: Vec<(String, String)>,
         turn_events: Vec<String>,
         lanes_changed_calls: usize,
     }
@@ -2868,8 +2870,9 @@ mod tests {
             self.approvals.push(prompt.to_string());
         }
 
-        fn decision_deferred(&mut self, message: &str, _decision_id: &str) {
-            self.deferred.push(message.to_string());
+        fn decision_deferred(&mut self, message: &str, decision_id: &str) {
+            self.deferred
+                .push((message.to_string(), decision_id.to_string()));
         }
 
         fn stream_opened(&mut self, block_type: &str) {
@@ -4551,6 +4554,31 @@ mod tests {
             .map(|c| c.turn_id)
             .collect();
         assert_eq!(turn_ids, vec![1, 2]);
+    }
+
+    /// Pins Python `test_needs_you_real.py::test_reducer_routes_decision_id_to_host`:
+    /// a kernel-side deferral's `decision_id` reaches the host verbatim
+    /// alongside the message (never re-derived from the notice text).
+    #[test]
+    fn test_reducer_routes_decision_id_to_host() {
+        let mut reducer = make_reducer("chat");
+        reducer.handle(&ev::UIEvent::Notification(ev::Notification {
+            session_id: SID.to_string(),
+            message: "decision deferred to queue · Allow x?".to_string(),
+            level: "decision".to_string(),
+            source: "needs_you".to_string(),
+            decision_id: "decision-7".to_string(),
+            ..ev::Notification::default()
+        }));
+        let host = reducer.host();
+        assert_eq!(
+            host.deferred,
+            vec![(
+                "decision deferred to queue · Allow x?".to_string(),
+                "decision-7".to_string()
+            )]
+        );
+        assert_eq!(host.notices, vec!["decision deferred to queue · Allow x?"]);
     }
 
     /// Pins Python `test_replay_suppresses_every_interactive_side_effect`.

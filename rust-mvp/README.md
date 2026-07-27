@@ -58,25 +58,39 @@ UI untouched (the `Runtime` trait absorbs it).
 
 ## Run
 ```sh
-cargo run --release            # core-client: spawns the serve backend, real interactive turn
+cargo run --release            # core-client: spawns the REAL serve backend (see below)
 cargo run --release -- --demo  # scripted in-process demo
 cargo run --release -- --direct  # direct-to-provider shortcut (needs ANTHROPIC_API_KEY)
 cargo test --release           # reducer + render + SSE + cross-process protocol turn
 cargo test --release snapshot -- --nocapture   # print a rendered frame
 ```
 
-`AMPLIFIER_SERVE_CMD` overrides the backend command. The **real** backend now
-exists — `amplifier-newtui serve` (`src/amplifier_app_newtui/kernel/serve.py`)
-wraps the live `RealRuntime` + `ApprovalBroker` and speaks this exact wire, so:
+The default runtime mirrors the Python launcher — real session by default,
+honest fallback: when the crate sits inside the amplifier-app-newtui checkout
+(`rust-mvp/` next to `src/amplifier_app_newtui/`), it spawns the **real**
+backend `uv run amplifier-newtui serve` (`kernel/serve.py`, wrapping the live
+`RealRuntime` + `ApprovalBroker` — **zero changes to amplifier-core**).
+Outside the checkout it falls back to the offline `backend/serve_mock.py`
+with an explicit notice; the mock emits the same vocabulary (no key, no core)
+so the cross-process test — a full interactive turn incl. an approval answered
+by ticket id — runs anywhere.
+
+`AMPLIFIER_SERVE_CMD` still overrides the backend command outright:
 
 ```sh
 AMPLIFIER_SERVE_CMD="uv run amplifier-newtui serve" cargo run --release
 ```
 
-drives the Rust UI from a real session with **zero changes to amplifier-core**.
-`backend/serve_mock.py` emits the same vocabulary offline (no key, no core) so the
-cross-process test — a full interactive turn incl. an approval answered by ticket
-id — runs anywhere.
+The Python launcher's TUI-relevant flags are accepted and forwarded to the
+backend `serve` command (and `--mode` also seeds the opening posture):
+
+```sh
+cargo run --release -- --bundle newtui -p anthropic -m claude-sonnet-4-5 \
+    --mode plan --resume core-0123
+```
+
+On exit, a real session prints the same resume hint as the Python app
+(`resume this session: amplifier-newtui resume <id>`).
 
 ## What it does NOT do (out of MVP scope)
 Real bundle loading, subagent lanes, rewind, persistence, and tool-use over a real

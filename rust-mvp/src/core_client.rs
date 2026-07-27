@@ -61,10 +61,14 @@ impl CoreClientRuntime {
                 }
                 if let Some(ev) = protocol::decode_wire(&line) {
                     if tx.send(Msg::Rt(ev)).is_err() {
-                        break;
+                        return; // app loop gone — no exit report needed
                     }
                 }
             }
+            // stdout EOF: the backend exited. Report it so the app can run
+            // the boot-failure diagnosis (identity never arrived) or an
+            // honest mid-session notice instead of hanging silently.
+            let _ = tx.send(Msg::BackendExited);
         });
 
         Ok(Self { stdin: Arc::new(Mutex::new(stdin)), child })

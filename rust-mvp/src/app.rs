@@ -628,6 +628,13 @@ pub struct App {
     pub allocator: RefCell<BlockIdAllocator>,
     /// Core version learned over the protocol (`""` until it lands).
     pub core_version: RefCell<String>,
+    /// FULL session id from `session.started` (`""` until it lands; demo
+    /// sessions never set it) — drives the exit resume hint, the analogue
+    /// of Python's `adapter.session_id` in `_print_resume_hint`.
+    session_id: RefCell<String>,
+    /// The boot-failure diagnosis already rendered — a trailing
+    /// `BackendExited` (the failed backend's EOF) must not overwrite it.
+    boot_failure_announced: bool,
     /// Last frame's hit-testing geometry, written by [`crate::ui::draw`].
     pub layout: RefCell<FrameLayout>,
     kitty_protocol: bool,
@@ -687,6 +694,8 @@ impl App {
             denial_log: Mutex::new(DenialLog::new()),
             allocator: RefCell::new(BlockIdAllocator::starting_at(APP_ID_RANGE_START)),
             core_version: RefCell::new(String::new()),
+            session_id: RefCell::new(String::new()),
+            boot_failure_announced: false,
             layout: RefCell::new(FrameLayout::default()),
             kitty_protocol,
             last_splash_frame: std::cell::Cell::new(0.0),
@@ -759,6 +768,7 @@ impl App {
                 model,
             } => {
                 let short: String = session_id.chars().take(7).collect();
+                *self.session_id.borrow_mut() = session_id;
                 self.announce_ready(&bundle, &model, &short);
             }
             WireEvent::Approval {
@@ -822,11 +832,99 @@ impl App {
                     let _ = splash.set_status(&status);
                 }
             }
+            WireEvent::Error { error, error_type } => {
+                let booting = self.ui.borrow().splash.is_some();
+                if booting {
+                    // Boot failure: serve emitted the error instead of
+                    // `session.started` (exit 1 follows).
+                    let detail = if error.trim().is_empty() {
+                        error_type
+                    } else {
+                        error.trim().to_string()
+                    };
+                    self.announce_boot_failure(&detail);
+                } else {
+                    // A failed turn (Python `_submit_prompt`'s except-arm:
+                    // notice only, the session stays live).
+                    self.ui
+                        .borrow_mut()
+                        .show_notice(&format!("turn failed · {error}"), None);
+                }
+            }
             WireEvent::Event(event) => {
                 self.reducer.handle(&event);
                 self.settle_after_event();
             }
         }
+    }
+
+    /// The backend process's stdout closed. Before identity this is a boot
+    /// failure — run the same diagnosis as a structured `error` record
+    /// (previously the splash hung forever); mid-session the session is
+    /// gone, so say so honestly.
+    pub fn on_backend_exited(&mut self) {
+        if self.boot_failure_announced {
+            return; // the error record's diagnosis already rendered
+        }
+        let booting = self.ui.borrow().splash.is_some();
+        if booting {
+            self.announce_boot_failure("backend exited before session.started");
+        } else {
+            self.ui
+                .borrow_mut()
+                .show_notice("backend exited · session lost — ctrl+d to quit", None);
+        }
+    }
+
+    /// Port of `ui/app_support.py::announce_boot_failure`: dismiss the
+    /// splash immediately (error text, not a melting wordmark) and render
+    /// the readable diagnosis + doctor hint with Python's exact strings.
+    fn announce_boot_failure(&mut self, detail: &str) {
+        self.boot_failure_announced = true;
+        let mut ui = self.ui.borrow_mut();
+        ui.splash = None; // Python `clear_boot_progress(immediate=True)`
+        let id = self.allocator.borrow_mut().next_id();
+        let _ = ui.transcript.append(
+            Answer {
+                clickable: false,
+                ..Answer::new(
+                    id,
+                    vec![
+                        Segment {
+                            style_token: StyleToken::Red,
+                            ..Segment::new("⊘ session failed to start · ")
+                        },
+                        Segment::new(detail),
+                    ],
+                )
+            }
+            .into(),
+            monotonic(),
+        );
+        let hint = "Check provider setup with `amplifier-newtui doctor`, or run \
+`--demo` for a credential-free UI. Press ctrl+d to quit.";
+        let id = self.allocator.borrow_mut().next_id();
+        let _ = ui.transcript.append(
+            Answer {
+                clickable: false,
+                ..Answer::new(
+                    id,
+                    vec![Segment {
+                        style_token: StyleToken::Dim,
+                        ..Segment::new(hint)
+                    }],
+                )
+            }
+            .into(),
+            monotonic(),
+        );
+        ui.show_notice("session failed to start", None);
+    }
+
+    /// The full stored session id (empty for demo/unstarted sessions) —
+    /// the exit resume hint's input.
+    pub fn resume_session_id(&self) -> String {
+        self.session_id.borrow().clone()
     }
 
     /// Post-event duties (Python `_consume_events` after `reducer.handle`).

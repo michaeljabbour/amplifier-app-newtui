@@ -33,6 +33,11 @@ pub enum WireEvent {
     /// `(action, detail)` pairs RealRuntime reports through `on_progress`
     /// while modules load — the splash shows them instead of a blank screen.
     BootProgress { action: String, detail: String },
+    /// serve's terminal `error` record (`kernel/serve.py`): a boot failure
+    /// (emitted instead of `session.started`, then exit 1) or a failed turn
+    /// (`_run_turn`, which also carries `session_id`). Dropping these left
+    /// the splash hanging forever on a dead backend.
+    Error { error: String, error_type: String },
 }
 
 /// Decode one backend stdout line into a [`WireEvent`] (or `None` to ignore).
@@ -65,7 +70,11 @@ pub fn decode_wire(line: &str) -> Option<WireEvent> {
             action: v["action"].as_str().unwrap_or("").to_string(),
             detail: v["detail"].as_str().unwrap_or("").to_string(),
         }),
-        // turn.completed / error are lifecycle, not transcript.
+        "error" => Some(WireEvent::Error {
+            error: v["error"].as_str().unwrap_or("").to_string(),
+            error_type: v["error_type"].as_str().unwrap_or("").to_string(),
+        }),
+        // turn.completed is lifecycle, not transcript.
         _ => None,
     }
 }
@@ -165,6 +174,29 @@ mod tests {
                 action: "installing_package".into(),
                 detail: "tool-bash".into(),
             }
+        );
+    }
+
+    // Pins the two `error` shapes kernel/serve.py puts on the wire: the
+    // boot-failure terminal record (serve() except-arm, then exit 1) and a
+    // failed turn (_run_turn, which adds session_id).
+    #[test]
+    fn decodes_serve_error_records() {
+        let boot = r#"{"schema_version": 1, "type": "error", "error": "no provider configured", "error_type": "RuntimeError"}"#;
+        assert_eq!(
+            decode_wire(boot),
+            Some(WireEvent::Error {
+                error: "no provider configured".into(),
+                error_type: "RuntimeError".into(),
+            })
+        );
+        let turn = r#"{"schema_version": 1, "type": "error", "session_id": "core-01", "error": "provider auth expired", "error_type": "APIStatusError"}"#;
+        assert_eq!(
+            decode_wire(turn),
+            Some(WireEvent::Error {
+                error: "provider auth expired".into(),
+                error_type: "APIStatusError".into(),
+            })
         );
     }
 

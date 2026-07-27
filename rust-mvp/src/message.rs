@@ -10,5 +10,9 @@ pub enum Msg {
     /// A line of backend boot/module chatter (the serve process's stderr) —
     /// surfaced on the splash status line so slow boots show what's loading.
     BootChatter(String),
+    /// The backend's stdout closed (the serve process exited). Before
+    /// `session.started` this is a boot failure (the splash would otherwise
+    /// hang forever); mid-session it means the session is gone.
+    BackendExited,
     Tick,
 }

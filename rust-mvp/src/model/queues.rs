@@ -936,6 +936,151 @@ mod tests {
         );
     }
 
+    // --- per-lane steering (issue #39) ----------------------------------------
+    // 1:1 port of tests/test_model_lane_steering.py.
+
+    #[test]
+    fn test_enqueue_is_per_lane_fifo() {
+        let queue = LaneSteeringQueue::with_clock(Box::new(|| 0.0));
+        queue.enqueue("lane-a", "focus on the parser").unwrap();
+        queue.enqueue("lane-a", "then the docs").unwrap();
+        queue.enqueue("lane-b", "run the migration").unwrap();
+
+        assert_eq!(
+            queue
+                .pending_for("lane-a")
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["focus on the parser", "then the docs"]
+        );
+        assert_eq!(
+            queue
+                .pending_for("lane-b")
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run the migration"]
+        );
+        assert_eq!(queue.queued_count("lane-a"), 2);
+        assert_eq!(queue.queued_count("lane-b"), 1);
+        assert_eq!(
+            queue.counts(),
+            HashMap::from([("lane-a".to_string(), 2), ("lane-b".to_string(), 1)])
+        );
+        assert_eq!(queue.total_pending(), 3);
+    }
+
+    #[test]
+    fn test_enqueue_stamps_steer_kind_and_unique_ids() {
+        let queue = LaneSteeringQueue::with_clock(Box::new(|| 1.5));
+        let first = queue.enqueue("lane-a", "one").unwrap();
+        let second = queue.enqueue("lane-b", "two").unwrap();
+        assert_eq!(first.kind, MessageKind::Steer);
+        assert_eq!(second.kind, MessageKind::Steer);
+        assert_ne!(first.message_id, second.message_id);
+        assert_eq!(first.created_at, 1.5);
+    }
+
+    #[test]
+    fn test_consume_next_pops_oldest_then_none() {
+        let queue = LaneSteeringQueue::with_clock(Box::new(|| 0.0));
+        queue.enqueue("lane-a", "first").unwrap();
+        queue.enqueue("lane-a", "second").unwrap();
+
+        assert_eq!(queue.consume_next("lane-a").expect("first queued").text, "first");
+        assert_eq!(
+            queue.consume_next("lane-a").expect("second queued").text,
+            "second"
+        );
+        // Empty now: the lane key is dropped and further reads are None.
+        assert!(queue.consume_next("lane-a").is_none());
+        assert_eq!(queue.queued_count("lane-a"), 0);
+        assert_eq!(queue.counts(), HashMap::new());
+    }
+
+    #[test]
+    fn test_consume_unknown_lane_is_none() {
+        let queue = LaneSteeringQueue::new();
+        assert!(queue.consume_next("never-seen").is_none());
+    }
+
+    #[test]
+    fn test_drain_drops_a_finished_lanes_backlog() {
+        let queue = LaneSteeringQueue::with_clock(Box::new(|| 0.0));
+        queue.enqueue("lane-a", "undelivered one").unwrap();
+        queue.enqueue("lane-a", "undelivered two").unwrap();
+        queue.enqueue("lane-b", "still live").unwrap();
+
+        let drained = queue.drain("lane-a");
+        assert_eq!(
+            drained.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+            vec!["undelivered one", "undelivered two"]
+        );
+        assert_eq!(queue.queued_count("lane-a"), 0);
+        assert_eq!(queue.queued_count("lane-b"), 1); // other lanes untouched
+        assert!(queue.drain("lane-a").is_empty()); // idempotent on an empty lane
+    }
+
+    #[test]
+    fn test_empty_text_and_missing_session_raise() {
+        let queue = LaneSteeringQueue::new();
+        assert_eq!(
+            queue.enqueue("lane-a", "   ").expect_err("blank text rejected"),
+            QueueError::Value("queued text cannot be empty".into())
+        );
+        assert_eq!(
+            queue.enqueue("", "has text").expect_err("missing session rejected"),
+            QueueError::Value("lane steering needs a session id".into())
+        );
+    }
+
+    #[test]
+    fn test_bound_is_per_lane() {
+        let queue = LaneSteeringQueue::with_clock(Box::new(|| 0.0));
+        for n in 0..MAX_QUEUE_ITEMS {
+            queue.enqueue("lane-a", &format!("steer {n}")).unwrap();
+        }
+        assert_eq!(
+            queue
+                .enqueue("lane-a", "one too many")
+                .expect_err("lane-a is full"),
+            QueueError::Value("lane steering queue limit reached".into())
+        );
+        // A different lane still has its full budget.
+        queue.enqueue("lane-b", "fresh budget").unwrap();
+        assert_eq!(queue.queued_count("lane-b"), 1);
+    }
+
+    #[test]
+    fn test_control_chars_are_stripped_but_newlines_kept() {
+        let queue = LaneSteeringQueue::new();
+        let message = queue.enqueue("lane-a", "line1\nline2\x07tail").unwrap();
+        assert_eq!(message.text, "line1\nline2tail");
+    }
+
+    #[test]
+    fn test_listener_fires_on_enqueue_consume_and_drain() {
+        let queue = LaneSteeringQueue::with_clock(Box::new(|| 0.0));
+        let fires: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&fires);
+        let listener_id = queue.add_listener(move || {
+            let mut fired = sink.lock().unwrap();
+            let next = fired.len();
+            fired.push(next);
+        });
+
+        queue.enqueue("lane-a", "a").unwrap();
+        queue.enqueue("lane-a", "b").unwrap();
+        queue.consume_next("lane-a");
+        queue.drain("lane-a");
+        assert_eq!(fires.lock().unwrap().len(), 4);
+
+        queue.remove_listener(listener_id);
+        queue.enqueue("lane-a", "c").unwrap();
+        assert_eq!(fires.lock().unwrap().len(), 4); // removed listener is silent
+    }
+
     // --- needs-you queue (DESIGN-SPEC §7) -------------------------------------
 
     #[test]
