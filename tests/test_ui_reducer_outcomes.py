@@ -500,10 +500,12 @@ def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
     assert working.kind == "working_status"
     assert working.spinner_frame == 1
     line = "".join(s.text for s in render_block(working, 200)[0])
-    assert "working · 3s" in line and "1 agent" in line
+    # Liveness phases: before execution_start the honest note is
+    # 'starting turn' (was the static '1 agent' mockup fallback).
+    assert "working · 3s" in line and "starting turn" in line
 
     # A running tool shows as the active branch of the live tree beneath
-    # the pulse (not inline); the static '1 agent' fallback drops away.
+    # the pulse (not inline); the phase note drops away.
     reducer.handle(
         ev.ToolPre(
             session_id="s",
@@ -517,7 +519,7 @@ def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
     rendered = "\n".join("".join(s.text for s in line) for line in render_block(working, 200))
     assert "$ uv run pytest -q" in rendered  # in the tree
     assert working.activity_lines and working.activity_lines[-1].running
-    assert "1 agent" not in rendered.splitlines()[0]  # not inline on the pulse
+    assert "starting turn" not in rendered.splitlines()[0]  # not inline on the pulse
     # ...and the pulse rides at the BOTTOM, under the newest content.
     assert host.blocks[-1].kind == "working_status"
 

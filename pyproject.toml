@@ -51,7 +51,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "dc010423d010da9a52e1b49808a1865666008c25" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "32d4052dad46016f91ce698646580473e4121344" }
 team-pulse-lib = { git = "https://github.com/microsoft/amplifier-bundle-team-pulse", rev = "e89574d2b90814a0c10a2164aa7d5c9cc43bd3ce", subdirectory = "team-pulse-lib" }
 
 [tool.pytest.ini_options]

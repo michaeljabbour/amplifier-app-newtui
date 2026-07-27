@@ -477,6 +477,9 @@ class _Turn:
     activity: str = ""
     """Current work item for the working line (real turns): running
     tool / ``thinking`` — supervisor-facing context."""
+    phase: str = "submitted"
+    """Liveness phase feeding the working line's empty-activity note
+    (``submitted`` → ``executing`` → ``streaming``, see _PHASE_NOTES)."""
     # -- rolling activity burst (DESIGN-SPEC §3) --------------------------
     digest_id: str | None = None
     """The current burst's in-place digest ToolLine (``Read 4 files · …``);
@@ -510,6 +513,26 @@ class _Turn:
     todo_items: tuple[TodoItem, ...] = ()
     """Latest root-todo list this turn (ambient-progress D3) — folded into
     the delegate summary's ``plan_final`` at fan-out close (D5)."""
+
+
+_PHASE_NOTES = {
+    "submitted": "starting turn",
+    "executing": "waiting on model",
+    "streaming": "thinking",
+}
+"""Working-line liveness notes for the silent stretches of a real turn
+(validated against a real session's ui-events.jsonl):
+
+- ``prompt_submit → execution_start`` (~15s of backend pre-turn hooks):
+  submitted but not executing yet → ``starting turn``.
+- ``execution_start → first content_block`` (~11s of model prefill):
+  executing, no blocks yet → ``waiting on model``.
+- first content/tool traffic onward: the long-standing ``thinking``
+  fallback.
+
+The phase only feeds the working line's EMPTY-activity note — any real
+tool activity / live tree wins exactly as before. Labels are shared
+verbatim with the Rust app (joint liveness enhancement)."""
 
 
 class TranscriptReducer:
@@ -690,6 +713,11 @@ class TranscriptReducer:
 
     def handle(self, event: ev.UIEvent) -> None:  # noqa: C901 - one dispatch table
         """Apply one normalized event; unknown kinds are ignored."""
+        # Any event stamped with a booting child's session id is that
+        # child's first sign of life — bundle composition finished; flip
+        # the lane to its normal running state (validated dead window:
+        # spawn → child session_start runs ~tens of seconds).
+        self._wake_booting_lane(event)
         if self._is_foreign_turn_event(event):
             self._track_child_activity(event)
             return
@@ -703,7 +731,10 @@ class TranscriptReducer:
                     self._host.lanes_changed()
             case ev.PromptSubmit():
                 self._start_turn(event)
+            case ev.ExecutionStart():
+                self._execution_started(event)
             case ev.StreamBlockStart():
+                self._mark_model_traffic()
                 self._lane.root_streaming = True
                 self._lane.clear_tail()
                 self._host.stream_opened(event.block_type)
@@ -719,14 +750,17 @@ class TranscriptReducer:
                 self._host.stream_closed()
                 self._host.show_notice(f"stream aborted · {event.error_message}".rstrip(" ·"))
             case ev.ContentBlockStart():
+                self._mark_model_traffic()
                 if event.block_type == "thinking":
                     self._thinking_started(event)
             case ev.ContentBlockEnd():
+                self._mark_model_traffic()
                 if event.block_type == "thinking":
                     self._thinking_recorded(event)
                 else:
                     self._durable_text(event)
             case ev.ToolPre():
+                self._mark_model_traffic()
                 self._tool_pre(event)
             case ev.ToolPost():
                 self._tool_post(event)
@@ -1514,6 +1548,14 @@ class TranscriptReducer:
         # The live activity tree only rides single-agent turns; fan-out
         # turns get the dedicated DelegateSummaryBlock instead (D5).
         lines = () if turn.agent_total > 1 else tuple(turn.activity_ring)
+        # Real turns with no explicit activity surface the liveness phase
+        # (``starting turn`` / ``waiting on model`` / ``thinking``) so the
+        # validated silent stretches — pre-turn hooks, model prefill —
+        # never read as a dead app. Real tool activity always wins;
+        # scripted demo turns keep their scripted (empty) note.
+        activity = turn.activity
+        if not activity and turn.spec is None:
+            activity = _PHASE_NOTES[turn.phase]
         return WorkingStatus(
             id=turn.working_id,
             telemetry=self._live_telemetry(),
@@ -1521,7 +1563,7 @@ class TranscriptReducer:
             # fan-out total (never decaying) on multi-agent turns.
             agent_count=turn.agent_total or 1,
             spinner_frame=turn.spinner_frame,
-            activity=turn.activity,
+            activity=activity,
             activity_lines=lines,
         )
 
@@ -1559,6 +1601,57 @@ class TranscriptReducer:
             return
         turn.activity = activity
         self._update_working()
+
+    def _execution_started(self, event: ev.ExecutionStart) -> None:
+        """``execution:start`` for the running turn: pre-turn hooks are
+        done, the engine now waits on the model's first content block
+        (liveness phase ``starting turn`` → ``waiting on model``).
+
+        Child sessions emit ``execution_start`` too (it is not in the
+        foreign-event divert list), so the root phase only advances for
+        the turn's own session; empty ids stay accepted for synthetic
+        events, matching the divert rule.
+        """
+        turn = self._turn
+        if (
+            turn is None
+            or turn.spec is not None
+            or turn.phase != "submitted"
+            or (turn.session_id and event.session_id and event.session_id != turn.session_id)
+        ):
+            return
+        turn.phase = "executing"
+        self._update_working()
+
+    def _mark_model_traffic(self) -> None:
+        """First root content/tool traffic of the turn: the model is
+        producing — the empty-activity note settles on the long-standing
+        ``thinking`` fallback for the rest of the turn."""
+        turn = self._turn
+        if turn is None or turn.spec is not None or turn.phase == "streaming":
+            return
+        turn.phase = "streaming"
+        self._update_working()
+
+    def _wake_booting_lane(self, event: ev.UIEvent) -> None:
+        """Flip a booting lane to its normal running state on the child's
+        first event (``session_start``, ``execution_start``, usage, …).
+
+        A seeded delegate brief stays in place as the activity line; the
+        plain ``booting`` placeholder becomes ``running``.
+        """
+        session_id = event.session_id
+        if not session_id:
+            return
+        record = self.lanes.get(session_id)
+        if record is None or record.lane.state != "booting":
+            return
+        self.lanes.update(
+            session_id,
+            state="running",
+            activity="running" if record.lane.activity == "booting" else None,
+        )
+        self._host.lanes_changed()
 
     def _usage(self, event: ev.ProviderResponseUsage) -> None:
         self.total_tokens += event.output_tokens
@@ -1633,12 +1726,19 @@ class TranscriptReducer:
         if turn is not None:
             turn.agent_total += 1
         seed: LaneSeed = self._lane_seed(event.agent) or LaneSeed()
+        # A spawn with no scripted state/telemetry is a real delegate whose
+        # child session has produced nothing yet — bundle composition can
+        # run ~tens of seconds, and a ``running · 0.0k tokens · $0.00`` row
+        # reads as hung. Open the lane as ``booting`` (first child event
+        # flips it — see _wake_booting_lane); scripted demo seeds keep
+        # their mockup-verbatim presentation.
+        booting = seed.state == "running" and not seed.elapsed and not seed.cost and not seed.tokens
         self.lanes.register(
             event.sub_session_id,
             parent_id=event.parent_session_id or event.session_id or None,
             name=event.agent,
-            activity=seed.activity or "running",
-            state=seed.state,
+            activity=seed.activity or ("booting" if booting else "running"),
+            state="booting" if booting else seed.state,
             # A done lane re-spawning here is a replayed turn reusing its
             # sub-session ids (completions for unknown lanes are dropped, so
             # no spawn/complete race reaches this path) — reset it live.

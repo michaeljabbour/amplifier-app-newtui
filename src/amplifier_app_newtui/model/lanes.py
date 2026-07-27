@@ -24,9 +24,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .blocks import StyleToken
 
-LaneStateName = Literal["running", "working", "done"]
+LaneStateName = Literal["booting", "running", "working", "done"]
 
 _STATE_GLYPHS: dict[LaneStateName, tuple[str, StyleToken]] = {
+    # A spawned child whose session has produced no event yet (bundle
+    # composition can run ~tens of seconds). The spec's glyph set (§8) is
+    # closed, so booting reuses the running glyph; the panel row instead
+    # swaps the zeroed telemetry cells for the honest ``booting · Ns``
+    # clock (see ``ui/lanes_panel.py``).
+    "booting": ("◐", "teal"),
     "running": ("◐", "teal"),
     "working": ("■", "fg"),
     "done": ("✔", "dim"),

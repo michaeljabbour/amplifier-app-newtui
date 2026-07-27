@@ -407,17 +407,26 @@ def _last_lines(text: str, max_lines: int | None) -> str:
     return "\n".join(lines[-max_lines:]) if len(lines) > max_lines else text
 
 
-def lane_tail_markup(text: str) -> str:
+def lane_tail_markup(text: str, label: str = "") -> str:
     """Markup for a focused lane's tail: the last :data:`LANE_TAIL_LINES`
     non-blank lines, ``┆``-guttered, dim (DESIGN-SPEC §8). Pure function —
     unit-testable without a widget; content is escaped, never interpreted.
+
+    ``label`` (the lane's short name) leads the first rendered line —
+    ``┆ explorer › I have the big picture…`` — the main transcript's
+    delegate-tail shape (joint enhancement with the Rust client's
+    ``labeled_lane_tail_markup``). The default empty label keeps the
+    panel tail byte-identical.
     """
     from textual.markup import escape
 
     lines = [line for line in text.split("\n") if line.strip()][-LANE_TAIL_LINES:]
     if not lines:
         return ""
-    body = "\n".join(f"┆ {escape(line)}" for line in lines)
+    body = "\n".join(
+        f"┆ {escape(label)} › {escape(line)}" if index == 0 and label else f"┆ {escape(line)}"
+        for index, line in enumerate(lines)
+    )
     return f"[$dim]{body}[/]"
 
 
@@ -459,6 +468,7 @@ class LiveTail(Static):
         self._render_pending: tuple[int, str, str, int | None] | None = None
         self._async_render_active = False
         self._lane_mode = False
+        self._lane_markup = ""
         self._root_open = False
         # Reveal is a session-level preference: the box defaults to hidden
         # (a one-line peek hint), and once the user shows it, it stays shown
@@ -507,6 +517,7 @@ class LiveTail(Static):
     def open_stream(self, block_type: str = "text") -> None:
         """Reset for a new streaming block (``llm:stream_block_start``)."""
         self._lane_mode = False  # root always preempts the lane tail (D4)
+        self._lane_markup = ""
         self._root_open = True
         self._cancel_timer()
         self._reset_source()
@@ -553,8 +564,12 @@ class LiveTail(Static):
         """True while the tail shows a focused lane's stream, not the root's."""
         return self._lane_mode
 
-    def show_lane_tail(self, text: str) -> None:
+    def show_lane_tail(self, text: str, label: str = "") -> None:
         """Paint the focused lane's accumulated tail (dim, ``┆``-guttered).
+
+        ``label`` prefixes the first line with the lane's short name — the
+        main transcript's delegate tail (joint enhancement); the lanes
+        panel's own tail keeps the unlabeled default.
 
         The root always preempts: refused while a root stream is open. The
         reducer owns accumulation and the ~0.05s throttle
@@ -565,14 +580,23 @@ class LiveTail(Static):
         if self._root_open:
             return
         self._lane_mode = True
-        self.update(lane_tail_markup(text))
+        self._lane_markup = lane_tail_markup(text, label)
+        self.update(self._lane_markup)
 
     def clear_lane_tail(self) -> None:
         """Drop the lane tail (root preemption / lane done / turn end)."""
         if not self._lane_mode:
             return
         self._lane_mode = False
+        self._lane_markup = ""
         self.update("")
+
+    @property
+    def lane_markup(self) -> str:
+        """The lane-mode markup currently painted (empty outside lane mode) —
+        the observable the main-chat delegate-tail tests pin (the Rust
+        client's ``painted()`` analogue)."""
+        return self._lane_markup
 
     def attach_evidence(self, answer: Answer, links: tuple[EvidenceLink, ...]) -> Answer:
         """Convenience: the consolidated Answer with evidence refs attached."""

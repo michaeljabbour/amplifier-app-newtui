@@ -335,3 +335,20 @@ async def test_provider_usage_repaints_footer_before_prompt_complete() -> None:
         assert app.reducer.session_cost == Decimal("0")
         await adapter.queue.put(PromptComplete(session_id="root", response="done", ts=3.0))
         assert await _wait_for(pilot, lambda: not app.turn_active)
+
+
+def test_boot_progress_after_exit_is_a_silent_noop() -> None:
+    """Late boot_progress callbacks (app quit during boot) must not raise.
+
+    Regression: activator progress marshalled via call_soon landed after the
+    Textual app exited; painting the splash then raised NoActiveAppError and
+    spammed the terminal post-exit.
+    """
+    from amplifier_app_newtui.ui.app import NewTuiApp
+    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+
+    app = NewTuiApp(DemoRuntimeAdapter())
+    assert not app.is_running
+    # Outside any active-app context — exactly the post-exit situation.
+    app.boot_progress("activating", "dep-amplifier-data")
+    app.boot_progress("installing", "hooks-tool-truncation")

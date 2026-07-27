@@ -17,6 +17,10 @@ from amplifier_app_newtui.model.queues import NeedsYouQueue, SteeringQueue
 from amplifier_app_newtui.model.trust import DenialLog
 from amplifier_app_newtui.model.turn import OutcomeLedger
 
+# Share the offline fake-module workspace fixtures so both test_runtime_offline
+# and test_serve_offline resolve them without a by-name import.
+from tests.test_runtime_offline import offline_env, offline_workspace  # noqa: F401,E402
+
 
 class FakeCommandContext:
     """Records every action a command handler takes (CommandContext fake)."""

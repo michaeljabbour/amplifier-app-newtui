@@ -547,6 +547,42 @@ def _print_session_table(summaries: list[Any]) -> None:
 
 
 @main.command()
+@click.option("--bundle", default=None, help="Bundle name or URI.")
+@click.option("--model", "-m", default=None, help="Model override (requires --provider).")
+@click.option("--provider", "-p", default=None, help="Provider override for THIS invocation.")
+@click.option("--mode", "mode", default=None, help="Interaction mode to start in.")
+@click.option(
+    "--resume", "resume", default=None, metavar="SESSION_ID", help="Resume a stored session."
+)
+def serve(
+    bundle: str | None,
+    model: str | None,
+    provider: str | None,
+    mode: str | None,
+    resume: str | None,
+) -> None:
+    """Run an interactive session as a bidirectional line protocol on stdio.
+
+    The out-of-process front-end contract: normalized events (plus
+    ``approval.required``) stream to stdout as JSON lines; ``submit`` /
+    ``approve`` / ``interrupt`` submissions arrive on stdin. This is the seam a
+    Rust (or any external) UI drives; it wraps the same ``RealRuntime`` the TUI
+    uses, so amplifier-core is untouched. See ``kernel/serve.py`` for the wire.
+    """
+    _validate_overrides(model, provider, mode)
+    resume_id: str | None = None
+    if resume is not None:
+        from .kernel import session_manager
+
+        resume_id = session_manager.resolve(_session_store(), resume)
+    from .kernel.serve import serve as _serve
+
+    raise SystemExit(
+        asyncio.run(_serve(bundle, mode=mode, model=model, provider=provider, resume_id=resume_id))
+    )
+
+
+@main.command()
 @click.option("--limit", "-n", default=20, show_default=True, help="Number of sessions to show.")
 @click.option(
     "--plain",

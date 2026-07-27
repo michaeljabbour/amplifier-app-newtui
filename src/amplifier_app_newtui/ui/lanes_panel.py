@@ -93,6 +93,10 @@ def format_lane_lines(
     CROPPED, and what fell off was the right-side telemetry — the panel's
     whole point. The elastic activity column is elided first; the tokens
     column is dropped whole next. Name, elapsed and cost always survive.
+
+    Booting lanes (spawned, no child event yet) end at the elapsed clock —
+    ``  ◐ name · booting · Ns`` — because their zeroed tokens/cost cells
+    would read as a hung agent during child bundle composition.
     """
     if not lanes:
         return ()
@@ -124,9 +128,15 @@ def format_lane_lines(
             line = (
                 f"  {lane.glyph} {names[i]:<{name_w}} · {acts[i]:<{act_w}} · {elapsed[i]:<{el_w}}"
             )
-            if show_tokens:
-                line += f" · {tokens[i]:<{tok_w}}"
-            line += f" · {costs[i]}"
+            # A booting lane has produced no telemetry yet — rendering
+            # ``↓ 0.0k tokens · $0.00`` reads as a hung agent, so the row
+            # ends at the honest ``booting · Ns`` clock instead.
+            if lane.state == "booting":
+                line = line.rstrip()
+            else:
+                if show_tokens:
+                    line += f" · {tokens[i]:<{tok_w}}"
+                line += f" · {costs[i]}"
             if badges[i]:
                 line += f" · {badges[i]}"
             lines.append(line)
