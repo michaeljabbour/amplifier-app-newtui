@@ -140,6 +140,109 @@ pub fn approval_hit(bar: &crate::ui::approval_bar::ApprovalBar, col: usize, row:
     None
 }
 
+// ---------------------------------------------------------------------------
+// Transcript drag-selection geometry — character/column-ranged, terminal
+// style: partial first line from the anchor cell, full middle lines, partial
+// last line to the head cell. Columns are terminal cells; a cell in the
+// middle of a wide glyph rounds to include the whole glyph (both here and
+// in the copy extraction, so highlight and clipboard always agree).
+// ---------------------------------------------------------------------------
+
+/// Order the (anchor, head) endpoints of a drag: the earlier `(line, col)`
+/// first, regardless of drag direction (tuple order is lexicographic).
+pub fn normalize_selection(
+    anchor: (usize, usize),
+    head: (usize, usize),
+) -> ((usize, usize), (usize, usize)) {
+    if head < anchor {
+        (head, anchor)
+    } else {
+        (anchor, head)
+    }
+}
+
+/// The selected cell range on content line `line` for a normalized
+/// selection: `Some((start_cell, end_cell_exclusive))` where `None` for the
+/// end means "to end of line". Both endpoints are inclusive cells, so the
+/// last line's range covers the head cell itself.
+pub fn selection_line_cells(
+    start: (usize, usize),
+    end: (usize, usize),
+    line: usize,
+) -> Option<(usize, Option<usize>)> {
+    if line < start.0 || line > end.0 {
+        return None;
+    }
+    let lo = if line == start.0 { start.1 } else { 0 };
+    let hi = (line == end.0).then_some(end.1 + 1);
+    Some((lo, hi))
+}
+
+/// Is the glyph starting at cell `pos` (width `w`) inside the selected cell
+/// range `[lo, hi)`? Any overlap counts — a cell in the middle of a wide
+/// glyph selects the whole glyph. Zero-width combining marks follow the
+/// glyph they attach to (the one painted just before them).
+fn cell_selected(pos: usize, w: usize, lo: usize, hi: usize) -> bool {
+    if w == 0 {
+        pos > lo && pos <= hi
+    } else {
+        pos < hi && pos + w > lo
+    }
+}
+
+/// The substring of `line` covering cells `[lo, hi)` (`hi` `None` = to end
+/// of line) — the copy-extraction half of the selection geometry.
+pub fn slice_line_cells(line: &str, lo: usize, hi: Option<usize>) -> String {
+    let hi = hi.unwrap_or(usize::MAX);
+    let mut pos = 0usize;
+    let mut out = String::new();
+    for ch in line.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if cell_selected(pos, w, lo, hi) {
+            out.push(ch);
+        }
+        pos += w;
+    }
+    out
+}
+
+/// Paint the selection highlight on one rendered line: REVERSED over the
+/// selected cell span only (per-span, not per-line). The whole-line case
+/// keeps the cheap line-level modifier.
+fn reverse_line_cells(line: &mut Line<'static>, lo: usize, hi: Option<usize>) {
+    if lo == 0 && hi.is_none() {
+        line.style = line.style.add_modifier(Modifier::REVERSED);
+        return;
+    }
+    let hi = hi.unwrap_or(usize::MAX);
+    let mut pos = 0usize;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for span in std::mem::take(&mut line.spans) {
+        let style = span.style;
+        // Split the span into runs of uniform selected-ness, so only the
+        // selected cells flip REVERSED (styles otherwise preserved).
+        let mut runs: Vec<(bool, String)> = Vec::new();
+        for ch in span.content.chars() {
+            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            let selected = cell_selected(pos, w, lo, hi);
+            match runs.last_mut() {
+                Some((run_selected, text)) if *run_selected == selected => text.push(ch),
+                _ => runs.push((selected, ch.to_string())),
+            }
+            pos += w;
+        }
+        for (selected, text) in runs {
+            let style = if selected {
+                style.add_modifier(Modifier::REVERSED)
+            } else {
+                style
+            };
+            spans.push(Span::styled(text, style));
+        }
+    }
+    line.spans = spans;
+}
+
 type ColorTable = HashMap<StyleToken, Color>;
 
 fn seg(text: impl Into<String>, token: StyleToken) -> BlockSegment {
@@ -377,12 +480,16 @@ fn draw_transcript_region(
         }
     }
 
-    // Transcript drag-selection: the selected rows paint REVERSED — the
-    // ratatui rendering of Python's screen-selection highlight.
-    if let Some((a, b)) = ui.selection {
-        let (lo, hi) = (a.min(b), a.max(b));
-        for line in lines.iter_mut().take(hi + 1).skip(lo) {
-            line.style = line.style.add_modifier(Modifier::REVERSED);
+    // Transcript drag-selection: the selected character range paints
+    // REVERSED — partial first line from the anchor cell, full middle
+    // lines, partial last line to the head cell (the ratatui rendering of
+    // Python's character-ranged Textual selection highlight).
+    if let Some((anchor, head)) = ui.selection {
+        let (start, end) = normalize_selection(anchor, head);
+        for (index, line) in lines.iter_mut().enumerate() {
+            if let Some((lo, hi)) = selection_line_cells(start, end, index) {
+                reverse_line_cells(line, lo, hi);
+            }
         }
     }
 

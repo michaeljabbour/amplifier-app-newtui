@@ -1476,9 +1476,9 @@ status body, wired it into the router, and covered it with a test.";
     // tests/test_ui_composer.py it adapts).
     // ------------------------------------------------------------------
 
-    /// Append a few answer rows and drag-select the first `rows` of the
-    /// first block. Returns the selected text.
-    fn drag_select_rows(app: &mut App, rows: u16) -> String {
+    /// Append a few answer rows and return the transcript rect plus the
+    /// screen y of the first block's first painted line.
+    fn seed_selection_rows(app: &mut App) -> (ratatui::layout::Rect, u16) {
         use amplifier_newtui_rs::model::blocks::{Answer, Segment};
         for index in 0..4 {
             let answer = Answer::new(
@@ -1495,7 +1495,14 @@ status body, wired it into the router, and covered it with a test.";
             .find(|(id, _, _)| id == "sel-0")
             .cloned()
             .expect("first selection row laid out");
-        let y0 = rect.y + (start - layout.transcript_scroll) as u16;
+        (rect, rect.y + (start - layout.transcript_scroll) as u16)
+    }
+
+    /// Drag-select the first `rows` of the first block, anchoring at column
+    /// 0 and releasing past every line's end (column 30) — so whole lines
+    /// land in the character-ranged selection. Returns the selected text.
+    fn drag_select_rows(app: &mut App, rows: u16) -> String {
+        let (rect, y0) = seed_selection_rows(app);
         app.on_mouse_down(rect.x, y0);
         app.on_mouse_drag(rect.x + 30, y0 + rows - 1);
         app.on_mouse_up(rect.x + 30, y0 + rows - 1);
@@ -1643,6 +1650,99 @@ status body, wired it into the router, and covered it with a test.";
         assert_eq!(app.selected_text(), "", "nothing left to copy");
         app.tick();
         assert!(copied.borrow().is_empty(), "no settled copy after the clear");
+    }
+
+    // Character-ranged selection (terminal semantics — upgraded from the
+    // whole-row drag-selection that MIGRATION.md recorded as a gap): the
+    // drag anchors at a (line, column) cell and extends to another; copy
+    // extracts exactly that substring range from the rendered plain lines.
+    #[test]
+    fn test_column_ranged_selection_single_line_and_reverse_drag() {
+        let (mut app, _ops) = test_app();
+        let (rect, y0) = seed_selection_rows(&mut app);
+        // "selection line 0": cells 10..=13 are "line" — a mid-line drag
+        // selects the word, not the whole rendered row.
+        app.on_mouse_down(rect.x + 10, y0);
+        app.on_mouse_drag(rect.x + 13, y0);
+        app.on_mouse_up(rect.x + 13, y0);
+        assert_eq!(app.selected_text(), "line", "single-line mid-selection");
+
+        // Dragging backwards over the same cells normalizes to the same
+        // range (terminal selections are direction-agnostic).
+        app.on_mouse_down(rect.x + 13, y0);
+        app.on_mouse_drag(rect.x + 10, y0);
+        app.on_mouse_up(rect.x + 10, y0);
+        assert_eq!(app.selected_text(), "line", "reverse drag normalized");
+    }
+
+    // A multi-line drag selects the partial FIRST line from the anchor
+    // column, full middle lines, and the partial LAST line to the head
+    // column (inclusive) — and the REVERSED highlight covers exactly those
+    // cells (per-span, not per-line).
+    #[test]
+    fn test_column_ranged_selection_partial_first_and_last_lines() {
+        use ratatui::style::Modifier;
+        let (mut app, _ops) = test_app();
+        let (rect, y0) = seed_selection_rows(&mut app);
+        // Anchor at column 10 of "selection line 0" and release on column
+        // 3 of "selection line 1" two rows below (the blank margin row sits
+        // between the blocks).
+        app.on_mouse_down(rect.x + 10, y0);
+        app.on_mouse_drag(rect.x + 3, y0 + 2);
+        app.on_mouse_up(rect.x + 3, y0 + 2);
+        assert_eq!(
+            app.selected_text(),
+            "line 0\n\nsele",
+            "partial first line · blank middle row · partial last line"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let reversed =
+            |x: u16, y: u16| buffer[(x, y)].modifier.contains(Modifier::REVERSED);
+        assert!(!reversed(rect.x + 9, y0), "cell before the anchor column stays plain");
+        assert!(reversed(rect.x + 10, y0), "anchor column highlighted");
+        assert!(reversed(rect.x + 15, y0), "first line highlighted to its end");
+        assert!(reversed(rect.x + 3, y0 + 2), "head column highlighted (inclusive)");
+        assert!(!reversed(rect.x + 4, y0 + 2), "cell beyond the head column stays plain");
+    }
+
+    // Columns are terminal cells: a drag cell in the MIDDLE of a wide glyph
+    // rounds to include the whole glyph — in the copied text and in the
+    // painted highlight alike.
+    #[test]
+    fn test_column_ranged_selection_wide_glyph_boundary() {
+        use amplifier_newtui_rs::model::blocks::{Answer, Segment};
+        use ratatui::style::Modifier;
+        let (mut app, _ops) = test_app();
+        let answer = Answer::new("wide-0", vec![Segment::new("你好 ok")]);
+        let _ = app.ui.borrow_mut().transcript.append(answer.into(), 0.0);
+        let layout = layout_after_draw(&app, 100, 32);
+        let rect = layout.transcript;
+        let (_, start, _) = layout
+            .block_lines
+            .iter()
+            .find(|(id, _, _)| id == "wide-0")
+            .cloned()
+            .expect("wide row laid out");
+        let y0 = rect.y + (start - layout.transcript_scroll) as u16;
+
+        // Cells: 你 = 0-1 · 好 = 2-3 · space = 4 · o = 5 · k = 6. Dragging
+        // cells 1..=2 straddles the middle of BOTH wide glyphs.
+        app.on_mouse_down(rect.x + 1, y0);
+        app.on_mouse_drag(rect.x + 2, y0);
+        app.on_mouse_up(rect.x + 2, y0);
+        assert_eq!(app.selected_text(), "你好", "both straddled glyphs included");
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let reversed =
+            |x: u16, y: u16| buffer[(x, y)].modifier.contains(Modifier::REVERSED);
+        assert!(reversed(rect.x, y0), "你 highlighted from its first cell");
+        assert!(!reversed(rect.x + 4, y0), "space after 好 stays plain");
+        assert!(!reversed(rect.x + 5, y0), "'o' stays plain");
     }
 
     // ------------------------------------------------------------------

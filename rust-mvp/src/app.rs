@@ -207,13 +207,17 @@ pub struct UiState {
     /// A `boot.progress` record landed: the protocol phases own the splash
     /// status from here on (raw stderr chatter no longer overwrites them).
     pub boot_progress_seen: bool,
-    /// Transcript drag-selection as (anchor, head) content-line indices,
-    /// inclusive both ends (mouse capture swallows the terminal's native
-    /// selection, so the app models its own — Python screen selections).
-    pub selection: Option<(usize, usize)>,
-    /// Mouse-down content line while the left button is held over the
+    /// Transcript drag-selection as (anchor, head) content positions —
+    /// each a `(line, column)` pair in content-line index / terminal-cell
+    /// column space, inclusive both ends (mouse capture swallows the
+    /// terminal's native selection, so the app models its own, character-
+    /// ranged like Python's Textual screen selections: partial first line
+    /// from the anchor column, full middle lines, partial last line to the
+    /// head column).
+    pub selection: Option<((usize, usize), (usize, usize))>,
+    /// Mouse-down content position while the left button is held over the
     /// transcript (the drag anchor; cleared on mouse-up).
-    pub selection_drag_anchor: Option<usize>,
+    pub selection_drag_anchor: Option<(usize, usize)>,
     /// Copy-on-select settle deadline (monotonic) — Python's 0.4s
     /// `_selection_timer`, restarted on every selection change.
     pub selection_settle_deadline: Option<f64>,
@@ -1473,17 +1477,19 @@ impl App {
         }
     }
 
-    /// Map a screen y over the transcript to a content-line index (clamped
-    /// into the rect vertically and to the painted content).
-    fn transcript_content_line(&self, y: u16) -> Option<usize> {
+    /// Map a screen (x, y) over the transcript to a content position —
+    /// `(line, column)` in content-line index / terminal-cell column space
+    /// (clamped into the rect and to the painted content).
+    fn transcript_content_pos(&self, x: u16, y: u16) -> Option<(usize, usize)> {
         let layout = self.layout.borrow();
         let rect = layout.transcript;
-        if rect.height == 0 || layout.transcript_total_lines == 0 {
+        if rect.width == 0 || rect.height == 0 || layout.transcript_total_lines == 0 {
             return None;
         }
         let y = y.clamp(rect.y, rect.y + rect.height - 1);
         let line = layout.transcript_scroll + (y - rect.y) as usize;
-        Some(line.min(layout.transcript_total_lines - 1))
+        let x = x.clamp(rect.x, rect.x + rect.width - 1);
+        Some((line.min(layout.transcript_total_lines - 1), (x - rect.x) as usize))
     }
 
     /// Reveal a block (Python `transcript.scroll_block_visible`): release
@@ -1518,8 +1524,8 @@ impl App {
             ui.selection_drag_anchor = None;
         }
         if Self::rect_contains(layout.transcript, x, y) {
-            // Anchor a possible drag-selection at the pressed row.
-            let anchor = self.transcript_content_line(y);
+            // Anchor a possible drag-selection at the pressed cell.
+            let anchor = self.transcript_content_pos(x, y);
             self.ui.borrow_mut().selection_drag_anchor = anchor;
         }
 
@@ -1613,10 +1619,10 @@ impl App {
     /// Left-button drag: extend the transcript selection from the mouse-down
     /// anchor (Python's screen drag-selection). Every extension restarts the
     /// copy-on-settle timer, mirroring `_selection_changed`'s 0.4s debounce.
-    pub fn on_mouse_drag(&mut self, _x: u16, y: u16) {
+    pub fn on_mouse_drag(&mut self, x: u16, y: u16) {
         let anchor = self.ui.borrow().selection_drag_anchor;
         let Some(anchor) = anchor else { return };
-        let Some(head) = self.transcript_content_line(y) else { return };
+        let Some(head) = self.transcript_content_pos(x, y) else { return };
         let mut ui = self.ui.borrow_mut();
         ui.selection = Some((anchor, head));
         ui.selection_settle_deadline = Some(monotonic() + SELECTION_SETTLE_SECONDS);
@@ -1628,25 +1634,30 @@ impl App {
         self.ui.borrow_mut().selection_drag_anchor = None;
     }
 
-    /// The current transcript selection as plain text: the rendered lines
-    /// (last frame's plain-text projection) in the selected row range,
-    /// newline-joined. Empty when nothing (or only whitespace) is selected.
+    /// The current transcript selection as plain text: the exact character
+    /// range of the rendered lines (last frame's plain-text projection) —
+    /// partial first line from the anchor column, full middle lines,
+    /// partial last line to the head column (terminal-style, normalized
+    /// for drag direction; a cell in the middle of a wide glyph rounds to
+    /// include it). Empty when nothing (or only whitespace) is selected.
     pub fn selected_text(&self) -> String {
-        let Some((a, b)) = self.ui.borrow().selection else {
+        let Some((anchor, head)) = self.ui.borrow().selection else {
             return String::new();
         };
+        let (start, end) = crate::ui::normalize_selection(anchor, head);
         let layout = self.layout.borrow();
-        let (lo, hi) = (a.min(b), a.max(b));
         let text = layout
             .transcript_plain_lines
             .iter()
             .enumerate()
-            .filter(|(index, _)| *index >= lo && *index <= hi)
-            .map(|(_, line)| line.as_str())
+            .filter_map(|(index, line)| {
+                crate::ui::selection_line_cells(start, end, index)
+                    .map(|(lo, hi)| crate::ui::slice_line_cells(line, lo, hi))
+            })
             .collect::<Vec<_>>()
             .join("\n");
         if text.trim().is_empty() {
-            String::new() // a drag over blank rows selects no text
+            String::new() // a drag over blank cells selects no text
         } else {
             text
         }

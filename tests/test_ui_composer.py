@@ -560,6 +560,72 @@ async def test_settled_drag_selection_copies_automatically() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transcript_selection_is_character_ranged() -> None:
+    """Regression pin (user report: 'I can only select lines'): the
+    transcript delegates to Textual's native character-ranged selection —
+    a drag anchors at a (line, column) cell, so what lands on the clipboard
+    is the partial first line from the anchor column, full middle lines,
+    and the partial last line to the head column, never whole rows. Pinned
+    so a Textual upgrade or an app-side selection model can never quietly
+    degrade the granularity back to lines."""
+    from textual.events import MouseDown, MouseMove, MouseUp
+
+    from amplifier_app_newtui.model.blocks import Answer, Segment
+    from amplifier_app_newtui.ui.app import NewTuiApp
+    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+
+    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    # Keep the copy-on-settle reflex away from the real OS clipboard.
+    app.copy_to_clipboard = lambda text: None  # type: ignore[method-assign]
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause(0.3)
+        w1 = app.transcript.append(Answer(id="sel-a", spans=(Segment(text="alpha bravo charlie"),)))
+        w2 = app.transcript.append(Answer(id="sel-b", spans=(Segment(text="delta echo foxtrot"),)))
+        w3 = app.transcript.append(Answer(id="sel-c", spans=(Segment(text="你好 world"),)))
+        await pilot.pause(0.3)
+        assert w1 is not None and w2 is not None and w3 is not None
+
+        def ev(cls, x: int, y: int):
+            return cls(
+                widget=None,
+                x=x,
+                y=y,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=x,
+                screen_y=y,
+                style="",
+            )
+
+        async def drag(x0: int, y0: int, x1: int, y1: int) -> str | None:
+            app.screen._forward_event(ev(MouseDown, x0, y0))
+            await pilot.pause()
+            app.screen._forward_event(ev(MouseMove, x1, y1))
+            await pilot.pause()
+            app.screen._forward_event(ev(MouseUp, x1, y1))
+            await pilot.pause()
+            return app.screen.get_selected_text()
+
+        r1, r2, r3 = w1.region, w2.region, w3.region
+
+        # Single line, mid-word to mid-word: exactly the dragged cells —
+        # not the whole rendered row.
+        assert await drag(r1.x + 6, r1.y, r1.x + 10, r1.y) == "bravo"
+
+        # Across two blocks: partial first line from the anchor column,
+        # partial last line to the head column.
+        assert await drag(r1.x + 6, r1.y, r2.x + 4, r2.y) == "bravo charlie\ndelt"
+
+        # Wide glyphs: selection columns are terminal cells (你好 spans
+        # four cells), and the extraction still lands on the right chars.
+        assert await drag(r3.x + 5, r3.y, r3.x + 9, r3.y) == "world"
+
+
+@pytest.mark.asyncio
 async def test_native_clipboard_write_does_not_block_the_ui(monkeypatch) -> None:
     """A slow platform clipboard process runs off the Textual event loop."""
     import threading

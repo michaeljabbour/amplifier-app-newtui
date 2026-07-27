@@ -116,8 +116,7 @@ On exit, a real session prints the same resume hint as the Python app
   until the protocol grows ops)
 - OSC 777 notify / OSC 8 hyperlinks / OSC 52 clipboard (selection copies use the
   OS clipboard tool only, synchronously)
-- image paste, composer-internal text selection, character-ranged transcript
-  selection (drag selection is whole-line)
+- image paste, composer-internal text selection
 - the first-run provider gate (stays Python launcher-side; a provider-missing
   boot surfaces as the boot-failure diagnosis)
 
