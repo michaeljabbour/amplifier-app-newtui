@@ -2176,31 +2176,32 @@ status body, wired it into the router, and covered it with a test.";
         assert!(text.contains(DEMO_BANNER.0), "banner headline renders:\n{text}");
     }
 
-    // The protocol half of the session-banner wiring (Python
-    // `announce_ready` appends SessionBanner once identity is known):
-    // `session.started` carries no version headline, so the client
-    // synthesizes the Python identity detail line.
+    // The protocol half of the session-banner wiring: `session.started`
+    // carries no version headline (the Python boot banner's payload), and
+    // the previously synthesized headline-less identity line duplicated the
+    // footer verbatim — user report: "Bundle: newtui |
+    // anthropic/claude-fable-5 · session 680b51d" rendered as boot noise.
+    // Protocol sessions therefore append NO SessionBanner at boot (identity
+    // lives in the footer/title); the demo banner, which has a real
+    // headline, still posts — test_demo_boot_banner_seed_and_typed_turn.
     #[test]
-    fn test_session_started_appends_identity_banner() {
-        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+    fn test_session_started_adds_no_duplicate_banner() {
         let mut app = boot_pending_app();
         app.handle_wire(WireEvent::SessionStarted {
             session_id: "core-0123456".into(),
             bundle: "newtui".into(),
             model: "claude-sonnet-4-5".into(),
         });
-        let banners = blocks_of(&app, "session_banner");
-        assert_eq!(banners.len(), 1, "one banner at boot");
-        let TranscriptBlock::SessionBanner(banner) = &banners[0] else {
-            unreachable!()
-        };
-        assert_eq!(banner.headline, "");
-        assert_eq!(
-            banner.detail,
-            "Bundle: newtui | claude-sonnet-4-5 · session core-01"
+        assert!(
+            blocks_of(&app, "session_banner").is_empty(),
+            "protocol sessions add no boot banner (footer already shows identity)"
         );
-        let text = flat_text(&app);
-        assert!(text.contains("Bundle: newtui"), "banner renders:\n{text}");
+        // Identity still fills the chrome.
+        let ui = app.ui.borrow();
+        assert!(ui.splash.is_none(), "splash dissolves on identity");
+        assert_eq!(ui.bundle, "newtui");
+        assert_eq!(ui.model_name, "claude-sonnet-4-5");
+        assert_eq!(ui.session_short, "core-01");
     }
 
     // Adapts tests/test_flow_ledger.py::test_ctrl_l_prints_session_ledger:

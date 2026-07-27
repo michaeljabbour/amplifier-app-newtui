@@ -3,8 +3,9 @@ front-end needs.
 
 ``run --output-format jsonl`` already externalizes the normalized ``UIEvent``
 stream (events OUT). ``serve`` adds the input direction (submissions IN:
-``submit`` / ``approve`` / ``interrupt``) so an out-of-process UI can drive a
-full *interactive* session — approvals answered across the boundary included.
+``submit`` / ``steer`` / ``approve`` / ``interrupt``) so an out-of-process UI
+can drive a full *interactive* session — approvals answered across the
+boundary and mid-turn steering included.
 
 It wraps :class:`~amplifier_app_newtui.kernel.runtime.RealRuntime` exactly as the
 one-shot ``run`` path does (``start`` → ``submit`` → drain ``queue`` → ``cleanup``)
@@ -16,6 +17,7 @@ that changes versus ``run`` is that stdin carries submissions back.
 Wire (one JSON object per line):
 
   IN  (stdin)   {"op": "submit",    "text": "..."}
+                {"op": "steer",     "text": "..."}   (mid-turn course correction)
                 {"op": "approve",   "ticket_id": "approval-3", "choice": "Allow once"}
                 {"op": "interrupt"}
   OUT (stdout)  {"schema_version": 1, "type": "boot.progress",
@@ -107,9 +109,9 @@ async def serve(
 
 async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> int:
     """The protocol loop over an already-started ``runtime``: emit session start,
-    stream events, and service ``submit``/``approve``/``interrupt`` submissions
-    until ``source`` closes. Split out so tests drive it with a fake-module
-    runtime (real broker, no key/network)."""
+    stream events, and service ``submit``/``steer``/``approve``/``interrupt``
+    submissions until ``source`` closes. Split out so tests drive it with a
+    fake-module runtime (real broker, no key/network)."""
     records = JsonlRecords()
     loop = asyncio.get_running_loop()
 
@@ -180,6 +182,20 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
                     continue  # a turn is already running; ignore re-submit
                 text = str(op.get("text", ""))
                 turn = asyncio.create_task(_run_turn(runtime, out, text))
+            elif kind == "steer":
+                # Mid-turn course correction (additive op). Lands in the SAME
+                # bounded queue the in-process TUI shares with the runtime
+                # (RealRuntime.steering): the StepBoundaryBridge consumes one
+                # steer per provider:request and the runtime itself narrates
+                # the application as a durable "Applying steer: …" block
+                # (kernel/runtime.py _steer_applied) — nothing new is emitted
+                # on stdout here. Bound/empty violations are dropped silently:
+                # a protocol client enforces the same SteeringQueue limits
+                # locally, so a ValueError here is a client already told.
+                try:
+                    runtime.steering.enqueue(str(op.get("text", "")))
+                except ValueError:
+                    pass
             elif kind == "approve":
                 ticket = op.get("ticket_id") or (
                     runtime.broker.head.ticket_id if runtime.broker.head else None
@@ -219,6 +235,13 @@ async def _run_turn(runtime: RealRuntime, out: IO[str], text: str) -> str:
                         "session_id": runtime.session_id,
                         "error": str(caught), "error_type": type(caught).__name__})
         return ""
+    finally:
+        # Turn-end queue duty (ui/app_support.finish_turn_queues parity):
+        # leftover steers are discarded — an unconsumed steer must never
+        # inject into a later turn the user never aimed it at (ADR-0007
+        # §Steering). The protocol client drains its own mirror queue and
+        # shows the discard notice; serve only keeps the runtime honest.
+        runtime.steering.drain_steers()
     _emit_raw(out, {"schema_version": 1, "type": "turn.completed",
                     "session_id": runtime.session_id, "response": response})
     return response

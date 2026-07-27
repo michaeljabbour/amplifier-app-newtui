@@ -33,8 +33,8 @@
 //!   deferred-decision resolution, and the decision narration.
 //! - [`ClientRuntimeAdapter`] is the real-runtime counterpart: an adapter
 //!   struct over `Box<dyn `[`Runtime`]`>` + the shared queues. The wire
-//!   protocol carries only `submit` / `approve` / `interrupt` today, so
-//!   those three forward; the passthrough session ops answer their Python
+//!   protocol carries `submit` / `steer` / `approve` / `interrupt` today, so
+//!   those four forward; the passthrough session ops answer their Python
 //!   *starting* values — the in-process runtime handle the Python guard
 //!   tests for (`_runtime is None`) never exists here, because the live
 //!   session lives behind `serve`. Extending the protocol moves an op from
@@ -225,6 +225,16 @@ pub trait RuntimeAdapter {
     /// `queued message picked up` notice.
     fn submit_queued(&mut self, text: &str) {
         self.submit(text, &[]);
+    }
+
+    /// Deliver a mid-turn steer to the backend (the `steer` wire op).
+    ///
+    /// Transport only: the LOCAL echo/badge bookkeeping stays in the app's
+    /// shared [`SteeringQueue`]. Default no-op — the base/demo runtimes
+    /// consume that shared queue in-process (the demo's `steer_source`), so
+    /// there is nothing to send; only the protocol adapter forwards.
+    fn steer(&mut self, text: &str) {
+        let _ = text;
     }
 
     // -- persistent prompt history (cross-session ↑ recall) ------------------
@@ -680,7 +690,7 @@ impl RuntimeAdapter for RuntimeAdapterBase {
 ///
 /// Wraps any [`Runtime`] (in practice
 /// [`crate::core_client::CoreClientRuntime`], which owns the spawned
-/// `serve` backend). The three protocol ops forward over the wire; the
+/// `serve` backend). The four protocol ops forward over the wire; the
 /// passthrough session ops answer their Python *starting* values because
 /// the in-process runtime handle Python guards on never exists here (the
 /// live session is behind `serve`). Prompts persist per project directory,
@@ -823,6 +833,15 @@ impl RuntimeAdapter for ClientRuntimeAdapter {
     fn submit(&mut self, text: &str, _attachments: &[ImageAttachment]) {
         if self.started {
             self.runtime.submit(text.to_string());
+        }
+    }
+
+    /// Wire delivery for a mid-turn steer (`steer` op): the backend's
+    /// StepBoundaryBridge consumes it at the running turn's next step
+    /// boundary. Silent before boot, like `submit`.
+    fn steer(&mut self, text: &str) {
+        if self.started {
+            self.runtime.steer(text);
         }
     }
 
@@ -1448,6 +1467,9 @@ mod tests {
         fn submit(&mut self, prompt: String) {
             self.calls.borrow_mut().push(format!("submit:{prompt}"));
         }
+        fn steer(&mut self, text: &str) {
+            self.calls.borrow_mut().push(format!("steer:{text}"));
+        }
         fn answer_approval(&mut self, ticket_id: &str, choice: &str) {
             self.calls
                 .borrow_mut()
@@ -1548,25 +1570,33 @@ mod tests {
     }
 
     // The portable slice of Python test_proxies_run_on_runtime_thread (T9):
-    // the three wire ops forward to the wrapped runtime once started (the
-    // seventeen remaining proxies are backend-side until the protocol
-    // carries session ops).
+    // the four wire ops forward to the wrapped runtime once started (the
+    // remaining proxies are backend-side until the protocol carries
+    // session ops). `steer` is silent pre-boot, like `submit`.
     #[test]
     fn test_wire_ops_forward_to_the_wrapped_runtime() {
         let (mut adapter, calls) = client();
+        adapter.steer("too early"); // pre-boot: silent, nothing sent
+        assert!(calls.borrow().is_empty());
         let mut ready_calls = 0;
         adapter.start(&mut || ready_calls += 1);
         assert_eq!(ready_calls, 1);
 
         adapter.submit("hello", &[]);
+        adapter.steer("focus on the parser");
         adapter.answer_approval("t1", "Allow once");
         assert!(adapter.interrupt()); // dispatched over the wire
+        // finish_turn_queues parity: the queued next-turn message the app
+        // drains at prompt_complete goes over the wire as a plain submit.
+        adapter.submit_queued("queued follow-up");
         assert_eq!(
             *calls.borrow(),
             vec![
                 "submit:hello".to_string(),
+                "steer:focus on the parser".to_string(),
                 "approve:t1:Allow once".to_string(),
                 "interrupt".to_string(),
+                "submit:queued follow-up".to_string(),
             ]
         );
     }

@@ -820,16 +820,14 @@ impl App {
             )
         };
         // Protocol sessions learn identity from `session.started`, which
-        // carries no version headline — synthesize the Python identity
-        // detail line so the banner still lands at boot (honest subset).
-        let (headline, detail) = if banner.0.is_empty() && banner.1.is_empty() {
-            (
-                String::new(),
-                format!("Bundle: {bundle} | {model} · session {session_short}"),
-            )
-        } else {
-            banner
-        };
+        // carries no version headline (the Python boot banner's actual
+        // payload). Synthesizing a headline-less identity line here just
+        // duplicated the footer verbatim (user report: "Bundle: newtui |
+        // anthropic/claude-fable-5 · session 680b51d" as boot noise), so an
+        // empty banner appends NOTHING — deliberate divergence from the
+        // Python boot banner until the wire carries version info. The demo
+        // banner (real headline) and `/about` still render it.
+        let (headline, detail) = banner;
         let mut ui = self.ui.borrow_mut();
         ui.splash = None;
         if !headline.is_empty() || !detail.is_empty() {
@@ -964,9 +962,50 @@ impl App {
                         }
                     }
                 }
+                self.consume_steer_on_wire_narration(&event);
                 self.reducer.handle(&event);
                 self.settle_after_event();
             }
+        }
+    }
+
+    /// Wire-driven steer-echo sync: the backend consumed a steer at a step
+    /// boundary and narrated it (RealRuntime `_steer_applied`'s durable
+    /// root-session `Applying steer: …` block). The local queue copy exists
+    /// only for the ↳ echo/badge UX — consume it now so `sync_steer_echoes`
+    /// drops the echo and the turn-end drain doesn't false-report a discard.
+    /// Both queues are FIFO fed by the same submits, so the narration always
+    /// names the oldest pending steer. Protocol sessions only (`session_id`
+    /// set by `session.started`): the demo runtime consumes the shared local
+    /// queue directly through its `steer_source`, before its narration event
+    /// ever arrives here.
+    fn consume_steer_on_wire_narration(&mut self, event: &ev::UIEvent) {
+        let session_id = self.session_id.borrow().clone();
+        if session_id.is_empty() {
+            return;
+        }
+        let ev::UIEvent::ContentBlockEnd(block) = event else {
+            return;
+        };
+        if block.session_id != session_id
+            || block.block.get("demo_role").and_then(serde_json::Value::as_str)
+                != Some("narration")
+        {
+            return;
+        }
+        let applied = block
+            .block
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|text| text.strip_prefix("Applying steer: "));
+        let Some(applied) = applied else { return };
+        let head_matches = self
+            .steering
+            .pending_steers()
+            .first()
+            .is_some_and(|steer| steer.text == applied);
+        if head_matches {
+            let _ = self.steering.consume_next_steer();
         }
     }
 
@@ -1863,10 +1902,12 @@ impl App {
 
     /// Running Enter (Python `on_composer_steer`).
     ///
-    /// NOTE (honest gap): steers are queued in the shared SteeringQueue and
-    /// echoed as a notice, but the wire protocol has no steer op yet — a
-    /// live backend never consumes them mid-turn.
-    fn on_steer(&mut self, text: &str) {
+    /// The local SteeringQueue owns the ↳ echo/badge UX; for protocol
+    /// sessions the steer ALSO goes over the wire (`steer` op) into
+    /// RealRuntime's queue, where the StepBoundaryBridge consumes it at the
+    /// next step boundary. The backend's `Applying steer: …` narration then
+    /// drops the local echo (see `handle_wire`'s wire-driven consume).
+    pub(crate) fn on_steer(&mut self, text: &str) {
         self.adapter.borrow_mut().record_prompt(text);
         let selected = {
             let mut ui = self.ui.borrow_mut();
@@ -1918,18 +1959,24 @@ impl App {
                 self.steer_echoes
                     .borrow_mut()
                     .insert(queued.message_id.clone(), id.clone());
-                let mut ui = self.ui.borrow_mut();
-                let _ = ui
-                    .transcript
-                    .append(SteerEcho::new(id, text).into(), monotonic());
-                // Advertise the queue chord the terminal can actually
-                // deliver (README/§12: alt+enter is the legacy fallback).
-                let notice = if self.kitty_protocol {
-                    STEER_NOTICE
-                } else {
-                    STEER_NOTICE_LEGACY
-                };
-                ui.show_notice(notice, None);
+                {
+                    let mut ui = self.ui.borrow_mut();
+                    let _ = ui
+                        .transcript
+                        .append(SteerEcho::new(id, text).into(), monotonic());
+                    // Advertise the queue chord the terminal can actually
+                    // deliver (README/§12: alt+enter is the legacy fallback).
+                    let notice = if self.kitty_protocol {
+                        STEER_NOTICE
+                    } else {
+                        STEER_NOTICE_LEGACY
+                    };
+                    ui.show_notice(notice, None);
+                }
+                // Wire delivery: the backend owns the actual injection
+                // (protocol `steer` op; no-op for demo/base adapters, whose
+                // runtime consumes the shared local queue in-process).
+                self.adapter.borrow_mut().steer(text);
             }
             Err(error) => self.ui.borrow_mut().show_notice(&error.to_string(), None),
         }

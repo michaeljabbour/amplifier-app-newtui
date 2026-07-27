@@ -23,7 +23,10 @@ import pytest
 
 from amplifier_app_newtui.kernel import serve as serve_module
 from amplifier_app_newtui.kernel.approval import ALLOW_ONCE, DENY
+from amplifier_app_newtui.kernel.events import ContentBlockEnd
 from amplifier_app_newtui.kernel.serve import serve, serve_loop
+from amplifier_app_newtui.kernel.steering import StepBoundaryBridge
+from amplifier_app_newtui.model.queues import QueuedMessage, SteeringQueue
 
 # Started-runtime + policy-hook helpers; the offline_env fixture comes from
 # conftest (shared with test_runtime_offline).
@@ -197,6 +200,129 @@ async def test_serve_emits_boot_progress_records_before_session_started(monkeypa
         "action": "creating",
         "detail": "session",
     }
+
+
+class _FakeSteerRuntime:
+    """Just enough runtime surface for ``serve_loop`` to run a steerable turn:
+    a REAL ``SteeringQueue`` + ``StepBoundaryBridge`` (the exact objects
+    RealRuntime wires in ``start``), with a ``submit`` that parks mid-turn so
+    the test can feed a ``steer`` op over the protocol before the next step
+    boundary — the same fake-boundary pattern ``test_kernel_steering`` drives.
+    ``_steer_applied`` mirrors ``RealRuntime._steer_applied`` verbatim (the
+    durable ``Applying steer: …`` narration block)."""
+
+    class _NoBroker:
+        head = None
+
+        def add_listener(self, listener) -> None:  # noqa: D401 — broker shim
+            pass
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.broker = self._NoBroker()
+        self.session_id = "steer-01"
+        self.bundle_name = "newtui"
+        self.model_name = "test-model"
+        self.steering = SteeringQueue()
+        self._bridge = StepBoundaryBridge(
+            self.session_id, self.steering, on_applied=self._steer_applied
+        )
+        self.mid_turn = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    def _steer_applied(self, steer: QueuedMessage) -> None:
+        self.queue.put_nowait(
+            ContentBlockEnd(
+                session_id=self.session_id,
+                block_type="text",
+                block={
+                    "type": "text",
+                    "text": f"Applying steer: {steer.text}",
+                    "demo_role": "narration",
+                },
+            )
+        )
+
+    async def submit(self, text: str) -> str:
+        del text
+        # First step boundary (nothing queued yet), then park mid-turn.
+        await self._bridge.handle_event("provider:request", {"session_id": self.session_id})
+        self.mid_turn.set()
+        await self.resume.wait()
+        # The NEXT step boundary — a steer fed over the wire meanwhile is
+        # consumed here, exactly once (StepBoundaryBridge contract).
+        await self._bridge.handle_event("provider:request", {"session_id": self.session_id})
+        return "done"
+
+    async def cleanup(self) -> None:
+        pass
+
+
+def _narration_texts(out: _Capture) -> list[str]:
+    with out._lock:
+        return [
+            record["event"]["block"]["text"]
+            for record in out.lines
+            if record.get("type") == "runtime.event"
+            and record["event"].get("kind") == "content_block_end"
+            and record["event"].get("block", {}).get("demo_role") == "narration"
+        ]
+
+
+async def test_serve_steer_op_lands_in_runtime_queue_and_applies_at_step_boundary() -> None:
+    """The additive ``steer`` op routes into the SAME SteeringQueue the
+    in-process TUI shares with the runtime; a steer submitted mid-turn is
+    consumed at the next step boundary and the runtime's own ``Applying
+    steer: …`` narration reaches the protocol stream (serve emits nothing
+    extra). Fixes the reported data loss: the Rust client parked steers in
+    its local queue and a live backend never consumed them."""
+    runtime = _FakeSteerRuntime()
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))  # type: ignore[arg-type]
+    )
+
+    stdin.feed({"op": "submit", "text": "build the parser"})
+    await asyncio.wait_for(runtime.mid_turn.wait(), timeout=5.0)
+
+    stdin.feed({"op": "steer", "text": "also create a dotgraph of the modules"})
+    await _wait_until(lambda: len(runtime.steering.pending_steers) == 1)
+    queued = runtime.steering.pending_steers[0]
+    assert queued.text == "also create a dotgraph of the modules"
+    assert queued.kind == "steer"
+
+    runtime.resume.set()
+    await _wait_until(lambda: out.find("turn.completed") is not None)
+    # Consumed at the boundary: queue empty, narration on the wire.
+    assert runtime.steering.pending_steers == ()
+    assert _narration_texts(out) == ["Applying steer: also create a dotgraph of the modules"]
+
+    stdin.close()
+    assert await server == 0
+
+
+async def test_serve_drains_leftover_steers_at_turn_end() -> None:
+    """A steer the turn never reached a boundary for is DISCARDED at turn end
+    (finish_turn_queues parity) — it must not inject into a later turn."""
+    runtime = _FakeSteerRuntime()
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))  # type: ignore[arg-type]
+    )
+
+    stdin.feed({"op": "submit", "text": "build the parser"})
+    await asyncio.wait_for(runtime.mid_turn.wait(), timeout=5.0)
+    stdin.feed({"op": "steer", "text": "first"})
+    stdin.feed({"op": "steer", "text": "second"})
+    await _wait_until(lambda: len(runtime.steering.pending_steers) == 2)
+
+    runtime.resume.set()  # one boundary left: "first" applies, "second" cannot
+    await _wait_until(lambda: out.find("turn.completed") is not None)
+    assert _narration_texts(out) == ["Applying steer: first"]
+    assert runtime.steering.pending == ()  # leftover drained, not leaked
+
+    stdin.close()
+    assert await server == 0
 
 
 async def test_serve_approval_deny_continues(offline_env) -> None:

@@ -68,7 +68,7 @@ row (NOT WIRED), not silently absorbed here.
 | Ref | Behavior | Status |
 |---|---|---|
 | §5-send | Idle + Enter → send user turn | covered-by:main::test_ui_snapshots_full_turn_renders_headless (submit op) + ui/composer::test_running_enter_posts_steer_not_submit (idle branch) |
-| §5-steer | Running + Enter → steer this turn (queued in SteeringQueue, exact notice); second steer queues a full message | added:main::test_flow_steer_running_enter_steers_then_second_steer_queues (client half; mid-turn wire *delivery* has no serve op yet — recorded gap in MIGRATION ui/app row) |
+| §5-steer | Running + Enter → steer this turn (queued in SteeringQueue, exact notice); second steer queues a full message | covered-by:main::test_flow_steer_running_enter_steers_then_second_steer_queues (client half) + core_client::steer_over_process_boundary_applies_and_drops_echo (wire delivery: user-authorized additive `steer` serve op → RealRuntime.steering; backend narration `Applying steer: …` consumes the local echo copy; Python side pinned in tests/test_serve_offline.py) |
 | §5-queue | Running + Shift+Enter → queue full next-turn message (strip + `· q1` + auto-run at turn end) | covered-by:main::test_flow_steer_queue_shift_enter_queues_and_drains_at_turn_end (exact strip text, footer badge, `queued message picked up`) |
 | §5-slash | `/` prefix opens the palette live-filtered | covered-by:main::test_flow_palette_slash_opens_and_builtin_runs |
 | §5-esc | Esc priority lane→palette→rewind→lanes→interrupt; second Esc ≤750ms opens rewind | covered-by:ui/keymap::test_esc_chain_priority_order_per_spec (+0.75 pin) + ui/app_support::test_esc_sequence_accepts_the_boundary_once, test_esc_sequence_expires_and_clears |
@@ -129,7 +129,7 @@ row (NOT WIRED), not silently absorbed here.
 | §11-interrupt | Esc while running → step-boundary stop, `Interrupted. Goal: …` recap, `· interrupted` rule | covered-by:main::test_flow_interrupt_esc_requests_break_then_recap_and_rule + ui/reducer interrupted-close-out cases |
 | §11-end-notice | Turn end notice `agents N done` / `turn interrupted · context saved` | covered-by:ui/reducer fan-out end-notice case + main flow-interrupt (exact strings) |
 | §11-closeout | Fan-out close-out folds chrome into durable summary; survives resume via events log | covered-by:ui/reducer::test_all_complete_finalizes_duration_and_failure_state + replay suite |
-| §11-banner | Session banner: bright `Amplifier <ver> · core <ver>` + dim bundle/provider/model/session line | covered-by:main.rs test_demo_boot_banner_seed_and_typed_turn + test_session_started_appends_identity_banner (boot-time posting wired in wave 2) + ui/transcript_render session-banner golden |
+| §11-banner | Session banner: bright `Amplifier <ver> · core <ver>` + dim bundle/provider/model/session line | covered-by:main.rs test_demo_boot_banner_seed_and_typed_turn + ui/transcript_render session-banner golden + commands test_about_posts_session_banner_block — the banner renders in demo boot and `/about`. DELIBERATE DIVERGENCE for protocol boots: `session.started` carries no version headline (the Python banner's actual payload) and the synthesized headline-less identity line duplicated the footer verbatim (user report: boot noise), so protocol sessions append NO boot banner — pinned by main::test_session_started_adds_no_duplicate_banner |
 
 ## §12 Non-visual requirements
 

@@ -29,6 +29,11 @@ use crate::ui::demo_wiring::{
 /// from a script or a process.
 pub trait Runtime {
     fn submit(&mut self, prompt: String);
+    /// Mid-turn steer: deliver `text` to the backend's steering queue so the
+    /// running turn applies it at its next step boundary (the `steer` wire
+    /// op). Default no-op — the demo runtime consumes the app's shared local
+    /// queue through its injected [`SteerSourceFn`] instead.
+    fn steer(&mut self, _text: &str) {}
     /// Answer a parked approval by ticket id with a broker choice string
     /// (`"Allow once"` / `"Allow always"` / `"Deny"`).
     fn answer_approval(&mut self, _ticket_id: &str, _choice: &str) {}

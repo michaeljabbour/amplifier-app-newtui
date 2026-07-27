@@ -94,6 +94,9 @@ impl Runtime for CoreClientRuntime {
     fn submit(&mut self, prompt: String) {
         self.send(protocol::submit(&prompt));
     }
+    fn steer(&mut self, text: &str) {
+        self.send(protocol::steer(text));
+    }
     fn answer_approval(&mut self, ticket_id: &str, choice: &str) {
         self.send(protocol::approve(ticket_id, choice));
     }
@@ -210,6 +213,108 @@ mod tests {
         assert!(text.contains("/health"), "durable answer:\n{text}");
         assert!(text.contains("+18/−0"), "turn rule carries the diffstat:\n{text}");
         assert!(text.contains("$0.01"), "footer cost from exact Decimal:\n{text}");
+    }
+
+    /// Mid-turn steer over the process boundary (user report: "steer queued ·
+    /// applies at next step boundary" while the model never saw the text —
+    /// the client parked steers locally and no wire op existed). Pins the
+    /// full loop: steer op reaches the backend while the turn is parked →
+    /// the backend applies it at its next step boundary and narrates
+    /// `Applying steer: …` → the wire narration consumes the local queue
+    /// copy, dropping the ↳ echo (no turn-end discard notice) → the answer
+    /// reflects the steered flow.
+    #[test]
+    fn steer_over_process_boundary_applies_and_drops_echo() {
+        use crate::model::blocks::TranscriptBlock;
+        let backend = format!("{}/backend/serve_mock.py", env!("CARGO_MANIFEST_DIR"));
+        let (tx, rx) = channel::<Msg>();
+        let rt = CoreClientRuntime::spawn(&["python3".to_string(), backend], tx)
+            .expect("spawn backend");
+
+        let adapter = ClientRuntimeAdapter::new(Box::new(rt));
+        let mut app = App::new(Box::new(adapter), true, None, None);
+        app.boot();
+
+        // Boot to identity, then run a turn that parks on the approval.
+        loop {
+            let msg = rx.recv_timeout(Duration::from_secs(5)).expect("boot record");
+            let Msg::Rt(ev) = msg else { continue };
+            let is_session = matches!(ev, protocol::WireEvent::SessionStarted { .. });
+            app.handle_wire(ev);
+            if is_session {
+                break;
+            }
+        }
+        app.submit_prompt("Add a health check endpoint");
+        while app.ui.borrow().approval.is_none() {
+            let msg = rx.recv_timeout(Duration::from_secs(5)).expect("park on approval");
+            if let Msg::Rt(ev) = msg {
+                app.handle_wire(ev);
+            }
+        }
+
+        // Mid-turn steer: local echo + wire delivery, in one composer path.
+        app.on_steer("also create a dotgraph of the modules");
+        assert_eq!(
+            app.steering.pending_steers().len(),
+            1,
+            "local queue keeps the echo bookkeeping copy"
+        );
+        let echoes: Vec<_> = app
+            .ui
+            .borrow()
+            .transcript
+            .blocks()
+            .into_iter()
+            .filter(|block| block.kind() == "steer_echo")
+            .collect();
+        assert_eq!(echoes.len(), 1, "↳ echo posted while the steer is pending");
+
+        // Answer the approval; the backend's next step boundary applies the
+        // steer and the turn runs to completion.
+        app.on_key("enter"); // "Allow once"
+        let mut saw_narration = false;
+        while let Ok(msg) = rx.recv_timeout(Duration::from_secs(5)) {
+            if let Msg::Rt(ev) = msg {
+                app.handle_wire(ev);
+                if !app.ui.borrow().turn_active {
+                    break;
+                }
+            }
+        }
+        assert!(!app.ui.borrow().turn_active, "turn completed over the protocol");
+
+        for block in app.ui.borrow().transcript.blocks() {
+            if let TranscriptBlock::Narration(narration) = &block {
+                if narration.text == "Applying steer: also create a dotgraph of the modules" {
+                    saw_narration = true;
+                }
+            }
+            assert_ne!(
+                block.kind(),
+                "steer_echo",
+                "the wire narration consumed the local copy — echo dropped"
+            );
+        }
+        assert!(saw_narration, "backend narrated the applied steer over the wire");
+        assert!(
+            app.steering.pending_steers().is_empty(),
+            "local queue emptied by the wire-driven consume (no discard at turn end)"
+        );
+        assert_ne!(
+            app.ui.borrow().notices.current(),
+            Some(crate::ui::app_support::STEER_DISCARDED_NOTICE),
+            "a consumed steer must not report a turn-end discard"
+        );
+
+        // The answer reflects the steered flow (mock appends the applied steer).
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("I also applied your steer"),
+            "answer reflects the steer:\n{text}"
+        );
     }
 
     /// LIVE end-to-end against the REAL Python backend (`uv run

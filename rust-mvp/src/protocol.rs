@@ -6,7 +6,8 @@
 //! wire AND resume replay — plus the two records `run` can't emit as runtime
 //! events: `approval.required` (carries the broker ticket id) and
 //! `session.started` (session identity for the title/footer). Submissions go
-//! the other way: `submit` / `approve` (ticket + broker choice) / `interrupt`.
+//! the other way: `submit` / `steer` (mid-turn course correction) / `approve`
+//! (ticket + broker choice) / `interrupt`.
 
 use crate::kernel::events::{parse_event, UIEvent};
 use serde_json::{json, Value};
@@ -81,6 +82,14 @@ pub fn decode_wire(line: &str) -> Option<WireEvent> {
 
 pub fn submit(text: &str) -> Value {
     json!({ "op": "submit", "text": text })
+}
+/// Mid-turn steer (user-authorized additive op): `kernel/serve.py` routes it
+/// into RealRuntime's SteeringQueue — the SAME queue the in-process Python
+/// TUI shares with the runtime — so the StepBoundaryBridge injects it at the
+/// running turn's next `provider:request` and the runtime narrates the
+/// application back as a durable `Applying steer: …` block.
+pub fn steer(text: &str) -> Value {
+    json!({ "op": "steer", "text": text })
 }
 pub fn approve(ticket_id: &str, choice: &str) -> Value {
     json!({ "op": "approve", "ticket_id": ticket_id, "choice": choice })
@@ -197,6 +206,16 @@ mod tests {
                 error: "provider auth expired".into(),
                 error_type: "APIStatusError".into(),
             })
+        );
+    }
+
+    // Pins the exact wire shape kernel/serve.py's steer arm consumes
+    // ({"op": "steer", "text": ...} → runtime.steering.enqueue).
+    #[test]
+    fn steer_op_wire_shape() {
+        assert_eq!(
+            steer("also create a dotgraph").to_string(),
+            r#"{"op":"steer","text":"also create a dotgraph"}"#
         );
     }
 

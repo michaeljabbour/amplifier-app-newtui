@@ -3,6 +3,7 @@
 Python kernel. It owns the turn loop and speaks a bidirectional line protocol:
 
   submissions IN  (stdin, one JSON/line):  {"op":"submit","text":...}
+                                           {"op":"steer","text":...}
                                            {"op":"approve","granted":bool}
                                            {"op":"interrupt"}
   events OUT      (stdout, one JSON/line):  the app's schema-v1 envelope —
@@ -77,6 +78,26 @@ def usage_event(event_id: str, **fields) -> None:
     )
 
 
+_steers: list[str] = []
+"""Mid-turn ``steer`` ops received while the turn was parked — the mock's
+stand-in for RealRuntime's SteeringQueue (kernel/serve.py routes the op
+into ``runtime.steering``)."""
+
+
+def apply_steers() -> list[str]:
+    """Step boundary: apply queued mid-turn steers with the exact narration
+    shape kernel/runtime.py ``RealRuntime._steer_applied`` puts on the wire
+    (a durable ContentBlockEnd text block with the narration role marker)."""
+    applied: list[str] = []
+    while _steers:
+        text = _steers.pop(0)
+        applied.append(text)
+        event("content_block_end", session_id="core-01", block_type="text",
+              block={"type": "text", "text": f"Applying steer: {text}",
+                     "demo_role": "narration"})
+    return applied
+
+
 def tool_call(index: int, tool: str, tool_input: dict, result: dict | None = None) -> None:
     """One tool:pre/tool:post pair, correlated by tool_call_id exactly as the
     real runtime emits them (the reducer folds them into its burst digest)."""
@@ -108,12 +129,30 @@ def run_turn(prompt: str) -> str:
     time.sleep(DELAY)
 
     # Park on approval: emit the ticket-bearing record (the one `run` can't), then
-    # block for the UI's decision routed back by ticket id.
+    # block for the UI's decision routed back by ticket id. A `steer` op that
+    # arrives while parked queues, exactly as kernel/serve.py enqueues it into
+    # RealRuntime.steering while a turn is in flight.
     _emit({"schema_version": 1, "type": "approval.required",
            "ticket_id": "approval-1", "prompt": "write_file src/health.py",
            "options": ["Allow once", "Allow always", "Deny"]})
-    decision = read_op() or {}
-    granted = str(decision.get("choice", "")).startswith("Allow") if decision.get("op") == "approve" else False
+    granted = False
+    while True:
+        decision = read_op()
+        if decision is None:
+            break  # stdin closed mid-park — fail closed (deny)
+        if decision.get("op") == "steer":
+            _steers.append(str(decision.get("text", "")))
+            continue
+        if decision.get("op") == "approve":
+            granted = str(decision.get("choice", "")).startswith("Allow")
+        break
+
+    # The next step boundary after the park: queued steers apply here (the
+    # StepBoundaryBridge consumes one per provider:request in the real thing).
+    steered = apply_steers()
+    steer_suffix = (
+        " I also applied your steer: " + "; ".join(steered) + "." if steered else ""
+    )
 
     if not granted:
         event("notification", message="Denied — continuing without the write", level="warn")
@@ -122,7 +161,7 @@ def run_turn(prompt: str) -> str:
         tool_call(6, "write_file", {"path": "src/health.py"},
                   {"status": "denied", "reason": "denied by user",
                    "continuation": "continuing without the write"})
-        response = "Understood — I left the endpoint out."
+        response = "Understood — I left the endpoint out." + steer_suffix
         event("stream_block_start", block_type="text")
         for w in response.split():
             event("stream_block_delta", text=w + " ")
@@ -138,7 +177,7 @@ def run_turn(prompt: str) -> str:
     time.sleep(DELAY)
     response = (
         "I've added a `/health` endpoint that returns 200 with a JSON status "
-        "body, wired it into the router, and covered it with a test."
+        "body, wired it into the router, and covered it with a test." + steer_suffix
     )
     event("stream_block_start", block_type="text")
     for w in response.split():
