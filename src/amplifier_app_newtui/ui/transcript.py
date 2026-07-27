@@ -417,7 +417,7 @@ class BlockWidget(Static):
 
     def _activate(self) -> None:
         block = self._block
-        if block.kind in ("tool_line", "blocked") and block.body:
+        if (block.kind == "tool_line" or block.kind == "blocked") and block.body:
             # Blocked lines expand exactly like tool lines: the digest stays
             # on the row, the raw command lives behind the click.
             toggled = block.model_copy(update={"expanded": not block.expanded})
