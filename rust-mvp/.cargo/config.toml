@@ -1,5 +1,4 @@
 [alias]
 # `cargo demo` — scripted in-process demo (no backend, no network).
 demo = "run -- --demo"
-# `cargo mock` — full wire protocol against the offline serve_mock backend.
-mock = "run"
+

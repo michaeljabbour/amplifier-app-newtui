@@ -4,7 +4,7 @@
 //! chord names and dispatch through the assembled `App` (keymap contexts,
 //! composer semantics, approval bar, ESC_CHAIN).
 
-use amplifier_newtui_rs::{app, core_client, live, message, runtime, ui};
+use amplifier_newtui_rs::{app, core_client, message, protocol, runtime, ui};
 
 use app::{App, DemoAdapter};
 use core_client::CoreClientRuntime;
@@ -16,8 +16,8 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use live::LiveRuntime;
 use message::Msg;
+use protocol::WireEvent;
 use ratatui::prelude::*;
 use runtime::ScriptedDemoRuntime;
 use std::cell::RefCell;
@@ -40,9 +40,8 @@ fn main() -> io::Result<()> {
     let kitty_protocol = ui::term_probe::probe_kitty_protocol(None);
 
     // Runtime selection:
-    //   --demo    → scripted in-process DemoRuntime (real event vocabulary)
-    //   --direct  → LiveRuntime (illustrative UI-calls-provider shortcut, not
-    //               the target architecture; falls back to demo without a key)
+    //   --demo    → scripted in-process ScriptedDemoRuntime (the kernel/demo.py
+    //               port, real event vocabulary; explicit opt-in only)
     //   default   → CoreClientRuntime: client of a backend process over the
     //               protocol (the canonical shape; drop-in for amplifier-core)
     let args: Vec<String> = std::env::args().collect();
@@ -52,53 +51,38 @@ fn main() -> io::Result<()> {
     let flags = parse_launch_flags(&args);
     let initial_mode = flags.mode.clone();
     let initial_mode = initial_mode.as_deref();
-    let mut app = if args.iter().any(|a| a == "--demo" || a == "demo") {
+    // A backend spawn failure never falls back to the demo: the app boots
+    // into `announce_boot_failure`'s honest diagnosis instead (set below).
+    let mut boot_error: Option<String> = None;
+    // The ONLY way into the scripted demo is the explicit `--demo` flag
+    // (Python parity — kernel/demo.py behind main.py's --demo).
+    let mut app = if args.iter().any(|a| a == "--demo") {
         demo_app(&tx, kitty_protocol, initial_mode)
-    } else if args.iter().any(|a| a == "--direct") {
-        match LiveRuntime::from_env(tx.clone()) {
-            Ok(rt) => {
-                let model = rt.model().to_string();
-                let mut adapter = ClientRuntimeAdapter::new(Box::new(rt));
-                adapter.base_mut().bundle_name = "newtui".into();
-                adapter.base_mut().model_name = model;
-                adapter.base_mut().session_short = live::LIVE_SESSION_ID.into();
-                App::new(Box::new(adapter), kitty_protocol, initial_mode, None)
-            }
-            Err(_) => {
-                let app = demo_app(&tx, kitty_protocol, initial_mode);
-                app.ui
-                    .borrow_mut()
-                    .show_notice("no ANTHROPIC_API_KEY — scripted demo", None);
-                app
-            }
-        }
     } else {
         let env_cmd = std::env::var("AMPLIFIER_SERVE_CMD").ok();
-        let (cmd, fallback_notice) =
-            resolve_backend(env_cmd.as_deref(), repo_serve_root().as_deref(), &flags);
-        match CoreClientRuntime::spawn(&cmd, tx.clone()) {
-            Ok(rt) => {
-                let app = App::new(
-                    Box::new(ClientRuntimeAdapter::new(Box::new(rt))),
-                    kitty_protocol,
-                    initial_mode,
-                    None,
-                );
-                if let Some(notice) = fallback_notice {
-                    app.ui.borrow_mut().show_notice(&notice, None);
-                }
-                app
-            }
+        let cmd = resolve_backend(env_cmd.as_deref(), repo_serve_root().as_deref(), &flags);
+        let runtime: Box<dyn runtime::Runtime> = match CoreClientRuntime::spawn(&cmd, tx.clone())
+        {
+            Ok(rt) => Box::new(rt),
             Err(e) => {
-                let app = demo_app(&tx, kitty_protocol, initial_mode);
-                app.ui
-                    .borrow_mut()
-                    .show_notice(&format!("backend spawn failed ({e}) — scripted demo"), None);
-                app
+                boot_error = Some(format!("backend spawn failed ({}: {e})", cmd[0]));
+                Box::new(UnspawnedBackend { tx: tx.clone() })
             }
-        }
+        };
+        App::new(
+            Box::new(ClientRuntimeAdapter::new(runtime)),
+            kitty_protocol,
+            initial_mode,
+            None,
+        )
     };
     app.boot();
+    if let Some(detail) = boot_error {
+        // Same path as a structured serve `error` record before
+        // session.started: splash dismissed, `⊘ session failed to start ·
+        // <detail>` + the doctor hint rendered (ui/app_support.py parity).
+        app.handle_wire(WireEvent::Error { error: detail, error_type: "SpawnError".into() });
+    }
 
     let mut terminal = setup_terminal()?;
     let size = terminal.size()?;
@@ -153,6 +137,23 @@ fn main() -> io::Result<()> {
         println!("{hint}");
     }
     Ok(())
+}
+
+/// The runtime seat when the backend process could not be spawned: the app
+/// runs (so the boot-failure diagnosis is readable and ctrl+d works), and
+/// any submit is answered with the honest failed-turn error — there is no
+/// backend, and no scripted stand-in is ever substituted silently.
+struct UnspawnedBackend {
+    tx: Sender<Msg>,
+}
+
+impl runtime::Runtime for UnspawnedBackend {
+    fn submit(&mut self, _prompt: String) {
+        let _ = self.tx.send(Msg::Rt(WireEvent::Error {
+            error: "backend not running — fix the setup and relaunch, or use --demo".into(),
+            error_type: "BackendUnavailable".into(),
+        }));
+    }
 }
 
 /// The exit farewell of main.py `_print_resume_hint`, verbatim: real
@@ -375,17 +376,19 @@ fn repo_serve_root() -> Option<std::path::PathBuf> {
 /// launch flags appended, mirroring Python's launch order: an explicit
 /// `AMPLIFIER_SERVE_CMD` wins; otherwise the REAL `uv run amplifier-newtui
 /// serve` backend when the checkout is present (real session by default);
-/// otherwise the offline mock with an honest notice (second value).
+/// otherwise the installed `amplifier-newtui serve` from PATH. There is no
+/// scripted fallback: if the command cannot spawn, the boot-failure
+/// diagnosis renders (never a silent demo or mock).
 fn resolve_backend(
     env_cmd: Option<&str>,
     repo_root: Option<&std::path::Path>,
     flags: &LaunchFlags,
-) -> (Vec<String>, Option<String>) {
+) -> Vec<String> {
     if let Some(cmd) = env_cmd {
         let mut parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
         if !parts.is_empty() {
             parts.extend(serve_flag_args(flags));
-            return (parts, None);
+            return parts;
         }
     }
     if let Some(root) = repo_root {
@@ -400,15 +403,11 @@ fn resolve_backend(
             "serve".to_string(),
         ];
         cmd.extend(serve_flag_args(flags));
-        return (cmd, None);
+        return cmd;
     }
-    (
-        vec![
-            "python3".to_string(),
-            format!("{}/backend/serve_mock.py", env!("CARGO_MANIFEST_DIR")),
-        ],
-        Some("no amplifier-newtui checkout — offline mock backend (scripted turn)".to_string()),
-    )
+    let mut cmd = vec!["amplifier-newtui".to_string(), "serve".to_string()];
+    cmd.extend(serve_flag_args(flags));
+    cmd
 }
 
 fn spawn_input_reader(tx: Sender<Msg>) {
@@ -1747,7 +1746,7 @@ status body, wired it into the router, and covered it with a test.";
 
     /// Pure flag→backend-args assembly: click grammar in (`--flag value`,
     /// `--flag=value`, short `-p`/`-m`), serve argv out, launch order
-    /// env-override → real serve (repo layout) → mock + honest notice.
+    /// env-override → real serve (repo layout) → installed serve from PATH.
     #[test]
     fn test_launch_flags_assemble_backend_command() {
         let argv: Vec<String> = [
@@ -1782,34 +1781,67 @@ status body, wired it into the router, and covered it with a test.";
         ];
 
         // AMPLIFIER_SERVE_CMD wins, with the flags appended to it too.
-        let (cmd, notice) =
-            resolve_backend(Some("uv run amplifier-newtui serve"), None, &flags);
+        let cmd = resolve_backend(Some("uv run amplifier-newtui serve"), None, &flags);
         let expected: Vec<&str> = ["uv", "run", "amplifier-newtui", "serve"]
             .into_iter()
             .chain(forwarded)
             .collect();
         assert_eq!(cmd, expected);
-        assert!(notice.is_none());
 
         // Repo layout → the REAL serve backend by default (uv --project).
-        let (cmd, notice) =
-            resolve_backend(None, Some(std::path::Path::new("/checkout")), &flags);
+        let cmd = resolve_backend(None, Some(std::path::Path::new("/checkout")), &flags);
         let expected: Vec<&str> =
             ["uv", "run", "--project", "/checkout", "amplifier-newtui", "serve"]
                 .into_iter()
                 .chain(forwarded)
                 .collect();
         assert_eq!(cmd, expected);
-        assert!(notice.is_none());
 
-        // No checkout → the offline mock, honestly labeled.
-        let (cmd, notice) = resolve_backend(None, None, &LaunchFlags::default());
-        assert_eq!(cmd[0], "python3");
-        assert!(cmd[1].ends_with("backend/serve_mock.py"), "mock fallback: {cmd:?}");
+        // No checkout → the installed `amplifier-newtui serve` from PATH.
+        // NEVER a scripted/mock stand-in: a spawn failure runs the
+        // boot-failure diagnosis instead.
+        let cmd = resolve_backend(None, None, &LaunchFlags::default());
+        assert_eq!(cmd, ["amplifier-newtui", "serve"]);
+    }
+
+    // A backend that cannot be spawned boots into the exact
+    // announce_boot_failure diagnosis (never a silent demo): the
+    // `UnspawnedBackend` seat plus a synthesized SpawnError record renders
+    // `⊘ session failed to start · <spawn error>` + the doctor hint, and a
+    // later submit is answered with the honest failed-turn notice.
+    #[test]
+    fn test_spawn_failure_boots_into_boot_failure_diagnosis() {
+        let (tx, rx) = channel::<Msg>();
+        let adapter = ClientRuntimeAdapter::new(Box::new(UnspawnedBackend { tx }));
+        let mut app = App::new(Box::new(adapter), true, None, None);
+        app.boot();
+        assert!(app.ui.borrow().splash.is_some(), "splash up while booting");
+        app.handle_wire(WireEvent::Error {
+            error: "backend spawn failed (amplifier-newtui: No such file or directory)".into(),
+            error_type: "SpawnError".into(),
+        });
+        assert!(app.ui.borrow().splash.is_none(), "splash dismissed");
+        assert_eq!(app.ui.borrow().notices.current(), Some("session failed to start"));
+        let text = flat_text(&app);
         assert!(
-            notice.as_deref().is_some_and(|n| n.contains("mock")),
-            "fallback carries an honest notice: {notice:?}"
+            text.contains(
+                "⊘ session failed to start · backend spawn failed \
+(amplifier-newtui: No such file or directory)"
+            ),
+            "spawn diagnosis:\n{text}"
         );
+        assert!(text.contains(DOCTOR_HINT), "doctor hint:\n{text}");
+
+        // Submitting into the dead seat yields the honest failed-turn error
+        // (routed back through the wire like any turn failure).
+        app.on_key("h");
+        app.on_key("i");
+        app.on_key("enter");
+        let error = match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(Msg::Rt(WireEvent::Error { error, .. })) => error,
+            _ => panic!("expected an error record on the app-loop queue"),
+        };
+        assert!(error.contains("backend not running"), "honest error: {error}");
     }
 
     // The serve boot-failure record (`{"type":"error",...}` before

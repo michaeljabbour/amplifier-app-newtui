@@ -21,7 +21,7 @@ pub struct CoreClientRuntime {
 }
 
 impl CoreClientRuntime {
-    /// Spawn the backend `cmd` (e.g. `["python3", ".../serve_mock.py"]`) and wire
+    /// Spawn the backend `cmd` (e.g. `["uv", "run", "amplifier-newtui", "serve"]`) and wire
     /// a reader thread that normalizes its event stream onto the app-loop queue.
     pub fn spawn(cmd: &[String], tx: Sender<Msg>) -> std::io::Result<Self> {
         let mut child = Command::new(&cmd[0])
