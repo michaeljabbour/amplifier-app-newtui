@@ -128,11 +128,29 @@ mod tests {
         let mut app = App::new(Box::new(adapter), true, None, None);
         app.boot();
 
-        // The mock emits session.started immediately: identity + splash gone.
-        match rx.recv_timeout(Duration::from_secs(5)).expect("session record") {
-            Msg::Rt(ev) => app.handle_wire(ev),
-            _ => panic!("expected wire event"),
+        // The mock emits boot.progress phases first (they paint the splash
+        // status while modules load), then session.started (identity +
+        // splash gone) — pinning the boot flow end-to-end offline.
+        let mut boot_statuses: Vec<String> = Vec::new();
+        loop {
+            let msg = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("boot/session record");
+            let Msg::Rt(ev) = msg else { continue };
+            let is_session = matches!(ev, protocol::WireEvent::SessionStarted { .. });
+            app.handle_wire(ev);
+            if is_session {
+                break;
+            }
+            if let Some(splash) = app.ui.borrow().splash.as_ref() {
+                boot_statuses.push(splash.status().to_string());
+            }
         }
+        assert!(
+            boot_statuses.contains(&"loading · newtui".to_string())
+                && boot_statuses.contains(&"installing package · tool-bash".to_string()),
+            "boot.progress phases reached the splash (Python boot_progress text): {boot_statuses:?}"
+        );
         assert!(app.ui.borrow().splash.is_none(), "splash dissolves on identity");
         assert_eq!(app.ui.borrow().bundle, "newtui");
 

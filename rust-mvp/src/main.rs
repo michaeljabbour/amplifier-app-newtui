@@ -107,6 +107,10 @@ fn main() -> io::Result<()> {
                 MouseEventKind::Down(MouseButton::Left) => {
                     app.on_mouse_down(mouse.column, mouse.row)
                 }
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    app.on_mouse_drag(mouse.column, mouse.row)
+                }
+                MouseEventKind::Up(MouseButton::Left) => app.on_mouse_up(mouse.column, mouse.row),
                 _ => {}
             },
             Msg::Term(_) => {}
@@ -1227,6 +1231,220 @@ status body, wired it into the router, and covered it with a test.";
             app.ui.borrow().transcript.focused_lane().is_some(),
             "row click focused the lane"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Transcript drag-selection + copy (each test names the Python case in
+    // tests/test_ui_composer.py it adapts).
+    // ------------------------------------------------------------------
+
+    /// Append a few answer rows and drag-select the first `rows` of the
+    /// first block. Returns the selected text.
+    fn drag_select_rows(app: &mut App, rows: u16) -> String {
+        use amplifier_newtui_rs::model::blocks::{Answer, Segment};
+        for index in 0..4 {
+            let answer = Answer::new(
+                format!("sel-{index}"),
+                vec![Segment::new(format!("selection line {index}"))],
+            );
+            let _ = app.ui.borrow_mut().transcript.append(answer.into(), 0.0);
+        }
+        let layout = layout_after_draw(app, 100, 32);
+        let rect = layout.transcript;
+        let (_, start, _) = layout.block_lines[0].clone();
+        let y0 = rect.y + (start - layout.transcript_scroll) as u16;
+        app.on_mouse_down(rect.x, y0);
+        app.on_mouse_drag(rect.x + 30, y0 + rows - 1);
+        app.on_mouse_up(rect.x + 30, y0 + rows - 1);
+        app.selected_text()
+    }
+
+    /// Route selection copies into a recording sink (the injectable copier).
+    fn recording_copier(app: &mut App, accept: bool) -> Rc<RefCell<Vec<String>>> {
+        let copied = Rc::new(RefCell::new(Vec::<String>::new()));
+        let sink = Rc::clone(&copied);
+        app.set_clipboard_copier(Box::new(move |text| {
+            sink.borrow_mut().push(text.to_string());
+            accept
+        }));
+        copied
+    }
+
+    // Adapts tests/test_ui_composer.py::test_settled_drag_selection_copies_
+    // automatically: a settled transcript drag-selection lands on the
+    // clipboard by itself (the 0.4s settle timer via the tick clock), with
+    // the exact notice, and never re-copies the same settled selection.
+    #[test]
+    fn test_settled_drag_selection_copies_automatically() {
+        use ratatui::style::Modifier;
+        let (mut app, _ops) = test_app();
+        let copied = recording_copier(&mut app, true);
+
+        let text = drag_select_rows(&mut app, 3);
+        assert!(text.contains("selection line 0"), "anchor row selected: {text}");
+        assert_eq!(text.lines().count(), 3, "three rendered rows: {text:?}");
+        assert!(
+            app.ui.borrow().selection_settle_deadline.is_some(),
+            "settle timer armed by the drag"
+        );
+        assert!(copied.borrow().is_empty(), "no copy before the settle");
+
+        // The selected rows paint REVERSED (the selection highlight).
+        let layout = layout_after_draw(&app, 100, 32);
+        let rect = layout.transcript;
+        let (_, start, _) = layout.block_lines[0].clone();
+        let y0 = rect.y + (start - layout.transcript_scroll) as u16;
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let cell = &terminal.backend().buffer()[(rect.x, y0)];
+        assert!(
+            cell.modifier.contains(Modifier::REVERSED),
+            "selected row highlighted"
+        );
+
+        // Let the settle timer fire on the tick clock.
+        app.ui.borrow_mut().selection_settle_deadline = Some(0.0);
+        app.tick();
+        assert_eq!(copied.borrow().len(), 1, "settled selection copied once");
+        assert_eq!(copied.borrow()[0], text);
+        let chars = text.chars().count();
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some(format!("copied on select · {chars} chars").as_str()),
+            "Python's exact copy-on-select notice"
+        );
+
+        // No duplicate copy for the same settled selection.
+        app.ui.borrow_mut().selection_settle_deadline = Some(0.0);
+        app.tick();
+        assert_eq!(copied.borrow().len(), 1, "no duplicate auto-copy");
+    }
+
+    // Adapts tests/test_ui_composer.py::test_ctrl_c_copies_transcript_
+    // selection_despite_composer_focus: ctrl+c copies an active transcript
+    // selection (and clears it) instead of quitting; with nothing selected
+    // it keeps the interrupt (running) / quit (idle) convention.
+    #[test]
+    fn test_ctrl_c_copies_transcript_selection_despite_composer_focus() {
+        let (mut app, _ops) = test_app();
+        let copied = recording_copier(&mut app, true);
+
+        let text = drag_select_rows(&mut app, 2);
+        assert!(!text.is_empty());
+        // The composer holds the keyboard — the selection still wins.
+        type_text(&mut app, "hi");
+        app.on_key("ctrl+c");
+        assert!(!app.should_quit(), "copy short-circuits quit");
+        assert_eq!(copied.borrow().as_slice(), std::slice::from_ref(&text));
+        let chars = text.chars().count();
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some(format!("copied · {chars} chars").as_str()),
+            "Python's exact explicit-copy notice"
+        );
+        assert!(app.ui.borrow().selection.is_none(), "selection cleared by the copy");
+
+        // Nothing selected, idle → quit (like ctrl+d).
+        app.on_key("ctrl+c");
+        assert!(app.should_quit(), "idle ctrl+c still quits");
+
+        // Nothing selected, running turn → interrupt, not quit.
+        let (mut app, ops) = test_app();
+        app.handle_wire(prompt_submit("first turn"));
+        assert!(app.ui.borrow().turn_active);
+        app.on_key("ctrl+c");
+        assert!(
+            ops.borrow().contains(&"interrupt".to_string()),
+            "running ctrl+c interrupts: {:?}",
+            ops.borrow()
+        );
+        assert!(!app.should_quit(), "running ctrl+c does not quit");
+
+        // A failing OS clipboard tool keeps Python's honest suffix.
+        let (mut app, _ops) = test_app();
+        let _copied = recording_copier(&mut app, false);
+        let text = drag_select_rows(&mut app, 2);
+        app.on_key("ctrl+c");
+        let chars = text.chars().count();
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some(
+                format!(
+                    "copied · {chars} chars · empty clipboard? allow terminal clipboard access"
+                )
+                .as_str()
+            )
+        );
+    }
+
+    // Python screen-selection semantics: a plain click (no drag) clears the
+    // selection before the normal click dispatch, and no settled copy fires
+    // for the cleared selection.
+    #[test]
+    fn test_click_without_drag_clears_selection() {
+        let (mut app, _ops) = test_app();
+        let copied = recording_copier(&mut app, true);
+        let text = drag_select_rows(&mut app, 2);
+        assert!(!text.is_empty());
+
+        let layout = layout_after_draw(&app, 100, 32);
+        let rect = layout.transcript;
+        app.on_mouse_down(rect.x + 5, rect.y);
+        app.on_mouse_up(rect.x + 5, rect.y);
+        assert!(app.ui.borrow().selection.is_none(), "plain click cleared it");
+        assert_eq!(app.selected_text(), "", "nothing left to copy");
+        app.tick();
+        assert!(copied.borrow().is_empty(), "no settled copy after the clear");
+    }
+
+    // ------------------------------------------------------------------
+    // Boot progress (regression: no module names while amplifier loads).
+    // ------------------------------------------------------------------
+
+    // The Rust half of tests/test_serve_offline.py::test_serve_emits_boot_
+    // progress_records_before_session_started: a boot.progress record paints
+    // the splash with Python boot_progress's exact text (snake_case action
+    // read as words, `action · detail`), stderr chatter no longer overwrites
+    // it, and session.started still dissolves the splash.
+    #[test]
+    fn test_boot_progress_sets_splash_status_and_wins_over_chatter() {
+        let ops = Rc::new(RefCell::new(Vec::new()));
+        let mut adapter = TestAdapter::new(Rc::clone(&ops));
+        adapter.base.session_short = String::new(); // protocol boot: no identity yet
+        let mut app = App::new(Box::new(adapter), true, None, None);
+        app.boot();
+        app.on_resize(100, 32);
+        assert!(app.ui.borrow().splash.is_some(), "splash up while booting");
+
+        app.handle_wire(WireEvent::BootProgress {
+            action: "installing_package".into(),
+            detail: "tool-bash".into(),
+        });
+        assert_eq!(
+            app.ui.borrow().splash.as_ref().unwrap().status(),
+            "installing package · tool-bash"
+        );
+
+        // Fallback stderr chatter loses to the structured record.
+        app.on_boot_chatter("stray module print");
+        assert_eq!(
+            app.ui.borrow().splash.as_ref().unwrap().status(),
+            "installing package · tool-bash"
+        );
+
+        // A detail-less phase renders the bare action (Python parity).
+        app.handle_wire(WireEvent::BootProgress {
+            action: "creating".into(),
+            detail: String::new(),
+        });
+        assert_eq!(app.ui.borrow().splash.as_ref().unwrap().status(), "creating");
+
+        app.handle_wire(WireEvent::SessionStarted {
+            session_id: "core-0123456".into(),
+            bundle: "newtui".into(),
+            model: "claude-sonnet-4-5".into(),
+        });
+        assert!(app.ui.borrow().splash.is_none(), "identity dissolves the splash");
     }
 
     /// Prints a real rendered frame (run: `cargo test -- --nocapture snapshot`).

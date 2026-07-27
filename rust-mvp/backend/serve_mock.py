@@ -37,6 +37,14 @@ def event(kind: str, **fields) -> None:
     _emit({"type": "runtime.event", "event": {"kind": kind, **fields}})
 
 
+def boot_progress(action: str, detail: str) -> None:
+    """The exact boot-phase record kernel/serve.py emits from RealRuntime's
+    ``on_progress`` (no sequence/timestamp — it precedes the session)."""
+    sys.stdout.write(json.dumps({"schema_version": 1, "type": "boot.progress",
+                                 "action": action, "detail": detail}) + "\n")
+    sys.stdout.flush()
+
+
 def read_op() -> dict | None:
     line = sys.stdin.readline()
     if not line:
@@ -144,6 +152,12 @@ def run_turn(prompt: str) -> str:
 
 
 def main() -> None:
+    # Boot phases land BEFORE session.started, exactly as kernel/serve.py's
+    # on_progress reports RealRuntime's start (module names on the splash
+    # while amplifier loads, instead of a blank screen).
+    boot_progress("loading", "newtui")
+    boot_progress("installing_package", "tool-bash")
+    boot_progress("creating", "session")
     _emit({
         "type": "session.started",
         "session_id": "core-01",

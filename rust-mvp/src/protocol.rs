@@ -29,6 +29,10 @@ pub enum WireEvent {
         bundle: String,
         model: String,
     },
+    /// A boot phase before `session.started` (`boot.progress`): the
+    /// `(action, detail)` pairs RealRuntime reports through `on_progress`
+    /// while modules load — the splash shows them instead of a blank screen.
+    BootProgress { action: String, detail: String },
 }
 
 /// Decode one backend stdout line into a [`WireEvent`] (or `None` to ignore).
@@ -56,6 +60,10 @@ pub fn decode_wire(line: &str) -> Option<WireEvent> {
             session_id: v["session_id"].as_str().unwrap_or("").to_string(),
             bundle: v["bundle"].as_str().unwrap_or("").to_string(),
             model: v["model"].as_str().unwrap_or("").to_string(),
+        }),
+        "boot.progress" => Some(WireEvent::BootProgress {
+            action: v["action"].as_str().unwrap_or("").to_string(),
+            detail: v["detail"].as_str().unwrap_or("").to_string(),
         }),
         // turn.completed / error are lifecycle, not transcript.
         _ => None,
@@ -141,6 +149,21 @@ mod tests {
                 session_id: "core-01".into(),
                 bundle: "newtui".into(),
                 model: "claude-sonnet-4-5".into(),
+            }
+        );
+    }
+
+    // Pins the record tests/test_serve_offline.py::test_serve_emits_boot_
+    // progress_records_before_session_started puts on the wire.
+    #[test]
+    fn decodes_boot_progress_action_and_detail() {
+        let line = r#"{"schema_version": 1, "type": "boot.progress", "action": "installing_package", "detail": "tool-bash"}"#;
+        let ev = decode_wire(line).expect("boot.progress line decodes");
+        assert_eq!(
+            ev,
+            WireEvent::BootProgress {
+                action: "installing_package".into(),
+                detail: "tool-bash".into(),
             }
         );
     }

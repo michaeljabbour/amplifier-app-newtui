@@ -18,7 +18,9 @@ Wire (one JSON object per line):
   IN  (stdin)   {"op": "submit",    "text": "..."}
                 {"op": "approve",   "ticket_id": "approval-3", "choice": "Allow once"}
                 {"op": "interrupt"}
-  OUT (stdout)  {"schema_version": 1, "sequence": N, "timestamp": T,
+  OUT (stdout)  {"schema_version": 1, "type": "boot.progress",
+                 "action": "preparing", "detail": "newtui"}   (before session.started)
+                {"schema_version": 1, "sequence": N, "timestamp": T,
                  "type": "session.started" | "runtime.event" | "turn.completed"}
                 {"schema_version": 1, "type": "approval.required",
                  "ticket_id": "approval-3", "prompt": "...", "options": [...]}
@@ -62,7 +64,24 @@ async def serve(
     Returns an exit code. Construction lives here; the loop lives in
     :func:`serve_loop`, which a test can drive against a pre-started runtime.
     """
-    runtime_kwargs: dict[str, Any] = {"bundle": bundle}
+    # Capture the real stdout BEFORE redirecting stray module prints to stderr —
+    # exactly the discipline the ``run`` JSONL path uses so the protocol stream
+    # stays clean while boot/module chatter still goes somewhere visible.
+    out = stdout or sys.stdout
+    source = stdin or sys.stdin
+
+    def _boot_progress(action: str, detail: str) -> None:
+        # Boot-phase feedback on the protocol stream: module prepare can run
+        # for minutes and ``session.started`` is the first record otherwise —
+        # a protocol client would show a blank splash the whole time. Same
+        # ``(action, detail)`` phases the Textual app paints via
+        # ``RealRuntime(on_progress=...)``. Fires in-loop (resolve_config /
+        # foundation's prepare call the callback synchronously inside
+        # ``runtime.start()``), so a plain emit is safe.
+        _emit_raw(out, {"schema_version": 1, "type": "boot.progress",
+                        "action": action, "detail": detail})
+
+    runtime_kwargs: dict[str, Any] = {"bundle": bundle, "on_progress": _boot_progress}
     if resume_id is not None:
         runtime_kwargs["resume_id"] = resume_id
     if model is not None:
@@ -75,12 +94,6 @@ async def serve(
         mode_value = mode
         runtime_kwargs["mode"] = lambda: mode_value
     runtime = RealRuntime(**runtime_kwargs)
-
-    # Capture the real stdout BEFORE redirecting stray module prints to stderr —
-    # exactly the discipline the ``run`` JSONL path uses so the protocol stream
-    # stays clean while boot/module chatter still goes somewhere visible.
-    out = stdout or sys.stdout
-    source = stdin or sys.stdin
 
     with redirect_stdout(sys.stderr):
         try:

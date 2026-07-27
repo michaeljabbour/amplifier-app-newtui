@@ -79,6 +79,11 @@ pub struct FrameLayout {
     pub transcript_scroll: usize,
     /// Per mounted block: (block id, first content line, line count).
     pub block_lines: Vec<(String, usize, usize)>,
+    /// The plain-text projection of every transcript content line painted
+    /// this frame (same indices as the scroll math) — the source the
+    /// drag-selection copies, so what lands on the clipboard is exactly
+    /// what was on screen.
+    pub transcript_plain_lines: Vec<String>,
     /// Lanes strip rect (zero-sized while closed).
     pub lanes: Rect,
     /// Per lanes-strip relative row: the lane index (None = header/tail).
@@ -334,15 +339,18 @@ fn draw_transcript_region(
 
     let width = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut plain: Vec<String> = Vec::new();
     let mut first = true;
     for block in ui.transcript.blocks() {
         let margin = if first { 0 } else { block_margin_top(&block) };
         for _ in 0..margin {
             lines.push(Line::default());
+            plain.push(String::new());
         }
         first = false;
         let start = lines.len();
         for line in render_block(&block, width.max(20)) {
+            plain.push(line.iter().map(|span| span.text.as_str()).collect());
             lines.push(to_ratatui_line(&line, Some(colors)));
         }
         layout
@@ -354,8 +362,19 @@ fn draw_transcript_region(
     let tail_source = ui.live_tail.visible_source();
     if !tail_source.is_empty() {
         lines.push(Line::default());
+        plain.push(String::new());
         for row in segments_to_rows(&streaming_spans(&tail_source)) {
+            plain.push(row.iter().map(|span| span.text.as_str()).collect());
             lines.push(to_ratatui_line(&row, Some(colors)));
+        }
+    }
+
+    // Transcript drag-selection: the selected rows paint REVERSED — the
+    // ratatui rendering of Python's screen-selection highlight.
+    if let Some((a, b)) = ui.selection {
+        let (lo, hi) = (a.min(b), a.max(b));
+        for line in lines.iter_mut().take(hi + 1).skip(lo) {
+            line.style = line.style.add_modifier(Modifier::REVERSED);
         }
     }
 
@@ -376,6 +395,7 @@ fn draw_transcript_region(
     layout.transcript = inner;
     layout.transcript_total_lines = lines.len();
     layout.transcript_scroll = scroll;
+    layout.transcript_plain_lines = plain;
     f.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
 
     // Transient notice: bottom-right overlay on the region's last row.

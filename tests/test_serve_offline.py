@@ -21,8 +21,9 @@ from typing import IO, Any, cast
 
 import pytest
 
+from amplifier_app_newtui.kernel import serve as serve_module
 from amplifier_app_newtui.kernel.approval import ALLOW_ONCE, DENY
-from amplifier_app_newtui.kernel.serve import serve_loop
+from amplifier_app_newtui.kernel.serve import serve, serve_loop
 
 # Started-runtime + policy-hook helpers; the offline_env fixture comes from
 # conftest (shared with test_runtime_offline).
@@ -136,6 +137,66 @@ async def test_serve_approval_allow(offline_env) -> None:
     completed = out.find("turn.completed")
     assert completed is not None
     assert "wrote hello.txt" in completed["response"]  # the tool ran post-approval
+
+
+class _FakeBootRuntime:
+    """A runtime whose ``start`` reports boot phases through ``on_progress``
+    exactly as RealRuntime does (resolve_config / foundation call the callback
+    synchronously in-loop during ``start``). Just enough surface for
+    ``serve_loop`` to run to a clean EOF exit."""
+
+    class _NoBroker:
+        head = None
+
+        def add_listener(self, listener) -> None:  # noqa: D401 — broker shim
+            pass
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._on_progress = kwargs.get("on_progress")
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.broker = self._NoBroker()
+        self.session_id = "boot-01"
+        self.bundle_name = "newtui"
+        self.model_name = "test-model"
+
+    async def start(self) -> None:
+        assert self._on_progress is not None, "serve must pass on_progress"
+        self._on_progress("loading", "newtui")
+        self._on_progress("installing_package", "tool-bash")
+        self._on_progress("creating", "session")
+
+    async def cleanup(self) -> None:
+        pass
+
+
+async def test_serve_emits_boot_progress_records_before_session_started(monkeypatch) -> None:
+    """The boot phases RealRuntime reports via on_progress reach the protocol
+    stream as schema-v1 ``boot.progress`` records, all before
+    ``session.started`` — a protocol client can show them on its splash."""
+    monkeypatch.setattr(serve_module, "RealRuntime", _FakeBootRuntime)
+    stdin, out = _PipeStdin(), _Capture()
+    stdin.close()  # immediate EOF: boot + session.started, then a clean exit
+
+    code = await serve(None, stdin=cast("IO[str]", stdin), stdout=cast("IO[str]", out))
+
+    assert code == 0
+    types = out.types()
+    assert types[:4] == ["boot.progress"] * 3 + ["session.started"], types
+    # The exact wire record, pinned (action/detail verbatim from on_progress).
+    assert out.lines[0] == {
+        "schema_version": 1,
+        "type": "boot.progress",
+        "action": "loading",
+        "detail": "newtui",
+    }
+    assert out.lines[1]["action"] == "installing_package"
+    assert out.lines[1]["detail"] == "tool-bash"
+    assert out.lines[2] == {
+        "schema_version": 1,
+        "type": "boot.progress",
+        "action": "creating",
+        "detail": "session",
+    }
 
 
 async def test_serve_approval_deny_continues(offline_env) -> None:

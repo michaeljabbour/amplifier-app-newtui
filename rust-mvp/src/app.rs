@@ -94,6 +94,10 @@ use crate::ui::FrameLayout;
 /// with the reducer-owned allocator (`b1`, `b2`, …). See module docs.
 const APP_ID_RANGE_START: u64 = 1_000_000;
 
+/// Copy-on-select settle delay in seconds (Python `set_timer(0.4,
+/// self._copy_settled_selection)` in `ui/app.py`).
+const SELECTION_SETTLE_SECONDS: f64 = 0.4;
+
 /// Monotonic clock in fractional seconds, anchored at first use.
 pub fn monotonic() -> f64 {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -197,6 +201,22 @@ pub struct UiState {
     /// The native terminal title to emit (OSC), already deduped by
     /// `TitleBar::repaint`; the main loop drains it.
     pub pending_title: Option<String>,
+    /// A `boot.progress` record landed: the protocol phases own the splash
+    /// status from here on (raw stderr chatter no longer overwrites them).
+    pub boot_progress_seen: bool,
+    /// Transcript drag-selection as (anchor, head) content-line indices,
+    /// inclusive both ends (mouse capture swallows the terminal's native
+    /// selection, so the app models its own — Python screen selections).
+    pub selection: Option<(usize, usize)>,
+    /// Mouse-down content line while the left button is held over the
+    /// transcript (the drag anchor; cleared on mouse-up).
+    pub selection_drag_anchor: Option<usize>,
+    /// Copy-on-select settle deadline (monotonic) — Python's 0.4s
+    /// `_selection_timer`, restarted on every selection change.
+    pub selection_settle_deadline: Option<f64>,
+    /// Suppress duplicate auto-copies of the same settled selection
+    /// (Python `_last_selection_copied`).
+    pub last_selection_copied: String,
 }
 
 impl UiState {
@@ -243,6 +263,11 @@ impl UiState {
             turn_started_at: None,
             bell_pending: false,
             pending_title: None,
+            boot_progress_seen: false,
+            selection: None,
+            selection_drag_anchor: None,
+            selection_settle_deadline: None,
+            last_selection_copied: String::new(),
         }
     }
 
@@ -612,6 +637,10 @@ pub struct App {
     last_splash_frame: std::cell::Cell<f64>,
     last_motion_frame: std::cell::Cell<f64>,
     last_spinner_frame: std::cell::Cell<f64>,
+    /// Clipboard writer for transcript-selection copies — injectable so
+    /// headless tests record what would land on the OS clipboard. Returns
+    /// true when a tool accepted the text (Python `_os_clipboard_copied`).
+    clipboard_copier: Box<dyn Fn(&str) -> bool>,
 }
 
 impl App {
@@ -663,7 +692,13 @@ impl App {
             last_splash_frame: std::cell::Cell::new(0.0),
             last_motion_frame: std::cell::Cell::new(0.0),
             last_spinner_frame: std::cell::Cell::new(0.0),
+            clipboard_copier: Box::new(app_support::os_clipboard_copy),
         }
+    }
+
+    /// Swap the clipboard writer (headless tests inject a recorder).
+    pub fn set_clipboard_copier(&mut self, copier: Box<dyn Fn(&str) -> bool>) {
+        self.clipboard_copier = copier;
     }
 
     /// Boot the runtime (Python `_boot_runtime`): start the adapter; when it
@@ -770,6 +805,22 @@ impl App {
                 }
                 drop(ui);
                 self.settle_after_event();
+            }
+            WireEvent::BootProgress { action, detail } => {
+                // Python `NewTuiApp.boot_progress`: snake_case phases read as
+                // words; the splash status is `"{action} · {detail}"` (or the
+                // bare action). Protocol phases win over stderr chatter.
+                let action = action.replace('_', " ");
+                let status = if detail.is_empty() {
+                    action
+                } else {
+                    format!("{action} · {detail}")
+                };
+                let mut ui = self.ui.borrow_mut();
+                ui.boot_progress_seen = true;
+                if let Some(splash) = ui.splash.as_mut() {
+                    let _ = splash.set_status(&status);
+                }
             }
             WireEvent::Event(event) => {
                 self.reducer.handle(&event);
@@ -910,9 +961,29 @@ impl App {
             self.ui.borrow_mut().should_quit = true;
             return;
         }
-        // ctrl+c: interrupt/kill convention (terminal selections are not
-        // modeled — the copy-selection branch never has a selection here).
+        // ctrl+c (Python `action_copy_selection`): copy wins whenever text is
+        // actually selected — the transcript drag-selection copies (and
+        // clears) instead of quitting. With nothing selected, keep the
+        // terminal/Mac convention: a running turn interrupts, an idle app
+        // quits (like ctrl+d).
         if key == "ctrl+c" {
+            let text = self.selected_text();
+            if !text.is_empty() {
+                let copied = (self.clipboard_copier)(&text);
+                let chars = text.chars().count();
+                let mut ui = self.ui.borrow_mut();
+                ui.selection = None;
+                ui.selection_settle_deadline = None;
+                let notice = if copied {
+                    format!("copied · {chars} chars")
+                } else {
+                    format!(
+                        "copied · {chars} chars · empty clipboard? allow terminal clipboard access"
+                    )
+                };
+                ui.show_notice(&notice, None);
+                return;
+            }
             let running = self.ui.borrow().turn_active;
             if running {
                 self.interrupt_turn();
@@ -1082,9 +1153,37 @@ impl App {
         }
     }
 
+    /// Map a screen y over the transcript to a content-line index (clamped
+    /// into the rect vertically and to the painted content).
+    fn transcript_content_line(&self, y: u16) -> Option<usize> {
+        let layout = self.layout.borrow();
+        let rect = layout.transcript;
+        if rect.height == 0 || layout.transcript_total_lines == 0 {
+            return None;
+        }
+        let y = y.clamp(rect.y, rect.y + rect.height - 1);
+        let line = layout.transcript_scroll + (y - rect.y) as usize;
+        Some(line.min(layout.transcript_total_lines - 1))
+    }
+
     /// A left-button press at screen (x, y).
     pub fn on_mouse_down(&mut self, x: u16, y: u16) {
         let layout = self.layout.borrow().clone();
+
+        // Python screen-selection semantics: a fresh press clears any
+        // transcript selection (a drag re-creates one) BEFORE the normal
+        // click dispatch below.
+        {
+            let mut ui = self.ui.borrow_mut();
+            ui.selection = None;
+            ui.selection_settle_deadline = None;
+            ui.selection_drag_anchor = None;
+        }
+        if Self::rect_contains(layout.transcript, x, y) {
+            // Anchor a possible drag-selection at the pressed row.
+            let anchor = self.transcript_content_line(y);
+            self.ui.borrow_mut().selection_drag_anchor = anchor;
+        }
 
         // Approval option chips / the composer's [mode] badge (chunk 7).
         if Self::rect_contains(layout.input, x, y) {
@@ -1162,6 +1261,63 @@ impl App {
                 self.handle_transcript_msg(msg);
             }
         }
+    }
+
+    /// Left-button drag: extend the transcript selection from the mouse-down
+    /// anchor (Python's screen drag-selection). Every extension restarts the
+    /// copy-on-settle timer, mirroring `_selection_changed`'s 0.4s debounce.
+    pub fn on_mouse_drag(&mut self, _x: u16, y: u16) {
+        let anchor = self.ui.borrow().selection_drag_anchor;
+        let Some(anchor) = anchor else { return };
+        let Some(head) = self.transcript_content_line(y) else { return };
+        let mut ui = self.ui.borrow_mut();
+        ui.selection = Some((anchor, head));
+        ui.selection_settle_deadline = Some(monotonic() + SELECTION_SETTLE_SECONDS);
+    }
+
+    /// Left-button release: the drag ends. The settle timer armed by the
+    /// last extension keeps running and fires copy-on-select via `tick`.
+    pub fn on_mouse_up(&mut self, _x: u16, _y: u16) {
+        self.ui.borrow_mut().selection_drag_anchor = None;
+    }
+
+    /// The current transcript selection as plain text: the rendered lines
+    /// (last frame's plain-text projection) in the selected row range,
+    /// newline-joined. Empty when nothing (or only whitespace) is selected.
+    pub fn selected_text(&self) -> String {
+        let Some((a, b)) = self.ui.borrow().selection else {
+            return String::new();
+        };
+        let layout = self.layout.borrow();
+        let (lo, hi) = (a.min(b), a.max(b));
+        let text = layout
+            .transcript_plain_lines
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index >= lo && *index <= hi)
+            .map(|(_, line)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.trim().is_empty() {
+            String::new() // a drag over blank rows selects no text
+        } else {
+            text
+        }
+    }
+
+    /// The settle timer fired (Python `_copy_settled_selection`): auto-copy
+    /// the settled drag-selection unless it is empty or a duplicate.
+    fn copy_settled_selection(&mut self) {
+        let text = self.selected_text();
+        if text.is_empty() || text == self.ui.borrow().last_selection_copied {
+            return;
+        }
+        self.ui.borrow_mut().last_selection_copied = text.clone();
+        let _ = (self.clipboard_copier)(&text);
+        self.ui.borrow_mut().show_notice(
+            &format!("copied on select · {} chars", text.chars().count()),
+            None,
+        );
     }
 
     /// Dispatch a transcript widget message (the Python `on_<message>`
@@ -1734,6 +1890,13 @@ impl App {
             ui.reflow_deadline = None;
             ui.transcript.debounce_fired(now);
         }
+        // Copy-on-select settle (Python's 0.4s `_selection_timer`).
+        let selection_settled = ui
+            .selection_settle_deadline
+            .is_some_and(|deadline| now >= deadline);
+        if selection_settled {
+            ui.selection_settle_deadline = None;
+        }
         if ui.transcript.compaction_pending() {
             ui.transcript.compact_history();
         }
@@ -1756,14 +1919,21 @@ impl App {
             }
         }
         drop(ui);
+        if selection_settled {
+            self.copy_settled_selection();
+        }
         self.settle_after_event();
     }
 
     /// Backend boot chatter (the serve process's stderr): while the splash is
     /// up, show the latest line as the boot status so slow module loads are
-    /// visible — the Rust analogue of the Python app's `boot_progress` phases.
+    /// visible. FALLBACK only — once a structured `boot.progress` record has
+    /// landed, the protocol phases own the status (chatter never overwrites).
     pub fn on_boot_chatter(&mut self, line: &str) {
         let mut ui = self.ui.borrow_mut();
+        if ui.boot_progress_seen {
+            return;
+        }
         if let Some(splash) = ui.splash.as_mut() {
             let text: String = line.chars().take(72).collect();
             let _ = splash.set_status(&text);
