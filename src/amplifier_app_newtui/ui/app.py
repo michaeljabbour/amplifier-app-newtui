@@ -824,6 +824,11 @@ class NewTuiApp(App[None]):
         session') instead of a blank screen. Dissolved by
         ``announce_ready`` via :meth:`clear_boot_progress`.
         """
+        if not self.is_running:
+            # Late callbacks after the app exited (quit during boot) land in
+            # a context with no active app; painting would raise
+            # NoActiveAppError and spam the terminal post-exit.
+            return
         action = action.replace("_", " ")  # foundation emits snake_case phases
         if self._splash is None:
             self._splash = BootSplash(id="boot-splash")
@@ -834,7 +839,12 @@ class NewTuiApp(App[None]):
             # active_app with no fallback). call_later hops into the app's
             # message pump, same as present_approval.
             self.call_later(self._mount_splash, self._splash)
-        self._splash.set_status(f"{action} · {detail}" if detail else action)
+        try:
+            self._splash.set_status(f"{action} · {detail}" if detail else action)
+        except (RuntimeError, LookupError):
+            # is_running can flip between the guard and the paint during
+            # teardown; a lost status frame beats a traceback.
+            pass
 
     async def _mount_splash(self, splash: BootSplash) -> None:
         await self.query_one("#transcript-region").mount(splash)
