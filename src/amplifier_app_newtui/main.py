@@ -551,7 +551,9 @@ def _print_session_table(summaries: list[Any]) -> None:
 @click.option("--model", "-m", default=None, help="Model override (requires --provider).")
 @click.option("--provider", "-p", default=None, help="Provider override for THIS invocation.")
 @click.option("--mode", "mode", default=None, help="Interaction mode to start in.")
-@click.option("--resume", "resume", default=None, metavar="SESSION_ID", help="Resume a stored session.")
+@click.option(
+    "--resume", "resume", default=None, metavar="SESSION_ID", help="Resume a stored session."
+)
 def serve(
     bundle: str | None,
     model: str | None,
@@ -576,9 +578,7 @@ def serve(
     from .kernel.serve import serve as _serve
 
     raise SystemExit(
-        asyncio.run(
-            _serve(bundle, mode=mode, model=model, provider=provider, resume_id=resume_id)
-        )
+        asyncio.run(_serve(bundle, mode=mode, model=model, provider=provider, resume_id=resume_id))
     )
 
 

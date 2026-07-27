@@ -80,8 +80,9 @@ async def serve(
         # ``RealRuntime(on_progress=...)``. Fires in-loop (resolve_config /
         # foundation's prepare call the callback synchronously inside
         # ``runtime.start()``), so a plain emit is safe.
-        _emit_raw(out, {"schema_version": 1, "type": "boot.progress",
-                        "action": action, "detail": detail})
+        _emit_raw(
+            out, {"schema_version": 1, "type": "boot.progress", "action": action, "detail": detail}
+        )
 
     runtime_kwargs: dict[str, Any] = {"bundle": bundle, "on_progress": _boot_progress}
     if resume_id is not None:
@@ -101,8 +102,15 @@ async def serve(
         try:
             await runtime.start()
         except Exception as caught:  # noqa: BLE001 — boot failure is a structured terminal record
-            _emit_raw(out, {"schema_version": 1, "type": "error",
-                            "error": str(caught), "error_type": type(caught).__name__})
+            _emit_raw(
+                out,
+                {
+                    "schema_version": 1,
+                    "type": "error",
+                    "error": str(caught),
+                    "error_type": type(caught).__name__,
+                },
+            )
             return 1
         return await serve_loop(runtime, source=source, out=out)
 
@@ -133,11 +141,14 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
 
     threading.Thread(target=_read_stdin, daemon=True, name="serve-stdin").start()
 
-    _emit_raw(out, records.session_started(
-        session_id=runtime.session_id,
-        bundle=runtime.bundle_name,
-        model=runtime.model_name,
-    ).model_dump(mode="json"))
+    _emit_raw(
+        out,
+        records.session_started(
+            session_id=runtime.session_id,
+            bundle=runtime.bundle_name,
+            model=runtime.model_name,
+        ).model_dump(mode="json"),
+    )
 
     # Approvals: the broker owns the ticket id the UIEvent lacks. On every queue
     # change, surface the head ticket once (id + prompt + options) so the UI can
@@ -149,13 +160,16 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
         head = runtime.broker.head
         if head is not None and head.ticket_id not in announced:
             announced.add(head.ticket_id)
-            _emit_raw(out, {
-                "schema_version": 1,
-                "type": "approval.required",
-                "ticket_id": head.ticket_id,
-                "prompt": head.prompt,
-                "options": list(head.options),
-            })
+            _emit_raw(
+                out,
+                {
+                    "schema_version": 1,
+                    "type": "approval.required",
+                    "ticket_id": head.ticket_id,
+                    "prompt": head.prompt,
+                    "options": list(head.options),
+                },
+            )
 
     runtime.broker.add_listener(_on_broker_change)
 
@@ -231,9 +245,16 @@ async def _run_turn(runtime: RealRuntime, out: IO[str], text: str) -> str:
     try:
         response = await runtime.submit(text)
     except Exception as caught:  # noqa: BLE001 — a failed turn is a structured record, not a crash
-        _emit_raw(out, {"schema_version": 1, "type": "error",
-                        "session_id": runtime.session_id,
-                        "error": str(caught), "error_type": type(caught).__name__})
+        _emit_raw(
+            out,
+            {
+                "schema_version": 1,
+                "type": "error",
+                "session_id": runtime.session_id,
+                "error": str(caught),
+                "error_type": type(caught).__name__,
+            },
+        )
         return ""
     finally:
         # Turn-end queue duty (ui/app_support.finish_turn_queues parity):
@@ -242,6 +263,13 @@ async def _run_turn(runtime: RealRuntime, out: IO[str], text: str) -> str:
         # §Steering). The protocol client drains its own mirror queue and
         # shows the discard notice; serve only keeps the runtime honest.
         runtime.steering.drain_steers()
-    _emit_raw(out, {"schema_version": 1, "type": "turn.completed",
-                    "session_id": runtime.session_id, "response": response})
+    _emit_raw(
+        out,
+        {
+            "schema_version": 1,
+            "type": "turn.completed",
+            "session_id": runtime.session_id,
+            "response": response,
+        },
+    )
     return response

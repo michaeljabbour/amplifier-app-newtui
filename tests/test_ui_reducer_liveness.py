@@ -206,9 +206,7 @@ def test_lane_booting_flips_to_running_on_first_child_event() -> None:
 def test_lane_booting_keeps_seeded_brief_activity() -> None:
     """A runtime-seeded delegate brief stays the activity line through the
     booting window and past the wake."""
-    reducer, _host = make_reducer(
-        lane_seed_lookup=lambda name: LaneSeed(activity="survey crates")
-    )
+    reducer, _host = make_reducer(lane_seed_lookup=lambda name: LaneSeed(activity="survey crates"))
     reducer.handle(ev.PromptSubmit(session_id=SID, prompt="fan out", ts=0.0))
     spawn(reducer, "researcher", "child-a", 1.0)
     lane = reducer.lanes.get("child-a")

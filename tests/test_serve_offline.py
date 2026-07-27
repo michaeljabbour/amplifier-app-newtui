@@ -85,7 +85,9 @@ class _Capture:
 
     def kinds(self) -> list[str]:
         with self._lock:
-            return [r["event"].get("kind", "") for r in self.lines if r.get("type") == "runtime.event"]
+            return [
+                r["event"].get("kind", "") for r in self.lines if r.get("type") == "runtime.event"
+            ]
 
     def find(self, type_: str) -> dict[str, Any] | None:
         with self._lock:

@@ -1732,9 +1732,7 @@ class TranscriptReducer:
         # reads as hung. Open the lane as ``booting`` (first child event
         # flips it — see _wake_booting_lane); scripted demo seeds keep
         # their mockup-verbatim presentation.
-        booting = (
-            seed.state == "running" and not seed.elapsed and not seed.cost and not seed.tokens
-        )
+        booting = seed.state == "running" and not seed.elapsed and not seed.cost and not seed.tokens
         self.lanes.register(
             event.sub_session_id,
             parent_id=event.parent_session_id or event.session_id or None,
