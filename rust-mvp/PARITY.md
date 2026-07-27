@@ -4,11 +4,14 @@ One row per spec'd behavior (checkbox) in `docs/DESIGN-SPEC.md`. Statuses:
 
 - `covered-by:<test>` — behavior already pinned by an existing Rust test
 - `added:<test>` — focused test added by this parity pass
-- `n/a:<reason>` — not coverable by the ported units (Textual/terminal-only mechanics,
-  backend-only concerns behind `serve`, or a recorded unwired-assembly gap)
+- `n/a:<reason>` — not coverable by the ported units (an architecture property, or
+  backend-only concerns behind `serve`)
 
 Test names are `module::test` (all inline `#[cfg(test)]`; the flow tests live in
-`src/main.rs::tests`). Totals: **48 behaviors — 40 covered, 4 added, 4 n/a.**
+`src/main.rs::tests`). Totals: **48 behaviors — 41 covered, 4 added, 3 n/a**
+(§12-mouse moved n/a → covered when the main.rs mouse wiring + tests landed).
+Client-side gaps that survive this table are recorded in the MIGRATION.md ui/app
+row (NOT WIRED), not silently absorbed here.
 
 ## §1 Themes & design tokens
 
@@ -45,7 +48,7 @@ Test names are `module::test` (all inline `#[cfg(test)]`; the flow tests live in
 | §3-answer | Final answer: styled spans, teal inline code, clickable → evidence | covered-by:ui/transcript_render::test_answer_splits_newlines_and_keeps_span_styles + ui/transcript click→evidence message tests |
 | §3-steer-echo | Steer echo `↳ steer queued: "<text>" · applies at next step boundary` + `Applying steer:` narration | covered-by:ui/transcript_render::test_steer_echo_exact + kernel/steering injection-string tests |
 | §3-rule | Turn rule: full-width, right label `<Ns> · <tok>, N% cached · $<cost> · <outcome>`, dim/dimmer by outcome | covered-by:ui/transcript_render::test_turn_rule_fills_width_exactly, test_turn_rule_label_dim_when_shipped_dimmer_otherwise |
-| §3-rule-click | Turn rule click → rewind picker at that checkpoint | covered-by:ui/rewind_strip::test_opens_at_clicked_rule_checkpoint (logic; terminal mouse wiring is a recorded assembly gap, see §12-mouse) |
+| §3-rule-click | Turn rule click → rewind picker at that checkpoint | covered-by:ui/rewind_strip::test_opens_at_clicked_rule_checkpoint (mouse wiring landed: FrameLayout hit-testing → BlockWidget::click → TranscriptMsg::OpenRewind in app.rs) |
 | §3-delegate | Delegate summary `● Used N delegates · Plan n/m · <dur> ▸`, expandable rows, rebuilt on resume | covered-by:ui/transcript_render delegate-summary suite + ui/reducer::test_fanout_appends_exactly_one_summary_block, test_replay_rebuilds_delegate_summary_lane_transcript_and_plan |
 
 ## §4 Modes & trust
@@ -54,7 +57,7 @@ Test names are `module::test` (all inline `#[cfg(test)]`; the flow tests live in
 |---|---|---|
 | §4-table | Five modes with exact colors + trust strings | covered-by:model/modes table test (exact `(id, color, trust)` tuples) |
 | §4-default | Default mode is `auto` (2026-07-16 amendment) | covered-by:main::test_flow_modes_shift_tab_cycles_with_notice (boot assert) |
-| §4-cycle | shift+tab cycles modes (also while input focused); badge click cycles | covered-by:main flow-modes + model/modes::test_cycle_visits_all_five_modes_and_wraps + ui/composer CycleModeRequested test (badge *click* rides the mouse gap, §12-mouse) |
+| §4-cycle | shift+tab cycles modes (also while input focused); badge click cycles | covered-by:main flow-modes + model/modes::test_cycle_visits_all_five_modes_and_wraps + ui/composer CycleModeRequested test + main::test_mode_badge_click_cycles (badge click wired) |
 | §4-notice | Mode change → notice `mode <id> · <trust>` | covered-by:main::test_flow_modes_shift_tab_cycles_with_notice (exact string) |
 | §4-tint | Mode tint in exactly three places; chat composer edge uses `rule` | covered-by:model/modes::test_chat_composer_edge_uses_rule_token + ui/composer mode-class tests + ui/footer mode-segment tests |
 | §4-gating | Trust profiles actually gate tools (plan read-only, brainstorm no tools, …, auto policy gate) | covered-by:model/trust suite (13) + kernel/governance_hook suite (40, classifier-gated auto) |
@@ -89,7 +92,7 @@ Test names are `module::test` (all inline `#[cfg(test)]`; the flow tests live in
 | §7-lane-return | Lane focused when approval arrives → auto-return to parent with notice | added:main::test_flow_approval_while_lane_focused_auto_returns_to_parent (behavior was an unwired assembly gap — now wired in `app.rs` mirroring Python `mount_approval`, incl. palette close + `back to parent · approval required`) |
 | §7-deny | Deny → `⊘ blocked … denied by user · continuing without …`, turn continues | covered-by:main flow-approval deny path + ui/transcript_render::test_blocked_exact |
 | §7-defer | Auto-mode trust block → deferred decision, footer `N decisions waiting · ctrl-y`, run continues | covered-by:ui/footer decisions-badge tests + ui/reducer decision_deferred cases + ui/approval_bar::test_ctrl_y_parks_ticket_without_resolving |
-| §7-needs-you | ctrl-y → Needs-you block, chips, `Applying decision:` clears badge | covered-by:ui/needs_you suite (13) + ui/transcript_render::test_needs_you_exact_chip_styling (chip *click* actions ride the mouse gap, §12-mouse) |
+| §7-needs-you | ctrl-y → Needs-you block, chips, `Applying decision:` clears badge | covered-by:ui/needs_you suite (13) + ui/transcript_render::test_needs_you_exact_chip_styling + ui/reducer::test_reducer_routes_decision_id_to_host (chip click *actions* inside the listing remain the recorded MIGRATION ui/app-row gap) |
 
 ## §8 Agent lanes & subagent focus
 
@@ -126,7 +129,7 @@ Test names are `module::test` (all inline `#[cfg(test)]`; the flow tests live in
 | §11-interrupt | Esc while running → step-boundary stop, `Interrupted. Goal: …` recap, `· interrupted` rule | covered-by:main::test_flow_interrupt_esc_requests_break_then_recap_and_rule + ui/reducer interrupted-close-out cases |
 | §11-end-notice | Turn end notice `agents N done` / `turn interrupted · context saved` | covered-by:ui/reducer fan-out end-notice case + main flow-interrupt (exact strings) |
 | §11-closeout | Fan-out close-out folds chrome into durable summary; survives resume via events log | covered-by:ui/reducer::test_all_complete_finalizes_duration_and_failure_state + replay suite |
-| §11-banner | Session banner: bright `Amplifier <ver> · core <ver>` + dim bundle/provider/model/session line | covered-by:ui/transcript_render session-banner golden + commands/builtin::test_about_posts_session_banner_block |
+| §11-banner | Session banner: bright `Amplifier <ver> · core <ver>` + dim bundle/provider/model/session line | covered-by:main.rs test_demo_boot_banner_seed_and_typed_turn + test_session_started_appends_identity_banner (boot-time posting wired in wave 2) + ui/transcript_render session-banner golden |
 
 ## §12 Non-visual requirements
 
@@ -134,7 +137,7 @@ Test names are `module::test` (all inline `#[cfg(test)]`; the flow tests live in
 |---|---|---|
 | §12-native | Built the amplifier-native way (thin app over amplifier-core, bundle-driven) | n/a:architecture property — the Rust client rides the Python `serve` backend (MIGRATION header); not unit-testable in-crate |
 | §12-real | Real sessions: streaming from core events; persistence with resume + fork | n/a:backend-only behind `serve` (client replay half covered-by ui/reducer replay suite; live end-to-end is MIGRATION Layer 5) |
-| §12-keys | Keybindings in real terminals; kitty shift+enter documented; graceful fallback | covered-by:ui/keymap::test_shift_enter_with_alt_enter_fallback + ui/footer alt+enter hint case (real-terminal kitty probe is integration, recorded) |
+| §12-keys | Keybindings in real terminals; kitty shift+enter documented; graceful fallback | covered-by:ui/keymap::test_shift_enter_with_alt_enter_fallback + ui/footer alt+enter hint case (kitty probe wired at startup: main.rs `probe_kitty_protocol`) |
 | §12-resize | Resize reflows transcript without corruption | covered-by:ui/transcript::test_resize_reflow_debounced_and_width_pure, test_resize_reflow_deferred_while_streaming_then_forced_once |
-| §12-mouse | Mouse click targets (rules, tool lines, lanes, palette, approval, badge, chips) | n/a:unwired-assembly-gap — terminal mouse events are not wired in the Rust app (recorded in MIGRATION ui/app row); per-widget click *logic* is covered by widget click tests |
-| §12-suite | Test suite covering block grammar, gating, palette, approvals, steer/queue, checkpoints, ledger math, theme tokens | covered — this table is the index (1078 tests green: 1066 lib + 12 bin) |
+| §12-mouse | Mouse click targets (rules, tool lines, lanes, palette, approval, badge, chips) | covered-by:main::test_tool_line_click_toggles_body_in_place, main::test_lanes_panel_row_click_focuses_lane, main::test_mode_badge_click_cycles (+ main::test_click_confirms_that_option, test_footer_badge_shows_and_click_posts_message, test_wheel_up_releases_follow_and_wheel_down_at_bottom_rearms — crossterm mouse capture + FrameLayout hit-testing wired in main.rs/app.rs; needs-you chip *actions* remain the recorded MIGRATION ui/app-row gap) |
+| §12-suite | Test suite covering block grammar, gating, palette, approvals, steer/queue, checkpoints, ledger math, theme tokens | covered — this table is the index (1137 tests green at tip 5664a53: 1108 lib + 29 bin, +1 ignored live e2e) |

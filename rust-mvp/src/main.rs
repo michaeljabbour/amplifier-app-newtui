@@ -19,7 +19,7 @@ use crossterm::terminal::{
 use live::LiveRuntime;
 use message::Msg;
 use ratatui::prelude::*;
-use runtime::DemoRuntime;
+use runtime::ScriptedDemoRuntime;
 use std::cell::RefCell;
 use std::io::{self, Stdout};
 use std::rc::Rc;
@@ -214,9 +214,57 @@ impl PerfLog {
 }
 
 fn demo_app(tx: &Sender<Msg>, kitty_protocol: bool, initial_mode: Option<&str>) -> App {
+    demo_app_with(tx, kitty_protocol, initial_mode, false)
+}
+
+/// The full `--demo` composition (Python `NewTuiApp(DemoRuntimeAdapter())`):
+/// the real scripted engine ([`ScriptedDemoRuntime`], the `kernel/demo.py`
+/// port) behind [`DemoAdapter`], with the script's step-boundary hooks wired
+/// to the live app — steer consumption, the LIVE mode gate, and the
+/// esc-interrupt close-out bridge. `instant` is the tests' zero-sleep mode.
+fn demo_app_with(
+    tx: &Sender<Msg>,
+    kitty_protocol: bool,
+    initial_mode: Option<&str>,
+    instant: bool,
+) -> App {
     let wiring = Rc::new(RefCell::new(DemoWiring::new()));
-    let adapter = DemoAdapter::new(Box::new(DemoRuntime::new(tx.clone())), Rc::clone(&wiring));
-    App::new(Box::new(adapter), kitty_protocol, initial_mode, Some(wiring))
+    let runtime = ScriptedDemoRuntime::new(tx.clone());
+    if instant {
+        runtime.set_instant();
+    }
+    let runtime = Rc::new(RefCell::new(runtime));
+    let adapter = DemoAdapter::new(Rc::clone(&runtime), Rc::clone(&wiring));
+    let mut app = App::new(
+        Box::new(adapter),
+        kitty_protocol,
+        initial_mode,
+        Some(Rc::clone(&wiring)),
+    );
+    // Python `DemoRuntime(steer_source=self._consume_steer,
+    // mode_source=self._current_mode)`: the script consumes ONE queued
+    // steer per step boundary and reads the LIVE mode for the pytest
+    // approval gate (spec §4/§5).
+    let steering = std::sync::Arc::clone(&app.steering);
+    runtime
+        .borrow()
+        .set_steer_source(Box::new(move || {
+            steering.consume_next_steer().map(|message| message.text)
+        }));
+    let mode_shared = std::sync::Arc::clone(&app.ui.borrow().mode_shared);
+    runtime
+        .borrow()
+        .set_mode_source(Box::new(move || mode_shared.lock().unwrap().clone()));
+    // Esc-interrupt close-out: Python's adapter `turn_spec` reads
+    // `runtime.interrupted_close` live; the Rust client copies it into the
+    // wiring when the cancelled close-out lands (`set_demo_interrupt_bridge`).
+    let bridge_runtime = Rc::clone(&runtime);
+    app.set_demo_interrupt_bridge(Box::new(move || {
+        wiring
+            .borrow_mut()
+            .set_interrupted_close(bridge_runtime.borrow().interrupted_close());
+    }));
+    app
 }
 
 /// Crossterm key event → Textual chord name (the grammar the ported units
@@ -1087,43 +1135,112 @@ status body, wired it into the router, and covered it with a test.";
         );
     }
 
-    // The `--demo` composition end-to-end: DemoAdapter + DemoRuntime play
-    // the scripted turn (real event vocabulary) through the assembled
-    // reducer, including the parked approval answered from the bar. The
-    // demo session carries the $0.40 scripted cost baseline (DemoWiring).
+    /// Pump the demo runtime's wire events into the app until `done` holds
+    /// (the headless analogue of the Python tests' Pilot `wait_for`).
+    fn drain_demo(app: &mut App, rx: &std::sync::mpsc::Receiver<Msg>, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !done(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "demo drain timed out before the condition held"
+            );
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Msg::Rt(ev)) => app.handle_wire(ev),
+                Ok(_) => {}
+                Err(_) => panic!("demo runtime went quiet before the condition held"),
+            }
+        }
+    }
+
+    /// Plain text of every transcript block's spans/summary (assertions over
+    /// durable content that the 100-col frame may wrap).
+    fn transcript_text(app: &App) -> String {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        app.ui
+            .borrow()
+            .transcript
+            .blocks()
+            .iter()
+            .map(|block| match block {
+                TranscriptBlock::Answer(answer) => answer
+                    .spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>(),
+                TranscriptBlock::UserLine(line) => line.text.clone(),
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // The `--demo` composition end-to-end — REWRITTEN for the real
+    // kernel/demo.py port (ScriptedDemoRuntime): the legacy pin asserted
+    // the serve-mock-shaped health-endpoint turn ($0.41374, `Read 3 files
+    // · ran 2 shell commands`, `/health`); the composition now plays the
+    // REAL Python demo script, so this pins tests/test_flow_ledger.py's
+    // expectations instead — the seed replay lands the $0.57 mount cost
+    // ($0.40 baseline + the seed spec), the chat-mode build turn parks on
+    // the scripted pytest approval (`Run uv run pytest tests/store/ -q?`,
+    // ticket demo-ticket-1), and `Allow once` closes out with
+    // kernel.demo.build_answer(denied=False) at the spec's cumulative cost.
     #[test]
     fn test_flow_demo_scripted_turn_end_to_end() {
+        use amplifier_newtui_rs::ui::demo_wiring::{
+            build_answer, demo_turn_by_key, TurnKey, PYTEST_APPROVAL_PROMPT,
+        };
         let (tx, rx) = channel::<Msg>();
-        let mut app = demo_app(&tx, true, None);
+        let mut app = demo_app_with(&tx, true, None, true);
         app.boot();
         app.on_resize(100, 32);
         assert!(app.ui.borrow().splash.is_none(), "demo identity known at boot");
         assert_eq!(app.ui.borrow().bundle, "anchors");
-        app.submit_prompt("Add a health check endpoint");
+        assert_eq!(app.ui.borrow().session_short, "e07d");
 
-        let mut answered = false;
-        while let Ok(msg) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            if let Msg::Rt(ev) = msg {
-                app.handle_wire(ev);
-                if app.ui.borrow().approval.is_some() && !answered {
-                    answered = true;
-                    app.on_key("enter"); // Allow once
-                }
-                if answered && !app.ui.borrow().turn_active {
-                    break;
-                }
-            }
+        // The seed transcript replays as a live turn (Python `start()`).
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 1 && !app.ui.borrow().turn_active
+        });
+        // $0.40 baseline + the seed spec's cost → the mockup's $0.57.
+        assert_eq!(app.reducer.session_cost, Decimal::from_str("0.57").unwrap());
+        assert!(
+            transcript_text(&app).contains("command-line app for Amplifier"),
+            "seed answer landed"
+        );
+
+        // Chat mode gates the pytest ask (spec §4 — mockup
+        // `this.mode().id === "chat"` read LIVE at the step boundary);
+        // the typed text echoes verbatim and plays the next unplayed
+        // scripted turn: build.
+        app.ui.borrow_mut().set_mode_by_id("chat", false);
+        type_text(&mut app, "hi");
+        app.on_key("enter");
+        drain_demo(&mut app, &rx, |app| app.ui.borrow().approval.is_some());
+        {
+            let ui = app.ui.borrow();
+            let bar = ui.approval.as_ref().expect("approval bar open");
+            assert_eq!(bar.ticket_id, "demo-ticket-1", "the scripted broker ticket");
+            assert_eq!(bar.prompt, PYTEST_APPROVAL_PROMPT);
+            assert!(ui.turn_active, "turn parked, still active");
         }
-        assert!(answered, "demo turn parked on the approval");
-        assert!(!app.ui.borrow().turn_active, "demo turn closed out");
-        // $0.40 baseline + $0.00924 + $0.0045 priced usage.
+
+        app.on_key("enter"); // Allow once
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 2 && !app.ui.borrow().turn_active
+        });
+        let text = transcript_text(&app);
+        assert!(text.contains("hi"), "verbatim user echo:\n{text}");
+        assert!(
+            text.contains(&build_answer(false)),
+            "allowed build close-out answer:\n{text}"
+        );
+        // Cumulative session spend after the build turn (mockup
+        // `this.cost`), straight from the pinned spec table.
         assert_eq!(
             app.reducer.session_cost,
-            Decimal::from_str("0.41374").unwrap()
+            demo_turn_by_key(TurnKey::Build).cost_after
         );
-        let text = draw_text(&app, 100, 32);
-        assert!(text.contains("Read 3 files · ran 2 shell commands"), "digest:\n{text}");
-        assert!(text.contains("/health"), "answer:\n{text}");
+        assert!(app.reducer.ledger.last_shipped(), "build turn shipped");
     }
 
     // ------------------------------------------------------------------
@@ -1373,7 +1490,12 @@ status body, wired it into the router, and covered it with a test.";
         }
         let layout = layout_after_draw(app, 100, 32);
         let rect = layout.transcript;
-        let (_, start, _) = layout.block_lines[0].clone();
+        let (_, start, _) = layout
+            .block_lines
+            .iter()
+            .find(|(id, _, _)| id == "sel-0")
+            .cloned()
+            .expect("first selection row laid out");
         let y0 = rect.y + (start - layout.transcript_scroll) as u16;
         app.on_mouse_down(rect.x, y0);
         app.on_mouse_drag(rect.x + 30, y0 + rows - 1);
@@ -1414,7 +1536,12 @@ status body, wired it into the router, and covered it with a test.";
         // The selected rows paint REVERSED (the selection highlight).
         let layout = layout_after_draw(&app, 100, 32);
         let rect = layout.transcript;
-        let (_, start, _) = layout.block_lines[0].clone();
+        let (_, start, _) = layout
+            .block_lines
+            .iter()
+            .find(|(id, _, _)| id == "sel-0")
+            .cloned()
+            .expect("first selection row laid out");
         let y0 = rect.y + (start - layout.transcript_scroll) as u16;
         let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
         terminal.draw(|f| ui::draw(f, &app)).unwrap();
@@ -1793,6 +1920,781 @@ status body, wired it into the router, and covered it with a test.";
                 "resume this session: amplifier-newtui resume core-0123456789abcdef\n\
                  list sessions:       amplifier-newtui sessions"
             )
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Demo-composition flow adaptations (each test names the Python case
+    // it adapts; the demo runtime plays instantly, events drain headless).
+    // ------------------------------------------------------------------
+
+    /// Instant demo app with the seed replay settled (the Python tests'
+    /// `seed_done` helper).
+    fn demo_seed_done() -> (App, std::sync::mpsc::Receiver<Msg>) {
+        let (tx, rx) = channel::<Msg>();
+        let mut app = demo_app_with(&tx, true, None, true);
+        app.boot();
+        app.on_resize(120, 40);
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 1 && !app.ui.borrow().turn_active
+        });
+        (app, rx)
+    }
+
+    fn blocks_of(app: &App, kind: &str) -> Vec<amplifier_newtui_rs::model::blocks::TranscriptBlock> {
+        app.ui
+            .borrow()
+            .transcript
+            .blocks()
+            .into_iter()
+            .filter(|block| block.kind() == kind)
+            .collect()
+    }
+
+    /// Click the first painted row of `block_id` (drawing first so the
+    /// frame layout is current).
+    fn click_block(app: &mut App, block_id: &str) {
+        let layout = layout_after_draw(app, 120, 40);
+        let (_, start, _) = layout
+            .block_lines
+            .iter()
+            .find(|(id, _, _)| id == block_id)
+            .cloned()
+            .expect("block laid out");
+        let y = layout.transcript.y + (start - layout.transcript_scroll) as u16;
+        app.on_mouse_down(layout.transcript.x, y);
+    }
+
+    // Adapts tests/test_app_boot.py::test_demo_boot_banner_seed_and_typed_
+    // turn (banner + seed half): the session banner block renders at boot
+    // from the adapter's identity with the exact DEMO_BANNER strings, and
+    // the seed turn replays (verbatim seed prompt, batched tool line,
+    // turn rule t1).
+    #[test]
+    fn test_demo_boot_banner_seed_and_typed_turn() {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        use amplifier_newtui_rs::ui::demo_wiring::{DEMO_BANNER, SEED_PROMPT};
+        let (app, _rx) = demo_seed_done();
+        let blocks = app.ui.borrow().transcript.blocks();
+        let TranscriptBlock::SessionBanner(banner) = &blocks[0] else {
+            panic!("first block is the session banner, got {:?}", blocks[0].kind());
+        };
+        assert_eq!(
+            (banner.headline.as_str(), banner.detail.as_str()),
+            DEMO_BANNER,
+            "exact Python DEMO_BANNER"
+        );
+        let user_lines = blocks_of(&app, "user_line");
+        let TranscriptBlock::UserLine(seed) = &user_lines[0] else {
+            unreachable!()
+        };
+        assert_eq!(seed.text, SEED_PROMPT);
+        assert!(
+            blocks_of(&app, "tool_line").iter().any(|block| matches!(
+                block,
+                TranscriptBlock::ToolLine(tool) if tool.summary == "Ran 2 shell commands"
+            )),
+            "seed batch tool line"
+        );
+        let rules = blocks_of(&app, "turn_rule");
+        let TranscriptBlock::TurnRule(rule) = &rules[0] else {
+            unreachable!()
+        };
+        assert_eq!(rule.checkpoint_id, "t1");
+        let text = draw_text(&app, 120, 40);
+        assert!(text.contains(DEMO_BANNER.0), "banner headline renders:\n{text}");
+    }
+
+    // The protocol half of the session-banner wiring (Python
+    // `announce_ready` appends SessionBanner once identity is known):
+    // `session.started` carries no version headline, so the client
+    // synthesizes the Python identity detail line.
+    #[test]
+    fn test_session_started_appends_identity_banner() {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        let mut app = boot_pending_app();
+        app.handle_wire(WireEvent::SessionStarted {
+            session_id: "core-0123456".into(),
+            bundle: "newtui".into(),
+            model: "claude-sonnet-4-5".into(),
+        });
+        let banners = blocks_of(&app, "session_banner");
+        assert_eq!(banners.len(), 1, "one banner at boot");
+        let TranscriptBlock::SessionBanner(banner) = &banners[0] else {
+            unreachable!()
+        };
+        assert_eq!(banner.headline, "");
+        assert_eq!(
+            banner.detail,
+            "Bundle: newtui | claude-sonnet-4-5 · session core-01"
+        );
+        let text = flat_text(&app);
+        assert!(text.contains("Bundle: newtui"), "banner renders:\n{text}");
+    }
+
+    // Adapts tests/test_flow_ledger.py::test_ctrl_l_prints_session_ledger:
+    // ctrl-l over the seeded demo prints the exact ledger scrollback block
+    // (mockup cmdLedger prints `this.cost` — the $0.57 session cost).
+    #[test]
+    fn test_ctrl_l_prints_session_ledger() {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        let (mut app, _rx) = demo_seed_done();
+        app.on_key("ctrl+l");
+        let ledgers = blocks_of(&app, "ledger");
+        let TranscriptBlock::Ledger(ledger) = ledgers.last().expect("ledger block") else {
+            unreachable!()
+        };
+        assert_eq!((ledger.session.as_str(), ledger.bundle.as_str()), ("e07d", "anchors"));
+        assert_eq!(ledger.turns, 1);
+        assert_eq!(ledger.spend, Decimal::from_str("0.57").unwrap());
+        assert_eq!((ledger.shipped, ledger.answer_only), (0, 1));
+        assert_eq!(ledger.cache_hit_pct, 91);
+        let text = draw_text(&app, 200, 40);
+        assert!(
+            text.contains("· Session ledger  e07d · anchors"),
+            "exact header:\n{text}"
+        );
+        assert!(
+            text.contains("1 turns · $0.57 · 0 shipped · 1 answer-only · cache hit 91%"),
+            "exact summary line:\n{text}"
+        );
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("ledger printed to scrollback")
+        );
+    }
+
+    // Adapts tests/test_flow_ledger.py::test_clicking_final_answer_prints_
+    // evidence_block: clicking the seed answer prints the scripted evidence
+    // block (numbered teal claims → grounding tool calls) with the exact
+    // §10 header and notice.
+    #[test]
+    fn test_clicking_final_answer_prints_evidence_block() {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        use amplifier_newtui_rs::ui::demo_wiring::DEMO_EVIDENCE;
+        let (mut app, _rx) = demo_seed_done();
+        let answer_id = blocks_of(&app, "answer")
+            .iter()
+            .find_map(|block| match block {
+                TranscriptBlock::Answer(answer) if !answer.evidence_refs.is_empty() => {
+                    Some(answer.id.clone())
+                }
+                _ => None,
+            })
+            .expect("seed answer carries evidence refs");
+        click_block(&mut app, &answer_id);
+
+        let evidences = blocks_of(&app, "evidence");
+        let TranscriptBlock::Evidence(evidence) = evidences.last().expect("evidence block")
+        else {
+            unreachable!()
+        };
+        assert_eq!(evidence.links.len(), DEMO_EVIDENCE.len());
+        assert_eq!(evidence.links[0].claim_quote, DEMO_EVIDENCE[0].quote);
+        assert_eq!(evidence.links[0].tool_ref, DEMO_EVIDENCE[0].source);
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("evidence revealed · every claim traces to a tool call")
+        );
+        let text = draw_text(&app, 200, 40);
+        assert!(
+            text.contains("· Evidence  1/2 · ←/→ select · enter expand · esc close"),
+            "exact §10 header:\n{text}"
+        );
+        assert!(
+            text.contains("¹ \"dashboard and steering wheel\" → Ran 2 shell commands"),
+            "first numbered claim:\n{text}"
+        );
+    }
+
+    // Adapts tests/test_flow_ledger.py::test_evidence_block_keys_select_
+    // expand_and_close (spec §10): the header's advertised keys actually
+    // work — ←/→ select (header 1/N tracks), enter expand (the demo links
+    // carry no correlation key, so the grounding reference surfaces as the
+    // notice), esc close hands the keyboard back to the composer.
+    #[test]
+    fn test_evidence_block_keys_select_expand_and_close() {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        use amplifier_newtui_rs::ui::demo_wiring::DEMO_EVIDENCE;
+        let (mut app, _rx) = demo_seed_done();
+        let answer_id = blocks_of(&app, "answer")
+            .iter()
+            .find_map(|block| match block {
+                TranscriptBlock::Answer(answer) if !answer.evidence_refs.is_empty() => {
+                    Some(answer.id.clone())
+                }
+                _ => None,
+            })
+            .expect("seed answer carries evidence refs");
+        click_block(&mut app, &answer_id);
+        let evidence_id = match blocks_of(&app, "evidence").last() {
+            Some(TranscriptBlock::Evidence(evidence)) => evidence.id.clone(),
+            other => panic!("evidence block mounted, got {other:?}"),
+        };
+        // The block takes the keyboard so the advertised keys are live.
+        assert_eq!(
+            app.ui.borrow().focused_evidence.as_deref(),
+            Some(evidence_id.as_str())
+        );
+
+        // → selects the next claim; the header counter tracks (2/2).
+        app.on_key("right");
+        let selected = match blocks_of(&app, "evidence").last() {
+            Some(TranscriptBlock::Evidence(evidence)) => evidence.selected,
+            _ => unreachable!(),
+        };
+        assert_eq!(selected, 1);
+        assert!(
+            draw_text(&app, 200, 40).contains("· Evidence  2/2 · "),
+            "header tracks the selection"
+        );
+        // ← selects back (clamped at the first claim).
+        app.on_key("left");
+        app.on_key("left");
+        let selected = match blocks_of(&app, "evidence").last() {
+            Some(TranscriptBlock::Evidence(evidence)) => evidence.selected,
+            _ => unreachable!(),
+        };
+        assert_eq!(selected, 0, "clamped at the first claim");
+
+        // enter expands the selected claim: no correlation key on the demo
+        // links, so the grounding reference surfaces as the exact notice.
+        app.on_key("enter");
+        assert_eq!(
+            app.ui.borrow().notices.current().map(str::to_string),
+            Some(format!("grounded by {}", DEMO_EVIDENCE[0].source))
+        );
+
+        // esc closes the block and hands the keyboard back.
+        app.on_key("escape");
+        assert!(blocks_of(&app, "evidence").is_empty(), "evidence closed");
+        assert!(app.ui.borrow().focused_evidence.is_none());
+        type_text(&mut app, "x");
+        assert_eq!(
+            app.ui.borrow().composer.text(),
+            "x",
+            "typing reaches the composer again"
+        );
+    }
+
+    // The correlated half of Python `on_expand_evidence_claim` (spec §10
+    // deep-link, exercised by tests/test_ui_transcript_view.py's message
+    // plumbing): enter on a claim whose link carries a tool_call_id expands
+    // the grounding tool line in place and scrolls it into view.
+    #[test]
+    fn test_evidence_enter_expands_grounding_tool_line() {
+        use amplifier_newtui_rs::model::blocks::{Answer, Segment, ToolLine, TranscriptBlock};
+        use amplifier_newtui_rs::model::evidence::EvidenceLink;
+        let (mut app, _ops) = test_app();
+        app.on_resize(120, 40);
+        {
+            let mut ui = app.ui.borrow_mut();
+            let tool = ToolLine {
+                body: vec!["$ pytest -q".into(), "42 passed".into()],
+                tool_call_ids: vec!["call-9".into()],
+                ..ToolLine::new("t-9", "✔ bash · pytest -q")
+            };
+            let _ = ui.transcript.append(tool.into(), 0.0);
+            let answer = Answer {
+                evidence_refs: vec![EvidenceLink {
+                    tool_call_id: "call-9".into(),
+                    ..EvidenceLink::new("tests pass", "bash pytest -q")
+                }],
+                ..Answer::new("a-9", vec![Segment::new("All 42 tests pass.")])
+            };
+            let _ = ui.transcript.append(answer.into(), 0.0);
+        }
+        click_block(&mut app, "a-9");
+        assert!(
+            app.ui.borrow().focused_evidence.is_some(),
+            "evidence opened and focused"
+        );
+
+        app.on_key("enter");
+        let block = app.ui.borrow().transcript.get_block("t-9").unwrap();
+        let TranscriptBlock::ToolLine(tool) = block else {
+            panic!("still a tool line");
+        };
+        assert!(tool.expanded, "enter expanded the grounding tool line");
+        assert!(
+            !app.ui.borrow().transcript.follow(),
+            "deep-link released the tail anchor to reveal the line"
+        );
+
+        // esc closes the evidence block.
+        let evidence_id = app.ui.borrow().focused_evidence.clone().unwrap();
+        app.on_key("escape");
+        assert!(app.ui.borrow().transcript.get_block(&evidence_id).is_none());
+    }
+
+    // Adapts tests/test_flow_steer_queue.py::test_enter_mid_turn_steers_
+    // echo_and_applies_at_step_boundary over the REAL scripted demo: the
+    // ↳ echo block + exact notice on Enter-while-running; the queued steer
+    // is consumed at the build turn's next step boundary (`Applying steer:
+    // …` narration) and its echo drops.
+    #[test]
+    fn test_enter_mid_turn_steers_echo_and_applies_at_step_boundary() {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        use amplifier_newtui_rs::ui::app_support::STEER_NOTICE;
+        let (mut app, rx) = demo_seed_done();
+        app.ui.borrow_mut().set_mode_by_id("chat", false);
+        type_text(&mut app, "hi");
+        app.on_key("enter");
+        drain_demo(&mut app, &rx, |app| app.ui.borrow().turn_active);
+
+        // Running + Enter → steer with the ↳ echo block + exact notice.
+        type_text(&mut app, "focus on the tests");
+        app.on_key("enter");
+        {
+            let echoes = blocks_of(&app, "steer_echo");
+            assert_eq!(echoes.len(), 1);
+            let TranscriptBlock::SteerEcho(echo) = &echoes[0] else {
+                unreachable!()
+            };
+            assert_eq!(echo.text, "focus on the tests");
+            assert_eq!(app.ui.borrow().notices.current(), Some(STEER_NOTICE));
+            assert_eq!(app.footer_state().queued, 0, "steers are not the qN badge");
+        }
+
+        // The turn parks on the pytest approval; answering releases the
+        // next step boundary, which consumes the steer.
+        drain_demo(&mut app, &rx, |app| app.ui.borrow().approval.is_some());
+        app.on_key("enter"); // Allow once
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 2 && !app.ui.borrow().turn_active
+        });
+        assert!(
+            blocks_of(&app, "narration").iter().any(|block| matches!(
+                block,
+                TranscriptBlock::Narration(narration)
+                    if narration.text == "Applying steer: focus on the tests"
+            )),
+            "step boundary consumed the steer"
+        );
+        assert!(blocks_of(&app, "steer_echo").is_empty(), "echo removed");
+        assert!(app.steering.pending_steers().is_empty());
+    }
+
+    // Adapts tests/test_flow_steer_queue.py::test_leftover_steer_discarded_
+    // at_turn_end: a steer no step boundary consumed is discarded at turn
+    // end — never rolling forward as a turn the user never sent — and its
+    // ↳ echo drops with the honest discard notice.
+    #[test]
+    fn test_leftover_steer_discarded_at_turn_end() {
+        use amplifier_newtui_rs::ui::app_support::STEER_DISCARDED_NOTICE;
+        let (mut app, ops) = test_app();
+        app.handle_wire(prompt_submit("first turn"));
+        type_text(&mut app, "never applied");
+        app.on_key("enter");
+        assert_eq!(blocks_of(&app, "steer_echo").len(), 1);
+        assert_eq!(app.steering.pending_steers().len(), 1);
+
+        app.handle_wire(prompt_complete("done", 0, ""));
+        assert!(blocks_of(&app, "steer_echo").is_empty(), "echo removed at discard");
+        assert!(app.steering.pending_steers().is_empty());
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some(STEER_DISCARDED_NOTICE)
+        );
+        assert!(
+            !ops.borrow().iter().any(|op| op == "submit:never applied"),
+            "a discarded steer never becomes a submitted turn: {:?}",
+            ops.borrow()
+        );
+    }
+
+    // Adapts tests/test_flow_interrupt.py::test_esc_interrupts_running_
+    // turn_with_recap_and_interrupted_rule over the REAL scripted demo
+    // (paced playback — the esc lands inside the first step's wait): the
+    // turn stops at the next step boundary, the interrupt bridge serves
+    // the interrupted close-out spec through the wiring, so the rule reads
+    // `· interrupted`, the checkpoint carries the Python label, and
+    // nothing ships.
+    #[test]
+    fn test_esc_interrupts_running_turn_with_recap_and_interrupted_rule() {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        use amplifier_newtui_rs::ui::demo_wiring::BUILD_PROMPT;
+        let (tx, rx) = channel::<Msg>();
+        let mut app = demo_app_with(&tx, true, None, false); // real pacing
+        app.boot();
+        app.on_resize(120, 40);
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 1 && !app.ui.borrow().turn_active
+        });
+
+        type_text(&mut app, BUILD_PROMPT);
+        app.on_key("enter");
+        drain_demo(&mut app, &rx, |app| app.ui.borrow().turn_active);
+        app.on_key("escape");
+        // Esc only requests the break — the notice waits for close-out.
+        assert_ne!(
+            app.ui.borrow().notices.current(),
+            Some("turn interrupted · context saved")
+        );
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 2 && !app.ui.borrow().turn_active
+        });
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("turn interrupted · context saved")
+        );
+        let text = draw_text(&app, 120, 40);
+        assert!(text.contains("Interrupted. Goal:"), "recap line:\n{text}");
+        let rules = blocks_of(&app, "turn_rule");
+        let TranscriptBlock::TurnRule(rule) = rules.last().unwrap() else {
+            unreachable!()
+        };
+        assert!(
+            rule.label.ends_with(" · interrupted"),
+            "interrupted rule label: {:?}",
+            rule.label
+        );
+        assert!(!rule.shipped, "dimmer label (spec §3: not shipped)");
+        let checkpoints = app.reducer.ledger.checkpoints();
+        assert_eq!(
+            checkpoints.last().unwrap().label,
+            "store refactor · interrupted",
+            "the bridge served interrupted_spec's checkpoint label"
+        );
+        assert!(!app.reducer.ledger.last_shipped(), "no ▲ yield glyph");
+    }
+
+    // Adapts tests/test_flow_lanes.py::test_focus_lane_child_transcript_
+    // banner_and_esc_back: ↓ + Enter focuses the second lane (coder) — the
+    // transcript swaps to the subagent's own blocks (focus banner +
+    // [delegated] brief + state recap), the footer shows the exact
+    // lane-focus hint, and esc returns to the parent with the exact
+    // `back to parent session` notice (test_flow_lanes.py:283).
+    #[test]
+    fn test_focus_lane_child_transcript_banner_and_esc_back() {
+        use amplifier_newtui_rs::model::blocks::TranscriptBlock;
+        use amplifier_newtui_rs::ui::demo_wiring::{demo_lane_by_name, AGENTS_PROMPT, DEMO_SESSION_ID};
+        use amplifier_newtui_rs::ui::needs_you::focused_lane_banner;
+        let (mut app, rx) = demo_seed_done();
+        app.submit_prompt(AGENTS_PROMPT);
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 2 && !app.ui.borrow().turn_active
+        });
+        assert!(app.ui.borrow().lanes_panel.display(), "panel auto-opened at fan-out");
+
+        // ↓ then Enter focuses the second lane (coder).
+        app.on_key("down");
+        app.on_key("enter");
+        let lane = demo_lane_by_name("coder").expect("scripted lane");
+        assert_eq!(
+            app.ui.borrow().transcript.focused_lane(),
+            Some(lane.sub_session_id.as_str())
+        );
+        // The panel stays open while a lane is focused.
+        assert!(app.ui.borrow().lanes_panel.display());
+
+        let blocks = app.ui.borrow().transcript.blocks();
+        let TranscriptBlock::SessionBanner(banner) = &blocks[0] else {
+            panic!("focus banner first, got {:?}", blocks[0].kind());
+        };
+        assert_eq!(banner.focus_note, focused_lane_banner("coder", DEMO_SESSION_ID));
+        assert_eq!(
+            banner.focus_note,
+            "focused: coder · subagent of e07de0 · own context window \
+             · results report back to parent · esc back"
+        );
+        let TranscriptBlock::UserLine(delegated) = &blocks[1] else {
+            panic!("[delegated] brief second, got {:?}", blocks[1].kind());
+        };
+        assert_eq!(delegated.mode, "delegated");
+        assert_eq!(delegated.text, lane.brief);
+        assert!(!blocks_of(&app, "narration").is_empty(), "own log rendered");
+        let TranscriptBlock::Answer(recap) = blocks.last().unwrap() else {
+            panic!("state recap last");
+        };
+        assert!(recap
+            .spans
+            .iter()
+            .any(|span| span.text.contains(&lane.state_recap)));
+
+        // Footer hint while lane-focused (exact spec string).
+        assert_eq!(app.ui.borrow().footer_context().as_str(), "lane_focus");
+        assert_eq!(
+            footer_right_text(&app.footer_state()),
+            "esc back to parent · transcript is the subagent's own"
+        );
+
+        // Esc returns to the parent transcript with the exact notice.
+        app.on_key("escape");
+        assert!(app.ui.borrow().transcript.focused_lane().is_none());
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("back to parent session")
+        );
+        assert!(
+            blocks_of(&app, "user_line").iter().any(|block| matches!(
+                block,
+                TranscriptBlock::UserLine(line) if line.text == AGENTS_PROMPT
+            )),
+            "parent transcript restored"
+        );
+    }
+
+    // Adapts tests/test_flow_rewind.py::test_double_esc_interrupts_then_
+    // opens_existing_rewind_picker: the first esc of a running turn only
+    // requests the interrupt; the second esc backtracks into the rewind
+    // picker on the existing checkpoint.
+    #[test]
+    fn test_double_esc_interrupts_then_opens_existing_rewind_picker() {
+        let (mut app, ops) = test_app();
+        // Turn 1 lands checkpoint t1.
+        reach_approval(&mut app);
+        app.on_key("enter");
+        finish_granted_turn(&mut app);
+        assert_eq!(app.reducer.ledger.checkpoints().len(), 1);
+
+        app.handle_wire(prompt_submit("second turn"));
+        assert!(app.ui.borrow().turn_active);
+        app.on_key("escape");
+        assert!(
+            ops.borrow().contains(&"interrupt".to_string()),
+            "first esc requested the interrupt"
+        );
+        assert!(!app.ui.borrow().rewind.display(), "no picker yet");
+        app.on_key("escape");
+        let ui = app.ui.borrow();
+        assert!(ui.rewind.display(), "second esc opened the picker");
+        assert_eq!(ui.rewind.current().map(|c| c.id.as_str()), Some("t1"));
+    }
+
+    // Adapts tests/test_flow_thinking_block.py::test_ctrl_g_toggles_
+    // durable_thinking_block_in_place: the durable thinking block defaults
+    // collapsed; ctrl-g expands/collapses it in place with the exact notices.
+    #[test]
+    fn test_ctrl_g_toggles_durable_thinking_block_in_place() {
+        use amplifier_newtui_rs::model::blocks::{Thinking, TranscriptBlock};
+        let (mut app, _ops) = test_app();
+        let _ = app.ui.borrow_mut().transcript.append(
+            Thinking {
+                text: "weigh A\npick B".into(),
+                ..Thinking::new("th-1")
+            }
+            .into(),
+            0.0,
+        );
+        let expanded = |app: &App| match app.ui.borrow().transcript.get_block("th-1") {
+            Some(TranscriptBlock::Thinking(thinking)) => thinking.expanded,
+            _ => panic!("thinking block present"),
+        };
+        assert!(!expanded(&app), "default collapsed");
+
+        app.on_key("ctrl+g");
+        assert!(expanded(&app));
+        assert_eq!(app.ui.borrow().notices.current(), Some("thinking · expanded"));
+
+        app.on_key("ctrl+g");
+        assert!(!expanded(&app));
+        assert_eq!(app.ui.borrow().notices.current(), Some("thinking · collapsed"));
+    }
+
+    // Adapts tests/test_flow_thinking_block.py::test_ctrl_g_falls_back_to_
+    // live_tail_without_durable_thinking: a withheld (empty-text) block is
+    // not expandable, so ctrl-g still drives the live-tail reveal.
+    #[test]
+    fn test_ctrl_g_falls_back_to_live_tail_without_durable_thinking() {
+        use amplifier_newtui_rs::model::blocks::{Thinking, TranscriptBlock};
+        let (mut app, _ops) = test_app();
+        let _ = app
+            .ui
+            .borrow_mut()
+            .transcript
+            .append(Thinking::new("th-2").into(), 0.0);
+        assert!(!app.ui.borrow().live_tail.revealed());
+
+        app.on_key("ctrl+g");
+        assert!(app.ui.borrow().live_tail.revealed());
+        assert_eq!(app.ui.borrow().notices.current(), Some("thinking · shown"));
+        // The withheld block stays collapsed/untouched.
+        match app.ui.borrow().transcript.get_block("th-2") {
+            Some(TranscriptBlock::Thinking(thinking)) => assert!(!thinking.expanded),
+            _ => panic!("thinking block present"),
+        };
+    }
+
+    // Adapts tests/test_flow_plan_panel.py::test_plan_panel_lights_up_mid_
+    // turn_and_collapses_when_done over the scripted build turn: the panel
+    // lights up while the plan runs (▶ active step) and collapses to the
+    // bare `Plan 3/3` header at close-out — with the footer never showing
+    // the count twice (D2) and no live todo block in the transcript (D3).
+    #[test]
+    fn test_plan_panel_lights_up_mid_turn_and_collapses_when_done() {
+        let (mut app, rx) = demo_seed_done();
+        app.ui.borrow_mut().set_mode_by_id("chat", false);
+        type_text(&mut app, "hi"); // → the build turn (next unplayed)
+        app.on_key("enter");
+        // The turn parks on the pytest approval: plan seeded, a step active.
+        drain_demo(&mut app, &rx, |app| app.ui.borrow().approval.is_some());
+        {
+            let ui = app.ui.borrow();
+            assert!(ui.plan_panel.display(), "panel lit up mid-turn");
+            let lines = ui.plan_panel.plan_lines();
+            assert!(lines[0].starts_with("Plan "), "count header: {lines:?}");
+            assert!(
+                lines.iter().any(|line| line.starts_with("  ▶ ")),
+                "an active step renders ▶: {lines:?}"
+            );
+        }
+        app.on_key("enter"); // Allow once → the turn runs to close-out
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 2 && !app.ui.borrow().turn_active
+        });
+        let ui = app.ui.borrow();
+        assert!(ui.plan_panel.display(), "still visible when done");
+        assert_eq!(ui.plan_panel.plan_lines(), vec!["Plan 3/3"]);
+        drop(ui);
+        assert!(
+            !footer_left_text(&app.footer_state()).contains("Plan"),
+            "D2: panel visible → footer never doubles the count"
+        );
+        assert!(blocks_of(&app, "todo").is_empty(), "D3: no live todo block");
+    }
+
+    // Adapts tests/test_flow_plan_panel.py::test_plan_panel_hides_below_90_
+    // cols: the responsive ladder degrades to the footer count only.
+    #[test]
+    fn test_plan_panel_hides_below_90_cols() {
+        let (mut app, rx) = demo_seed_done();
+        app.on_resize(80, 40);
+        app.ui.borrow_mut().set_mode_by_id("chat", false);
+        type_text(&mut app, "hi");
+        app.on_key("enter");
+        drain_demo(&mut app, &rx, |app| app.ui.borrow().approval.is_some());
+        assert!(!app.ui.borrow().plan_items.is_empty(), "plan landed");
+        assert!(!app.ui.borrow().plan_panel.display(), "ladder: hidden below 90 cols");
+        assert!(
+            footer_left_text(&app.footer_state()).contains("Plan"),
+            "count-only in the footer"
+        );
+        app.on_key("enter");
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 2 && !app.ui.borrow().turn_active
+        });
+        assert!(!app.ui.borrow().plan_panel.display());
+        assert!(
+            footer_left_text(&app.footer_state()).contains("Plan 3/3"),
+            "final count in the footer"
+        );
+    }
+
+    // Adapts tests/test_flow_palette.py::test_esc_with_zero_match_filter_
+    // clears_filter_not_the_turn: a live zero-match slash filter consumes
+    // the esc (strip hidden but filter live) — it never falls through to
+    // interrupt-running; only the NEXT esc reaches the interrupt.
+    #[test]
+    fn test_esc_with_zero_match_filter_clears_filter_not_the_turn() {
+        let (mut app, ops) = test_app();
+        app.handle_wire(prompt_submit("first turn"));
+        assert!(app.ui.borrow().turn_active);
+
+        type_text(&mut app, "/zzz");
+        {
+            let ui = app.ui.borrow();
+            assert!(!ui.palette.is_open(), "zero matches → strip hidden…");
+            assert_eq!(ui.palette.filter_text(), Some("/zzz"), "…but the filter is live");
+        }
+
+        app.on_key("escape");
+        {
+            let ui = app.ui.borrow();
+            assert_eq!(ui.palette.filter_text(), None, "esc cleared the filter");
+            assert!(ui.turn_active, "the turn keeps running");
+            assert_eq!(ui.composer.text(), "/zzz", "mockup: typed text stays");
+        }
+        assert!(
+            !ops.borrow().contains(&"interrupt".to_string()),
+            "first esc never reached interrupt"
+        );
+
+        app.on_key("escape");
+        assert!(
+            ops.borrow().contains(&"interrupt".to_string()),
+            "only the NEXT esc interrupts"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Full-frame render locks — the three unadapted SVG snapshots of
+    // tests/test_ui_snapshots.py, as exact-content frame assertions.
+    // ------------------------------------------------------------------
+
+    // Adapts tests/test_ui_snapshots.py::test_double_esc_rewind_snapshot:
+    // the stable rewind-open screen — the strip renders the exact
+    // `rewind_line` text for the newest checkpoint.
+    #[test]
+    fn test_double_esc_rewind_snapshot() {
+        use amplifier_newtui_rs::ui::rewind_strip::rewind_line;
+        let (mut app, _ops) = test_app();
+        reach_approval(&mut app);
+        app.on_key("enter");
+        finish_granted_turn(&mut app);
+        app.handle_wire(prompt_submit("second turn"));
+        app.on_key("escape"); // interrupt request
+        app.on_key("escape"); // backtrack → rewind picker
+        assert!(app.ui.borrow().rewind.display());
+
+        let expected = {
+            let ui = app.ui.borrow();
+            let checkpoint = ui.rewind.current().expect("newest checkpoint").clone();
+            rewind_line(&checkpoint)
+        };
+        let text = draw_text(&app, 140, 32);
+        let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flattened.contains(&expected.split_whitespace().collect::<Vec<_>>().join(" ")),
+            "exact rewind strip line {expected:?} in frame:\n{text}"
+        );
+    }
+
+    // Adapts tests/test_ui_snapshots.py::test_plan_panel_bottom_strip_
+    // snapshot: the post-build-turn bottom strip — plan collapsed to
+    // `Plan 3/3`, still visible in the frame.
+    #[test]
+    fn test_plan_panel_bottom_strip_snapshot() {
+        let (mut app, rx) = demo_seed_done();
+        app.ui.borrow_mut().set_mode_by_id("chat", false);
+        type_text(&mut app, "hi");
+        app.on_key("enter");
+        drain_demo(&mut app, &rx, |app| app.ui.borrow().approval.is_some());
+        app.on_key("enter");
+        drain_demo(&mut app, &rx, |app| {
+            app.reducer.ledger.checkpoints().len() == 2 && !app.ui.borrow().turn_active
+        });
+        assert_eq!(app.ui.borrow().plan_panel.plan_lines(), vec!["Plan 3/3"]);
+        let text = draw_text(&app, 120, 40);
+        assert!(text.contains("Plan 3/3"), "collapsed plan strip in frame:\n{text}");
+    }
+
+    // Adapts tests/test_ui_snapshots.py::test_lane_tail_snapshot: the dim
+    // ┆-guttered lane tail rendering (last 3 non-blank lines).
+    #[test]
+    fn test_lane_tail_snapshot() {
+        let (mut app, _ops) = test_app();
+        // A lane exists so the panel has a row to hang the tail under.
+        app.handle_wire(prompt_submit("fan out"));
+        app.handle_wire(wire(ev::UIEvent::AgentSpawned(ev::AgentSpawned {
+            session_id: SESSION.into(),
+            ts: 101.0,
+            agent: "researcher".into(),
+            sub_session_id: "s1".into(),
+            parent_session_id: SESSION.into(),
+            ..ev::AgentSpawned::default()
+        })));
+        assert!(app.ui.borrow().lanes_panel.display(), "panel auto-opened");
+        app.ui.borrow_mut().lanes_panel.show_lane_tail(
+            "…the queue bridge normalizes delegate lifecycle events at a single\n\
+             boundary, so the lanes are fed from the same UIEvent union as the\n\
+             transcript — checking trackers/task_status.py next",
+        );
+        let text = draw_text(&app, 90, 24);
+        assert!(text.contains('┆'), "dim gutter glyph in frame:\n{text}");
+        assert!(
+            text.contains("checking trackers/task_status.py next"),
+            "tail text in frame:\n{text}"
         );
     }
 

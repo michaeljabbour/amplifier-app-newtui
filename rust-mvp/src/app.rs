@@ -29,7 +29,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ratatui::style::Color;
@@ -42,8 +42,8 @@ use crate::commands::permissions::PermissionSurface;
 use crate::commands::registry::{CommandRegistry, CommandSpec};
 use crate::kernel::events as ev;
 use crate::model::blocks::{
-    Answer, BlockIdAllocator, EvidenceBlock, Segment, StyleToken, TodoItem, TranscriptBlock,
-    UserLine,
+    Answer, BlockIdAllocator, EvidenceBlock, Segment, SessionBanner, SteerEcho, StyleToken,
+    TodoItem, ToolLine, TranscriptBlock, UserLine,
 };
 use crate::model::lanes::LaneRegistry;
 use crate::model::modes::{cycle_mode, get_mode, ModeProfile};
@@ -54,17 +54,20 @@ use crate::model::queues::{
 use crate::model::trust::DenialLog;
 use crate::model::turn::{Checkpoint, OutcomeLedger};
 use crate::protocol::WireEvent;
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, ScriptedDemoRuntime};
 use crate::ui::app_support::{
     self, resolve_esc, EscAction, EscFlags, EscSequence, PlanSurface, APPROVAL_NOTICE,
-    APPROVAL_NOTICE_DURATION, QUEUED_NOTICE,
+    APPROVAL_NOTICE_DURATION, QUEUED_NOTICE, STEER_DISCARDED_NOTICE, STEER_NOTICE,
+    STEER_NOTICE_LEGACY,
 };
 use crate::ui::approval_bar::{ApprovalBar, ApprovalMsg, KeyOutcome, DEFAULT_OPTIONS};
 use crate::ui::chrome::{TitleBar, TitleChanged};
 use crate::ui::command_context::{AppCommandContext, CommandHost};
 use crate::ui::composer::{Composer, ComposerMessage};
 use crate::ui::config_admin::{self, ConfigAdminHost};
-use crate::ui::demo_wiring::{DemoWiring, DEMO_BUNDLE, DEMO_MODEL, DEMO_SESSION_SHORT};
+use crate::ui::demo_wiring::{
+    DemoWiring, DEMO_BANNER, DEMO_BUNDLE, DEMO_MODEL, DEMO_SESSION_SHORT,
+};
 use crate::ui::directory_admin::{self, DirectoryAdminHost, DirectoryEntry, DirectoryKind};
 use crate::ui::file_mentions::{
     close_file_mentions, handle_file_mention_intent, FileMentionStrip, MentionHost,
@@ -217,6 +220,14 @@ pub struct UiState {
     /// Suppress duplicate auto-copies of the same settled selection
     /// (Python `_last_selection_copied`).
     pub last_selection_copied: String,
+    /// The evidence block currently owning the keyboard (spec §10 — the
+    /// Rust rendering of Python `widget.focus()` on the mounted evidence
+    /// block: while set, ←/→/enter/esc route to that widget).
+    pub focused_evidence: Option<String>,
+    /// Cross-thread mirror of the live mode id — the demo script's
+    /// step-boundary trust gate reads it from its worker thread (Python
+    /// `mode_source=self._current_mode` reads `app.mode_id` same-loop).
+    pub mode_shared: Arc<Mutex<String>>,
 }
 
 impl UiState {
@@ -268,6 +279,8 @@ impl UiState {
             selection_drag_anchor: None,
             selection_settle_deadline: None,
             last_selection_copied: String::new(),
+            focused_evidence: None,
+            mode_shared: Arc::new(Mutex::new(mode.id.as_str().to_string())),
         }
     }
 
@@ -295,6 +308,7 @@ impl UiState {
         self.mode = get_mode(Some(mode_id));
         self.permissions.set_mode(self.mode.id.as_str());
         self.composer.set_mode(self.mode);
+        *self.mode_shared.lock().unwrap() = self.mode.id.as_str().to_string();
         if notify {
             let notice = self.mode.notice();
             self.show_notice(&notice, None);
@@ -501,24 +515,27 @@ impl ReducerHost for Shell {
 // Demo adapter — RuntimeAdapterBase + DemoRuntime + DemoWiring data hooks
 // ---------------------------------------------------------------------------
 
-/// `--demo` adapter: the base contract over the scripted [`Runtime`], with
-/// [`DemoWiring`]'s pure data hooks (deferred decisions, decision
-/// narrations, scripted lane transcripts, evidence, the $0.40 session-cost
-/// baseline). The Python demo's full scripted turns (`kernel/demo.py`) are
-/// unported — `turn_spec` stays `None` and the runtime plays the
-/// real-vocabulary script in `runtime.rs`.
+/// `--demo` adapter: the base contract over the scripted
+/// [`ScriptedDemoRuntime`] (the `kernel/demo.py` engine port), with
+/// [`DemoWiring`]'s pure data hooks (turn specs, deferred decisions,
+/// decision narrations, scripted lane transcripts, evidence, the $0.40
+/// session-cost baseline — $0.57 once the seed rule is cut).
 pub struct DemoAdapter {
     pub base: RuntimeAdapterBase,
-    runtime: Box<dyn Runtime>,
+    runtime: Rc<RefCell<ScriptedDemoRuntime>>,
     wiring: Rc<RefCell<DemoWiring>>,
 }
 
 impl DemoAdapter {
-    pub fn new(runtime: Box<dyn Runtime>, wiring: Rc<RefCell<DemoWiring>>) -> Self {
+    pub fn new(
+        runtime: Rc<RefCell<ScriptedDemoRuntime>>,
+        wiring: Rc<RefCell<DemoWiring>>,
+    ) -> Self {
         let mut base = RuntimeAdapterBase::new();
         base.bundle_name = DEMO_BUNDLE.to_string();
         base.model_name = DEMO_MODEL.to_string();
         base.session_short = DEMO_SESSION_SHORT.to_string();
+        base.banner = (DEMO_BANNER.0.to_string(), DEMO_BANNER.1.to_string());
         base.session_cost_start = wiring.borrow().session_cost_start();
         Self { base, runtime, wiring }
     }
@@ -552,21 +569,33 @@ impl RuntimeAdapter for DemoAdapter {
     fn session_cost_start(&self) -> Decimal {
         self.base.session_cost_start
     }
+    fn banner(&self) -> (String, String) {
+        self.base.banner.clone()
+    }
+    /// Python `DemoRuntimeAdapter.start`: identity is known immediately
+    /// (`ready()` first), then the seed transcript replays as a live turn.
     fn start(&mut self, ready: &mut dyn FnMut()) {
         self.wiring.borrow_mut().mark_seed_played();
         ready();
+        self.runtime.borrow_mut().play_seed();
     }
     fn submit(&mut self, text: &str, _attachments: &[crate::ui::composer::ImageAttachment]) {
         self.wiring.borrow_mut().record_submit(text);
-        self.runtime.submit(text.to_string());
+        self.runtime.borrow_mut().submit(text.to_string());
+    }
+    /// Queue-drained turn (spec §5): the scripted mode notice is skipped
+    /// so `queued message picked up` stays visible (Python `submit_queued`).
+    fn submit_queued(&mut self, text: &str) {
+        self.wiring.borrow_mut().record_submit(text);
+        self.runtime.borrow_mut().submit_queued(text.to_string());
     }
     fn interrupt(&mut self) -> bool {
-        self.runtime.interrupt();
+        self.runtime.borrow_mut().interrupt();
         true
     }
     fn answer_approval(&mut self, ticket_id: &str, choice: &str) {
         self.wiring.borrow_mut().record_approval_choice(choice);
-        self.runtime.answer_approval(ticket_id, choice);
+        self.runtime.borrow_mut().answer_approval(ticket_id, choice);
     }
     fn lane_blocks(
         &mut self,
@@ -621,7 +650,9 @@ pub struct App {
     pub journal: Mutex<ApprovalJournal>,
     /// Command-facing mirror of the reducer-owned ledger (module docs).
     pub ledger: Mutex<OutcomeLedger>,
-    pub steering: SteeringQueue,
+    /// Shared so the demo script's worker thread can consume steers at
+    /// step boundaries (Python `steer_source=self._consume_steer`).
+    pub steering: Arc<SteeringQueue>,
     pub lane_steering: LaneSteeringQueue,
     pub needs_you: NeedsYouQueue,
     pub denial_log: Mutex<DenialLog>,
@@ -648,6 +679,14 @@ pub struct App {
     /// headless tests record what would land on the OS clipboard. Returns
     /// true when a tool accepted the text (Python `_os_clipboard_copied`).
     clipboard_copier: Box<dyn Fn(&str) -> bool>,
+    /// ↳ steer-echo bookkeeping: queued `message_id` → echo block id
+    /// (Python `app.steer_echoes`; `sync_steer_echoes` drops stale ones).
+    steer_echoes: RefCell<HashMap<String, String>>,
+    /// Demo-only: copies the runtime's esc-interrupt close-out into the
+    /// [`DemoWiring`] when a cancelled close-out lands, so the reducer's
+    /// close-time `spec_lookup` re-resolve sees it (Python `turn_spec`
+    /// reads `self._runtime.interrupted_close` live, same event loop).
+    demo_interrupt_bridge: Option<Box<dyn Fn()>>,
 }
 
 impl App {
@@ -666,13 +705,32 @@ impl App {
             initial_mode,
             commands.specs(),
         )));
-        let options = ReducerOptions {
-            session_cost_start: adapter.session_cost_start(),
-            evidence_lookup: demo_wiring.map(|wiring| {
-                Box::new(move |answer: &str| wiring.borrow().evidence_links(answer))
-                    as Box<dyn Fn(&str) -> Vec<crate::model::evidence::EvidenceLink>>
-            }),
-            ..ReducerOptions::default()
+        // Python wires the demo adapter's three data hooks straight into
+        // the reducer (`spec_lookup=adapter.turn_spec,
+        // lane_seed_lookup=adapter.lane_seed,
+        // evidence_lookup=adapter.evidence_links`).
+        let options = match demo_wiring {
+            Some(wiring) => ReducerOptions {
+                session_cost_start: adapter.session_cost_start(),
+                spec_lookup: Some(Box::new({
+                    let wiring = Rc::clone(&wiring);
+                    move |prompt: &str| {
+                        wiring.borrow().turn_spec(prompt).map(|spec| spec.reducer_spec())
+                    }
+                })),
+                lane_seed_lookup: Some(Box::new({
+                    let wiring = Rc::clone(&wiring);
+                    move |agent: &str| wiring.borrow().lane_seed(agent)
+                })),
+                evidence_lookup: Some(Box::new(move |answer: &str| {
+                    wiring.borrow().evidence_links(answer)
+                })),
+                ..ReducerOptions::default()
+            },
+            None => ReducerOptions {
+                session_cost_start: adapter.session_cost_start(),
+                ..ReducerOptions::default()
+            },
         };
         let reducer = TranscriptReducer::with_options(
             Shell(Rc::clone(&ui)),
@@ -688,7 +746,7 @@ impl App {
             commands,
             journal: Mutex::new(ApprovalJournal::new()),
             ledger: Mutex::new(OutcomeLedger::new()),
-            steering: SteeringQueue::new(),
+            steering: Arc::new(SteeringQueue::new()),
             lane_steering: LaneSteeringQueue::new(),
             needs_you: NeedsYouQueue::new(),
             denial_log: Mutex::new(DenialLog::new()),
@@ -702,12 +760,20 @@ impl App {
             last_motion_frame: std::cell::Cell::new(0.0),
             last_spinner_frame: std::cell::Cell::new(0.0),
             clipboard_copier: Box::new(app_support::os_clipboard_copy),
+            steer_echoes: RefCell::new(HashMap::new()),
+            demo_interrupt_bridge: None,
         }
     }
 
     /// Swap the clipboard writer (headless tests inject a recorder).
     pub fn set_clipboard_copier(&mut self, copier: Box<dyn Fn(&str) -> bool>) {
         self.clipboard_copier = copier;
+    }
+
+    /// Install the demo esc-interrupt close-out bridge (see the field docs
+    /// on [`App::demo_interrupt_bridge`]); `--demo` composition only.
+    pub fn set_demo_interrupt_bridge(&mut self, bridge: Box<dyn Fn()>) {
+        self.demo_interrupt_bridge = Some(bridge);
     }
 
     /// Boot the runtime (Python `_boot_runtime`): start the adapter; when it
@@ -731,19 +797,43 @@ impl App {
         }
     }
 
-    /// Session identity landed: dissolve the splash, fill the chrome, seed
-    /// prompt history and `@file` completion.
+    /// Session identity landed: dissolve the splash, append the session
+    /// banner, fill the chrome, seed prompt history and `@file` completion
+    /// (Python `app_support.announce_ready`).
     fn announce_ready(&mut self, bundle: &str, model: &str, session_short: &str) {
-        let (history, files, notices) = {
+        let (history, files, notices, banner) = {
             let mut adapter = self.adapter.borrow_mut();
             (
                 adapter.prompt_history(),
                 adapter.workspace_files(),
                 adapter.startup_notices(),
+                adapter.banner(),
             )
+        };
+        // Protocol sessions learn identity from `session.started`, which
+        // carries no version headline — synthesize the Python identity
+        // detail line so the banner still lands at boot (honest subset).
+        let (headline, detail) = if banner.0.is_empty() && banner.1.is_empty() {
+            (
+                String::new(),
+                format!("Bundle: {bundle} | {model} · session {session_short}"),
+            )
+        } else {
+            banner
         };
         let mut ui = self.ui.borrow_mut();
         ui.splash = None;
+        if !headline.is_empty() || !detail.is_empty() {
+            let id = self.allocator.borrow_mut().next_id();
+            let _ = ui.transcript.append(
+                SessionBanner {
+                    detail,
+                    ..SessionBanner::new(id, headline)
+                }
+                .into(),
+                monotonic(),
+            );
+        }
         ui.bundle = bundle.to_string();
         ui.model_name = model.to_string();
         ui.session_short = session_short.to_string();
@@ -800,8 +890,10 @@ impl App {
                     ui.lanes_panel.set_focused(None);
                 }
                 // The approval bar owns the keyboard (spec §7): an open
-                // palette strip would otherwise steal the arrow keys.
+                // palette strip would otherwise steal the arrow keys, and
+                // a focused evidence block loses focus to `bar.focus()`.
                 ui.palette.apply_filter(None);
+                ui.focused_evidence = None;
                 if let Ok(mut bar) = ApprovalBar::new(ticket_id, prompt, options) {
                     bar.update_wrap(ui.term_width as usize);
                     ui.approval = Some(bar);
@@ -852,6 +944,17 @@ impl App {
                 }
             }
             WireEvent::Event(event) => {
+                // Demo esc-interrupt: the cancelled close-out precedes its
+                // `prompt_complete` on the wire — copy the runtime's
+                // interrupted close-out spec into the wiring NOW so the
+                // reducer's close-time spec re-resolve sees it.
+                if let ev::UIEvent::OrchestratorComplete(complete) = &event {
+                    if complete.status == ev::OrchestratorStatus::Cancelled {
+                        if let Some(bridge) = self.demo_interrupt_bridge.as_ref() {
+                            bridge();
+                        }
+                    }
+                }
                 self.reducer.handle(&event);
                 self.settle_after_event();
             }
@@ -932,8 +1035,34 @@ impl App {
         self.sync_lanes_panel();
         self.sync_title();
         self.sync_rewind_checkpoints();
+        self.sync_steer_echoes();
         self.drain_deferrals();
         self.drain_turn_queues();
+    }
+
+    /// Drop the ↳ echo of any steer no longer pending (spec §5) — Python
+    /// `sync_steer_echoes`, a steering-queue listener; here it runs with
+    /// the other post-event duties (a steer leaves the queue either when
+    /// the runtime consumes it at a step boundary or at turn-end discard).
+    fn sync_steer_echoes(&mut self) {
+        let stale: Vec<(String, String)> = {
+            let pending: std::collections::HashSet<String> = self
+                .steering
+                .pending_steers()
+                .into_iter()
+                .map(|message| message.message_id)
+                .collect();
+            self.steer_echoes
+                .borrow()
+                .iter()
+                .filter(|(message_id, _)| !pending.contains(*message_id))
+                .map(|(message_id, block_id)| (message_id.clone(), block_id.clone()))
+                .collect()
+        };
+        for (message_id, block_id) in stale {
+            self.steer_echoes.borrow_mut().remove(&message_id);
+            let _ = self.ui.borrow_mut().transcript.remove_block(&block_id);
+        }
     }
 
     fn sync_lanes_panel(&mut self) {
@@ -1036,9 +1165,13 @@ impl App {
         if !pending {
             return;
         }
-        // Leftover steers are discarded at turn end (mockup §5); the one
-        // queued next-turn message becomes the next submitted turn.
-        let _ = self.steering.drain_steers();
+        // Leftover steers are discarded at turn end (mockup §5) — but say
+        // so (Python `finish_turn_queues`): silent loss of typed input
+        // reads as a bug. `sync_steer_echoes` drops the ↳ echoes.
+        if !self.steering.drain_steers().is_empty() {
+            self.ui.borrow_mut().show_notice(STEER_DISCARDED_NOTICE, None);
+        }
+        self.sync_steer_echoes();
         if let Some(message) = self.steering.consume_next_turn_message() {
             {
                 let mut ui = self.ui.borrow_mut();
@@ -1147,6 +1280,38 @@ impl App {
                 return;
             }
             _ => {}
+        }
+
+        // A focused evidence block owns its advertised keys (←/→ select ·
+        // enter expand · esc close — keymap `evidence` context, spec §10):
+        // the Rust rendering of Python giving the mounted widget keyboard
+        // focus, so its bindings run before the app's.
+        if matches!(key, "left" | "right" | "enter" | "escape") {
+            let focused = self.ui.borrow().focused_evidence.clone();
+            if let Some(block_id) = focused {
+                let routed = {
+                    let mut ui = self.ui.borrow_mut();
+                    match ui
+                        .transcript
+                        .get_widget_mut(&block_id)
+                        .and_then(|widget| widget.as_block_mut())
+                    {
+                        Some(widget) => Some(widget.handle_key(key, monotonic())),
+                        None => {
+                            // The block vanished (trim/compaction): drop
+                            // the stale focus and fall through.
+                            ui.focused_evidence = None;
+                            None
+                        }
+                    }
+                };
+                if let Some(msg) = routed {
+                    if let Some(msg) = msg {
+                        self.handle_transcript_msg(msg);
+                    }
+                    return;
+                }
+            }
         }
 
         // Rewind strip navigation while open (keymap `rewind` context).
@@ -1264,6 +1429,24 @@ impl App {
         Some(line.min(layout.transcript_total_lines - 1))
     }
 
+    /// Reveal a block (Python `transcript.scroll_block_visible`): release
+    /// the tail anchor and point the scroll offset at the block's first
+    /// painted line from the last frame (clamped to content at draw time).
+    fn scroll_block_into_view(&mut self, block_id: &str) {
+        let start = {
+            let layout = self.layout.borrow();
+            layout
+                .block_lines
+                .iter()
+                .find(|(id, _, _)| id == block_id)
+                .map(|(_, start, _)| *start)
+        };
+        let Some(start) = start else { return };
+        let mut ui = self.ui.borrow_mut();
+        ui.transcript.release_anchor();
+        ui.transcript_scroll = start;
+    }
+
     /// A left-button press at screen (x, y).
     pub fn on_mouse_down(&mut self, x: u16, y: u16) {
         let layout = self.layout.borrow().clone();
@@ -1348,6 +1531,15 @@ impl App {
             let Some((block_id, row)) = layout.block_at_line(line) else {
                 return;
             };
+            // Transcript clicks never strand the keyboard (DESIGN-SPEC
+            // §12); the one exception is the evidence block, which keeps
+            // the focus it took on click (Python `on_click`).
+            {
+                let mut ui = self.ui.borrow_mut();
+                if ui.focused_evidence.as_deref() != Some(block_id.as_str()) {
+                    ui.focused_evidence = None;
+                }
+            }
             let msg = {
                 let mut ui = self.ui.borrow_mut();
                 ui.transcript
@@ -1453,21 +1645,28 @@ impl App {
                     return;
                 }
                 let mut ui = self.ui.borrow_mut();
-                // Repeat clicks must not stack duplicate evidence blocks.
+                // Repeat clicks must not stack duplicate evidence blocks —
+                // refocus the already-open block instead (Python
+                // `on_show_evidence`).
                 let last = ui
                     .transcript
                     .block_ids()
                     .last()
                     .and_then(|id| ui.transcript.get_block(id));
-                let duplicate = matches!(
-                    &last,
-                    Some(TranscriptBlock::Evidence(existing)) if existing.links == links
-                );
-                if !duplicate {
-                    let id = self.allocator.borrow_mut().next_id();
-                    let _ = ui
-                        .transcript
-                        .append(EvidenceBlock::new(id, links).into(), monotonic());
+                match &last {
+                    Some(TranscriptBlock::Evidence(existing)) if existing.links == links => {
+                        ui.focused_evidence = Some(existing.id.clone());
+                    }
+                    _ => {
+                        let id = self.allocator.borrow_mut().next_id();
+                        let _ = ui
+                            .transcript
+                            .append(EvidenceBlock::new(id.clone(), links).into(), monotonic());
+                        // The block owns the keyboard while open so its
+                        // advertised keys (←/→ select · enter expand · esc
+                        // close, spec §10) work; esc hands it back.
+                        ui.focused_evidence = Some(id);
+                    }
                 }
                 // Mockup revealEvidence ends with this exact notice.
                 ui.show_notice("evidence revealed · every claim traces to a tool call", None);
@@ -1481,11 +1680,63 @@ impl App {
                     .position(|checkpoint| checkpoint.id == checkpoint_id);
                 self.open_rewind_strip(index);
             }
-            TranscriptMsg::ExpandEvidenceClaim { .. }
-            | TranscriptMsg::CloseEvidence { .. }
-            | TranscriptMsg::LaneFocusChanged { .. } => {
-                // Keyboard-focus paths of focused evidence blocks — the
-                // click path never emits these.
+            TranscriptMsg::ExpandEvidenceClaim { link, .. } => {
+                // Enter on the evidence block (Python
+                // `on_expand_evidence_claim`): deep-link the selected claim
+                // to the tool line that grounds it (correlation key, spec
+                // §10) — expand it and scroll it into view.
+                if !link.tool_call_id.is_empty() {
+                    let target = {
+                        let ui = self.ui.borrow();
+                        ui.transcript.blocks().into_iter().find_map(|block| {
+                            match block {
+                                TranscriptBlock::ToolLine(tool)
+                                    if tool.tool_call_ids.contains(&link.tool_call_id) =>
+                                {
+                                    Some(tool)
+                                }
+                                _ => None,
+                            }
+                        })
+                    };
+                    if let Some(tool) = target {
+                        let tool_id = tool.id.clone();
+                        if !tool.body.is_empty() && !tool.expanded {
+                            let expanded = ToolLine {
+                                expanded: true,
+                                ..tool
+                            };
+                            let _ = self
+                                .ui
+                                .borrow_mut()
+                                .transcript
+                                .replace(expanded.into(), monotonic());
+                        }
+                        self.scroll_block_into_view(&tool_id);
+                        return;
+                    }
+                }
+                // No correlated tool line in the transcript: surface the
+                // grounding reference itself instead of silently doing
+                // nothing (Python's exact notice).
+                self.ui
+                    .borrow_mut()
+                    .show_notice(&format!("grounded by {}", link.tool_ref), None);
+            }
+            TranscriptMsg::CloseEvidence { block_id } => {
+                // Esc on the evidence block (Python `on_close_evidence`):
+                // close it and hand the keyboard back to the composer.
+                let mut ui = self.ui.borrow_mut();
+                if ui.transcript.get_block(&block_id).is_some() {
+                    let _ = ui.transcript.remove_block(&block_id);
+                }
+                if ui.focused_evidence.as_deref() == Some(block_id.as_str()) {
+                    ui.focused_evidence = None;
+                }
+            }
+            TranscriptMsg::LaneFocusChanged { .. } => {
+                // Focus swap follow-ups run at the call sites (focus_lane /
+                // handle_esc) — the message is informational here.
             }
         }
     }
@@ -1641,11 +1892,27 @@ impl App {
             self.queue_message(text); // second steer queues (spec §5)
             return;
         }
+        // Python `echo_steer`: queue the mid-turn steer and stamp its
+        // ↳ echo block + the queue-chord notice (spec §5).
         match self.steering.enqueue(text, MessageKind::Steer) {
-            Ok(_) => self.ui.borrow_mut().show_notice(
-                "steer queued · shift+enter queues a full next-turn message",
-                None,
-            ),
+            Ok(queued) => {
+                let id = self.allocator.borrow_mut().next_id();
+                self.steer_echoes
+                    .borrow_mut()
+                    .insert(queued.message_id.clone(), id.clone());
+                let mut ui = self.ui.borrow_mut();
+                let _ = ui
+                    .transcript
+                    .append(SteerEcho::new(id, text).into(), monotonic());
+                // Advertise the queue chord the terminal can actually
+                // deliver (README/§12: alt+enter is the legacy fallback).
+                let notice = if self.kitty_protocol {
+                    STEER_NOTICE
+                } else {
+                    STEER_NOTICE_LEGACY
+                };
+                ui.show_notice(notice, None);
+            }
             Err(error) => self.ui.borrow_mut().show_notice(&error.to_string(), None),
         }
     }
@@ -1863,7 +2130,11 @@ impl App {
                 .show_notice("no rewind checkpoints yet", None);
             return;
         }
-        self.ui.borrow_mut().rewind.show_checkpoints(&checkpoints, index);
+        let mut ui = self.ui.borrow_mut();
+        // The strip takes the keyboard (Python `strip.focus()`): a focused
+        // evidence block hands it over.
+        ui.focused_evidence = None;
+        ui.rewind.show_checkpoints(&checkpoints, index);
     }
 
     /// Confirm-then-trim rewind (ADR-0007 §Rewind): the adapter confirms
@@ -1927,6 +2198,10 @@ impl App {
                 let mut ui = self.ui.borrow_mut();
                 let _ = ui.transcript.restore_main(monotonic());
                 ui.lanes_panel.set_focused(None);
+                // Python `handle_lane_focus_change(lane_id=None)`: the
+                // composer path shows the exact return notice (the
+                // approval auto-return path shows its own instead).
+                ui.show_notice("back to parent session", None);
             }
             Some(EscAction::ClosePalette) => {
                 self.ui.borrow_mut().palette.apply_filter(None);

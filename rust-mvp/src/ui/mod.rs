@@ -226,9 +226,14 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let lanes_open = ui.lanes_panel.display();
     let lane_rows = if lanes_open {
-        // header + one row per lane + optional tail line
-        1 + ui.lanes_panel.records().len()
-            + usize::from(ui.lanes_panel.tail_row_index().is_some())
+        // header + one row per lane + the tail's rows (the ┆-guttered
+        // tail shows the LAST 3 non-blank lines — Python lane_tail_markup)
+        let tail_lines = if ui.lanes_panel.tail_row_index().is_some() {
+            strip_markup(&ui.lanes_panel.tail_markup()).lines().count()
+        } else {
+            0
+        };
+        1 + ui.lanes_panel.records().len() + tail_lines
     } else {
         0
     };

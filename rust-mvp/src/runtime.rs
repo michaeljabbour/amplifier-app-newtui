@@ -1118,6 +1118,23 @@ impl ScriptedDemoRuntime {
         }
     }
 
+    /// Step-boundary steer hook (Python `steer_source=self._consume_steer`);
+    /// install before the first turn — the script lock is uncontended then.
+    pub fn set_steer_source(&self, source: SteerSourceFn) {
+        if let Ok(mut script) = self.script.lock() {
+            script.set_steer_source(source);
+        }
+    }
+
+    /// LIVE-mode hook for the store turn's approval gate (Python
+    /// `mode_source=self._current_mode`, spec §4); install before the
+    /// first turn — the script lock is uncontended then.
+    pub fn set_mode_source(&self, source: ModeSourceFn) {
+        if let Ok(mut script) = self.script.lock() {
+            script.set_mode_source(source);
+        }
+    }
+
     /// Replay the seed transcript (Python adapter `start()` runs the seed
     /// turn live before the first submit).
     pub fn play_seed(&mut self) {

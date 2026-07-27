@@ -1,9 +1,11 @@
 # amplifier-newtui-rs — ratatui MVP
 
-A self-contained Rust/ratatui proof-of-concept of the Amplifier TUI experience,
-built for the Rust-migration evaluation (`docs` in the parent repo). **No Python,
-no amplifier-core, no network** — a scripted `DemoRuntime` emits the same kind of
-normalized events the real engine would.
+A Rust/ratatui port of the Amplifier TUI experience, built for the Rust-migration
+evaluation (`docs` in the parent repo; unit-by-unit ledger in the repo-root
+`MIGRATION.md`). By default it is a **pure protocol client of the real Python
+`amplifier-newtui serve` backend** (amplifier-core untouched); `--demo` runs a
+scripted in-process turn with **no Python, no network**, and outside the checkout
+it falls back to an offline mock backend with an explicit notice.
 
 It deliberately mirrors the Python app's architecture so it reads as a port path,
 not a toy:
@@ -11,7 +13,7 @@ not a toy:
 | Rust module | Python analogue | Role |
 |---|---|---|
 | `event.rs` | `kernel/events.py` | the normalized `UiEvent` union (one boundary) |
-| `runtime.rs` | `kernel/demo.py` | `Runtime` trait + scripted `DemoRuntime` |
+| `runtime.rs` | `kernel/demo.py` | `Runtime` trait + `DemoScript` engine / `ScriptedDemoRuntime` (full port of the six demo turn scripts) + the legacy inline `DemoRuntime` |
 | `protocol.rs` | `kernel/jsonl.py` (extended) | the wire protocol: events out, submissions in |
 | `core_client.rs` | `ui/runtime_adapter.py` | **`CoreClientRuntime`: client of a backend over the protocol** |
 | `live.rs` | (illustrative) | `LiveRuntime`: UI-calls-provider shortcut — NOT the target shape |
@@ -65,6 +67,15 @@ cargo test --release           # reducer + render + SSE + cross-process protocol
 cargo test --release snapshot -- --nocapture   # print a rendered frame
 ```
 
+Aliases (`.cargo/config.toml`): `cargo demo` = `cargo run -- --demo`;
+`cargo mock` = `cargo run` — note that inside the checkout the default runtime
+now spawns the REAL backend, so to actually get the offline mock use
+`AMPLIFIER_SERVE_CMD="python3 backend/serve_mock.py" cargo mock` (the alias
+comment predates real-by-default).
+
+Opt-in boot-milestone log: `AMPLIFIER_PERF_LOG=<path>` appends JSONL lines
+(`first_draw`, `session_started`, …) — the input to `PERFORMANCE.md`.
+
 The default runtime mirrors the Python launcher — real session by default,
 honest fallback: when the crate sits inside the amplifier-app-newtui checkout
 (`rust-mvp/` next to `src/amplifier_app_newtui/`), it spawns the **real**
@@ -92,8 +103,20 @@ cargo run --release -- --bundle newtui -p anthropic -m claude-sonnet-4-5 \
 On exit, a real session prints the same resume hint as the Python app
 (`resume this session: amplifier-newtui resume <id>`).
 
-## What it does NOT do (out of MVP scope)
-Real bundle loading, subagent lanes, rewind, persistence, and tool-use over a real
-provider — those are the backend/`kernel`+`foundation` seams a full migration ports
-next. Crucially, they all live behind the protocol, so the Rust UI is already done
-with respect to them.
+## What it does NOT do (recorded gaps — the MIGRATION.md ui/app row is canonical)
+- per-widget shimmer timers (one global tick clock at Python cadences instead)
+- steer wire delivery (no serve op yet — the client queues/echoes only)
+- needs-you decision actions inside the listing (chips render, clicks don't resolve)
+- resume replay (`--resume` forwards to serve; no history replay into the transcript)
+- session ops over the wire (rename/fork/etc. answer "session still starting"
+  until the protocol grows ops)
+- OSC 777 notify / OSC 8 hyperlinks / OSC 52 clipboard (selection copies use the
+  OS clipboard tool only, synchronously)
+- image paste, composer-internal text selection, character-ranged transcript
+  selection (drag selection is whole-line)
+- the first-run provider gate (stays Python launcher-side; a provider-missing
+  boot surfaces as the boot-failure diagnosis)
+
+Everything backend-shaped (bundle loading, persistence, tool-use, real provider
+turns) lives behind the `serve` protocol, so the Rust UI is already done with
+respect to it.
