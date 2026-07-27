@@ -897,6 +897,45 @@ impl TranscriptView {
         self.widgets.get_mut(block_id)
     }
 
+    /// Every visible block as *displayed*: the working line's spinner/motion
+    /// offsets and elapsed wall-clock seconds folded in (paint-time only —
+    /// the stored blocks never mutate). Python folds these inside
+    /// `BlockWidget.repaint_block`; the ratatui host re-renders from blocks
+    /// each frame, so its draw path must read the same fold or the shimmer
+    /// band freezes at the reducer's `motion_frame: 0`.
+    pub fn display_blocks(&self, now: f64) -> Vec<TranscriptBlock> {
+        self.order
+            .iter()
+            .map(|block_id| match self.widgets.get(block_id) {
+                Some(TranscriptWidget::Block(widget)) => widget.display_block(now),
+                Some(widget) => widget.block(),
+                None => self.blocks[block_id].clone(),
+            })
+            .collect()
+    }
+
+    /// Advance the shimmer frame of every mounted working-status widget.
+    ///
+    /// Python: each working-status `BlockWidget` runs its own Textual
+    /// `_motion_timer` at [`MOTION_INTERVAL_SECONDS`]; this host has one
+    /// tick clock instead, which fans the advance out here (the app gates
+    /// the cadence). Stashed parent lists and archived history hold plain
+    /// blocks, so a focused lane naturally pauses the parent's shimmer —
+    /// exactly like an unmounted Textual widget's stopped timer. Returns
+    /// true when any working line advanced (a repaint is due).
+    pub fn advance_working_motion(&mut self, now: f64) -> bool {
+        let mut advanced = false;
+        for widget in self.widgets.values_mut() {
+            if let TranscriptWidget::Block(block_widget) = widget {
+                if block_widget.block().kind() == "working_status" {
+                    block_widget.advance_motion(now);
+                    advanced = true;
+                }
+            }
+        }
+        advanced
+    }
+
     /// Mounted widget count (bounded by [`HISTORY_WIDGET_LIMIT`] after
     /// compaction).
     pub fn widget_count(&self) -> usize {
@@ -2011,6 +2050,59 @@ mod tests {
         // the pulse timer with it.
         view.remove_block("b1").unwrap();
         assert!(view.get_widget("b1").is_none());
+    }
+
+    /// The `_motion_timer` sibling of
+    /// `test_working_status_widget_pulses_spinner`: the app's shimmer-cadence
+    /// clock drives `advance_working_motion`, and `display_blocks` folds the
+    /// moved band into the paint-time block — with the chasing highlight
+    /// changing styles but never text
+    /// (`test_ui_transcript_render.py::test_working_label_has_a_chasing_highlight_without_changing_text`).
+    #[test]
+    fn test_working_status_widget_advances_motion_without_changing_text() {
+        // Python: MOTION_INTERVAL_SECONDS = SHIMMER_INTERVAL_SECONDS (0.08s).
+        assert!((MOTION_INTERVAL_SECONDS - SHIMMER_INTERVAL_SECONDS).abs() < 1e-9);
+
+        let mut view = TranscriptView::new();
+        view.append(
+            TranscriptBlock::WorkingStatus(WorkingStatus {
+                agent_count: 1,
+                ..WorkingStatus::new("b1", TurnTelemetry::new(1.0))
+            }),
+            10.0,
+        )
+        .unwrap();
+        let motion_frame = |view: &TranscriptView, now: f64| -> u32 {
+            match view.display_blocks(now).pop() {
+                Some(TranscriptBlock::WorkingStatus(status)) => status.motion_frame,
+                other => panic!("expected working status, got {other:?}"),
+            }
+        };
+        assert_eq!(motion_frame(&view, 10.0), 0);
+        let before = render_block(&view.display_blocks(10.0).pop().unwrap(), 80);
+
+        // Three shimmer intervals → the band's peak moved three cells.
+        assert!(view.advance_working_motion(10.0 + MOTION_INTERVAL_SECONDS));
+        assert!(view.advance_working_motion(10.0 + 2.0 * MOTION_INTERVAL_SECONDS));
+        assert!(view.advance_working_motion(10.0 + 3.0 * MOTION_INTERVAL_SECONDS));
+        let now = 10.0 + 3.0 * MOTION_INTERVAL_SECONDS;
+        assert_eq!(motion_frame(&view, now), 3);
+        let after = render_block(&view.display_blocks(now).pop().unwrap(), 80);
+        assert_ne!(before[0], after[0], "the shimmer band swept the label");
+        let text = |line: &[Segment]| -> String {
+            line.iter().map(|segment| segment.text.as_str()).collect()
+        };
+        assert_eq!(text(&before[0]), text(&after[0]), "motion never mutates text");
+
+        // Removing the block (turn end) stops the motion with the widget —
+        // and a transcript without a working line is a no-op advance.
+        view.remove_block("b1").unwrap();
+        view.append(
+            TranscriptBlock::Answer(Answer::new("b2", vec![Segment::new("done")])),
+            11.0,
+        )
+        .unwrap();
+        assert!(!view.advance_working_motion(11.0 + MOTION_INTERVAL_SECONDS));
     }
 
     /// The archive preserves infinite scroll/copy and old tool interactivity.

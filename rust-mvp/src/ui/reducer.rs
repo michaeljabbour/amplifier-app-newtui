@@ -2458,6 +2458,30 @@ impl<H: ReducerHost> TranscriptReducer<H> {
         }
     }
 
+    /// A turn is currently open (hosts use this to spot dangling turns).
+    pub fn turn_running(&self) -> bool {
+        self.turn.is_some()
+    }
+
+    /// Settle a dangling in-flight turn as interrupted.
+    ///
+    /// A backend that dies mid-turn (crash / stdout EOF) can never deliver
+    /// its `prompt_complete` close-out, which would leave the working pulse
+    /// mounted and "working" forever. Close it out with the same durable
+    /// shape [`Self::replay`] gives a log that ended mid-turn — cancelled,
+    /// then the synthesized close-out (`ts` stays in the turn's own clock
+    /// domain). No-op without a running turn.
+    pub fn close_dangling_turn(&mut self) {
+        let Some(turn) = self.turn.as_mut() else { return };
+        turn.cancelled = true;
+        let (session_id, last_ts) = (turn.session_id.clone(), turn.last_ts);
+        self.handle(&ev::UIEvent::PromptComplete(ev::PromptComplete {
+            session_id,
+            ts: last_ts,
+            ..ev::PromptComplete::default()
+        }));
+    }
+
     /// Update the working line's current-work note (real turns only).
     pub fn set_activity(&mut self, activity: &str) {
         {

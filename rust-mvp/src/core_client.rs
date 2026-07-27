@@ -123,6 +123,11 @@ mod tests {
     /// which asserted the legacy demo model instead of the reducer.)
     #[test]
     fn interactive_turn_over_process_boundary() {
+        // This turn's exact-dollar assert prices against the process-wide
+        // active pricing table — hold the same guard the kernel::cost swap
+        // tests hold, or a concurrent expensive-table swap races this turn
+        // onto $1/1k rates (observed: session cost $2.740, flaky).
+        let _pricing = crate::kernel::cost::active_table_test_guard();
         let backend = format!("{}/backend/serve_mock.py", env!("CARGO_MANIFEST_DIR"));
         let (tx, rx) = channel::<Msg>();
         let rt = CoreClientRuntime::spawn(&["python3".to_string(), backend], tx)

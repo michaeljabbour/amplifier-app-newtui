@@ -104,7 +104,9 @@ On exit, a real session prints the same resume hint as the Python app
 (`resume this session: amplifier-newtui resume <id>`).
 
 ## What it does NOT do (recorded gaps — the MIGRATION.md ui/app row is canonical)
-- per-widget shimmer timers (one global tick clock at Python cadences instead)
+- per-widget shimmer timers (one global tick clock at Python cadences instead —
+  it drives the title spinner, lanes shimmer, splash, the working line's 1s
+  pulse, and the working label's shimmer band)
 - steer wire delivery (no serve op yet — the client queues/echoes only)
 - needs-you decision actions inside the listing (chips render, clicks don't resolve)
 - resume replay (`--resume` forwards to serve; no history replay into the transcript)

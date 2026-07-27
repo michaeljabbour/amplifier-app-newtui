@@ -675,6 +675,13 @@ pub struct App {
     last_splash_frame: std::cell::Cell<f64>,
     last_motion_frame: std::cell::Cell<f64>,
     last_spinner_frame: std::cell::Cell<f64>,
+    /// Working-line heartbeat (Python ui/app.py `set_interval(1.0,
+    /// lambda: self.reducer.tick(time.time()))`): 1s block replaces pulse
+    /// the ✳/✦/✧ glyph and the seconds counter.
+    last_reducer_tick: std::cell::Cell<f64>,
+    /// Working-label shimmer (Python per-widget `_motion_timer` at
+    /// `transcript::MOTION_INTERVAL_SECONDS`).
+    last_working_motion: std::cell::Cell<f64>,
     /// Clipboard writer for transcript-selection copies — injectable so
     /// headless tests record what would land on the OS clipboard. Returns
     /// true when a tool accepted the text (Python `_os_clipboard_copied`).
@@ -759,6 +766,8 @@ impl App {
             last_splash_frame: std::cell::Cell::new(0.0),
             last_motion_frame: std::cell::Cell::new(0.0),
             last_spinner_frame: std::cell::Cell::new(0.0),
+            last_reducer_tick: std::cell::Cell::new(0.0),
+            last_working_motion: std::cell::Cell::new(0.0),
             clipboard_copier: Box::new(app_support::os_clipboard_copy),
             steer_echoes: RefCell::new(HashMap::new()),
             demo_interrupt_bridge: None,
@@ -973,6 +982,15 @@ impl App {
         if booting {
             self.announce_boot_failure("backend exited before session.started");
         } else {
+            // A dead backend can never deliver the in-flight turn's
+            // `prompt_complete`: without this the working pulse stays
+            // mounted (and "working…") forever. Settle it as interrupted —
+            // the same durable shape replay gives a log that ended mid-turn
+            // (`test_replay_closes_a_dangling_turn_as_interrupted`).
+            if self.reducer.turn_running() {
+                self.reducer.close_dangling_turn();
+                self.settle_after_event();
+            }
             self.ui
                 .borrow_mut()
                 .show_notice("backend exited · session lost — ctrl+d to quit", None);
@@ -2251,8 +2269,22 @@ impl App {
     /// notice expiry, live-tail trailing paint, resize-reflow debounce,
     /// pending history compaction, splash/spinner/motion frames.
     pub fn tick(&mut self) {
-        self.reducer.tick(wall_now());
-        let now = monotonic();
+        self.tick_at(monotonic());
+    }
+
+    /// [`App::tick`] against an explicit monotonic-domain clock — the whole
+    /// heartbeat is deterministic under test. The loop tick fires faster
+    /// than any single animation; each cadence gates itself here.
+    pub fn tick_at(&mut self, now: f64) {
+        // Working-line 1s heartbeat (Python ui/app.py:
+        // `set_interval(1.0, lambda: self.reducer.tick(time.time()))`) —
+        // ungated this ran at the 25ms loop tick, replacing the working
+        // block (and resetting its shimmer to `motion_frame: 0`) 40× a
+        // second while flickering the pulse glyph far off Python's cadence.
+        if now - self.last_reducer_tick.get() >= crate::ui::transcript::SPINNER_INTERVAL_SECONDS {
+            self.last_reducer_tick.set(now);
+            self.reducer.tick(wall_now());
+        }
         let mut ui = self.ui.borrow_mut();
         ui.notices.tick();
         if ui.live_tail_deadline.is_some_and(|deadline| now >= deadline) {
@@ -2283,6 +2315,15 @@ impl App {
         {
             self.last_motion_frame.set(now);
             ui.lanes_panel.advance_motion();
+        }
+        // Working-label shimmer (Python: each working-status widget's own
+        // `_motion_timer` at MOTION_INTERVAL_SECONDS) — without this the
+        // band froze at whatever frame the last block replace carried.
+        if now - self.last_working_motion.get()
+            >= crate::ui::transcript::MOTION_INTERVAL_SECONDS
+        {
+            self.last_working_motion.set(now);
+            ui.transcript.advance_working_motion(now);
         }
         let (width, height) = (ui.term_width as usize, ui.term_height as usize);
         if ui.splash.is_some() && now - self.last_splash_frame.get() >= crate::ui::splash::FRAME_SECONDS {

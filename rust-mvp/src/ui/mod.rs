@@ -346,7 +346,10 @@ fn draw_transcript_region(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut plain: Vec<String> = Vec::new();
     let mut first = true;
-    for block in ui.transcript.blocks() {
+    // Display blocks, not raw blocks: the working line's spinner/motion
+    // offsets and live seconds fold in at paint time (Python repaint_block)
+    // — rendering the raw block froze the shimmer band at frame 0.
+    for block in ui.transcript.display_blocks(crate::app::monotonic()) {
         let margin = if first { 0 } else { block_margin_top(&block) };
         for _ in 0..margin {
             lines.push(Line::default());

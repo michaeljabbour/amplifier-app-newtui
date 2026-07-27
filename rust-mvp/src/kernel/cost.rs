@@ -262,6 +262,21 @@ pub fn set_active_pricing_table(table: Option<Arc<PricingTable>>) {
     *cell = table.unwrap_or_else(|| default_pricing_table().clone());
 }
 
+/// Test-only: serialize tests that touch (or must be isolated from) the
+/// process-wide [`active_pricing_table`], resetting it to the fallback on
+/// acquisition. The swap tests below hold this; so must any test that
+/// prices a turn and asserts exact dollars — parallel test threads
+/// otherwise race a running turn onto a swapped table (found live:
+/// `core_client::tests::interactive_turn_over_process_boundary` priced its
+/// turn at $2.740 whenever it overlapped the expensive-table swap test).
+#[cfg(test)]
+pub(crate) fn active_table_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    set_active_pricing_table(None);
+    guard
+}
+
 /// Best-effort provider inference from a model name.
 pub fn infer_provider(model: &str) -> Option<&'static str> {
     let lowered = model.to_lowercase();
@@ -892,7 +907,7 @@ mod tests {
     use crate::kernel::events::{normalize, ContentBlockEnd, Payload};
     use serde_json::json;
     use std::collections::BTreeMap;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
 
     fn d(text: &str) -> Decimal {
         Decimal::from_str(text).unwrap()
@@ -909,10 +924,7 @@ mod tests {
     /// Rust tests share the process-wide table across threads). Every
     /// caller starts from the pristine fallback.
     fn active_table_guard() -> MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        set_active_pricing_table(None);
-        guard
+        active_table_test_guard()
     }
 
     /// Python's module-level `_EXPENSIVE` table.

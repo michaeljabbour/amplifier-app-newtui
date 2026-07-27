@@ -1900,6 +1900,145 @@ status body, wired it into the router, and covered it with a test.";
         );
     }
 
+    // Adapts tests/test_ui_reducer_replay.py::test_replay_closes_a_dangling_
+    // turn_as_interrupted to the live wire: a backend that dies mid-turn can
+    // never deliver its `prompt_complete` close-out, which left the working
+    // pulse mounted (and "working…") forever under the user's last turn.
+    // The exit settles the turn with the same durable shape a live Esc
+    // leaves, and the session-lost notice stands.
+    #[test]
+    fn test_backend_exit_closes_a_dangling_turn_as_interrupted() {
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("first turn"));
+        assert_eq!(blocks_of(&app, "working_status").len(), 1, "pulse mounted");
+
+        app.on_backend_exited();
+        assert!(
+            blocks_of(&app, "working_status").is_empty(),
+            "the dangling pulse unmounted"
+        );
+        assert!(!app.ui.borrow().turn_active, "turn settled");
+        let text = flat_text(&app);
+        assert!(text.contains("Interrupted. Goal: first turn."), "recap:\n{text}");
+        assert!(!app.reducer.ledger.last_shipped(), "nothing shipped");
+        assert_eq!(
+            app.ui.borrow().notices.current(),
+            Some("backend exited · session lost — ctrl+d to quit"),
+            "the session-lost notice outlives the interrupt notice"
+        );
+    }
+
+    // The "stuck on my last turn" sweep: the working pulse must unmount on
+    // EVERY close-out shape — normal completion, esc interrupt
+    // (tests/test_flow_interrupt.py), a leftover steer discarded at turn end
+    // (tests/test_flow_steer_queue.py::test_leftover_steer_discarded_at_turn_end),
+    // a queued follow-up draining at close-out
+    // (tests/test_flow_steer_queue.py), and a failed turn's error record
+    // (kernel/serve.py: `RealRuntime.submit` emits its close-out from
+    // `finally`, so the error record is still followed by prompt_complete).
+    #[test]
+    fn test_working_line_unmounts_on_every_close_out_path() {
+        let no_working = |app: &App| blocks_of(app, "working_status").is_empty();
+
+        // Normal completion.
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("add a health check"));
+        assert!(!no_working(&app), "pulse mounts with the turn");
+        app.handle_wire(prompt_complete(ANSWER, 1, "+18/−0"));
+        assert!(no_working(&app), "normal completion drops the pulse");
+
+        // Esc interrupt → cancelled close-out.
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("refactor the session store"));
+        app.on_key("escape");
+        app.handle_wire(wire(ev::UIEvent::CancelCompleted(ev::CancelCompleted {
+            session_id: SESSION.into(),
+            ts: 105.0,
+            ..ev::CancelCompleted::default()
+        })));
+        app.handle_wire(prompt_complete("", 0, ""));
+        assert!(no_working(&app), "interrupted close-out drops the pulse");
+
+        // Steered turn (the leftover steer is discarded at turn end).
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("first turn"));
+        type_text(&mut app, "never applied");
+        app.on_key("enter"); // Enter-while-running queues a steer
+        app.handle_wire(prompt_complete("done", 0, ""));
+        assert!(no_working(&app), "steered turn drops the pulse");
+
+        // Queued follow-up drains at close-out — turn one's pulse still drops.
+        let (mut app, ops) = test_app();
+        app.handle_wire(prompt_submit("first turn"));
+        type_text(&mut app, "second turn");
+        app.on_key("shift+enter"); // queue the FULL next-turn message
+        app.handle_wire(prompt_complete("done", 0, ""));
+        assert!(
+            ops.borrow().contains(&"submit:second turn".to_string()),
+            "queue drained: {:?}",
+            ops.borrow()
+        );
+        assert!(no_working(&app), "queued follow-up still drops the pulse");
+
+        // Failed turn: error record, then the serve contract's close-out.
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("auth expires mid-turn"));
+        app.handle_wire(WireEvent::Error {
+            error: "provider auth expired".into(),
+            error_type: "APIStatusError".into(),
+        });
+        app.handle_wire(prompt_complete("", 0, ""));
+        assert!(no_working(&app), "failed turn drops the pulse");
+    }
+
+    // The Rust half of the recorded MIGRATION gap "shimmer motion static":
+    // nothing advanced the working label's motion frame and the draw path
+    // rendered the reducer's raw block (`motion_frame` forever 0), so the
+    // band froze — "shimmer stuck on my last turn". Adapts the
+    // `_motion_timer` half of tests/test_ui_transcript_view.py::
+    // test_working_status_widget_pulses_spinner: the tick clock sweeps the
+    // band at MOTION_INTERVAL_SECONDS while a turn runs.
+    #[test]
+    fn test_working_label_shimmer_advances_on_the_tick_clock() {
+        use amplifier_newtui_rs::ui::transcript::MOTION_INTERVAL_SECONDS;
+
+        let (mut app, _ops) = test_app();
+        app.handle_wire(prompt_submit("long provider call"));
+
+        let motion_at = |app: &App, now: f64| -> u32 {
+            app.ui
+                .borrow()
+                .transcript
+                .display_blocks(now)
+                .iter()
+                .find_map(|block| match block {
+                    amplifier_newtui_rs::model::blocks::TranscriptBlock::WorkingStatus(w) => {
+                        Some(w.motion_frame)
+                    }
+                    _ => None,
+                })
+                .expect("working line mounted")
+        };
+
+        // Anchor past the process clock so every cadence gate is due.
+        let base = amplifier_newtui_rs::app::monotonic() + 1000.0;
+        app.tick_at(base);
+        let first = motion_at(&app, base);
+        let step = MOTION_INTERVAL_SECONDS + 0.001;
+        app.tick_at(base + step);
+        app.tick_at(base + 2.0 * step);
+        let later = motion_at(&app, base + 2.0 * step);
+        assert!(
+            later >= first + 2,
+            "the band sweeps one cell per interval: {first} → {later}"
+        );
+
+        // Between due intervals the frame holds — the shimmer runs at the
+        // Python cadence, not the 25ms loop rate.
+        app.tick_at(base + 2.0 * step + 0.01);
+        assert_eq!(motion_at(&app, base + 2.0 * step + 0.01), later);
+    }
+
     // Python `_print_resume_hint`: a real session id learned from
     // session.started prints the exact two-line farewell; demo/unstarted
     // sessions (no stored id) print nothing.
