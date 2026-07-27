@@ -410,6 +410,19 @@ class Notification(_Envelope):
     parked its item kernel-side; the app resolves that item instead of
     re-deriving one from the message text. Empty for scripted/legacy
     notices — the adapter then supplies the decision data."""
+    # -- deferred-decision detail (additive, ``level == "decision"``) ------
+    # The in-process TUI reads the parked NeedsYouItem straight off the
+    # shared queue, but a protocol client (serve) only sees this event —
+    # without these fields the wire genuinely lacked the escalation reason
+    # and choices, so the client could render neither the WHY line nor
+    # actionable chips. All default-empty: additive for old readers.
+    question: str = ""
+    reason: str = ""
+    """The governance escalation / classifier denial reason (the WHY)."""
+    choices: tuple[str, ...] = ()
+    highlight: str = ""
+    action: str = ""
+    """The denied action this decision defers (raw command text)."""
 
 
 class ContextInjected(_Envelope):
@@ -909,12 +922,20 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 result="error",
             )
         case "user:notification":
+            raw_choices = payload.get("choices")
             return Notification(
                 **env,
                 message=_str(payload, "message", "text"),
                 level=_str(payload, "level", default="info"),
                 source=_str(payload, "source"),
                 decision_id=_str(payload, "decision_id"),
+                question=_str(payload, "question"),
+                reason=_str(payload, "reason"),
+                choices=tuple(str(c) for c in raw_choices)
+                if isinstance(raw_choices, (list, tuple))
+                else (),
+                highlight=_str(payload, "highlight"),
+                action=_str(payload, "action"),
             )
         case _:
             return None

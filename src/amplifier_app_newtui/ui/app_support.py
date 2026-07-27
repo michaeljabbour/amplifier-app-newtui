@@ -32,6 +32,7 @@ from ..model.blocks import (
     TodoItem,
     UserLine,
 )
+from ..model.formatting import command_digest
 from ..model.queues import NeedsYouItem
 from . import keymap, notifications
 from .footer import FooterState
@@ -59,6 +60,7 @@ _GLOBAL_ACTIONS = frozenset(
         "show_ledger",
         "show_needs_you",
         "open_rewind",
+        "plan_drilldown",
     }
 )
 
@@ -142,6 +144,21 @@ def global_bindings() -> list[BindingType]:
     return bindings
 
 
+def needs_you_display_question(item: NeedsYouItem) -> str:
+    """The question as the Needs-you row shows it: compact, never raw sprawl.
+
+    Governance parks classifier denials as ``Allow <raw action>?`` — for a
+    heredoc write that raw action is the ENTIRE command (unreadable in a
+    row). Exactly that shape is displayed as ``Allow <verb-noun digest>?``;
+    any other question (scripted demo, escalation review) is already prose
+    and passes through verbatim. Display-only: the parked item, the wire
+    payload, and the answer injection keep the full raw action.
+    """
+    if item.action and item.question == f"Allow {item.action}?":
+        return f"Allow {command_digest(item.action)}?"
+    return item.question
+
+
 def needs_you_block(
     pending: tuple[NeedsYouItem, ...], allocator: BlockIdAllocator
 ) -> NeedsYouBlock | None:
@@ -151,7 +168,7 @@ def needs_you_block(
     entries = tuple(
         NeedsYouEntry(
             decision_id=item.decision_id,
-            question=item.question,
+            question=needs_you_display_question(item),
             reason=item.reason,
             choices=tuple(NeedsYouChoice(label=c, answer=c) for c in item.choices),
             highlight=item.highlight,
@@ -764,6 +781,7 @@ __all__ = [
     "handle_lane_focus_change",
     "mount_approval",
     "needs_you_block",
+    "needs_you_display_question",
     "permissions_block",
     "plan_footer_counts",
     "sync_plan_surfaces",

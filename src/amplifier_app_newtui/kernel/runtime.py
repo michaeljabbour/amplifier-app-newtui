@@ -936,6 +936,14 @@ class RealRuntime:
                 level="decision",
                 source="needs_you",
                 decision_id=item.decision_id,
+                # Full deferral detail (additive): a protocol client has no
+                # shared queue to read the parked item from — without these
+                # the wire lacked the WHY and the actionable choices.
+                question=item.question,
+                reason=item.reason,
+                choices=item.choices,
+                highlight=item.highlight,
+                action=item.action,
             )
         )
 

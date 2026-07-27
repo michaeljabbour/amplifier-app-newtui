@@ -19,6 +19,7 @@ Wire (one JSON object per line):
   IN  (stdin)   {"op": "submit",    "text": "..."}
                 {"op": "steer",     "text": "..."}   (mid-turn course correction)
                 {"op": "approve",   "ticket_id": "approval-3", "choice": "Allow once"}
+                {"op": "decision",  "decision_id": "decision-1", "answer": "Allow once"}
                 {"op": "interrupt"}
   OUT (stdout)  {"schema_version": 1, "type": "boot.progress",
                  "action": "preparing", "detail": "newtui"}   (before session.started)
@@ -220,6 +221,23 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
                         runtime.broker.answer(ticket, choice)
                     except KeyError:
                         pass  # already resolved / timed out
+            elif kind == "decision":
+                # Answer a DEFERRED needs-you decision (additive op). A
+                # deferral has NO live broker ticket — governance parked the
+                # item straight into NeedsYouQueue and deny-and-continued,
+                # so {"op":"approve"} can never reach it. This mirrors the
+                # in-process TUI's apply_decision: answer the SAME kernel
+                # queue; the StepBoundaryBridge injects the answer at the
+                # next provider:request (kernel/steering.py). Unknown ids /
+                # already-answered decisions are a client already told —
+                # dropped silently like the steer arm's bound violations.
+                decision_id = str(op.get("decision_id", ""))
+                answer = str(op.get("answer", ""))
+                if decision_id and answer:
+                    try:
+                        runtime.needs_you.answer(decision_id, answer)
+                    except (KeyError, ValueError):
+                        pass
             elif kind == "interrupt":
                 asyncio.create_task(runtime.interrupt())  # noqa: RUF006 — fire-and-forget
     finally:

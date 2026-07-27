@@ -466,18 +466,21 @@ def test_context_exact_bar() -> None:
 
 
 def test_needs_you_exact_chip_styling() -> None:
+    # Deferred-decision UX: the escalation reason moved from an inline
+    # ``· reason`` run to its own dim WHY line under the row.
     lines = render_block(_blocks()["needs_you"], 80)
     # Header is one plain orange run, count never pluralized (mockup).
     assert line_plain(lines[0]) == "· Needs you  1 deferred decision"
     assert lines[0][1].style_token == "orange" and not lines[0][1].bold
     # Row number: '  1 ' orange, no period; two spaces before the chip.
     assert lines[1][0] == Segment(text="  1 ", style_token="orange")
-    assert line_plain(lines[1]) == (
-        "  1 push branch to fork? · net access denied  [yes · push to fork]"
-    )
+    assert line_plain(lines[1]) == "  1 push branch to fork?  [yes · push to fork]"
     chip = lines[1][-1]
     assert chip.text == "[yes · push to fork]"
     assert chip.style_token == "green" and chip.bg_token == "bg-tab"
+    # The WHY gets its own dim line — never inlined into the question row.
+    assert line_plain(lines[2]) == "    why · net access denied"
+    assert all(seg.style_token == "dim" for seg in lines[2])
 
 
 def test_needs_you_highlight_renders_teal() -> None:

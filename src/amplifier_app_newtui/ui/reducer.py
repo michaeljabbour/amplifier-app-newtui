@@ -49,6 +49,7 @@ from ..model.blocks import (
     WorkingStatus,
 )
 from ..model.evidence import EvidenceLink
+from ..model.formatting import command_digest
 from ..model.lanes import LaneRegistry, LaneStateName
 from ..model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
 from .lane_reducer import (
@@ -265,6 +266,19 @@ def _change_preview(
     return paths, tuple(lines)
 
 
+def _blocked_body(raw: str, reason: str) -> tuple[str, ...]:
+    """Expandable blocked-line body: the WHY plus the raw command verbatim.
+
+    The collapsed row carries only the verb-noun digest (a heredoc must
+    never sprawl across it); this keeps every raw byte one click away.
+    """
+    lines: list[str] = []
+    if reason:
+        lines.append(f"why · {reason}")
+    lines.extend(line for line in str(raw).splitlines() if line.strip())
+    return tuple(lines)
+
+
 def _digest_summary(counts: dict[tuple[str, str | None], int]) -> str:
     """``{('read','file'):4, ('ran','command'):6}`` -> ``Read 4 files · ran
     6 commands``. First segment capitalized; ordered for natural reading."""
@@ -466,6 +480,13 @@ class _Turn:
     active_step: str | None = None
     calls: dict[str, dict[str, Any]] = field(default_factory=dict)
     blocked: set[str] = field(default_factory=set)
+    blocked_lines: list[tuple[str, Blocked]] = field(default_factory=list)
+    """``(raw action, rendered Blocked block)`` newest-last — a following
+    deferral notification upgrades ITS line to the ``needs your ok`` form."""
+    deferred_actions: list[str] = field(default_factory=list)
+    """Deferral notifications whose ⊘ line has NOT rendered yet (the real
+    governance hook defers BEFORE it denies, so the decision notification
+    can precede the blocked line). ``""`` matches the next blocked line."""
     deferred: bool = False
     """Turn hit the trust boundary and deferred a decision to the queue."""
     cancelled: bool = False
@@ -1399,14 +1420,13 @@ class TranscriptReducer:
         if status == "denied":
             # A denial is load-bearing: it always gets its own durable ⊘
             # line (spec §3/§7), never folded into the digest.
-            turn.blocked.add(command or _op_label(tool, tool_input))
-            self._append_content(
-                Blocked(
-                    id=self._ids.next_id(),
-                    cmd=command or _op_label(tool, tool_input),
-                    reason=str(event.result.get("reason", "denied")),
-                    continuation=str(event.result.get("continuation", "")),
-                )
+            raw = command or _op_label(tool, tool_input)
+            turn.blocked.add(raw)
+            self._append_blocked(
+                turn,
+                raw,
+                str(event.result.get("reason", "denied")),
+                str(event.result.get("continuation", "")),
             )
             self._settle_activity(turn, _op_label(tool, tool_input))
             self._update_working()
@@ -1693,14 +1713,70 @@ class TranscriptReducer:
         cmd = event.command or event.prompt
         if turn is not None and (cmd in turn.blocked or event.prompt in turn.blocked):
             return  # already rendered from the denied tool:post
-        self._append_content(
-            Blocked(
-                id=self._ids.next_id(),
-                cmd=cmd,
-                reason=event.reason or "denied by user",
-                continuation=event.continuation,
-            )
+        self._append_blocked(turn, cmd, event.reason or "denied by user", event.continuation)
+
+    def _append_blocked(self, turn: _Turn | None, raw: str, reason: str, continuation: str) -> None:
+        """Render one durable ⊘ line: compact digest on the row, the raw
+        command (plus the why) behind the ToolLine-style expand body.
+
+        The body attaches only when the digest actually hides something —
+        short one-line denials keep their original single-line form. A
+        deferral notification that follows upgrades the line in place
+        (:meth:`_mark_blocked_deferred`)."""
+        digest = command_digest(raw)
+        deferred = False
+        if turn is not None and turn.deferred_actions:
+            # The deferral notification already arrived (real governance
+            # defers BEFORE it denies): this line is born deferred.
+            for index, action in enumerate(turn.deferred_actions):
+                if action in ("", raw):
+                    del turn.deferred_actions[index]
+                    deferred = True
+                    break
+        block = Blocked(
+            id=self._ids.next_id(),
+            cmd=digest,
+            reason=reason,
+            continuation=continuation,
+            body=_blocked_body(raw, reason) if (deferred or digest != raw) else (),
+            deferred=deferred,
         )
+        self._append_content(block)
+        if turn is not None:
+            turn.blocked_lines.append((raw, block))
+
+    def _mark_blocked_deferred(self, action: str) -> bool:
+        """Upgrade the deferral's ⊘ line to ``needs your ok — ctrl+y``.
+
+        Matched by the deferral's denied ``action`` (real runtime); a
+        deferral with no action key (scripted/demo notices) upgrades the
+        turn's newest blocked line. Returns False when no line matched —
+        the caller then parks the action so the line renders deferred the
+        moment it appears (the real hook defers BEFORE it denies)."""
+        turn = self._turn
+        if turn is None or not turn.blocked_lines:
+            return False
+        index = len(turn.blocked_lines) - 1
+        if action:
+            matches = [i for i, (raw, _) in enumerate(turn.blocked_lines) if raw == action]
+            if not matches:
+                return False
+            index = matches[-1]
+        raw, block = turn.blocked_lines[index]
+        if block.deferred:
+            return True
+        updated = block.model_copy(
+            update={
+                "deferred": True,
+                # The deferred head hides the reason tail: make sure the
+                # expand body carries WHY + the raw command even when the
+                # digest didn't shorten anything.
+                "body": block.body or _blocked_body(raw, block.reason),
+            }
+        )
+        turn.blocked_lines[index] = (raw, updated)
+        self._host.replace_block(updated)
+        return True
 
     def _notification(self, event: ev.Notification) -> None:
         if event.source == "mode":
@@ -1714,6 +1790,11 @@ class TranscriptReducer:
                 # turn so its close-out fires no end notice, keeping this
                 # deferred-decision notice visible (spec §11).
                 self._turn.deferred = True
+            # The deferral's ⊘ line flips to ``needs your ok — ctrl+y``; if
+            # it hasn't rendered yet (defer-before-deny ordering), park the
+            # action so the line is born deferred.
+            if not self._mark_blocked_deferred(event.action) and self._turn is not None:
+                self._turn.deferred_actions.append(event.action)
             self._host.decision_deferred(event.message, event.decision_id)
             self._host.show_notice(event.message)
         elif event.message:

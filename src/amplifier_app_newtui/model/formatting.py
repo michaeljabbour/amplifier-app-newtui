@@ -50,4 +50,80 @@ def format_tokens_compact(tokens: int) -> str:
     return f"{tokens / 1_000_000:.1f}m"
 
 
-__all__ = ["format_tokens_compact", "format_tokens_k"]
+DIGEST_MAX_CHARS = 48
+"""Hard cap for :func:`command_digest` output. Chosen so the full blocked
+line (``  ⊘ blocked · <digest> · needs your ok — ctrl+y to review``)
+stays inside the transcript's 100-cell reading measure."""
+
+_HEREDOC_MARKER = "<<"
+_QUOTES = "'\""
+
+
+def _truncate_chars(text: str, width: int) -> str:
+    """``text`` unchanged when it fits, else hard-cut with a ``…``."""
+    return text if len(text) <= width else f"{text[: width - 1]}…"
+
+
+def _redirect_target(tokens: list[str]) -> str:
+    """The path a ``>`` / ``>>`` redirection writes, or ``""``.
+
+    Whitespace-token based on purpose (matches the reducer's shell-command
+    handling): both the spaced form (``> path``) and the attached form
+    (``>path`` / ``>>path``) are recognized; ``2>`` etc. are not writes we
+    can name a target for and fall through.
+    """
+    for index, token in enumerate(tokens):
+        if token in (">", ">>"):
+            if index + 1 < len(tokens):
+                return tokens[index + 1].strip(_QUOTES)
+        elif token.startswith(">>") and len(token) > 2:
+            return token[2:].strip(_QUOTES)
+        elif token.startswith(">") and len(token) > 1 and not token.startswith(">>"):
+            return token[1:].strip(_QUOTES)
+    return ""
+
+
+def command_digest(command: str, width: int = DIGEST_MAX_CHARS) -> str:
+    """Verb-noun digest of a (possibly multi-line) shell command.
+
+    The blocked-line / needs-you display summary (deferred-decision UX):
+    a raw heredoc sprawling across the row becomes
+    ``write /tmp/diag/build2.py (heredoc, 14 lines)``. Deterministic and
+    dependency-free so the Python and Rust apps render byte-identical
+    digests:
+
+    - heredoc (``<<TAG`` on the first line): ``write <redirect target>
+      (heredoc, N lines)`` — N is the body line count between the marker
+      line and the closing tag; without a redirect target the command's
+      first word stands in for ``write <target>``.
+    - other multi-line commands: first line + `` (+N lines)``.
+    - single line with a ``>`` / ``>>`` redirect: ``write <target>``.
+    - anything else: the whitespace-collapsed first line.
+
+    Every shape is hard-truncated at *width* characters.
+    """
+    lines = [line for line in str(command).splitlines() if line.strip()]
+    if not lines:
+        return "(command)"
+    first = " ".join(lines[0].split())
+    tokens = first.split()
+    if _HEREDOC_MARKER in first:
+        target = _redirect_target(tokens)
+        head = f"write {target}" if target else (tokens[0] if tokens else "(command)")
+        if len(lines) > 1:
+            body_lines = max(len(lines) - 2, 0)
+            plural = "s" if body_lines != 1 else ""
+            return _truncate_chars(f"{head} (heredoc, {body_lines} line{plural})", width)
+        # Whitespace-collapsed heredoc (queue-sanitized actions lose their
+        # newlines): the body length is unknowable — say so honestly.
+        return _truncate_chars(f"{head} (heredoc)", width)
+    if len(lines) > 1:
+        suffix = f" (+{len(lines) - 1} lines)"
+        return _truncate_chars(_truncate_chars(first, max(width - len(suffix), 1)) + suffix, width)
+    target = _redirect_target(tokens)
+    if target:
+        return _truncate_chars(f"write {target}", width)
+    return _truncate_chars(first, width)
+
+
+__all__ = ["DIGEST_MAX_CHARS", "command_digest", "format_tokens_compact", "format_tokens_k"]

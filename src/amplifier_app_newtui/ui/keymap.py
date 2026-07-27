@@ -123,6 +123,10 @@ KEYMAP: tuple[Binding, ...] = (
     _b("show_ledger", ("ctrl+l",), "ctrl-l", NO_APPROVAL),
     _b("show_needs_you", ("ctrl+y",), "ctrl-y", NO_APPROVAL),
     _b("open_rewind", ("ctrl+r",), "ctrl-r", NO_APPROVAL),
+    # Plan-panel drilldown: while the ambient plan strip is visible, ctrl+n
+    # cycles its row window default → +2 → +3 → back (ctrl+n is claimed by
+    # neither the app tables nor Textual's TextArea defaults).
+    _b("plan_drilldown", ("ctrl+n",), "ctrl-n", NO_APPROVAL),
     # In-panel navigation.
     _b("palette_up", ("up",), "↑↓", _PALETTE),
     _b("palette_down", ("down",), "↑↓", _PALETTE),

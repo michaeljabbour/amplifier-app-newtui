@@ -49,6 +49,7 @@ from textual.widgets import Static
 
 from ..model.blocks import (
     Answer,
+    Blocked,
     DelegateSummaryBlock,
     EvidenceBlock,
     NeedsYouBlock,
@@ -416,7 +417,9 @@ class BlockWidget(Static):
 
     def _activate(self) -> None:
         block = self._block
-        if block.kind == "tool_line" and block.body:
+        if block.kind in ("tool_line", "blocked") and block.body:
+            # Blocked lines expand exactly like tool lines: the digest stays
+            # on the row, the raw command lives behind the click.
             toggled = block.model_copy(update={"expanded": not block.expanded})
             self._block = toggled
             self.repaint_block()
@@ -966,7 +969,7 @@ class TranscriptView(VerticalScroll):
         """Keep canonical history aligned with a tail widget's local toggle."""
 
         widget = self._widgets.get(message.block_id)
-        if isinstance(widget, BlockWidget) and isinstance(widget.block, ToolLine):
+        if isinstance(widget, BlockWidget) and isinstance(widget.block, (Blocked, ToolLine)):
             self._blocks[message.block_id] = widget.block
 
     def on_delegate_summary_toggled(self, message: DelegateSummaryToggled) -> None:
