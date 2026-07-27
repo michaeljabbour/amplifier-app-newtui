@@ -221,16 +221,34 @@ def _render_plan(block: PlanBlock, width: int) -> tuple[Line, ...]:
     return tuple(lines)
 
 
+BLOCKED_DEFERRED_HINT = " · needs your ok — ctrl+y to review"
+"""Tail of a deferred blocked line: the WHY lives in the needs-you entry
+(ctrl+y), the raw command behind the click-to-expand body."""
+
+
 def _render_blocked(block: Blocked, width: int) -> tuple[Line, ...]:
     line: list[Segment] = [
         Segment(text="  ⊘ blocked · ", style_token="red"),
         Segment(text=block.cmd, style_token="red"),
     ]
-    if block.reason:
-        line.append(Segment(text=f" · {block.reason}", style_token="dim"))
-    if block.continuation:
-        line.append(Segment(text=f" · {block.continuation}", style_token="dim"))
-    return (tuple(line),)
+    if block.deferred:
+        # Deferred decision: digest + next step only — reason and raw
+        # command are one click (expand) or one ctrl+y away.
+        line.append(Segment(text=BLOCKED_DEFERRED_HINT, style_token="dim"))
+    else:
+        if block.reason:
+            line.append(Segment(text=f" · {block.reason}", style_token="dim"))
+        if block.continuation:
+            line.append(Segment(text=f" · {block.continuation}", style_token="dim"))
+    if block.body:
+        # Same affordance as ToolLine: the hint stays visible while expanded.
+        line.append(Segment(text=TOOL_EXPAND_HINT, style_token="dimmer"))
+    lines: list[Line] = [tuple(line)]
+    if block.expanded:
+        lines.extend(
+            (Segment(text=f"      {body_line}", style_token="dimmer"),) for body_line in block.body
+        )
+    return tuple(lines)
 
 
 def _shimmer_segments(label: str, frame: int) -> tuple[Segment, ...]:
@@ -651,8 +669,6 @@ def _render_needs_you(block: NeedsYouBlock, width: int) -> tuple[Line, ...]:
     for index, entry in enumerate(block.items, start=1):
         row: list[Segment] = [Segment(text=f"  {index} ", style_token="orange")]
         row.extend(_needs_you_question_segments(entry))
-        if entry.reason:
-            row.append(Segment(text=f" · {entry.reason}", style_token="dim"))
         for choice in entry.choices:
             row.append(Segment(text="  ", style_token="fg"))
             row.append(
@@ -663,6 +679,10 @@ def _render_needs_you(block: NeedsYouBlock, width: int) -> tuple[Line, ...]:
                 )
             )
         lines.append(tuple(row))
+        if entry.reason:
+            # The governance escalation reason as its own dim WHY line —
+            # never inlined into the question row (deferred-decision UX).
+            lines.append((Segment(text=f"    why · {entry.reason}", style_token="dim"),))
     return tuple(lines)
 
 

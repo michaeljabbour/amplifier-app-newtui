@@ -27,6 +27,18 @@ from .segments import Line, line_plain
 PLAN_MAX_ROWS = 5
 """Max item rows before collapsing the rest into ``⋮ +N more``."""
 
+PLAN_DRILL_EXTRA: tuple[int, ...] = (0, 2, 3)
+"""Drilldown ladder for the visible-plan window: default → +2 rows → +3
+rows → back (ctrl+n while the panel is shown). The ``todo`` data model is
+FLAT today (``TodoItem`` has content + status only, no children), so
+"deeper" honestly means MORE rows of the same list, not nested sub-items."""
+
+
+def plan_drill_notice(extra: int) -> str:
+    """The notice shown when the drill level changes (both apps verbatim)."""
+    return f"plan · +{extra} rows" if extra else "plan · default rows"
+
+
 PLAN_PANEL_WIDTH = 37
 """Fixed column width of the panel in the bottom strip (design §1 mockup)."""
 
@@ -118,15 +130,38 @@ class PlanPanel(Static):
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002
         super().__init__(id=id)
         self._items: tuple[TodoItem, ...] = ()
+        self._drill = 0
+        """Index into :data:`PLAN_DRILL_EXTRA` (ctrl+n cycles it)."""
 
     @property
     def items(self) -> tuple[TodoItem, ...]:
         return self._items
 
     @property
+    def drill_extra(self) -> int:
+        """Extra visible rows at the current drill level (0 at default)."""
+        return PLAN_DRILL_EXTRA[self._drill]
+
+    @property
+    def max_rows(self) -> int:
+        """The current visible-row cap: the mockup 5 plus the drill extra."""
+        return PLAN_MAX_ROWS + self.drill_extra
+
+    def cycle_drill(self) -> int:
+        """Advance the drill ladder (default → +2 → +3 → back); returns the
+        new extra-row count. The data is flat (see :data:`PLAN_DRILL_EXTRA`),
+        so each step widens the window rather than descending a tree."""
+        self._drill = (self._drill + 1) % len(PLAN_DRILL_EXTRA)
+        if self.is_mounted:
+            self.refresh(layout=True)
+        return self.drill_extra
+
+    @property
     def plan_lines(self) -> tuple[str, ...]:
         """The exact plain-text lines currently displayed (test surface)."""
-        return tuple(line_plain(line) for line in format_plan_lines(self._items))
+        return tuple(
+            line_plain(line) for line in format_plan_lines(self._items, max_rows=self.max_rows)
+        )
 
     def update_plan(self, items: Sequence[TodoItem]) -> None:
         """Replace the listing (the ``todo`` tool replaces the whole list)."""
@@ -143,7 +178,7 @@ class PlanPanel(Static):
     def render(self) -> Text:
         tokens = self.app.theme_variables
         text = Text()
-        for index, line in enumerate(format_plan_lines(self._items)):
+        for index, line in enumerate(format_plan_lines(self._items, max_rows=self.max_rows)):
             if index:
                 text.append("\n")
             for seg in line:
@@ -155,10 +190,12 @@ class PlanPanel(Static):
 
 
 __all__ = [
+    "PLAN_DRILL_EXTRA",
     "PLAN_MAX_ROWS",
     "PLAN_PANEL_WIDTH",
     "PlanPanel",
     "format_plan_lines",
     "plan_counts",
+    "plan_drill_notice",
     "plan_panel_width",
 ]

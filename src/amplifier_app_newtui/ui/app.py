@@ -71,7 +71,7 @@ from .live_tail import LiveTail
 from .needs_you import NeedsYouList
 from .notices import NoticeSlot
 from .palette import PaletteStrip
-from .plan_panel import PlanPanel
+from .plan_panel import PlanPanel, plan_drill_notice
 from .queued_strip import QueuedStrip
 from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
@@ -1378,6 +1378,18 @@ class NewTuiApp(App[None]):
 
     def action_open_rewind(self) -> None:
         self.open_rewind_strip(None)
+
+    def action_plan_drilldown(self) -> None:
+        """ctrl+n: cycle the plan panel's row window (default → +2 → +3).
+
+        The todo data model is flat (no sub-items), so drilling honestly
+        shows MORE rows of the same list; a hidden ``⋮ +N more`` shrinks
+        accordingly. No-op notice when the panel is not on screen."""
+        if not self.plan_panel.display:
+            self.show_notice("no plan panel to drill")
+            return
+        extra = self.plan_panel.cycle_drill()
+        self.show_notice(plan_drill_notice(extra))
 
     def action_palette_up(self) -> None:
         self.palette.move_selection(-1)

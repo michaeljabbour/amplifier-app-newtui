@@ -276,6 +276,13 @@ class Blocked(_FrozenModel):
 
     Never halts the turn by itself (DESIGN-SPEC §3/§7): ``continuation``
     says what the agent does instead (``continuing without <thing>``).
+
+    ``cmd`` is the compact verb-noun digest of the blocked action (a raw
+    heredoc must never sprawl across the row); the full raw command lives
+    in the click-to-expand ``body`` exactly like a :class:`ToolLine`.
+    ``deferred=True`` marks a block whose decision was parked in the
+    needs-you queue — the line then reads ``needs your ok — ctrl+y to
+    review`` instead of the deny reason tail.
     """
 
     id: str
@@ -283,6 +290,11 @@ class Blocked(_FrozenModel):
     cmd: str
     reason: str
     continuation: str = ""
+    body: tuple[str, ...] = ()
+    """Expandable detail: the raw command (and the why line) verbatim."""
+    expanded: bool = False
+    deferred: bool = False
+    """The blocked action's decision is waiting in the needs-you queue."""
 
 
 class ActivityBranch(_FrozenModel):

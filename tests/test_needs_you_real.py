@@ -129,6 +129,13 @@ def test_real_runtime_emits_decision_notification_on_defer() -> None:
     assert event.source == "needs_you"
     assert event.decision_id == item.decision_id
     assert item.question in event.message
+    # Additive deferral detail (deferred-decision UX): a protocol client
+    # has no shared queue to read the parked item from — the notification
+    # itself must carry the question, the WHY, and the actionable choices.
+    assert event.question == item.question
+    assert event.reason == "not authorized"
+    assert event.choices == item.choices
+    assert event.action == PUSH
 
 
 # ---------------------------------------------------------------------------

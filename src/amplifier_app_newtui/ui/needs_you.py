@@ -6,9 +6,10 @@ transcript flow on ctrl-y / footer-badge click, not a modal):
 - Header (orange): ``· Needs you  N deferred decision``
 - One numbered row per deferred decision: orange number + fg question +
   inline actionable chips like ``[yes · push to fork]`` (green on
-  bg-tab). Clicking a chip posts :class:`NeedsYouList.DecisionTaken`;
-  the app then logs the ``Applying decision: …`` narration and clears
-  the footer badge.
+  bg-tab), with the governance escalation reason as its own dim
+  ``    why · …`` line beneath. Clicking a chip posts
+  :class:`NeedsYouList.DecisionTaken`; the app then logs the
+  ``Applying decision: …`` narration and clears the footer badge.
 
 Also provides the focused-lane banner line helper (spec §8): the bright
 ``focused: <name>`` prefix plus the dim
@@ -52,6 +53,15 @@ def chip_text(choice: NeedsYouChoice) -> str:
 def applying_decision_line(detail: str) -> str:
     """Narration logged when a decision is acted on: ``Applying decision: …``."""
     return f"Applying decision: {detail}"
+
+
+def decision_why_line(reason: str) -> str:
+    """The dim WHY line under a decision row: ``    why · <reason>``.
+
+    The governance escalation reason gets its own line (deferred-decision
+    UX) instead of being inlined into the question row.
+    """
+    return f"    why · {reason}"
 
 
 def focused_lane_banner_parts(name: str, parent_session: str) -> tuple[str, str]:
@@ -109,7 +119,8 @@ class _ChoiceChip(Static):
 
 
 class _DecisionText(Static):
-    """Orange number + fg question (+ dim reason) text of one decision row."""
+    """Orange number + fg question text of one decision row (the reason
+    renders as its own :class:`_DecisionWhy` line beneath)."""
 
     DEFAULT_CSS = """
     _DecisionText {
@@ -139,9 +150,25 @@ class _DecisionText(Static):
                 text.append(after, style=Style(color=tokens.get("fg")))
         else:
             text.append(question, style=Style(color=tokens.get("fg")))
-        if self.entry.reason:
-            text.append(f" · {self.entry.reason}", style=Style(color=tokens.get("dim")))
         return text
+
+
+class _DecisionWhy(Static):
+    """Dim ``    why · <reason>`` line under one decision row.
+
+    Presentation only — not a click target (like the header)."""
+
+    DEFAULT_CSS = """
+    _DecisionWhy {
+        width: 100%;
+        height: 1;
+        color: $dim;
+    }
+    """
+
+    def __init__(self, entry: NeedsYouEntry) -> None:
+        super().__init__(Text(decision_why_line(entry.reason)), id=f"why-{entry.decision_id}")
+        self.entry = entry
 
 
 class _DecisionRow(Horizontal):
@@ -182,8 +209,6 @@ class _DecisionRow(Horizontal):
         if width <= 0:
             return
         needed = cell_len(decision_number_text(self.number)) + cell_len(self.entry.question)
-        if self.entry.reason:
-            needed += cell_len(f" · {self.entry.reason}")
         # each chip carries ``margin-left: 2``
         needed += sum(cell_len(chip_text(choice)) + 2 for choice in self.entry.choices)
         self.set_class(needed > width, "-wrapped")
@@ -262,9 +287,10 @@ class NeedsYouList(Vertical):
         if self._block is None or not self._block.items:
             return
         rows: list[Static | Horizontal] = [_NeedsYouHeader(len(self._block.items))]
-        rows.extend(
-            _DecisionRow(entry, number) for number, entry in enumerate(self._block.items, start=1)
-        )
+        for number, entry in enumerate(self._block.items, start=1):
+            rows.append(_DecisionRow(entry, number))
+            if entry.reason:
+                rows.append(_DecisionWhy(entry))
         await self.mount(*rows)
 
 
@@ -273,6 +299,7 @@ __all__ = [
     "applying_decision_line",
     "chip_text",
     "decision_number_text",
+    "decision_why_line",
     "focused_lane_banner",
     "focused_lane_banner_parts",
     "needs_you_header",

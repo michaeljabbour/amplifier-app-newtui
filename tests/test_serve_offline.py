@@ -26,7 +26,7 @@ from amplifier_app_newtui.kernel.approval import ALLOW_ONCE, DENY
 from amplifier_app_newtui.kernel.events import ContentBlockEnd
 from amplifier_app_newtui.kernel.serve import serve, serve_loop
 from amplifier_app_newtui.kernel.steering import StepBoundaryBridge
-from amplifier_app_newtui.model.queues import QueuedMessage, SteeringQueue
+from amplifier_app_newtui.model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
 
 # Started-runtime + policy-hook helpers; the offline_env fixture comes from
 # conftest (shared with test_runtime_offline).
@@ -322,6 +322,68 @@ async def test_serve_drains_leftover_steers_at_turn_end() -> None:
     await _wait_until(lambda: out.find("turn.completed") is not None)
     assert _narration_texts(out) == ["Applying steer: first"]
     assert runtime.steering.pending == ()  # leftover drained, not leaked
+
+    stdin.close()
+    assert await server == 0
+
+
+class _FakeDecisionRuntime(_FakeSteerRuntime):
+    """The steerable fake plus a REAL ``NeedsYouQueue`` wired into the same
+    ``StepBoundaryBridge`` — exactly the objects RealRuntime mounts — so the
+    additive ``decision`` op can be proven end-to-end: park → answer over
+    the wire → consumed at the next step boundary."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.needs_you = NeedsYouQueue()
+        self._bridge = StepBoundaryBridge(self.session_id, self.steering, needs_you=self.needs_you)
+
+
+async def test_serve_decision_op_answers_deferred_decision() -> None:
+    """The additive ``decision`` op answers a DEFERRED needs-you decision.
+
+    Ticket-lifecycle finding: after a governance deferral there is NO live
+    broker ticket — ``GovernanceHook._classify`` parks the item straight
+    into ``NeedsYouQueue`` and returns deny (deny-and-continue), so the
+    existing ``approve`` op can never reach it. ``decision`` answers the
+    SAME kernel queue the in-process TUI's ``apply_decision`` does; the
+    StepBoundaryBridge then consumes the answered item at the next
+    ``provider:request`` (the answer injection)."""
+    runtime = _FakeDecisionRuntime()
+    item = runtime.needs_you.defer(
+        "Allow cat > /tmp/diag/build2.py <<'PY' …?",
+        "outside configured project boundary without explicit authorization",
+        choices=("Allow once", "Allow always", "Deny"),
+        action="cat > /tmp/diag/build2.py <<'PY' …",
+    )
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))  # type: ignore[arg-type]
+    )
+
+    stdin.feed({"op": "submit", "text": "keep going"})
+    await asyncio.wait_for(runtime.mid_turn.wait(), timeout=5.0)
+
+    # Unknown ids and malformed ops are swallowed (client already told).
+    stdin.feed({"op": "decision", "decision_id": "decision-999", "answer": "Allow once"})
+    stdin.feed({"op": "decision", "decision_id": "", "answer": "Allow once"})
+    stdin.feed({"op": "decision", "decision_id": item.decision_id, "answer": "Allow once"})
+    await _wait_until(
+        lambda: any(
+            i.decision_id == item.decision_id and i.status == "answered"
+            for i in runtime.needs_you.items
+        )
+    )
+    answered = next(i for i in runtime.needs_you.items if i.decision_id == item.decision_id)
+    assert answered.answer == "Allow once"
+
+    # The next step boundary consumes it (the injection the model sees).
+    runtime.resume.set()
+    await _wait_until(lambda: out.find("turn.completed") is not None)
+    consumed = next(i for i in runtime.needs_you.items if i.decision_id == item.decision_id)
+    assert consumed.status == "consumed"
+    # An answered decision no longer blocks dependents.
+    assert not runtime.needs_you.dependency_blocked(item.action)
 
     stdin.close()
     assert await server == 0
