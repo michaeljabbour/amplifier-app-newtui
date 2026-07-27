@@ -414,6 +414,19 @@ def test_lane_tail_markup_escapes_and_handles_empty() -> None:
     assert "┆ \\[red]not markup" in markup  # escaped — content is never interpreted
 
 
+def test_labeled_lane_tail_markup_prefixes_first_line_only() -> None:
+    """Rust: test_labeled_lane_tail_markup_prefixes_first_line_only — the
+    main transcript's delegate tail leads its first rendered line with the
+    lane's short label; the panel shape (empty label) stays byte-identical."""
+    markup = lane_tail_markup("one\ntwo\nthree\nfour\n", label="explorer")
+    assert markup == "[$dim]┆ explorer › two\n┆ three\n┆ four[/]"
+    # Empty label degrades to the panel tail verbatim.
+    assert lane_tail_markup("one\ntwo", label="") == lane_tail_markup("one\ntwo")
+    assert lane_tail_markup("", label="explorer") == ""
+    # Label content is escaped, never interpreted.
+    assert "┆ \\[red]agent › hi" in lane_tail_markup("hi", label="[red]agent")
+
+
 @pytest.mark.asyncio
 async def test_lane_mode_yields_to_root_stream_and_clears() -> None:
     app = TailHarness()
