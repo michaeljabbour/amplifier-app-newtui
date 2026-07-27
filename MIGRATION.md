@@ -191,6 +191,20 @@ clients — the client swap does not change backend cost. amplifier-cli (~15 s b
 environmental reference points only. Demo turn timings are not engine-comparable
 (different scripted turns).
 
+## Performance RCA (2026-07-27, validated by 4 parallel investigators + standalone reproductions)
+
+The 51s first turn decomposed as: ~34s backend boot overlap (prompt accepted during boot),
+~12s hooks-memory-interject pre-execution search, ~5.2s actual LLM, ~0.3s close-out —
+"post-turn hooks" and "spawned agent" hypotheses were falsified. Fixes landed:
+(1) foundation pin dc010423 → 32d4052 (activator find_spec bug reinstalled 10 packages
+every boot — issue #326): warm boot 44.7s → 11.4s, zero reinstalls;
+(2) memory-store search regenerate-per-hit fix on amplifier-bundle-memory branch
+perf/search-no-regenerate (42s → 1.85s per query at 69k events, byte-identical results;
+local branch, not pushed); (3) 33 wedged/zombie memory daemons killed (one at 103% CPU,
+1.4GB, 15h); (4) working-line "1 agent" fallback → "thinking" (deliberate divergence:
+Python transcript_render.py:280 still shows the mockup string "1 agent" — nothing spawns;
+both codebases' comments already claimed "thinking").
+
 ## Log / caveats
 
 - 2026-07-27: completeness audit. A 7-slice audit of the whole Python tree against this

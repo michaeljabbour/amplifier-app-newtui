@@ -288,13 +288,18 @@ fn render_working_status(block: &WorkingStatus, _width: usize) -> Vec<Line> {
     // Single-agent pulse: the live activity tree beneath carries the ops
     // (spec §3). Before any tool runs, fall back to the inline note
     // (``thinking``) so the supervisor still sees the turn breathing.
+    //
+    // Deliberate divergence from the Python app: Python (and the mockup
+    // runTurn line) falls back to '1 agent' here, which reads as a spawned
+    // subagent when nothing was spawned. We show 'thinking' instead — an
+    // honest label for a turn with no activity yet.
     let mut pulse: Vec<Segment> = vec![seg(format!("{frame} "), StyleToken::Orange)];
     pulse.extend(shimmer_segments("working", block.motion_frame as usize));
     if !block.activity_lines.is_empty() {
         pulse.push(seg(format!(" · {inner} · "), StyleToken::Dim));
     } else {
         let note = if block.activity.is_empty() {
-            "1 agent"
+            "thinking"
         } else {
             block.activity.as_str()
         };
@@ -1576,7 +1581,9 @@ mod tests {
 
     #[test]
     fn test_working_status_single_agent_exact() {
-        // Single-agent turns always show '· 1 agent ·' (mockup runTurn line).
+        // Single-agent turns with no activity yet show '· thinking ·'
+        // (deliberate divergence from the mockup/Python '1 agent', which
+        // misreads as a spawned subagent).
         let block = WorkingStatus {
             agent_count: 1,
             ..working()
@@ -1584,7 +1591,7 @@ mod tests {
         let lines = render_block(&block.clone().into(), 80);
         assert_eq!(
             line_plain(&lines[0]),
-            "✳ working · 8s · ↓ 3.2k tok · 1 agent · esc to interrupt · type to steer"
+            "✳ working · 8s · ↓ 3.2k tok · thinking · esc to interrupt · type to steer"
         );
         let zero = WorkingStatus {
             agent_count: 0,

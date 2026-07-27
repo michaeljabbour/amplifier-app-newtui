@@ -4302,10 +4302,10 @@ mod tests {
         let block: TranscriptBlock = working.into();
         let line = line_text(&render_block(&block, 200)[0]);
         assert!(line.contains("working · 3s"), "line was {line:?}");
-        assert!(line.contains("1 agent"), "line was {line:?}");
+        assert!(line.contains("thinking"), "line was {line:?}");
 
         // A running tool shows as the active branch of the live tree beneath
-        // the pulse (not inline); the static '1 agent' fallback drops away.
+        // the pulse (not inline); the static 'thinking' fallback drops away.
         reducer.handle(&tool_pre(
             "s",
             "t1",
@@ -4331,7 +4331,7 @@ mod tests {
         let joined = rendered.join("\n");
         assert!(joined.contains("$ uv run pytest -q")); // in the tree
         assert!(activity_lines.last().expect("a branch").running);
-        assert!(!rendered[0].contains("1 agent")); // not inline on the pulse
+        assert!(!rendered[0].contains("thinking")); // not inline on the pulse
         // ...and the pulse rides at the BOTTOM, under the newest content.
         assert_eq!(
             reducer.host().blocks.last().expect("a block").kind(),
