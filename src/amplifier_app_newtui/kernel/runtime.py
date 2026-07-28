@@ -948,6 +948,9 @@ class RealRuntime:
                 question=item.question,
                 reason=item.reason,
                 choices=item.choices,
+                descriptions=item.descriptions,
+                multiple=item.multiple,
+                custom=item.custom,
                 highlight=item.highlight,
                 action=item.action,
             )

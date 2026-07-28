@@ -669,19 +669,41 @@ def _render_needs_you(block: NeedsYouBlock, width: int) -> tuple[Line, ...]:
     for index, entry in enumerate(block.items, start=1):
         row: list[Segment] = [Segment(text=f"  {index} ", style_token="orange")]
         row.extend(_needs_you_question_segments(entry))
+        if entry.multiple:
+            # Donor question.tsx: multi-select questions append this hint to
+            # the prompt so the checkbox chips read as "pick any".
+            row.append(Segment(text=" (select all that apply)", style_token="dim"))
         for choice in entry.choices:
             row.append(Segment(text="  ", style_token="fg"))
-            row.append(
-                Segment(
-                    text=f"[{choice.label}]",
-                    style_token="green",
-                    bg_token="bg-tab",
-                )
+            # Multi-select chips carry a checkbox glyph (donor ``[ ] label``);
+            # the static transcript snapshot shows them unchecked -- live
+            # selection state lives in the interactive NeedsYouList widget.
+            chip = (
+                f"[{GLYPH_CHECKBOX_EMPTY} {choice.label}]"
+                if entry.multiple
+                else f"[{choice.label}]"
             )
+            row.append(Segment(text=chip, style_token="green", bg_token="bg-tab"))
         lines.append(tuple(row))
+        # Per-option help (donor renders opt.description under each option) as
+        # dim ``      <label> · <description>`` lines -- absent for governance
+        # decisions (no descriptions), so their goldens are unchanged.
+        for choice in entry.choices:
+            if choice.description:
+                lines.append(
+                    (
+                        Segment(
+                            text=f"      {choice.label} · {choice.description}",
+                            style_token="dim",
+                        ),
+                    )
+                )
+        if entry.custom:
+            # Donor "Type your own answer" pseudo-option -> free-text affordance.
+            lines.append((Segment(text="      + type your own answer", style_token="dimmer"),))
         if entry.reason:
-            # The governance escalation reason as its own dim WHY line —
-            # never inlined into the question row (deferred-decision UX).
+            # The governance escalation reason / question header as its own dim
+            # WHY line — never inlined into the question row (deferred-decision UX).
             lines.append((Segment(text=f"    why · {entry.reason}", style_token="dim"),))
     return tuple(lines)
 

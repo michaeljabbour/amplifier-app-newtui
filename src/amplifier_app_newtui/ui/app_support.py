@@ -160,6 +160,21 @@ def needs_you_display_question(item: NeedsYouItem) -> str:
     return item.question
 
 
+def _needs_you_choices(item: NeedsYouItem) -> tuple[NeedsYouChoice, ...]:
+    """Choices for a needs-you entry, pairing each label with its aligned
+    option description (question tool) -- ``answer`` stays the bare label so
+    the answered decision matches the donor contract."""
+    descriptions = item.descriptions
+    return tuple(
+        NeedsYouChoice(
+            label=label,
+            answer=label,
+            description=descriptions[i] if i < len(descriptions) else "",
+        )
+        for i, label in enumerate(item.choices)
+    )
+
+
 def needs_you_block(
     pending: tuple[NeedsYouItem, ...], allocator: BlockIdAllocator
 ) -> NeedsYouBlock | None:
@@ -171,7 +186,9 @@ def needs_you_block(
             decision_id=item.decision_id,
             question=needs_you_display_question(item),
             reason=item.reason,
-            choices=tuple(NeedsYouChoice(label=c, answer=c) for c in item.choices),
+            choices=_needs_you_choices(item),
+            multiple=item.multiple,
+            custom=item.custom,
             highlight=item.highlight,
         )
         for item in pending

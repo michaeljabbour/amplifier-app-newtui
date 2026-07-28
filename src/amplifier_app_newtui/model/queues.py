@@ -284,6 +284,15 @@ class NeedsYouItem(BaseModel):
     question: str
     reason: str = ""
     choices: tuple[str, ...] = ()
+    descriptions: tuple[str, ...] = ()
+    """Per-choice option help, aligned index-for-index to ``choices`` (the
+    donor ``question`` tool's option ``description``s). Empty tuple for
+    governance/scripted decisions that carry only labels."""
+    multiple: bool = False
+    """Question tool: more than one choice may be selected (multi-select);
+    the answer is the comma-joined labels."""
+    custom: bool = False
+    """Question tool: a free-text answer is allowed (donor ``custom``)."""
     highlight: str = ""
     """Substring of ``question`` the UI accents teal (mockup ``mj/waypoint``)."""
     action: str = ""
@@ -380,6 +389,9 @@ class NeedsYouQueue(_ListenerMixin):
         reason: object = "",
         *,
         choices: tuple[str, ...] = (),
+        descriptions: tuple[str, ...] = (),
+        multiple: bool = False,
+        custom: bool = False,
         highlight: object = "",
         action: object = "",
         dependencies: tuple[str, ...] = (),
@@ -398,11 +410,23 @@ class NeedsYouQueue(_ListenerMixin):
             clean_question = _clean_line(question, 4_096)
             if not clean_question:
                 raise ValueError("decision question cannot be empty")
+            clean_choices: list[str] = []
+            clean_descriptions: list[str] = []
+            descs = tuple(descriptions)
+            for i, raw_choice in enumerate(choices):
+                label = _clean_line(raw_choice, 200)
+                if not label:
+                    continue  # drop the label AND its aligned description together
+                clean_choices.append(label)
+                clean_descriptions.append(_clean_line(descs[i], 500) if i < len(descs) else "")
             item = NeedsYouItem(
                 decision_id=f"decision-{self._next_id}",
                 question=clean_question,
                 reason=_clean_line(reason, 4_096),
-                choices=tuple(_clean_line(c, 200) for c in choices if _clean_line(c, 200)),
+                choices=tuple(clean_choices),
+                descriptions=tuple(clean_descriptions) if any(clean_descriptions) else (),
+                multiple=bool(multiple),
+                custom=bool(custom),
                 highlight=_clean_line(highlight, 200),
                 action=_clean_line(action, 4_096),
                 dependencies=_clean_keys(dependencies),

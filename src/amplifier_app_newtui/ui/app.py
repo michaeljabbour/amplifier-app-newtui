@@ -988,6 +988,15 @@ class NewTuiApp(App[None]):
     def on_composer_submit(self, message: Composer.Submit) -> None:
         message.stop()
         text = message.text
+        pending_custom = getattr(self, "_pending_custom_decision", "")
+        if pending_custom and text and not text.startswith("/"):
+            # A free-text answer to a needs-you question (donor custom option):
+            # answer the parked decision instead of starting a turn.
+            self._pending_custom_decision = ""
+            close_file_mentions(self)
+            app_support.apply_decision(self, pending_custom, text)
+            self._refresh_footer()
+            return
         # Persist for cross-session ↑ recall (mirrors the composer's own
         # in-memory ring; the adapter scrubs + dedups + caps). Base/demo
         # adapters no-op, so only real sessions write to disk.
@@ -1398,6 +1407,16 @@ class NewTuiApp(App[None]):
         self._restore_keyboard()
         app_support.apply_decision(self, message.item_id, message.choice)
 
+    def on_needs_you_list_custom_answer_requested(
+        self, message: NeedsYouList.CustomAnswerRequested
+    ) -> None:
+        message.stop()
+        # Donor "Type your own answer": route the NEXT composer submit into
+        # this decision's answer instead of a turn (see on_composer_submit).
+        self._pending_custom_decision = message.item_id
+        self._restore_keyboard()
+        self.show_notice("type your answer, then enter to submit · esc to cancel")
+
     def on_click(self, event: events.Click) -> None:
         """Transcript clicks never strand the keyboard (DESIGN-SPEC §12).
 
@@ -1515,6 +1534,19 @@ class NewTuiApp(App[None]):
             self.show_notice("no decisions waiting")
             return
         self.append_block(block)
+        # Take the keyboard so number keys answer the decision (the donor
+        # number-key + enter flow); the block hands focus back to the composer
+        # on answer via _restore_keyboard. A deliberate ctrl-y "review" grab,
+        # like the evidence block -- not a stray transcript click.
+        self.call_after_refresh(self._focus_needs_you)
+
+    def _focus_needs_you(self) -> None:
+        widgets = self.query(NeedsYouList)
+        if widgets:
+            try:
+                self.set_focus(widgets.last())
+            except Exception:  # noqa: BLE001 -- focus is best-effort
+                pass
 
     def action_open_rewind(self) -> None:
         self.open_rewind_strip(None)
