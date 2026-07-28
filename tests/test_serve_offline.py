@@ -17,6 +17,7 @@ import asyncio
 import json
 import queue
 import threading
+from pathlib import Path
 from typing import IO, Any, cast
 
 import pytest
@@ -397,3 +398,103 @@ async def test_serve_approval_deny_continues(offline_env) -> None:
     assert completed is not None
     assert "Denied" in completed["response"]  # FakeLoop's deny branch
     assert "tool_post" not in out.kinds()  # write_file did not execute
+
+
+class _HistoryRuntime:
+    """Minimal real-surface runtime for the additive ``history.query`` READ op.
+
+    ``serve_loop`` needs a queue/broker/ids + ``cleanup``; the history arm reads
+    ``project_dir`` off the runtime to locate this project's prompt store. No
+    turn is run (history.query answers without one)."""
+
+    class _NoBroker:
+        head = None
+
+        def add_listener(self, listener) -> None:  # noqa: D401 -- broker shim
+            pass
+
+    def __init__(self, project_dir: Path) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.broker = self._NoBroker()
+        self.session_id = "history-01"
+        self.bundle_name = "newtui"
+        self.model_name = "test-model"
+        self.project_dir = project_dir
+
+    async def cleanup(self) -> None:
+        pass
+
+
+def _seed_history(project: Path) -> None:
+    from amplifier_app_newtui.kernel.prompt_history import PromptHistoryStore
+
+    store = PromptHistoryStore(project_dir=project)
+    for prompt in (
+        "deploy app",
+        "run tests",
+        "deploy app",
+        "check logs",
+        "deploy app",
+        "delete branch",
+    ):
+        store.append(prompt)
+
+
+async def test_serve_history_query_returns_frecency_ranked(tmp_path, monkeypatch) -> None:
+    """The additive ``history.query`` op returns a ``history.list`` ranked by
+    frecency: the thrice-used older ``deploy app`` outranks the once-used newer
+    ``delete branch`` -- the inversion vs the chronological up-ring."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    _seed_history(project)
+
+    runtime = _HistoryRuntime(project)
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))  # type: ignore[arg-type]
+    )
+
+    stdin.feed({"op": "history.query", "prefix": "de", "limit": 10})
+    await _wait_until(lambda: out.find("history.list") is not None)
+    stdin.close()
+    assert await server == 0
+
+    record = out.find("history.list")
+    assert record is not None
+    assert record["schema_version"] == 1
+    assert record["prefix"] == "de"
+    entries = record["entries"]
+    assert [e["text"] for e in entries] == ["deploy app", "delete branch"]
+    assert entries[0]["frequency"] == 3
+    assert entries[0]["age"] == 1
+    assert entries[0]["score"] == 1.5
+    assert entries[1]["age"] == 0  # newest, but ranked second
+    assert entries[0]["score"] > entries[1]["score"]  # frequency beat recency
+    # Prefix filter excluded the non-'de' prompts.
+    assert "run tests" not in [e["text"] for e in entries]
+
+
+async def test_serve_history_query_empty_prefix_returns_all(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    _seed_history(project)
+
+    runtime = _HistoryRuntime(project)
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))  # type: ignore[arg-type]
+    )
+
+    stdin.feed({"op": "history.query"})  # no prefix, no limit -> all, default cap
+    await _wait_until(lambda: out.find("history.list") is not None)
+    stdin.close()
+    assert await server == 0
+
+    record = out.find("history.list")
+    assert record is not None
+    assert record["prefix"] == ""
+    texts = [e["text"] for e in record["entries"]]
+    assert texts[0] == "deploy app"  # frecency top
+    assert set(texts) == {"deploy app", "run tests", "check logs", "delete branch"}

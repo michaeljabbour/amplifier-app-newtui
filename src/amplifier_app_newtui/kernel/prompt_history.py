@@ -31,6 +31,7 @@ from pathlib import Path
 
 from ..model.redaction import scrub_text
 from .config import get_project_slug
+from .frecency import RankedPrompt, rank_history
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,29 @@ class PromptHistoryStore:
             limit = self.max_entries
         entries = _dedup_consecutive(self._read_entries())
         return entries[-limit:] if limit >= 0 else entries
+
+    def ranked_history(
+        self,
+        prefix: str = "",
+        *,
+        limit: int | None = None,
+    ) -> list[RankedPrompt]:
+        """Frecency-ranked recall over this project's prompt history.
+
+        Ranks the deduped, recency-ordered store (:meth:`load`) by
+        ``frequency / (1 + age)`` -- a prompt used often *and* recently
+        beats one used once, even a more recent once (see :mod:`.frecency`
+        and ``.ai/oc_donor.md``). This is the query surface an autocomplete
+        UI ranks by; it does **not** change the composer's chronological
+        up-ring (:meth:`load`), which stays the default walk the client
+        lane builds on.
+
+        Args:
+            prefix: Literal case-sensitive ``startswith`` filter; ``\"\"``
+                matches all.
+            limit: Cap on results (``None`` = all, ``<= 0`` = none).
+        """
+        return rank_history(self.load(), prefix=prefix, limit=limit)
 
     # -- write -------------------------------------------------------------
 

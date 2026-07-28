@@ -163,3 +163,65 @@ def test_history_is_isolated_per_directory(tmp_path: Path, monkeypatch) -> None:
     # A fresh store for the SAME dir recalls it; a different dir does not.
     assert PromptHistoryStore(project_dir=dir_x).load() == ["command A"]
     assert PromptHistoryStore(project_dir=dir_y).load() == []
+
+
+# --------------------------------------------------------------------------
+# ranked_history (frecency query surface -- kernel/frecency.py)
+# --------------------------------------------------------------------------
+
+
+def test_ranked_history_frequency_beats_recency(store: PromptHistoryStore) -> None:
+    """A thrice-used older prompt outranks a once-used newer one over the store.
+
+    Plain ``load()`` (the composer up-ring) stays chronological; ``ranked_history``
+    is the separate frecency view (see .ai/oc_donor.md).
+    """
+    for prompt in (
+        "deploy app",
+        "run tests",
+        "deploy app",
+        "check logs",
+        "deploy app",
+        "delete branch",
+    ):
+        store.append(prompt)
+    # Chronological recall keeps insertion order (newest last).
+    assert store.load()[-1] == "delete branch"
+    ranked = store.ranked_history()
+    assert [r.text for r in ranked][:2] == ["deploy app", "delete branch"]
+    assert ranked[0].frequency == 3
+    assert ranked[0].score > ranked[1].score
+
+
+def test_ranked_history_prefix_filters(store: PromptHistoryStore) -> None:
+    for prompt in ("deploy app", "run tests", "delete branch"):
+        store.append(prompt)
+    ranked = store.ranked_history("de")
+    texts = [r.text for r in ranked]
+    assert "run tests" not in texts
+    assert set(texts) == {"deploy app", "delete branch"}
+
+
+def test_ranked_history_limit(store: PromptHistoryStore) -> None:
+    for prompt in ("a", "b", "c", "d"):
+        store.append(prompt)
+    ranked = store.ranked_history(limit=2)
+    assert len(ranked) == 2
+    # Equal frequency -> most-recent-first: d (newest), c.
+    assert [r.text for r in ranked] == ["d", "c"]
+
+
+def test_ranked_history_empty_store_is_empty(tmp_path: Path) -> None:
+    assert PromptHistoryStore(path=tmp_path / "absent").ranked_history() == []
+
+
+def test_ranked_history_consecutive_dupes_count_once(store: PromptHistoryStore) -> None:
+    """Consecutive dupes are one submission at the store (composer parity), so
+    frequency counts them once; a non-consecutive repeat DOES raise frequency."""
+    store.append("same")
+    store.append("same")  # consecutive dup -> not recorded
+    store.append("other")
+    store.append("same")  # non-consecutive -> recorded, freq now 2
+    ranked = {r.text: r for r in store.ranked_history()}
+    assert ranked["same"].frequency == 2
+    assert ranked["other"].frequency == 1
