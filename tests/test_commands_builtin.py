@@ -73,6 +73,9 @@ MOCKUP_TABLE = [
         "attach or remove session tags; /tag sessions <tag> filters",
         "built-in",
     ),
+    # Prompt-stash (HGT from opencode): save/restore in-progress drafts.
+    ("Between", "/stashes", "list stashed drafts; /unstash restores one", "built-in"),
+    ("Between", "/unstash", "restore a stashed draft: /unstash [n]", "built-in"),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
     ("Repair", "/permissions", "edit trust slots: boundary, blocks, exceptions", "built-in"),

@@ -657,3 +657,20 @@ async def test_native_clipboard_write_does_not_block_the_ui(monkeypatch) -> None
         assert not finished.is_set()
         await pilot.pause(0.3)
         assert finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_set_draft_replaces_buffer_and_ends_history_nav() -> None:
+    """set_draft (the /unstash recall seam) loads the whole draft, cursor at
+    the end, and ends any history browsing."""
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        await pilot.press(*"older", "enter")  # seeds prompt history
+        await pilot.press("up")  # now browsing history: text == "older"
+        assert composer.history_browsing
+        composer.set_draft("recalled stash text")
+        await pilot.pause()
+        assert composer.text == "recalled stash text"
+        assert not composer.history_browsing
+        assert composer._input.cursor_location == (0, len("recalled stash text"))

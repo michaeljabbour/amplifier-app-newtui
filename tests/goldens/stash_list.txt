@@ -1,0 +1,4 @@
+Stashed drafts  ·  3 saved · /unstash <n> restores one
+  1. a very long single line draft that should be trun…  ·  just now
+  2. a multiline draft  ·  2m ago  ·  ~3 lines
+  3. first stashed draft  ·  3h ago

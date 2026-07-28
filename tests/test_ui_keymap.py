@@ -154,3 +154,14 @@ def test_approval_defer_parks_on_ctrl_y_in_approval_context_only() -> None:
     assert show.keys == ("ctrl+y",)
     assert "approval" not in show.contexts
     validate()  # the ctrl-y split does not trip the conflict guard
+
+
+def test_stash_prompt_bound_to_ctrl_s_idle_and_running() -> None:
+    """prompt-stash (HGT): ctrl+s stashes the draft, active while composing or
+    while a turn runs; the new chord does not collide (validate stays clean)."""
+    binding = next(b for b in KEYMAP if b.action == "stash_prompt")
+    assert binding.keys == ("ctrl+s",)
+    assert binding.contexts == frozenset({"idle", "running"})
+    assert binding.label == "ctrl-s stash"
+    assert len(binding.label) <= 32
+    validate()
