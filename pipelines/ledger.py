@@ -20,10 +20,15 @@ Commands (stdlib only, never raises for the pipeline's tool nodes):
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-LEDGER = Path(__file__).with_name("ledger.tsv")
+# Ledger file is overridable so one tool can serve several pipelines
+# (e.g. the app-cli backlog ledger and the opencode-transfer ledger).
+# Back-compatible: unset LEDGER_FILE keeps the original ledger.tsv sibling.
+_LEDGER_ENV = os.environ.get("LEDGER_FILE")
+LEDGER = Path(_LEDGER_ENV) if _LEDGER_ENV else Path(__file__).with_name("ledger.tsv")
 ORDER = {"new": 0, "implemented": 1, "acknowledged": 2}
 
 
@@ -75,7 +80,13 @@ def main(argv: list[str]) -> int:
         return 0
 
     if cmd == "sort":
-        rows.sort(key=lambda r: (ORDER.get(r[2], 9), int(r[0])))
+        rows.sort(
+            key=lambda r: (
+                ORDER.get(r[2], 9),
+                int(r[0]) if r[0].isdigit() else 0,
+                r[0],
+            )
+        )
         _write(rows)
         print("sorted")
         return 0
