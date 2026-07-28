@@ -43,12 +43,57 @@ from contextlib import redirect_stdout
 from typing import IO, Any
 
 from .jsonl import JsonlRecords
+from .prompt_history import PromptHistoryStore
 from .runtime import RealRuntime
 
 
 def _emit_raw(out: IO[str], obj: dict[str, Any]) -> None:
     out.write(json.dumps(obj, default=str) + "\n")
     out.flush()
+
+
+DEFAULT_HISTORY_QUERY_LIMIT = 10
+"""Default cap for a ``history.query`` with no explicit ``limit``."""
+
+
+def _history_list_record(runtime: RealRuntime, op: dict[str, Any]) -> dict[str, Any]:
+    """Build the ``history.list`` reply to a ``history.query`` op.
+
+    Additive READ path: frecency-ranks THIS project's prompt history
+    (``kernel/frecency.py`` over ``PromptHistoryStore``) for an
+    out-of-process autocomplete/recall UI -- a prompt used often *and*
+    recently outranks a once-used more recent one. It needs no live turn,
+    so it answers even mid-turn. Best-effort: any failure returns an empty
+    list rather than breaking the protocol loop -- prompt history is never
+    load-bearing (mirrors the store's own swallow-and-continue contract).
+    It does NOT touch the composer up-ring default (that stays chronological
+    for the client lane to build on).
+    """
+    prefix = str(op.get("prefix", ""))
+    try:
+        limit = int(op.get("limit", DEFAULT_HISTORY_QUERY_LIMIT))
+    except (TypeError, ValueError):
+        limit = DEFAULT_HISTORY_QUERY_LIMIT
+    entries: list[dict[str, Any]] = []
+    try:
+        store = PromptHistoryStore(project_dir=getattr(runtime, "project_dir", None))
+        entries = [
+            {
+                "text": ranked.text,
+                "score": round(ranked.score, 6),
+                "frequency": ranked.frequency,
+                "age": ranked.age,
+            }
+            for ranked in store.ranked_history(prefix, limit=limit)
+        ]
+    except Exception:  # noqa: BLE001 -- history recall is best-effort, never fatal
+        entries = []
+    return {
+        "schema_version": 1,
+        "type": "history.list",
+        "prefix": prefix,
+        "entries": entries,
+    }
 
 
 async def serve(
@@ -240,6 +285,14 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
                         pass
             elif kind == "interrupt":
                 asyncio.create_task(runtime.interrupt())  # noqa: RUF006 — fire-and-forget
+            elif kind == "history.query":
+                # Additive READ op (no turn needed): frecency-ranked prompt
+                # recall. Serviced inline off the ops queue so it answers
+                # even while a turn runs; emit is on the loop thread (safe).
+                # Merge note: other in-flight lanes append effort.*/tag.*
+                # arms to THIS ladder -- each arm is independent, so the
+                # only adjacency is textual (self-contained additive elif).
+                _emit_raw(out, _history_list_record(runtime, op))
     finally:
         # Let an in-flight turn finish (the pump keeps draining its events) so a
         # piped one-shot `submit` completes cleanly on stdin EOF; only then stop
