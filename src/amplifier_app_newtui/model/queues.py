@@ -422,6 +422,27 @@ class NeedsYouQueue(_ListenerMixin):
             raise ValueError("decision answer cannot be empty")
         return self._transition(decision_id, "answered", clean_answer)
 
+    def consume(self, decision_id: str) -> NeedsYouItem | None:
+        """Mark ONE answered decision consumed and return it (or ``None``).
+
+        Companion to :meth:`consume_answered` for a caller that delivered the
+        answer directly (a blocking ``question`` tool returns it as its tool
+        result). Consuming the item here keeps the step-boundary bridge's
+        ``consume_answered`` from RE-injecting the same answer as a next-turn
+        instruction. Tolerant: a no-op for an unknown, dismissed, or
+        already-consumed id (only an ``answered`` item transitions).
+        """
+        updated: NeedsYouItem | None = None
+        with self._lock:
+            for index, item in enumerate(self._items):
+                if item.decision_id == decision_id and item.status == "answered":
+                    updated = item.model_copy(update={"status": "consumed"})
+                    self._items[index] = updated
+                    break
+        if updated is not None:
+            self._notify()
+        return updated
+
     def dismiss(self, decision_id: str) -> NeedsYouItem:
         return self._transition(decision_id, "dismissed", "")
 
