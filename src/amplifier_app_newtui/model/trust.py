@@ -92,6 +92,12 @@ _TOOL_CAPABILITIES: dict[str, CapabilityClass] = {
     "shell": CapabilityClass.EXEC,
     "exec": CapabilityClass.EXEC,
     "exec_command": CapabilityClass.EXEC,
+    # Code mode: one program orchestrates many tools in a single sandboxed
+    # pass, so it can exercise ANY tool it is handed. Gate it at least as
+    # strictly as exec (asks in chat/build, classifier-gated in auto) —
+    # authority stays host-owned; a program cannot widen it via prose
+    # (donor law, .ai/oc_donor.md §5). The kernel sandbox is the backend.
+    "execute": CapabilityClass.EXEC,
 }
 
 _READ_HINTS = ("read", "list", "glob", "grep", "search", "find", "cat", "view", "load")
@@ -147,6 +153,16 @@ def classify_tool(
         ):
             return CapabilityClass.TEST
     return capability
+
+
+def tool_capability_map() -> dict[str, CapabilityClass]:
+    """The explicit tool-name -> capability table (a copy).
+
+    Exposes the governance map so surfaces like the Code Mode catalog can
+    show which tools an ``execute`` program could orchestrate, grouped by the
+    capability they exercise, without importing the private table.
+    """
+    return dict(_TOOL_CAPABILITIES)
 
 
 # Per-mode static policy: capability -> decision. Missing key = "ask"
@@ -319,6 +335,7 @@ __all__ = [
     "DenialRecord",
     "TrustDecision",
     "classify_tool",
+    "tool_capability_map",
     "resolve",
     "resolve_capability",
 ]

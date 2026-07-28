@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from ..model.blocks import LedgerBlock, SessionBanner
 from ..model.modes import MODE_PROFILES
+from .codemode import cmd_codemode
 from .context import ContextUsage, build_context_block
 from .doctor import McpServerStats, build_doctor_block, run_checks
 from .improve import (
@@ -388,6 +389,13 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="deferred overlays; /bundle load <name> composes one now",
         tag="built-in",
         handler=_cmd_bundle,
+    ),
+    CommandSpec(
+        group="During",
+        name="/codemode",
+        desc="code mode · preview the execute() tool catalog",
+        tag="built-in",
+        handler=cmd_codemode,
     ),
     CommandSpec(
         group="Parallel",

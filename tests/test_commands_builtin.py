@@ -49,6 +49,7 @@ MOCKUP_TABLE = [
         "deferred overlays; /bundle load <name> composes one now",
         "built-in",
     ),
+    ("During", "/codemode", "code mode · preview the execute() tool catalog", "built-in"),
     ("Parallel", "/tasks", "agent lanes: one line per subagent", "built-in"),
     ("Ship", "/ledger", "session outcome ledger: spend vs yield", "built-in"),
     # Beyond the mockup table: transcript markdown export.
@@ -94,7 +95,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 35
+    assert len(registry.specs) == 36
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
