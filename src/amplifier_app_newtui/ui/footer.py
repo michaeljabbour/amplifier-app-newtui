@@ -36,6 +36,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from ..model.blocks import GLYPH_YIELD
+from ..model.formatting import format_tokens_compact
 from ..model.modes import ModeId, get_mode
 from ..model.native_modes import native_badge_text
 from .keymap import FOOTER_HINTS, Context, hint_label
@@ -69,6 +70,17 @@ class FooterState(BaseModel):
     cost_estimated: bool = False
     """True when any usage this session was unpriceable → the total is a
     floor, rendered ``~$1.23`` (never lie in the footer)."""
+    context_pct: int | None = None
+    """Context occupancy as a whole-number % of the real window (the same
+    ``compaction.max_tokens`` window ``/context`` meters against). ``None``
+    before any usage, or when the window is unknown (donor parity:
+    ``model.limit.context ? … : null`` — omit the %, never guess a
+    denominator)."""
+    context_tokens: int | None = None
+    """Context tokens used — the last provider response’s occupancy
+    (donor ``last.tokens.*`` sum). ``None`` before any usage; rendered
+    alone (``12.4k ctx``) when the window is unknown so the readout is
+    still honest without a percentage."""
     shipped: bool = False
     """True when the last turn shipped → green ``▲`` yield glyph."""
     queued: int = Field(default=0, ge=0)
@@ -86,6 +98,20 @@ class FooterState(BaseModel):
 
 
 # -- pure text builders (exact strings; tests assert on these) ---------------
+
+
+def _context_part(state: FooterState) -> str:
+    """The live context readout (donor: context tokens + % of the window).
+
+    ``NN% ctx`` when a window/percentage is known; the compact token count
+    alone (``12.4k ctx``) when the window is unknown (honest — omit the %,
+    never a guessed denominator); empty before any usage exists.
+    """
+    if state.context_pct is not None:
+        return f"{state.context_pct}% ctx"
+    if state.context_tokens is not None:
+        return f"{format_tokens_compact(state.context_tokens)} ctx"
+    return ""
 
 
 def _left_parts(
@@ -110,6 +136,9 @@ def _left_parts(
         parts.append(state.model)
     if session and state.session_short:
         parts.append(state.session_short)
+    ctx_part = _context_part(state)
+    if ctx_part:
+        parts.append(ctx_part)
     cost_part = f"{'~' if state.cost_estimated else ''}${state.cost:.2f}"
     if state.shipped:
         cost_part += f" {GLYPH_YIELD}"
@@ -310,6 +339,9 @@ class FooterBar(Horizontal):
             rest_parts.append(state.model)
         if drops.get("session", True) and state.session_short:
             rest_parts.append(state.session_short)
+        ctx_part = _context_part(state)
+        if ctx_part:
+            rest_parts.append(ctx_part)
         rest_parts.append(f"{'~' if state.cost_estimated else ''}${state.cost:.2f}")
         markup = f"[${mode.color_token}]$mode_part[/]"
         substitutions = {"mode_part": f"mode {mode.id}"}
@@ -342,6 +374,7 @@ class FooterBar(Horizontal):
 __all__ = [
     "FooterBar",
     "FooterState",
+    "_context_part",
     "footer_left_text",
     "footer_left_text_fit",
     "footer_right_text",

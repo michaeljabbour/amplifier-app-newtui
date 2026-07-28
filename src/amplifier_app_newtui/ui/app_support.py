@@ -741,6 +741,13 @@ def plan_footer_counts(app: NewTuiApp) -> tuple[int, int]:
 def footer_state(app: NewTuiApp) -> FooterState:
     """One frozen footer snapshot from the app's current interaction state."""
     done, total = plan_footer_counts(app)
+    # Live context readout (donor sidebar-context parity): context tokens
+    # used + true % of the real window, sourced from the app's own
+    # ContextUsage (the same ``compaction.max_tokens`` window ``/context``
+    # meters against). Shown only once real usage exists.
+    usage = app.context_usage()
+    context_tokens = usage.used or None
+    context_pct = usage.used_pct if usage.used > 0 else None
     return FooterState(
         mode_id=app.mode_id,  # type: ignore[arg-type]
         native_modes=app.native_modes,
@@ -751,6 +758,8 @@ def footer_state(app: NewTuiApp) -> FooterState:
         session_short=app.adapter.session_short,
         cost=max(Decimal("0"), app.reducer.live_session_cost),
         cost_estimated=app.reducer.live_cost_estimated,
+        context_pct=context_pct,
+        context_tokens=context_tokens,
         shipped=app.ledger.last_shipped,
         queued=len(app.adapter.steering.pending_next_turn),
         waiting=app.adapter.needs_you.pending_count,
