@@ -48,6 +48,7 @@ from ..model.blocks import (
     UserLine,
     WorkingStatus,
 )
+from ..model.codemode import CODE_MODE_TOOL
 from ..model.evidence import EvidenceLink
 from ..model.formatting import command_digest
 from ..model.lanes import LaneRegistry, LaneStateName
@@ -264,6 +265,142 @@ def _change_preview(
         hidden = len(lines) - _CHANGE_PREVIEW_LINES
         lines = (*lines[:_CHANGE_PREVIEW_LINES], f"… {hidden} more lines")
     return paths, tuple(lines)
+
+
+# -- code mode (execute) special-case render (donor: TUI <Execute>) ------------
+
+_CODEMODE_PROGRAM_LINES = 80
+"""Bound the inlined program source in the expandable body."""
+_CODEMODE_OUTPUT_LINES = 40
+"""Bound the inlined result/diagnostic tail in the expandable body."""
+
+
+def _codemode_trace(result: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    """The bridged tool-call trace as ``(name, status)`` pairs.
+
+    Tolerant of the honest seam (serve was not modified): reads ``tool_calls``
+    (host ``ToolCall``) or ``metadata.toolCalls`` (donor ``CallEntry``), and
+    accepts either a ``name`` or a ``tool`` key for the call label.
+    """
+    raw = result.get("tool_calls")
+    if not isinstance(raw, list):
+        meta = result.get("metadata")
+        raw = meta.get("toolCalls") if isinstance(meta, dict) else None
+    calls: list[tuple[str, str]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("tool") or "").strip()
+            if not name:
+                continue
+            status = str(item.get("status") or "completed").strip() or "completed"
+            calls.append((name, status))
+    return tuple(calls)
+
+
+def _codemode_is_error(result: dict[str, Any]) -> bool:
+    """Whether the program/diagnostic failed (donor: ``metadata.error``)."""
+    if result.get("error") is True or result.get("ok") is False:
+        return True
+    if str(result.get("status", "")).lower() in {"error", "failed"}:
+        return True
+    return bool(result.get("diagnostic"))
+
+
+def _codemode_output(result: dict[str, Any]) -> str:
+    """The result body: the rendered ``output`` string, else the diagnostic
+    message (+ suggestions), else the JSON-ish program value."""
+    out = result.get("output")
+    if isinstance(out, str) and out.strip():
+        return out
+    diag = result.get("diagnostic")
+    if isinstance(diag, dict):
+        parts: list[str] = []
+        message = str(diag.get("message", "")).strip()
+        if message:
+            parts.append(message)
+        suggestions = diag.get("suggestions")
+        if isinstance(suggestions, (list, tuple)):
+            parts.extend(str(hint) for hint in suggestions if str(hint).strip())
+        if parts:
+            return "\n".join(parts)
+    value = result.get("value")
+    if isinstance(value, str):
+        return value
+    if value is not None:
+        import json
+
+        try:
+            return json.dumps(value, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+    return ""
+
+
+def _codemode_bounded(lines: list[str], limit: int) -> list[str]:
+    if len(lines) > limit:
+        hidden = len(lines) - limit
+        return [*lines[:limit], f"\u2026 {hidden} more lines"]
+    return lines
+
+
+def codemode_execute_block(
+    tool_input: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    block_id: str,
+    tool_call_ids: tuple[str, ...] = (),
+    expanded: bool = False,
+) -> ToolLine:
+    """One durable, expandable Code Mode ``execute`` line.
+
+    Re-expresses the donor TUI ``<Execute>`` render for a host ``ToolLine``:
+    the collapsed head names Code Mode and the bridged tool-call count; the
+    expandable body shows the program source, the ``\u21b3`` bridged trace
+    (with a failed-call marker), and the result/diagnostics. Pure: no host,
+    no I/O \u2014 golden/behaviorally testable in isolation.
+    """
+    program = str(tool_input.get("code", "") or "")
+    calls = _codemode_trace(result)
+    error = _codemode_is_error(result)
+    output = _codemode_output(result)
+
+    count = len(calls)
+    call_label = f"{count} tool call{'s' if count != 1 else ''}" if count else "no tool calls"
+    summary = f"Code Mode \u00b7 execute \u00b7 {call_label}"
+    if error:
+        summary = f"{summary} \u00b7 failed"
+
+    body: list[str] = []
+    if program.strip():
+        body.append("program")
+        body.extend(
+            f"  {line}" for line in _codemode_bounded(program.splitlines(), _CODEMODE_PROGRAM_LINES)
+        )
+    if calls:
+        if body:
+            body.append("")
+        body.append("tool calls")
+        for name, status in calls:
+            suffix = "" if status == "completed" else f" \u00b7 {status}"
+            body.append(f"  \u21b3 {name}{suffix}")
+    if output.strip():
+        if body:
+            body.append("")
+        body.append("result")
+        body.extend(
+            f"  {line}" for line in _codemode_bounded(output.splitlines(), _CODEMODE_OUTPUT_LINES)
+        )
+
+    return ToolLine(
+        id=block_id,
+        summary=summary,
+        body=tuple(body),
+        status="failed" if error else "completed",
+        expanded=expanded,
+        tool_call_ids=tool_call_ids,
+    )
 
 
 def _blocked_body(raw: str, reason: str) -> tuple[str, ...]:
@@ -1416,6 +1553,21 @@ class TranscriptReducer:
         self.tool_tokens += _approx_tokens(tool_input, event.result)
         command = info["command"] or str(tool_input.get("command", ""))
         tool = info["tool"]
+        if tool == CODE_MODE_TOOL:
+            # Code Mode replaces many round-trips with one program; render the
+            # program + bridged trace + result as its own durable block instead
+            # of folding an opaque `used execute` into the burst digest.
+            self._append_content(
+                codemode_execute_block(
+                    tool_input,
+                    event.result,
+                    block_id=self._ids.next_id(),
+                    tool_call_ids=(event.tool_call_id,) if event.tool_call_id else (),
+                )
+            )
+            self._settle_activity(turn, _op_label(tool, tool_input))
+            self._update_working()
+            return
         status = str(event.result.get("status", ""))
         if status == "denied":
             # A denial is load-bearing: it always gets its own durable ⊘

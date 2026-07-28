@@ -76,6 +76,7 @@ from amplifier_app_newtui.model.blocks import (
 from amplifier_app_newtui.model.evidence import EvidenceLink
 from amplifier_app_newtui.model.turn import TurnTelemetry
 from amplifier_app_newtui.ui.live_tail import answer_spans
+from amplifier_app_newtui.ui.reducer import codemode_execute_block
 from amplifier_app_newtui.ui.transcript import render_block_markup
 
 GOLDEN_DIR = Path(__file__).resolve().parent
@@ -228,6 +229,14 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
     )
 
 
+_CODEMODE_PROGRAM = (
+    "totals = {}\n"
+    "for path in tools.read.list_files({}):\n"
+    '    totals[path] = len(tools.read.read_file({ "path": path }))\n'
+    "return totals"
+)
+"""A model-authored Code Mode program: one confined pass, many bridged calls."""
+
 _CALLOUT_ANSWER_SOURCE = (
     "Trimmed the retry wrapper.\n"
     "\n"
@@ -271,6 +280,41 @@ def variant_blocks() -> tuple[tuple[str, TranscriptBlock], ...]:
         (
             "answer (rendering polish)",
             Answer(id="g22", spans=answer_spans(_POLISH_ANSWER_SOURCE)),
+        ),
+        (
+            "tool_line (code mode execute)",
+            codemode_execute_block(
+                {"code": _CODEMODE_PROGRAM},
+                {
+                    "output": '{\n  "a.py": 812,\n  "b.py": 344\n}',
+                    "status": "completed",
+                    "tool_calls": [
+                        {"name": "read.list_files", "status": "completed"},
+                        {"name": "read.read_file", "status": "completed"},
+                        {"name": "write.write_file", "status": "error"},
+                    ],
+                },
+                block_id="g23",
+                tool_call_ids=("call-execute-1",),
+                expanded=True,
+            ),
+        ),
+        (
+            "tool_line (code mode diagnostic)",
+            codemode_execute_block(
+                {"code": "import os\nreturn os.getcwd()"},
+                {
+                    "ok": False,
+                    "error": True,
+                    "diagnostic": {
+                        "kind": "unsupported_syntax",
+                        "message": "import is not available in code mode",
+                        "suggestions": ["call the supplied tools instead of importing"],
+                    },
+                },
+                block_id="g24",
+                expanded=True,
+            ),
         ),
     )
 
