@@ -35,6 +35,11 @@ from ..kernel.demo import (
     TurnKey,
     build_denied_spec,
 )
+from ..kernel.session_manager import (
+    MAX_TAGS,
+    SessionSummary,
+    normalize_tag,
+)
 from ..model.blocks import (
     Answer,
     BlockIdAllocator,
@@ -190,6 +195,18 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         self._pending: dict[str, asyncio.Future[str]] = {}
         self._ticket_seq = 0
         self._build_denied = False
+        # Session tags — an in-memory store so the offline demo actually
+        # *shows* the tag UX (donor has none). The live demo session
+        # starts untagged; a sibling ships pre-tagged so /sessions renders
+        # a #chip before the user types anything.
+        self._demo_tags: dict[str, set[str]] = {
+            DEMO_SESSION_ID: set(),
+            "b1f4c209aa": {"backend", "urgent"},
+        }
+        self._demo_roster: tuple[tuple[str, str, int], ...] = (
+            (DEMO_SESSION_ID, "onboarding tour", 12),
+            ("b1f4c209aa", "backend api sweep", 34),
+        )
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -225,6 +242,71 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         """Esc while running: DemoRuntime breaks at the next step boundary
         (spec §11: interrupted recap + ``· interrupted`` rule)."""
         return self._runtime.interrupt()
+
+    # -- session tags (in-memory demo store) --------------------------------
+
+    def session_summaries(self) -> tuple[SessionSummary, ...]:
+        """The demo roster, each row carrying its live in-memory tags."""
+        return tuple(
+            SessionSummary(
+                session_id=sid,
+                name=name,
+                bundle=DEMO_BUNDLE,
+                messages=msgs,
+                tags=tuple(sorted(self._demo_tags.get(sid, set()))),
+            )
+            for sid, name, msgs in self._demo_roster
+        )
+
+    async def session_tags(self) -> tuple[str, ...]:
+        return tuple(sorted(self._demo_tags.get(DEMO_SESSION_ID, set())))
+
+    async def sessions_by_tag(self, tag: str) -> tuple[SessionSummary, ...]:
+        wanted = normalize_tag(tag)
+        return tuple(row for row in self.session_summaries() if wanted in row.tags)
+
+    async def add_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
+        current = self._demo_tags.setdefault(DEMO_SESSION_ID, set())
+        changed, rejected = self._normalize(tags)
+        if len(current | set(changed)) > MAX_TAGS:
+            return (False, f"too many tags (max {MAX_TAGS}); remove some first")
+        added = [t for t in changed if t not in current]
+        current.update(added)
+        return (True, self._tag_notice(added, rejected, verb="add"))
+
+    async def remove_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
+        current = self._demo_tags.setdefault(DEMO_SESSION_ID, set())
+        changed, rejected = self._normalize(tags)
+        removed = [t for t in changed if t in current]
+        current.difference_update(removed)
+        return (True, self._tag_notice(removed, rejected, verb="remove"))
+
+    @staticmethod
+    def _normalize(tags: tuple[str, ...]) -> tuple[list[str], list[str]]:
+        """(valid-normalized, rejected-raw) mirroring the kernel rule."""
+        valid: list[str] = []
+        rejected: list[str] = []
+        for raw in tags:
+            norm = normalize_tag(raw)
+            if norm:
+                valid.append(norm)
+            else:
+                rejected.append(raw)
+        return valid, rejected
+
+    def _tag_notice(self, changed: list[str], rejected: list[str], *, verb: str) -> str:
+        """Mirror kernel.runtime._tag_message so the demo reads identically."""
+        now = ", ".join(sorted(self._demo_tags[DEMO_SESSION_ID])) or "(none)"
+        if changed:
+            head = "tagged" if verb == "add" else "untagged"
+            line = f"{head} · {', '.join(changed)} · now: {now}"
+        elif verb == "add":
+            line = f"no new tags · now: {now}"
+        else:
+            line = f"no matching tags · now: {now}"
+        if rejected:
+            line += f" · rejected: {', '.join(rejected)}"
+        return line
 
     def _key_for(self, text: str) -> TurnKey:
         spec = self._by_prompt.get(text.strip())
