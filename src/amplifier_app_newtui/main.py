@@ -614,6 +614,28 @@ def _session_store():  # noqa: ANN202 — SessionStore (lazy import keeps --demo
     return SessionStore()
 
 
+def _current_usernames() -> tuple[str, ...]:
+    """Best-effort local account name(s) to redact from a sanitized export.
+
+    The username embedded in the developer's home path is the classic identity
+    leak; supplying it lets the pure ``model.sanitize`` redactor scrub it
+    whole-word wherever it appears (not only inside a path). Never raises.
+    """
+    import getpass
+
+    names: list[str] = []
+    try:
+        login = getpass.getuser()
+    except Exception:  # noqa: BLE001 — username lookup is best-effort
+        login = ""
+    if login:
+        names.append(login)
+    home = Path.home().name
+    if home and home not in names:
+        names.append(home)
+    return tuple(names)
+
+
 def _echo_cross_project_hint(partial: str) -> None:
     """After a per-project 'no session found', point to the session if it lives
     in another project. Sessions are stored per working directory, so a bare
@@ -1092,6 +1114,89 @@ def session_fork(session_id: str, directive: str, new_name: str) -> None:
         raise SystemExit(1)
     click.echo(f"forked {resolved[:8]} → {detail}")
     click.echo(f"resume to run the directive: amplifier-newtui resume {detail[:8]}")
+
+
+@session.command("export")
+@click.argument("session_id")
+@click.option(
+    "--sanitize",
+    is_flag=True,
+    help="Redact user filesystem paths (home dirs / usernames) for safe sharing.",
+)
+@click.option(
+    "--tool-io",
+    "tool_io",
+    is_flag=True,
+    help="Also redact tool inputs/outputs (implies --sanitize).",
+)
+@click.option(
+    "--output",
+    "-o",
+    "output",
+    default=None,
+    metavar="FILE",
+    help="Write JSON to FILE (default: stdout).",
+)
+def session_export(session_id: str, sanitize: bool, tool_io: bool, output: str | None) -> None:
+    """Export a stored session as portable JSON (round-trips via `session import`).
+
+    Distinct from the in-app markdown ``/export`` (human-readable but lossy):
+    this is the STRUCTURED artifact that can be imported back into a session.
+    ``--sanitize`` redacts user filesystem paths on top of the always-on secret
+    scrub; ``--tool-io`` also blanks tool inputs/outputs. With no flags the
+    export is unredacted — the existing default is unchanged.
+    """
+    from .kernel import session_manager, session_transfer
+
+    store = _session_store()
+    try:
+        resolved = session_manager.resolve(store, session_id)
+    except FileNotFoundError:
+        click.echo(f"no session found matching '{session_id}'", err=True)
+        _echo_cross_project_hint(session_id)
+        raise SystemExit(1) from None
+    except ValueError as error:
+        click.echo(str(error), err=True)
+        raise SystemExit(1) from None
+    payload = session_transfer.export_session(
+        store,
+        resolved,
+        sanitize=sanitize,
+        redact_tool_io=tool_io,
+        users=_current_usernames(),
+    )
+    text = session_transfer.dumps(payload)
+    if output:
+        Path(output).write_text(text + "\n", encoding="utf-8")
+        label = "sanitized " if payload["sanitized"] else ""
+        click.echo(f"exported {label}session {resolved[:8]} → {output}", err=True)
+        return
+    click.echo(text)
+
+
+@session.command("import")
+@click.argument("file")
+@click.option("--name", "-n", "new_name", default="", help="Name for the imported session.")
+def session_import(file: str, new_name: str) -> None:
+    """Import a session from a portable JSON export FILE (local path).
+
+    Mints a NEW stored session (fresh id + origin provenance) so it never
+    clobbers an existing one, then lists/resumes like any native session. A
+    sanitized export imports fine but keeps its redaction placeholders — the
+    real content is gone by design. (The donor's share-URL import needs a share
+    service the host does not run, so it is out of scope: local file only.)
+    """
+    from .kernel import session_transfer
+
+    store = _session_store()
+    try:
+        payload = session_transfer.read_export_file(file)
+        new_id = session_transfer.import_session(store, payload, name=new_name or None)
+    except session_transfer.SessionTransferError as error:
+        click.echo(str(error), err=True)
+        raise SystemExit(1) from None
+    click.echo(f"imported → {new_id}")
+    click.echo(f"resume it: amplifier-newtui resume {new_id[:8]}")
 
 
 # ``session resume <id>`` — alias to the top-level ``resume`` command, so both
