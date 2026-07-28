@@ -17,6 +17,7 @@ import asyncio
 import json
 import queue
 import threading
+from decimal import Decimal
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -24,7 +25,9 @@ import pytest
 
 from amplifier_app_newtui.kernel import serve as serve_module
 from amplifier_app_newtui.kernel.approval import ALLOW_ONCE, DENY
-from amplifier_app_newtui.kernel.events import ContentBlockEnd
+from amplifier_app_newtui.kernel.compaction import CompactionConfig
+from amplifier_app_newtui.kernel.cost import CostTracker, PricingTable
+from amplifier_app_newtui.kernel.events import ContentBlockEnd, ProviderResponseUsage
 from amplifier_app_newtui.kernel.serve import serve, serve_loop
 from amplifier_app_newtui.kernel.steering import StepBoundaryBridge
 from amplifier_app_newtui.model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
@@ -498,3 +501,148 @@ async def test_serve_history_query_empty_prefix_returns_all(tmp_path, monkeypatc
     texts = [e["text"] for e in record["entries"]]
     assert texts[0] == "deploy app"  # frecency top
     assert set(texts) == {"deploy app", "run tests", "check logs", "delete branch"}
+    assert completed is not None
+    assert "Denied" in completed["response"]  # FakeLoop's deny branch
+    assert "tool_post" not in out.kinds()  # write_file did not execute
+
+
+# --------------------------------------------------------------------------
+# Context/cost meter telemetry (additive: context.state record + context.get op)
+# --------------------------------------------------------------------------
+
+
+class _FakeUsageRuntime:
+    """Minimal serve_loop surface + a real CostTracker/CompactionConfig whose
+    ``submit`` pushes ``ProviderResponseUsage`` events onto the queue like a real
+    turn — the seam the additive context.state telemetry meters. Carries the same
+    ``.cost``/``.compaction`` a RealRuntime exposes so serve reads honest sources."""
+
+    class _NoBroker:
+        head = None
+
+        def add_listener(self, listener) -> None:  # noqa: D401 — broker shim
+            pass
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.broker = self._NoBroker()
+        self.session_id = "meter-01"
+        self.bundle_name = "newtui"
+        self.model_name = "anthropic/claude-sonnet-4"
+        self.steering = SteeringQueue()
+        # Deterministic offline pricing (no live/network swap).
+        self.cost = CostTracker(pricing=PricingTable())
+        self.compaction = CompactionConfig(max_tokens=200_000)
+
+    async def submit(self, text: str) -> str:
+        del text
+        self.queue.put_nowait(
+            ProviderResponseUsage(
+                session_id=self.session_id,
+                input_tokens=1000,
+                output_tokens=200,
+                cache_read=0,
+                cache_write=0,
+                model="claude-sonnet-4",
+            )
+        )
+        self.queue.put_nowait(
+            ProviderResponseUsage(
+                session_id=self.session_id,
+                input_tokens=1200,
+                output_tokens=340,
+                cache_read=800,
+                cache_write=100,
+                model="claude-sonnet-4",
+            )
+        )
+        return "ok"
+
+    async def cleanup(self) -> None:
+        pass
+
+
+def _context_states(out: _Capture) -> list[dict[str, Any]]:
+    with out._lock:
+        return [dict(r) for r in out.lines if r.get("type") == "context.state"]
+
+
+# Both provider responses priced through the SAME CostTracker math the footer uses.
+_C1 = Decimal(1000) * Decimal("0.003") / 1000 + Decimal(200) * Decimal("0.015") / 1000
+_C2 = (
+    Decimal(1200) * Decimal("0.003") / 1000
+    + Decimal(340) * Decimal("0.015") / 1000
+    + Decimal(800) * (Decimal("0.003") * Decimal("0.1")) / 1000
+    + Decimal(100) * Decimal("0.003") / 1000
+)
+
+
+async def test_serve_pushes_context_state_per_provider_response() -> None:
+    """Each provider response advances the meter and pushes a context.state with
+    honest tokens (the LAST response's sum, donor parity), % of the compaction
+    window, and the running $ from the CostTracker."""
+    runtime = _FakeUsageRuntime()
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))  # type: ignore[arg-type]
+    )
+
+    stdin.feed({"op": "submit", "text": "build it"})
+    await _wait_until(lambda: out.find("turn.completed") is not None)
+    await _wait_until(lambda: len(_context_states(out)) >= 2)
+
+    states = _context_states(out)
+    assert len(states) >= 2  # two responses -> two pushes
+    last = states[1]
+    assert last["type"] == "context.state"
+    assert last["schema_version"] == 1
+    assert last["session_id"] == "meter-01"
+    assert last["model"] == "anthropic/claude-sonnet-4"
+    assert last["context_tokens"] == 1200 + 340 + 800 + 100  # last response, not a sum
+    assert last["input_tokens"] == 1200
+    assert last["output_tokens"] == 340
+    assert last["cache_read"] == 800
+    assert last["cache_write"] == 100
+    assert last["context_window"] == 200_000
+    assert last["window_source"] == "compaction"
+    assert last["context_pct"] == round(2440 / 200_000 * 100)  # 1
+    assert Decimal(last["cost_usd"]) == _C1 + _C2
+    assert last["cost_estimated"] is False
+
+    stdin.close()
+    assert await server == 0
+
+
+async def test_serve_context_get_op_pulls_current_state() -> None:
+    """The additive ``context.get`` op returns the current meter on demand (initial
+    paint / refresh) — the same context.state record the pump pushes. Before any
+    usage it is a valid snapshot with null tokens and a $0 floor."""
+    runtime = _FakeUsageRuntime()
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))  # type: ignore[arg-type]
+    )
+
+    stdin.feed({"op": "context.get"})
+    await _wait_until(lambda: len(_context_states(out)) >= 1)
+    first = _context_states(out)[0]
+    assert first["context_tokens"] is None
+    assert first["context_pct"] is None
+    assert first["cost_usd"] == "0"
+    # Window is still reported when known, even before any usage.
+    assert first["context_window"] == 200_000
+
+    stdin.feed({"op": "submit", "text": "go"})
+    await _wait_until(lambda: out.find("turn.completed") is not None)
+    await _wait_until(lambda: len(_context_states(out)) >= 3)  # 1 pull + 2 pushes
+    stdin.feed({"op": "context.get"})
+    await _wait_until(lambda: len(_context_states(out)) >= 4)
+
+    pull = _context_states(out)[-1]
+    assert pull["context_tokens"] == 2440
+    assert pull["context_pct"] == 1
+    assert pull["context_window"] == 200_000
+    assert Decimal(pull["cost_usd"]) == _C1 + _C2
+
+    stdin.close()
+    assert await server == 0
