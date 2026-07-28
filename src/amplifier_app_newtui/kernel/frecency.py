@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-__all__ = ["RankedPrompt", "frecency_score", "rank_history"]
+__all__ = ["RankedPrompt", "frecency_score", "rank_history", "suggest_completion"]
 
 
 @dataclass(frozen=True)
@@ -120,3 +120,24 @@ def rank_history(
     if limit is not None:
         ranked = ranked[:limit]
     return ranked
+
+
+def suggest_completion(entries: list[str], prefix: str) -> str | None:
+    """Best frecency-ranked prior prompt that *completes* ``prefix``.
+
+    The client-side autosuggestion surface (fish/zsh-style ghost text): given
+    the composer's recency-ordered history and the current draft ``prefix``,
+    return the highest-frecency prompt that ``startswith(prefix)`` **and** is
+    strictly longer than it (a real completion, never an echo of what was just
+    typed). ``None`` when ``prefix`` is empty or nothing completes it.
+
+    This is a thin read over :func:`rank_history` -- it never mutates and never
+    touches the composer's chronological up-ring; it only *picks* from the same
+    frecency order the recall op exposes.
+    """
+    if not prefix:
+        return None
+    for ranked in rank_history(entries, prefix=prefix):
+        if ranked.text != prefix:
+            return ranked.text
+    return None
