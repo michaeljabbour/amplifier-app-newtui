@@ -65,6 +65,13 @@ MOCKUP_TABLE = [
     ("Between", "/sessions", "list stored sessions for this project", "built-in"),
     ("Between", "/branch", "snapshot this conversation into a new session", "built-in"),
     ("Between", "/fork", "snapshot into a new session primed to run a directive", "built-in"),
+    # Beyond the mockup table: session tags (HGT session-tags-backend).
+    (
+        "Between",
+        "/tag",
+        "attach or remove session tags; /tag sessions <tag> filters",
+        "built-in",
+    ),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     ("Between", "/quit", "exit the app (ctrl-d works too)", "built-in"),
     ("Repair", "/permissions", "edit trust slots: boundary, blocks, exceptions", "built-in"),
@@ -94,7 +101,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 35
+    assert len(registry.specs) == 36
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 

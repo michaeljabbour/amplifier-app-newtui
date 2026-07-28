@@ -191,6 +191,15 @@ def _cmd_fork(ctx: CommandContext, args: str) -> None:
     ctx.fork_session(args.strip())
 
 
+def _cmd_tag(ctx: CommandContext, args: str) -> None:
+    """``/tag`` — organise sessions by short tags.
+
+    ``/tag`` | ``/tag list`` shows the live session's tags; ``/tag add <t1>
+    [t2 ...]`` and ``/tag rm <t1> [t2 ...]`` attach/detach; ``/tag sessions
+    <tag>`` lists stored sessions carrying <tag>."""
+    ctx.manage_tags(args.strip())
+
+
 def _cmd_permissions(ctx: CommandContext, args: str) -> None:
     del args
     ctx.open_permissions()
@@ -475,6 +484,13 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="snapshot into a new session primed to run a directive",
         tag="built-in",
         handler=_cmd_fork,
+    ),
+    CommandSpec(
+        group="Between",
+        name="/tag",
+        desc="attach or remove session tags; /tag sessions <tag> filters",
+        tag="built-in",
+        handler=_cmd_tag,
     ),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     CommandSpec(

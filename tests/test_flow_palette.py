@@ -54,6 +54,7 @@ ALL_COMMANDS = (
     "/sessions",
     "/branch",
     "/fork",
+    "/tag",
     "/quit",
     "/permissions",
     "/allowed-dirs",

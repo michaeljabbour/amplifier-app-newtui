@@ -21,12 +21,22 @@ Wire (one JSON object per line):
                 {"op": "approve",   "ticket_id": "approval-3", "choice": "Allow once"}
                 {"op": "decision",  "decision_id": "decision-1", "answer": "Allow once"}
                 {"op": "interrupt"}
+                {"op": "tag.add",   "session_id": "<id?>", "tags": ["urgent"]}   (session tags; additive)
+                {"op": "tag.remove","session_id": "<id?>", "tags": ["urgent"]}
+                {"op": "tag.list",  "session_id": "<id?>"}
+                {"op": "tag.sessions", "tag": "urgent"}
   OUT (stdout)  {"schema_version": 1, "type": "boot.progress",
                  "action": "preparing", "detail": "newtui"}   (before session.started)
                 {"schema_version": 1, "sequence": N, "timestamp": T,
                  "type": "session.started" | "runtime.event" | "turn.completed"}
                 {"schema_version": 1, "type": "approval.required",
                  "ticket_id": "approval-3", "prompt": "...", "options": [...]}
+                {"schema_version": 1, "type": "tag.updated", "op": "tag.add",
+                 "ok": true, "session_id": "...", "tags": [...], "changed": [...], "rejected": [...]}
+                {"schema_version": 1, "type": "tag.list", "op": "tag.list",
+                 "ok": true, "session_id": "...", "tags": [...]}
+                {"schema_version": 1, "type": "tag.sessions", "op": "tag.sessions",
+                 "ok": true, "tag": "urgent", "sessions": [{"session_id": "...", "name": "...", "tags": [...]}]}
 
 The ``runtime.event`` envelope is byte-identical to the ``run`` JSONL contract
 (``JsonlRecords``); ``approval.required`` is the one record ``run`` cannot emit,
@@ -42,6 +52,7 @@ import threading
 from contextlib import redirect_stdout
 from typing import IO, Any
 
+from . import session_manager
 from .jsonl import JsonlRecords
 from .runtime import RealRuntime
 
@@ -49,6 +60,107 @@ from .runtime import RealRuntime
 def _emit_raw(out: IO[str], obj: dict[str, Any]) -> None:
     out.write(json.dumps(obj, default=str) + "\n")
     out.flush()
+
+
+# -- session tags (additive metadata ops) -----------------------------------
+# tag CRUD is pure session *metadata* (kernel/session_manager), never
+# amplifier-core, so each op is one synchronous request->response over the
+# SessionStore with no turn involved. Strictly additive to the wire.
+
+_TAG_OPS = frozenset({"tag.add", "tag.remove", "tag.list", "tag.sessions"})
+
+
+def _serve_store(runtime: Any) -> Any:
+    """The SessionStore the tag ops read/write.
+
+    Prefer the runtime's own store (bound to the right project); fall back to a
+    default-constructed store from its project_dir. Built lazily so runtimes
+    that never receive a tag op (every existing serve test) construct nothing.
+    """
+    store = getattr(runtime, "store", None)
+    if store is not None:
+        return store
+    from .persistence import SessionStore
+
+    return SessionStore(project_dir=getattr(runtime, "project_dir", None))
+
+
+def _tag_inputs(op: dict[str, Any]) -> list[str]:
+    """Read the ``tags`` list (or a singular ``tag``) from a tag-op request."""
+    raw = op.get("tags")
+    if isinstance(raw, list):
+        return [str(item) for item in raw]
+    single = op.get("tag")
+    if isinstance(single, str):
+        return [single]
+    return []
+
+
+def _handle_tag_op(runtime: Any, op: dict[str, Any]) -> dict[str, Any]:
+    """Service one synchronous tag op; return the response record to emit.
+
+    ``tag.sessions`` filters the whole store by one tag. ``tag.add`` /
+    ``tag.remove`` / ``tag.list`` target a single session, defaulting to the
+    LIVE session (``runtime.session_id``) when the client omits ``session_id``;
+    the live session persists lazily, so it is materialized first (mirroring
+    ``/rename``). An explicitly-supplied id is resolved as a prefix and is
+    NEVER created — an unknown id round-trips ``ok:false`` with an error.
+    """
+    kind = str(op.get("op", ""))
+    store = _serve_store(runtime)
+
+    if kind == "tag.sessions":
+        tag = str(op.get("tag", ""))
+        summaries = session_manager.sessions_by_tag(store, tag)
+        return {
+            "schema_version": 1,
+            "type": "tag.sessions",
+            "op": "tag.sessions",
+            "ok": True,
+            "tag": session_manager.normalize_tag(tag) or tag,
+            "sessions": [
+                {"session_id": s.session_id, "name": s.name, "tags": list(s.tags)}
+                for s in summaries
+            ],
+        }
+
+    supplied = op.get("session_id")
+    session_id = str(supplied or getattr(runtime, "session_id", ""))
+    if not supplied:
+        bundle = str(getattr(runtime, "bundle_name", "") or "unknown")
+        session_manager.ensure_session_dir(store, session_id, bundle=bundle)
+
+    if kind == "tag.list":
+        listed = session_manager.get_tags(store, session_id)
+        record: dict[str, Any] = {
+            "schema_version": 1,
+            "type": "tag.list",
+            "op": "tag.list",
+            "ok": listed.ok,
+            "session_id": listed.session_id,
+            "tags": list(listed.tags),
+        }
+        if not listed.ok:
+            record["error"] = listed.error
+        return record
+
+    if kind == "tag.add":
+        outcome = session_manager.add_tags(store, session_id, _tag_inputs(op))
+    else:  # tag.remove
+        outcome = session_manager.remove_tags(store, session_id, _tag_inputs(op))
+    record = {
+        "schema_version": 1,
+        "type": "tag.updated",
+        "op": kind,
+        "ok": outcome.ok,
+        "session_id": outcome.session_id,
+        "tags": list(outcome.tags),
+        "changed": list(outcome.changed),
+        "rejected": list(outcome.rejected),
+    }
+    if not outcome.ok:
+        record["error"] = outcome.error
+    return record
 
 
 async def serve(
@@ -238,6 +350,10 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
                         runtime.needs_you.answer(decision_id, answer)
                     except (KeyError, ValueError):
                         pass
+            elif kind in _TAG_OPS:
+                # Additive synchronous metadata ops (session tag CRUD): one
+                # request -> one response record, no turn, no amplifier-core.
+                _emit_raw(out, _handle_tag_op(runtime, op))
             elif kind == "interrupt":
                 asyncio.create_task(runtime.interrupt())  # noqa: RUF006 — fire-and-forget
     finally:
