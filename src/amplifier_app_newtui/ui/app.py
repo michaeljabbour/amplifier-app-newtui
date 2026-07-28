@@ -187,6 +187,10 @@ class NewTuiApp(App[None]):
             session_cost_start=adapter.session_cost_start,
         )
         self.turn_active = False
+        # Current reasoning-effort tier for the footer indicator (HGT effort
+        # cycle). None = unset/default -> the footer omits the segment; a
+        # value appears once ctrl+e cycles or /effort <level> sets it.
+        self._effort: str | None = None
         # Terminal-window focus (Textual AppFocus/AppBlur, the mode-1004
         # focus report): assumed focused until a blur says otherwise, so
         # the desktop rung of the notification ladder only escalates when
@@ -431,6 +435,11 @@ class NewTuiApp(App[None]):
         return self._native_modes.names
 
     @property
+    def current_effort(self) -> str | None:
+        """Current reasoning-effort tier for the footer indicator (None = unset)."""
+        return self._effort
+
+    @property
     def splash_active(self) -> bool:
         """True while the boot splash is up (SessionOpsController host surface)."""
         return self._splash is not None
@@ -442,6 +451,16 @@ class NewTuiApp(App[None]):
 
     def append_block(self, block: TranscriptBlock) -> None:
         self.transcript.append(block)
+
+    def set_effort_indicator(self, level: str | None) -> None:
+        """Cache the reasoning-effort tier and repaint the footer indicator.
+
+        The SessionOpsController calls this after a successful effort change
+        (ctrl+e cycle or ``/effort <level>``) so the footer's ``effort <tier>``
+        segment stays honest without an async ``get_effort`` on every repaint.
+        """
+        self._effort = level
+        self._refresh_footer()
 
     def replace_block(self, block: TranscriptBlock) -> None:
         try:
@@ -1298,7 +1317,11 @@ class NewTuiApp(App[None]):
             # before any palette handling — arrows always cycle a pending
             # approval's selection (spec §7).
             return self.approval_bar is None and self.palette.is_open
-        if self.approval_bar is not None and action in ("cycle_mode", "cycle_permission"):
+        if self.approval_bar is not None and action in (
+            "cycle_mode",
+            "cycle_permission",
+            "cycle_effort",
+        ):
             # Mockup keydown: while an approval is open, Tab (with or
             # without shift) cycles the approval selection and returns —
             # cycleMode is unreachable, and the trust posture must not
@@ -1317,6 +1340,10 @@ class NewTuiApp(App[None]):
 
     def action_cycle_permission(self) -> None:
         self.show_notice(f"trust · {self._mode.trust_str} · edit via /permissions")
+
+    def action_cycle_effort(self) -> None:
+        """ctrl+e: advance the reasoning-effort tier one step in the ring."""
+        self.session_ops.cycle_effort()
 
     def action_toggle_lanes(self) -> None:
         if self.lanes_panel.display:

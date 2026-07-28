@@ -125,6 +125,7 @@ class _FakeHost:
         self.notices: list[str] = []
         self.status_refreshes = 0
         self.workers_run = 0
+        self.effort_indicator: list[str | None] = []
 
     def run_worker(self, work: Any, *, exclusive: bool = False) -> None:
         # The app schedules the async body on its loop; here we just run it
@@ -140,6 +141,9 @@ class _FakeHost:
 
     def refresh_status(self) -> None:
         self.status_refreshes += 1
+
+    def set_effort_indicator(self, level: str | None) -> None:
+        self.effort_indicator.append(level)
 
 
 def _text(block: TranscriptBlock) -> str:
@@ -216,6 +220,43 @@ def test_apply_effort_sets(controller: SessionOpsController, host: _FakeHost) ->
     controller.apply_effort("medium")
     assert host.adapter.calls == ["set_effort:medium"]
     assert host.notices == ["effort · medium"]
+
+
+def test_apply_effort_sets_updates_footer_indicator(
+    controller: SessionOpsController, host: _FakeHost
+) -> None:
+    controller.apply_effort("medium")
+    # the successful set feeds the footer indicator its canonical tier
+    assert host.effort_indicator == ["medium"]
+
+
+def test_cycle_effort_advances_ring(controller: SessionOpsController, host: _FakeHost) -> None:
+    host.adapter.effort = "high"  # next in the ring is xhigh
+    host.adapter.set_effort_result = (True, "xhigh")
+    controller.cycle_effort()
+    assert host.adapter.calls == ["get_effort", "set_effort:xhigh"]
+    assert host.effort_indicator == ["xhigh"]
+    assert host.notices == ["effort · xhigh"]
+
+
+def test_cycle_effort_from_unset_enters_ring_at_none(
+    controller: SessionOpsController, host: _FakeHost
+) -> None:
+    host.adapter.effort = None  # unset -> the ring's first tier is none
+    host.adapter.set_effort_result = (True, "none")
+    controller.cycle_effort()
+    assert host.adapter.calls == ["get_effort", "set_effort:none"]
+    assert host.effort_indicator == ["none"]
+    assert host.notices == ["effort · none"]
+
+
+def test_cycle_effort_guards_while_starting() -> None:
+    starting = _FakeHost(_FakeAdapter(), splash_active=True)
+    SessionOpsController(starting).cycle_effort()
+    # the friendly "still starting" notice, no adapter traffic, no indicator
+    assert starting.adapter.calls == []
+    assert starting.effort_indicator == []
+    assert starting.notices == ["session still starting · try again once the banner lands"]
 
 
 def test_compact_context_notice(controller: SessionOpsController, host: _FakeHost) -> None:
