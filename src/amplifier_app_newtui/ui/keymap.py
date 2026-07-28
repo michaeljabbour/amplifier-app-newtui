@@ -117,6 +117,11 @@ KEYMAP: tuple[Binding, ...] = (
     # Panels / pickers.
     _b("toggle_lanes", ("ctrl+t",), "ctrl-t", NO_APPROVAL),
     _b("cycle_tail", ("ctrl+o",), "ctrl-o", NO_APPROVAL),
+    # Compose the draft in $VISUAL/$EDITOR (ctrl+e is the donor's own
+    # editor chord and is free in both clients; ctrl+g/ctrl+o are already
+    # taken here by toggle_thinking/cycle_tail). Suspends the TUI, opens a
+    # temp .md seeded with the draft, reads it back normalized.
+    _b("open_external_editor", ("ctrl+e",), "ctrl-e edit", NO_APPROVAL),
     # Show/hide the root stream box (thinking/response peek). Advertised
     # only while a turn runs — that is the only time a live box exists.
     _b("toggle_thinking", ("ctrl+g",), "ctrl-g think", _RUNNING),

@@ -226,6 +226,13 @@ class ComposerInput(TextArea):
             event.stop()
             event.prevent_default()
             composer.post_message(Composer.PasteImage())
+        elif event.key == "ctrl+e":
+            # Compose the current draft in $VISUAL/$EDITOR (donor parity).
+            # Intercepted before TextArea fall-through so no editor binding
+            # can ever claim ctrl+e; the app owns App.suspend + the subprocess.
+            event.stop()
+            event.prevent_default()
+            composer.post_message(Composer.OpenExternalEditor())
         elif event.key == "escape":
             event.stop()
             event.prevent_default()
@@ -362,6 +369,11 @@ class Composer(Horizontal):
     class CycleModeRequested(Message):
         """The ``[mode]`` badge was clicked; the app cycles the mode."""
 
+    class OpenExternalEditor(Message):
+        """ctrl+e: suspend the TUI and compose the draft in
+        ``$VISUAL``/``$EDITOR`` (the app owns ``App.suspend`` + the
+        subprocess; the kernel owns the temp-file round-trip)."""
+
     # -- lifecycle -------------------------------------------------------------
 
     def __init__(
@@ -465,6 +477,21 @@ class Composer(Horizontal):
         strips — e.g. typing while the lanes panel holds focus)."""
         self.end_history_navigation()
         self._input.insert(text)
+
+    def editor_seed(self) -> str:
+        """The draft handed to the external editor: the visible input text.
+
+        Paste stubs round-trip untouched, so the retained ``_pastes`` map
+        stays valid and submit-time ``_expand`` still resolves them.
+        """
+        return self._input.text
+
+    def apply_editor_result(self, text: str) -> None:
+        """Replace the draft with the editor's normalized content, cursor at
+        the end (the composer counterpart of the donor ``input.setText``)."""
+        self.end_history_navigation()
+        self._input.load_text(text)
+        self._input.cursor_location = _cursor_location(text, len(text))
 
     def seed_history(self, prompts: Iterable[str]) -> None:
         """Load persisted user prompts so resumed sessions keep ↑ history."""
