@@ -21,16 +21,29 @@ Wire (one JSON object per line):
                 {"op": "approve",   "ticket_id": "approval-3", "choice": "Allow once"}
                 {"op": "decision",  "decision_id": "decision-1", "answer": "Allow once"}
                 {"op": "interrupt"}
+                {"op": "effort.get"}                  (read the reasoning-effort tier)
+                {"op": "effort.set", "effort": "high"} (set it; accepts "max"->"xhigh")
+                {"op": "effort.cycle"}                 (advance one tier, wraps xhigh->none)
   OUT (stdout)  {"schema_version": 1, "type": "boot.progress",
                  "action": "preparing", "detail": "newtui"}   (before session.started)
                 {"schema_version": 1, "sequence": N, "timestamp": T,
                  "type": "session.started" | "runtime.event" | "turn.completed"}
                 {"schema_version": 1, "type": "approval.required",
                  "ticket_id": "approval-3", "prompt": "...", "options": [...]}
+                {"schema_version": 1, "type": "effort.state",
+                 "effort": "high" | null, "levels": ["none", ..., "xhigh"]}
+                 (reply to every effort.* op; set/cycle add "ok"/"detail")
 
 The ``runtime.event`` envelope is byte-identical to the ``run`` JSONL contract
 (``JsonlRecords``); ``approval.required`` is the one record ``run`` cannot emit,
-because a one-shot has no way to answer it.
+because a one-shot has no way to answer it. The ``effort.*`` ops expose the
+in-session reasoning-effort tier (the ``/effort`` command's plumbing:
+``RealRuntime.get_effort`` / ``set_effort`` -> ``session_ops``) so an
+out-of-process UI can read, set, and cycle a dimension orthogonal to the model
+mid-session. The post-op ``effort.state`` IS the change notification (serve is
+single-client, so the echoed state is authoritative). Cycle lives server-side
+to keep the canonical ring order in one home; a client may equally compose it
+from ``effort.get`` + ``effort.set``.
 """
 
 from __future__ import annotations
@@ -44,11 +57,53 @@ from typing import IO, Any
 
 from .jsonl import JsonlRecords
 from .runtime import RealRuntime
+from .session_ops import EFFORT_LEVELS
 
 
 def _emit_raw(out: IO[str], obj: dict[str, Any]) -> None:
     out.write(json.dumps(obj, default=str) + "\n")
     out.flush()
+
+
+def _next_effort(current: str | None) -> str:
+    """The next reasoning-effort tier in the canonical ring, wrapping ``xhigh`` ->
+    ``none``.
+
+    Mirrors the donor ``variant.cycle`` entry/advance rules within the tiers
+    amplifier's existing ``set_effort`` can actually reach: an unset/unknown
+    current enters the ring at the first tier; otherwise advance one and wrap.
+    There is no Default(unset) slot because ``session_ops.set_effort`` has no
+    clear path (documented divergence -- see ``.ai/oc_donor.md``)."""
+    if current is None or current not in EFFORT_LEVELS:
+        return EFFORT_LEVELS[0]
+    return EFFORT_LEVELS[(EFFORT_LEVELS.index(current) + 1) % len(EFFORT_LEVELS)]
+
+
+async def _emit_effort_state(
+    runtime: RealRuntime,
+    out: IO[str],
+    *,
+    ok: bool | None = None,
+    detail: str | None = None,
+) -> None:
+    """Emit the current reasoning-effort tier as an ``effort.state`` record.
+
+    The reply to every ``effort.*`` op and the change notification itself
+    (serve is single-client, so the post-op state is authoritative). ``levels``
+    is the canonical ring order the client cycles through; ``ok``/``detail`` are
+    attached only for mutating ops (set/cycle) so a client can surface the same
+    success/error notice the in-process ``/effort`` command shows."""
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "type": "effort.state",
+        "effort": await runtime.get_effort(),
+        "levels": list(EFFORT_LEVELS),
+    }
+    if ok is not None:
+        record["ok"] = ok
+    if detail is not None:
+        record["detail"] = detail
+    _emit_raw(out, record)
 
 
 async def serve(
@@ -240,6 +295,23 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
                         pass
             elif kind == "interrupt":
                 asyncio.create_task(runtime.interrupt())  # noqa: RUF006 — fire-and-forget
+            elif kind == "effort.get":
+                # Read-only: reply with the current tier + canonical ring order.
+                await _emit_effort_state(runtime, out)
+            elif kind == "effort.set":
+                # Set an explicit tier (accepts the "max"->"xhigh" alias). The
+                # echoed effort.state carries ok/detail so the client can show the
+                # same notice /effort does; an invalid level reports ok:false and
+                # leaves the tier unchanged (session_ops.set_effort).
+                ok, detail = await runtime.set_effort(str(op.get("effort", "")))
+                await _emit_effort_state(runtime, out, ok=ok, detail=detail)
+            elif kind == "effort.cycle":
+                # The donor's headline op, re-expressed server-side so the
+                # canonical ring order lives in ONE home; a client may equally
+                # compose get+set. Advances one tier, wrapping xhigh->none.
+                nxt = _next_effort(await runtime.get_effort())
+                ok, detail = await runtime.set_effort(nxt)
+                await _emit_effort_state(runtime, out, ok=ok, detail=detail)
     finally:
         # Let an in-flight turn finish (the pump keeps draining its events) so a
         # piped one-shot `submit` completes cleanly on stdin EOF; only then stop
