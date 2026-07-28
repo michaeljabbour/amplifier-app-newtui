@@ -281,6 +281,14 @@ class CommandContext(Protocol):
         """``/fork <directive>``: snapshot into a new session primed to run it."""
         ...
 
+    def manage_tags(self, args: str) -> None:
+        """``/tag``: organise sessions by short tags.
+
+        Sub-verbs: no-arg / ``list`` shows the live session's tags;
+        ``add <t1> [t2 ...]`` and ``rm <t1> [t2 ...]`` attach/detach; and
+        ``sessions <tag>`` lists stored sessions carrying <tag>."""
+        ...
+
 
 CommandHandler = Callable[[CommandContext, str], None]
 """Handler signature: ``(ctx, args)`` where ``args`` is the text after the

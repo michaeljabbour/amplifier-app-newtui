@@ -188,6 +188,9 @@ class FakeCommandContext:
     def fork_session(self, directive: str) -> None:
         self.calls.append(f"fork_session:{directive}")
 
+    def manage_tags(self, args: str) -> None:
+        self.calls.append(f"manage_tags:{args}")
+
 
 @pytest.fixture
 def fake_command_context() -> FakeCommandContext:

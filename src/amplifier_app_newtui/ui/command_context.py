@@ -197,5 +197,8 @@ class AppCommandContext:
     def fork_session(self, directive: str) -> None:
         self._app.fork_session(directive)
 
+    def manage_tags(self, args: str) -> None:
+        self._app.manage_tags(args)
+
 
 __all__ = ["AppCommandContext"]

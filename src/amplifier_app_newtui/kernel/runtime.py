@@ -1632,6 +1632,48 @@ class RealRuntime:
             return ()
         return tuple(session_manager.list_summaries(self._store, limit=20))
 
+    @property
+    def store(self) -> SessionStore | None:
+        """The live session's persistence store (``None`` before boot).
+
+        Exposed for the ``serve`` protocol's additive tag ops, which read and
+        write session tags directly on the store (kernel/serve._serve_store).
+        """
+        return self._store
+
+    def session_tags(self) -> tuple[str, ...]:
+        """The live session's tags (sorted; empty before boot or when none)."""
+        if self._store is None or self._initialized is None:
+            return ()
+        return session_manager.read_tags(self._store, self._initialized.session_id)
+
+    def sessions_by_tag(self, tag: str) -> tuple[session_manager.SessionSummary, ...]:
+        """Newest-first summaries of stored sessions carrying *tag*."""
+        if self._store is None:
+            return ()
+        return tuple(session_manager.sessions_by_tag(self._store, tag))
+
+    async def add_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
+        """Attach *tags* to the live session (persisted metadata ``tags``).
+
+        Like ``/rename``, the lazily-persisted live session is materialized
+        first so the tag always lands. Returns ``(ok, human_message)``.
+        """
+        if self._store is None or self._initialized is None:
+            return (False, "session still starting")
+        session_id = self._initialized.session_id
+        if not session_manager.ensure_session_dir(self._store, session_id, bundle=self.bundle_name):
+            return (False, "could not persist session to tag")
+        outcome = session_manager.add_tags(self._store, session_id, list(tags))
+        return (outcome.ok, _tag_message(outcome, verb="add"))
+
+    async def remove_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
+        """Detach *tags* from the live session. Returns ``(ok, human_message)``."""
+        if self._store is None or self._initialized is None:
+            return (False, "session still starting")
+        outcome = session_manager.remove_tags(self._store, self._initialized.session_id, list(tags))
+        return (outcome.ok, _tag_message(outcome, verb="remove"))
+
     async def rename_session(self, name: str) -> tuple[bool, str]:
         """Label the live session (persisted metadata ``name``).
 
@@ -1789,6 +1831,23 @@ class RealRuntime:
         if self._initialized is not None:
             await self._initialized.cleanup()
             self._initialized = None
+
+
+def _tag_message(outcome: session_manager.TagOutcome, *, verb: str) -> str:
+    """Human one-liner for a tag add/remove outcome (the /tag notice text)."""
+    if not outcome.ok:
+        return outcome.error or "could not update tags"
+    now = ", ".join(outcome.tags) if outcome.tags else "(none)"
+    if outcome.changed:
+        head = "tagged" if verb == "add" else "untagged"
+        line = f"{head} · {', '.join(outcome.changed)} · now: {now}"
+    elif verb == "add":
+        line = f"no new tags · now: {now}"
+    else:
+        line = f"no matching tags · now: {now}"
+    if outcome.rejected:
+        line += f" · rejected: {', '.join(outcome.rejected)}"
+    return line
 
 
 def list_sessions(project_dir: Path | None = None) -> list[str]:
