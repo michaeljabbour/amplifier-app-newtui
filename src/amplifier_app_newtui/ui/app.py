@@ -53,6 +53,7 @@ from ..model.blocks import (
 from ..model.lanes import LaneRegistry, lane_labels
 from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
+from ..model.prompt_stash import PromptStash, stash_list_spans
 from ..model.turn import OutcomeLedger
 from . import app_support, keymap, notifications
 from .approval_bar import ApprovalBar
@@ -168,6 +169,7 @@ class NewTuiApp(App[None]):
         self.kitty_protocol = kitty_protocol
         self.allocator = BlockIdAllocator()
         self.ledger = OutcomeLedger()
+        self._stash = PromptStash()
         self.lanes = LaneRegistry()
         self.journal = ApprovalJournal()
         self.permissions = PermissionSurface()
@@ -636,6 +638,53 @@ class NewTuiApp(App[None]):
             Answer(
                 id=self.allocator.next_id(),
                 spans=sessions_spans(summaries, current=self.adapter.session_short),
+            )
+        )
+
+    # -- prompt-stash (HGT from opencode) -----------------------------------
+
+    def action_stash_prompt(self) -> None:
+        """``ctrl+s``: stash the in-progress draft and clear the composer.
+
+        A no-op with a notice when the composer is empty (donor: the stash
+        command is enabled only for a non-empty draft).
+        """
+        text = self.composer.text
+        if not text.strip():
+            self.show_notice("nothing to stash")
+            return
+        self._stash.push(text, now=time.time())
+        self.composer.clear()
+        self.composer.focus_input()
+        self.show_notice(f"draft stashed · {self._stash.count} in stash")
+
+    def recall_stash(self, index: int | None) -> None:
+        """``/unstash [n]``: restore a stashed draft into the composer.
+
+        ``index`` is ``None`` for the most-recent (LIFO ``pop``) or a 1-based
+        newest-first position as listed by ``/stashes``. The entry is removed.
+        """
+        if self._stash.is_empty:
+            self.show_notice("no stashed drafts")
+            return
+        entry = self._stash.pop() if index is None else self._stash.recall(index)
+        if entry is None:
+            self.show_notice(f"no stashed draft #{index} · /stashes lists them")
+            return
+        self.composer.set_draft(entry.text)
+        self.composer.focus_input()
+        remaining = self._stash.count
+        self.show_notice(f"draft restored · {remaining} left" if remaining else "draft restored")
+
+    def list_stashes(self) -> None:
+        """``/stashes``: post the stashed-draft roster (newest first)."""
+        if self._stash.is_empty:
+            self.show_notice("no stashed drafts")
+            return
+        self.append_block(
+            Answer(
+                id=self.allocator.next_id(),
+                spans=stash_list_spans(self._stash.entries, now=time.time()),
             )
         )
 

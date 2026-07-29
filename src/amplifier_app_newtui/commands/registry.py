@@ -289,6 +289,17 @@ class CommandContext(Protocol):
         ``sessions <tag>`` lists stored sessions carrying <tag>."""
         ...
 
+    # -- prompt-stash (HGT from opencode) -----------------------------------
+
+    def recall_stash(self, index: int | None) -> None:
+        """``/unstash [n]``: restore the most-recent stashed draft (or the
+        nth as listed by ``/stashes``) into the composer, removing it."""
+        ...
+
+    def list_stashes(self) -> None:
+        """``/stashes``: post the stashed-draft roster (newest first)."""
+        ...
+
 
 CommandHandler = Callable[[CommandContext, str], None]
 """Handler signature: ``(ctx, args)`` where ``args`` is the text after the

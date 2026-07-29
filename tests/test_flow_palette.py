@@ -56,6 +56,8 @@ ALL_COMMANDS = (
     "/branch",
     "/fork",
     "/tag",
+    "/stashes",
+    "/unstash",
     "/quit",
     "/permissions",
     "/allowed-dirs",

@@ -191,6 +191,12 @@ class FakeCommandContext:
     def manage_tags(self, args: str) -> None:
         self.calls.append(f"manage_tags:{args}")
 
+    def recall_stash(self, index: int | None) -> None:
+        self.calls.append(f"recall_stash:{index}")
+
+    def list_stashes(self) -> None:
+        self.calls.append("list_stashes")
+
 
 @pytest.fixture
 def fake_command_context() -> FakeCommandContext:

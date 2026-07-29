@@ -201,6 +201,26 @@ def _cmd_tag(ctx: CommandContext, args: str) -> None:
     ctx.manage_tags(args.strip())
 
 
+def _cmd_stashes(ctx: CommandContext, args: str) -> None:
+    """``/stashes`` — list the stashed drafts (newest first)."""
+    del args
+    ctx.list_stashes()
+
+
+def _cmd_unstash(ctx: CommandContext, args: str) -> None:
+    """``/unstash`` — restore the most-recent stashed draft; ``/unstash <n>``
+    restores the nth as listed by ``/stashes``."""
+    target = args.strip()
+    index: int | None = None
+    if target:
+        try:
+            index = int(target)
+        except ValueError:
+            ctx.show_notice("usage: /unstash [n]")
+            return
+    ctx.recall_stash(index)
+
+
 def _cmd_permissions(ctx: CommandContext, args: str) -> None:
     del args
     ctx.open_permissions()
@@ -499,6 +519,21 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="attach or remove session tags; /tag sessions <tag> filters",
         tag="built-in",
         handler=_cmd_tag,
+    ),
+    # Prompt-stash (HGT from opencode): save/restore in-progress drafts.
+    CommandSpec(
+        group="Between",
+        name="/stashes",
+        desc="list stashed drafts; /unstash restores one",
+        tag="built-in",
+        handler=_cmd_stashes,
+    ),
+    CommandSpec(
+        group="Between",
+        name="/unstash",
+        desc="restore a stashed draft: /unstash [n]",
+        tag="built-in",
+        handler=_cmd_unstash,
     ),
     # Beyond the mockup table: exit path (amplifier-app-cli parity).
     CommandSpec(

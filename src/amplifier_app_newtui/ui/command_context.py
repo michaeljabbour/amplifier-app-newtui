@@ -200,5 +200,13 @@ class AppCommandContext:
     def manage_tags(self, args: str) -> None:
         self._app.manage_tags(args)
 
+    # -- prompt-stash (HGT from opencode) -----------------------------------
+
+    def recall_stash(self, index: int | None) -> None:
+        self._app.recall_stash(index)
+
+    def list_stashes(self) -> None:
+        self._app.list_stashes()
+
 
 __all__ = ["AppCommandContext"]

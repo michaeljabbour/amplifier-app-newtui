@@ -137,6 +137,12 @@ KEYMAP: tuple[Binding, ...] = (
     # cycles its row window default → +2 → +3 → back (ctrl+n is claimed by
     # neither the app tables nor Textual's TextArea defaults).
     _b("plan_drilldown", ("ctrl+n",), "ctrl-n", NO_APPROVAL),
+    # Prompt-stash (HGT from opencode): stash the in-progress draft. The
+    # save direction MUST be a keybind — typing a "/stash" command would make
+    # the composer text the palette filter, clobbering the very draft it means
+    # to save. Recall is the /unstash + /stashes commands (composer is empty
+    # then, so a command is safe). ctrl+s survives raw mode (IXON disabled).
+    _b("stash_prompt", ("ctrl+s",), "ctrl-s stash", frozenset({"idle", "running"})),
     # In-panel navigation.
     _b("palette_up", ("up",), "↑↓", _PALETTE),
     _b("palette_down", ("down",), "↑↓", _PALETTE),

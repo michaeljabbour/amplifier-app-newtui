@@ -523,6 +523,17 @@ class Composer(Horizontal):
         self._input.load_text(text)
         self._input.cursor_location = _cursor_location(text, len(text))
 
+    def set_draft(self, text: str) -> None:
+        """Load *text* as the whole draft, cursor at the end.
+
+        The prompt-stash recall seam (``/unstash``): unlike
+        :meth:`insert_text`, this replaces the buffer wholesale and ends any
+        history browsing, mirroring the composer's own ``_load_history_text``.
+        """
+        self.end_history_navigation()
+        self._input.load_text(text)
+        self._input.cursor_location = _cursor_location(text, len(text))
+
     def seed_history(self, prompts: Iterable[str]) -> None:
         """Load persisted user prompts so resumed sessions keep ↑ history."""
         for prompt in prompts:

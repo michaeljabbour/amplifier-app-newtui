@@ -62,6 +62,7 @@ _GLOBAL_ACTIONS = frozenset(
         "show_needs_you",
         "open_rewind",
         "plan_drilldown",
+        "stash_prompt",
     }
 )
 
