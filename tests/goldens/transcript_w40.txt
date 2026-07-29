@@ -115,3 +115,32 @@
 [$dim]☐ [/][$fg]syntax highlighting (a non-goal)[/]
 
 [$teal]  print('click a fence to copy it')[/]
+
+=== tool_line (code mode execute) ===
+[$dim]  ● [/][$dim]Code Mode · execute · 3 tool calls[/][$dimmer] · click to expand[/]
+[$dimmer]      program[/]
+[$dimmer]        totals = {}[/]
+[$dimmer]        for path in tools.read.list_files({}):[/]
+[$dimmer]            totals\[path] = len(tools.read.read_file({ "path": path }))[/]
+[$dimmer]        return totals[/]
+[$dimmer]      [/]
+[$dimmer]      tool calls[/]
+[$dimmer]        ↳ read.list_files[/]
+[$dimmer]        ↳ read.read_file[/]
+[$dimmer]        ↳ write.write_file · error[/]
+[$dimmer]      [/]
+[$dimmer]      result[/]
+[$dimmer]        {[/]
+[$dimmer]          "a.py": 812,[/]
+[$dimmer]          "b.py": 344[/]
+[$dimmer]        }[/]
+
+=== tool_line (code mode diagnostic) ===
+[$red]  ● [/][$red]Code Mode · execute · no tool calls · failed[/][$dimmer] · click to expand[/]
+[$dimmer]      program[/]
+[$dimmer]        import os[/]
+[$dimmer]        return os.getcwd()[/]
+[$dimmer]      [/]
+[$dimmer]      result[/]
+[$dimmer]        import is not available in code mode[/]
+[$dimmer]        call the supplied tools instead of importing[/]
