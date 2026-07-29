@@ -60,6 +60,7 @@ from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
 from .command_context import AppCommandContext
 from .composer import Composer
 from .footer import FooterBar
+from .history_recall import HistoryRecallStrip
 from .file_mentions import (
     FileMentionIntent,
     FileMentionStrip,
@@ -230,6 +231,7 @@ class NewTuiApp(App[None]):
         self.rewind = RewindStrip(id="rewind-strip")
         self.queued_strip = QueuedStrip(id="queued-strip")
         self.file_mentions = FileMentionStrip(id="file-mentions")
+        self.history_recall = HistoryRecallStrip(id="history-recall")
         self.composer = Composer(kitty_protocol=kitty_protocol, id="composer")
         self.footer_bar = FooterBar(id="footer-bar")
 
@@ -246,6 +248,7 @@ class NewTuiApp(App[None]):
         yield self.rewind
         yield self.queued_strip
         yield self.file_mentions
+        yield self.history_recall
         with Container(id="composer-slot"):
             yield self.composer
         yield self.footer_bar
@@ -1099,6 +1102,12 @@ class NewTuiApp(App[None]):
 
     def on_file_mention_intent(self, message: FileMentionIntent) -> None:
         handle_file_mention_intent(self, message)
+
+    def on_composer_history_suggested(self, message: Composer.HistorySuggested) -> None:
+        # The frecency-recall ghost changed; reflect it on the strip above
+        # the composer (None hides it). The up-ring is untouched.
+        message.stop()
+        self.history_recall.show(message.suggestion)
 
     def on_composer_nav_key(self, message: Composer.NavKey) -> None:
         message.stop()

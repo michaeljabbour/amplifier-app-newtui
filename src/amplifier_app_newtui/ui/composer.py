@@ -37,6 +37,7 @@ from textual.message import Message
 from textual.widgets import Static, TextArea
 
 from ..kernel.clipboard import ImageAttachment, pasted_image_attachments
+from ..kernel.frecency import suggest_completion
 from ..model.modes import DEFAULT_MODE, ModeProfile, get_mode
 from .file_mentions import FileMentionIntent
 from .keymap import COMPOSER_PLACEHOLDER, hint_label
@@ -157,6 +158,10 @@ class ComposerInput(TextArea):
     def _remember_paste(self, payload: str) -> None:
         self._last_paste = (payload, self.text, self.cursor_location, monotonic())
 
+    def _cursor_at_end(self) -> bool:
+        """True when the caret sits after the last character (Right accepts)."""
+        return _cursor_offset(self.text, self.cursor_location) == len(self.text)
+
     async def _on_key(self, event: events.Key) -> None:
         composer = self._composer()
         if composer is None:
@@ -174,6 +179,19 @@ class ComposerInput(TextArea):
             event.stop()
             event.prevent_default()
             composer.post_message(FileMentionIntent("clear"))
+        elif composer.suggestion_active and event.key == "tab":
+            # Frecency recall ghost is showing (non-chord, appeared while
+            # typing) -- Tab accepts it. Gated on suggestion_active so a Tab
+            # with no ghost keeps its stock TextArea behavior.
+            event.stop()
+            event.prevent_default()
+            composer.accept_suggestion()
+        elif composer.suggestion_active and event.key == "right" and self._cursor_at_end():
+            # Right-arrow accepts too, but ONLY at end-of-buffer so mid-text
+            # cursor movement is never hijacked.
+            event.stop()
+            event.prevent_default()
+            composer.accept_suggestion()
         elif event.key == "enter":
             event.stop()
             event.prevent_default()
@@ -374,6 +392,17 @@ class Composer(Horizontal):
         ``$VISUAL``/``$EDITOR`` (the app owns ``App.suspend`` + the
         subprocess; the kernel owns the temp-file round-trip)."""
 
+    class HistorySuggested(Message):
+        """The frecency-recall ghost changed: *suggestion* is the best prior
+        prompt completing the current draft, or ``None`` to hide the surface.
+
+        Distinct from the chronological up-ring (that stays untouched); this
+        is the typed-prefix autosuggestion the client lane adds."""
+
+        def __init__(self, suggestion: str | None) -> None:
+            self.suggestion = suggestion
+            super().__init__()
+
     # -- lifecycle -------------------------------------------------------------
 
     def __init__(
@@ -400,6 +429,7 @@ class Composer(Horizontal):
         self._history: list[str] = []
         self._history_index: int | None = None
         self._history_draft = ""
+        self._suggestion: str | None = None
 
     def compose(self):
         yield self._badge
@@ -532,6 +562,46 @@ class Composer(Horizontal):
         self._history_index = None
         self._history_draft = ""
 
+    @property
+    def suggestion(self) -> str | None:
+        """The active frecency-recall ghost text, or ``None``."""
+        return self._suggestion
+
+    @property
+    def suggestion_active(self) -> bool:
+        return self._suggestion is not None
+
+    def accept_suggestion(self) -> bool:
+        """Fill the composer with the ghosted prompt; the Changed cascade
+        recomputes (and hides) the ghost. No-op when nothing is ghosted."""
+        suggestion = self._suggestion
+        if suggestion is None:
+            return False
+        self._load_history_text(suggestion)
+        return True
+
+    def _refresh_suggestion(self) -> None:
+        """Recompute the recall ghost from the in-memory ring for a *plain*
+        single-line draft, and post :class:`HistorySuggested` when it changes.
+
+        Never fires for a slash-command draft, an active ``@`` mention, an
+        empty/multi-line buffer, or while walking the up-ring -- so the ring's
+        default behavior is left exactly as it was.
+        """
+        text = self._input.text
+        eligible = (
+            bool(text)
+            and "\n" not in text
+            and not text.startswith("/")
+            and not self._mention_filter_active
+            and not self.history_browsing
+        )
+        suggestion = suggest_completion(self._history, text) if eligible else None
+        if suggestion == self._suggestion:
+            return
+        self._suggestion = suggestion
+        self.post_message(self.HistorySuggested(suggestion))
+
     def apply_file_mention(self, path: str) -> bool:
         """Replace the active ``@query`` with *path* and keep typing."""
         self.end_history_navigation()
@@ -598,6 +668,7 @@ class Composer(Horizontal):
             if self._mention_filter_active:
                 self._mention_filter_active = False
                 self.post_message(FileMentionIntent("clear"))
+            self._refresh_suggestion()
             return
         if self._palette_open:
             self._palette_open = False
@@ -610,6 +681,7 @@ class Composer(Horizontal):
             self._mention_filter_active = False
             self.mention_open = False
             self.post_message(FileMentionIntent("clear"))
+        self._refresh_suggestion()
 
     # -- internals ---------------------------------------------------------------
 
