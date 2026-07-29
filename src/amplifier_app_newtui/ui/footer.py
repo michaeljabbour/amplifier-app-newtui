@@ -64,6 +64,12 @@ class FooterState(BaseModel):
     model: str = ""
     """Primary model id, already bare (``claude-fable-5``, no provider
     prefix) — its own dim part between the bundle and the session."""
+    effort: str | None = None
+    """Reasoning-effort tier (``none``…``xhigh``) shown as an ``effort <tier>``
+    part just before the cost. ``None`` = unset/default — the segment is
+    omitted entirely, so an untouched session keeps the lean footer (the
+    ctrl+e cycle is what first surfaces it). Mirrors the backend's null-vs-"none"
+    distinction: null hides the indicator, an explicit ``none`` shows it."""
     session_short: str = ""
     cost: Decimal = Field(default=Decimal("0"), ge=0)
     cost_estimated: bool = False
@@ -110,6 +116,8 @@ def _left_parts(
         parts.append(state.model)
     if session and state.session_short:
         parts.append(state.session_short)
+    if state.effort is not None:
+        parts.append(f"effort {state.effort}")
     cost_part = f"{'~' if state.cost_estimated else ''}${state.cost:.2f}"
     if state.shipped:
         cost_part += f" {GLYPH_YIELD}"
@@ -310,6 +318,8 @@ class FooterBar(Horizontal):
             rest_parts.append(state.model)
         if drops.get("session", True) and state.session_short:
             rest_parts.append(state.session_short)
+        if state.effort is not None:
+            rest_parts.append(f"effort {state.effort}")
         rest_parts.append(f"{'~' if state.cost_estimated else ''}${state.cost:.2f}")
         markup = f"[${mode.color_token}]$mode_part[/]"
         substitutions = {"mode_part": f"mode {mode.id}"}

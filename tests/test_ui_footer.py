@@ -102,6 +102,17 @@ def test_plan_count_segment_appears_only_when_total_positive() -> None:
     assert "Plan" not in footer_left_text(FULL_STATE)  # default total=0 → absent
 
 
+def test_effort_segment_appears_only_when_set() -> None:
+    """HGT effort indicator: the tier rides the left segment just before the
+    cost, and only when set (None keeps the lean footer)."""
+    state = FULL_STATE.model_copy(update={"effort": "high"})
+    assert " · effort high · $0.87" in footer_left_text(state)
+    # default (None) → absent; an explicit "none" still shows (null vs "none").
+    assert "effort" not in footer_left_text(FULL_STATE)
+    shown = FULL_STATE.model_copy(update={"effort": "none"})
+    assert " · effort none · " in footer_left_text(shown)
+
+
 def test_waiting_text_singular_plural_empty() -> None:
     assert footer_waiting_text(FooterState(waiting=1)) == "1 decision waiting · ctrl-y"
     assert footer_waiting_text(FooterState(waiting=3)) == "3 decisions waiting · ctrl-y"

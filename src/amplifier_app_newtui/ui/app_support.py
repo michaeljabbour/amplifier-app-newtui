@@ -54,6 +54,7 @@ _GLOBAL_ACTIONS = frozenset(
     {
         "cycle_mode",
         "cycle_permission",
+        "cycle_effort",
         "cycle_tail",
         "toggle_lanes",
         "toggle_thinking",
@@ -748,6 +749,7 @@ def footer_state(app: NewTuiApp) -> FooterState:
         # The adapter may carry a provider-qualified id ("anthropic/x");
         # the footer speaks human and shows the bare model name (story #4).
         model=app.adapter.model_name.rpartition("/")[2],
+        effort=app.current_effort,
         session_short=app.adapter.session_short,
         cost=max(Decimal("0"), app.reducer.live_session_cost),
         cost_estimated=app.reducer.live_cost_estimated,

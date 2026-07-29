@@ -46,6 +46,7 @@ from ..model.blocks import (
     TranscriptBlock,
     UserLine,
 )
+from ..kernel.session_ops import EFFORT_LEVELS, normalize_effort
 from ..model.config import default_config_state
 from ..model.evidence import EvidenceLink
 from ..model.lanes import LaneStateName
@@ -190,6 +191,10 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         self._pending: dict[str, asyncio.Future[str]] = {}
         self._ticket_seq = 0
         self._build_denied = False
+        # In-memory reasoning-effort tier: the scripted demo has no real
+        # orchestrator, but honoring get/set_effort lets the ctrl+e cycle and
+        # the footer indicator work fully offline (parity with real sessions).
+        self._effort: str | None = None
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -225,6 +230,22 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         """Esc while running: DemoRuntime breaks at the next step boundary
         (spec §11: interrupted recap + ``· interrupted`` rule)."""
         return self._runtime.interrupt()
+
+    async def get_effort(self) -> str | None:
+        """Current reasoning-effort tier (in-memory; None until first set)."""
+        return self._effort
+
+    async def set_effort(self, level: str) -> tuple[bool, str]:
+        """Set the reasoning-effort tier (accepts the ``max``->``xhigh`` alias).
+
+        Mirrors ``kernel.session_ops.set_effort``'s validate-then-store contract so
+        the offline demo cycle and ``/effort <level>`` behave like a real session.
+        """
+        canonical = normalize_effort(level)
+        if canonical is None:
+            return (False, f"effort must be one of: {', '.join(EFFORT_LEVELS)} (or max)")
+        self._effort = canonical
+        return (True, canonical)
 
     def _key_for(self, text: str) -> TurnKey:
         spec = self._by_prompt.get(text.strip())

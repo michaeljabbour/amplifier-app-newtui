@@ -20,6 +20,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
+from ..kernel.session_ops import EFFORT_LEVELS
 from ..model.blocks import Answer, TranscriptBlock
 from .session_ops_view import (
     diff_spans,
@@ -34,6 +35,19 @@ from .session_ops_view import (
 if TYPE_CHECKING:
     from ..model.blocks import BlockIdAllocator
     from .runtime_adapter import RuntimeAdapter
+
+
+def _next_effort(current: str | None) -> str:
+    """Next reasoning-effort tier in the canonical ring, wrapping ``xhigh`` -> ``none``.
+
+    The client-side twin of ``kernel.serve._next_effort`` (the Python client cycles
+    in-process, not over serve): an unset/unknown current enters the ring at the first
+    tier; otherwise advance one and wrap. There is no Default(unset) slot because
+    ``set_effort`` has no clear path (documented divergence from the donor).
+    """
+    if current is None or current not in EFFORT_LEVELS:
+        return EFFORT_LEVELS[0]
+    return EFFORT_LEVELS[(EFFORT_LEVELS.index(current) + 1) % len(EFFORT_LEVELS)]
 
 
 class SessionOpsHost(Protocol):
@@ -76,6 +90,10 @@ class SessionOpsHost(Protocol):
 
     def refresh_status(self) -> None:
         """Repaint the title/footer after adapter-derived state changes."""
+        ...
+
+    def set_effort_indicator(self, level: str | None) -> None:
+        """Cache the reasoning-effort tier and repaint the footer indicator."""
         ...
 
 
@@ -141,10 +159,26 @@ class SessionOpsController:
     async def _apply_effort(self, arg: str) -> None:
         if arg:
             ok, detail = await self._host.adapter.set_effort(arg)
+            if ok:
+                self._host.set_effort_indicator(detail)  # footer indicator stays honest
             self._host.show_notice(f"effort · {detail}" if ok else detail)
             return
         current = await self._host.adapter.get_effort()
+        self._host.set_effort_indicator(current)  # sync the indicator on a bare /effort
         self._host.show_notice(f"effort · {current or '(default)'} · /effort <level> to set")
+
+    def cycle_effort(self) -> None:
+        """ctrl+e: advance the reasoning-effort tier one step (donor variant.cycle)."""
+        if self._ops_starting():
+            return
+        self._host.run_worker(self._cycle_effort(), exclusive=False)
+
+    async def _cycle_effort(self) -> None:
+        nxt = _next_effort(await self._host.adapter.get_effort())
+        ok, detail = await self._host.adapter.set_effort(nxt)
+        if ok:
+            self._host.set_effort_indicator(detail)
+        self._host.show_notice(f"effort · {detail}" if ok else detail)
 
     def compact_context(self, focus: str) -> None:
         if self._ops_starting():
