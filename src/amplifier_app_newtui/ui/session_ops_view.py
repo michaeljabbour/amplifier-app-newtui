@@ -140,15 +140,19 @@ def sessions_spans(
                 bold=is_current,
             )
         )
-        spans.append(
-            Segment(
-                text=(
-                    f"{summary.name or '—'}  ·  {summary.bundle}  ·  "
-                    f"{summary.messages} msgs  ·  {summary.time_ago}\n"
-                ),
-                style_token="dim",
-            )
+        detail = (
+            f"{summary.name or '—'}  ·  {summary.bundle}  ·  "
+            f"{summary.messages} msgs  ·  {summary.time_ago}"
         )
+        # Tags trail the row as dim ``#tag`` chips. The donor has no
+        # first-class session tags, so this follows the house dim-metadata
+        # convention rather than any donor widget.
+        if summary.tags:
+            spans.append(Segment(text=f"{detail}  ", style_token="dim"))
+            chips = " ".join(f"#{tag}" for tag in summary.tags)
+            spans.append(Segment(text=f"{chips}\n", style_token="dimmer"))
+        else:
+            spans.append(Segment(text=f"{detail}\n", style_token="dim"))
     return tuple(spans)
 
 

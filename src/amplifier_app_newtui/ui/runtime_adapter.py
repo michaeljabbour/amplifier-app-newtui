@@ -338,6 +338,21 @@ class RuntimeAdapter:
         del directive
         return (False, "forking needs a real session")
 
+    async def session_tags(self) -> tuple[str, ...]:
+        return ()
+
+    async def sessions_by_tag(self, tag: str) -> tuple[SessionSummary, ...]:
+        del tag
+        return ()
+
+    async def add_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
+        del tags
+        return (False, "tagging needs a real session")
+
+    async def remove_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
+        del tags
+        return (False, "tagging needs a real session")
+
     async def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
         del kind
         return ()
@@ -702,6 +717,34 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is None:
             return (False, "session still starting")
         return await self._in_runtime(self._runtime.fork_session(directive))
+
+    async def session_tags(self) -> tuple[str, ...]:
+        if self._runtime is None:
+            return ()
+
+        async def read() -> tuple[str, ...]:
+            return self._runtime.session_tags()
+
+        return await self._in_runtime(read())
+
+    async def sessions_by_tag(self, tag: str) -> tuple[SessionSummary, ...]:
+        if self._runtime is None:
+            return ()
+
+        async def read() -> tuple[SessionSummary, ...]:
+            return self._runtime.sessions_by_tag(tag)
+
+        return await self._in_runtime(read())
+
+    async def add_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.add_session_tags(tags))
+
+    async def remove_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
+        if self._runtime is None:
+            return (False, "session still starting")
+        return await self._in_runtime(self._runtime.remove_session_tags(tags))
 
     async def directory_entries(self, kind: DirectoryKind) -> tuple[DirectoryEntry, ...]:
         if self._runtime is None:

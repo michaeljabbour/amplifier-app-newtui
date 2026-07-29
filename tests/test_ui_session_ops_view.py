@@ -171,3 +171,35 @@ def test_sessions_spans_lists_rows_and_marks_current() -> None:
     # The current session's short id renders bold.
     current = [sp for sp in spans if sp.text.strip() == "abc12345"]
     assert current and current[0].bold
+
+
+def test_sessions_spans_renders_tag_chips() -> None:
+    """Tags trail their row as dim ``#tag`` chips (client-UX delta)."""
+    rows = (
+        SessionSummary(
+            session_id="abc12345ff",
+            name="auth",
+            bundle="newtui",
+            messages=6,
+            mtime=0.0,
+            tags=("frontend", "urgent"),
+        ),
+        SessionSummary(session_id="def67890aa", name="", bundle="dev", messages=2, mtime=0.0),
+    )
+    spans = sessions_spans(rows, current="abc12345")
+    text = _text(spans)
+    # Chips are sorted-as-stored and prefixed with the tag sigil.
+    assert "#frontend" in text and "#urgent" in text
+    # Rendered as dedicated muted-chip segments (not folded into the id/name).
+    chip_spans = [sp for sp in spans if sp.text.strip().startswith("#")]
+    assert chip_spans and chip_spans[0].style_token == "dimmer"
+    assert "#frontend #urgent" in chip_spans[0].text
+    # A tag-less row shows no chip sigil on its detail line.
+    assert text.count("#") == 2  # exactly the two chips above
+
+
+def test_sessions_spans_untagged_row_has_no_chip() -> None:
+    """No tags → the row is byte-for-byte the pre-tags render (no ``#``)."""
+    rows = (SessionSummary(session_id="abc12345ff", name="auth", bundle="newtui", messages=6),)
+    text = _text(sessions_spans(rows))
+    assert "#" not in text

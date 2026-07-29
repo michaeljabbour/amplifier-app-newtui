@@ -668,6 +668,65 @@ class NewTuiApp(App[None]):
         else:
             self.show_notice(detail)
 
+    # -- session tags (/tag add|rm|list|sessions) ---------------------------
+
+    def manage_tags(self, args: str) -> None:
+        """``/tag`` sub-verb dispatch (add / rm / list / sessions).
+
+        One protocol method (like ``/config``) keeps the CommandContext surface
+        minimal; the verb selects a worker so metadata IO never blocks the UI.
+        """
+        parts = args.split()
+        verb = parts[0].lower() if parts else "list"
+        rest = tuple(parts[1:])
+        if verb in ("list", "ls", "show") and not rest:
+            self.run_worker(self._show_tags(), exclusive=False)
+        elif verb == "add":
+            if not rest:
+                self.show_notice("usage: /tag add <name> [name ...]")
+                return
+            if self.session_ops._ops_starting():
+                return
+            self.run_worker(self._add_tags(rest), exclusive=False)
+        elif verb in ("rm", "remove", "del", "delete"):
+            if not rest:
+                self.show_notice("usage: /tag rm <name> [name ...]")
+                return
+            if self.session_ops._ops_starting():
+                return
+            self.run_worker(self._remove_tags(rest), exclusive=False)
+        elif verb == "sessions":
+            if not rest:
+                self.show_notice("usage: /tag sessions <tag>")
+                return
+            self.run_worker(self._sessions_by_tag(rest[0]), exclusive=False)
+        else:
+            self.show_notice("usage: /tag [list | add <name> | rm <name> | sessions <tag>]")
+
+    async def _show_tags(self) -> None:
+        tags = await self.adapter.session_tags()
+        if tags:
+            self.show_notice(f"tags: {', '.join(tags)}")
+        else:
+            self.show_notice("no session tags \u00b7 attach with /tag add <name>")
+
+    async def _add_tags(self, tags: tuple[str, ...]) -> None:
+        _ok, detail = await self.adapter.add_session_tags(tags)
+        self.show_notice(detail)
+
+    async def _remove_tags(self, tags: tuple[str, ...]) -> None:
+        _ok, detail = await self.adapter.remove_session_tags(tags)
+        self.show_notice(detail)
+
+    async def _sessions_by_tag(self, tag: str) -> None:
+        summaries = await self.adapter.sessions_by_tag(tag)
+        self.append_block(
+            Answer(
+                id=self.allocator.next_id(),
+                spans=sessions_spans(summaries, current=self.adapter.session_short),
+            )
+        )
+
     def _sync_palette_commands(self) -> None:
         """Registry subscriber: every successful register/unregister
         re-feeds the palette rows — palette and help stay a live

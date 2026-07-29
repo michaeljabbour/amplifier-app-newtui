@@ -58,6 +58,10 @@ NEUTRAL_CASES: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
         ("allowed", "add", "/tmp/p"),
         (False, "directory management needs a real session"),
     ),
+    ("session_tags", (), ()),
+    ("sessions_by_tag", ("frontend",), ()),
+    ("add_session_tags", (("urgent",),), (False, "tagging needs a real session")),
+    ("remove_session_tags", (("urgent",),), (False, "tagging needs a real session")),
 )
 
 # Async methods deliberately NOT in the neutral table — each has its own

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,6 +63,57 @@ def _valid_name(name: str) -> bool:
     return bool(NAME_PATTERN.fullmatch(name))
 
 
+# -- session tags -----------------------------------------------------------
+# The donor (opencode) has NO first-class session tags: dialog-tag.tsx is
+# file-mention autocomplete and Session.Info carries only a free-form
+# ``metadata`` bag (see .ai/oc_donor.md). This is the idiomatic-for-host
+# re-expression: tags live in the same ``metadata.json`` the host already
+# round-trips, under a ``tags`` list. Constraints mirror NAME_PATTERN's
+# path-safe discipline but tighter, since a tag is an index key not a label.
+
+TAG_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
+"""A tag: lowercase, starts alnum, then letters / digits / dash / underscore."""
+
+MAX_TAG_LENGTH = 32
+"""Longest stored tag; longer inputs are clamped before validation."""
+
+MAX_TAGS = 20
+"""Most tags one session may carry; an add that would exceed this is refused."""
+
+TAGS_KEY = "tags"
+"""``metadata.json`` key holding the session's sorted, deduped tag list."""
+
+
+def normalize_tag(raw: str) -> str | None:
+    """Normalize one tag or return ``None`` when it cannot be a valid tag.
+
+    Strips, lowercases, clamps to :data:`MAX_TAG_LENGTH`, then requires a full
+    :data:`TAG_PATTERN` match. Idempotent: ``normalize_tag(normalize_tag(x))``.
+    """
+    tag = raw.strip().lower()[:MAX_TAG_LENGTH]
+    if not tag or not TAG_PATTERN.fullmatch(tag):
+        return None
+    return tag
+
+
+def _coerce_tags(raw: object) -> tuple[str, ...]:
+    """Read a persisted tag value into a sorted, deduped, valid tuple.
+
+    Best-effort and total: a missing key, a non-list, or junk members degrade
+    to a clean subset rather than raising \u2014 a listing must never crash on one
+    session's malformed metadata.
+    """
+    if not isinstance(raw, list):
+        return ()
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            tag = normalize_tag(item)
+            if tag and tag not in out:
+                out.append(tag)
+    return tuple(sorted(out))
+
+
 @dataclass(frozen=True)
 class SessionSummary:
     """One row of the resume picker / ``session list`` table.
@@ -82,6 +134,7 @@ class SessionSummary:
     messages: int = 0
     mtime: float = 0.0
     turns: int | None = None
+    tags: tuple[str, ...] = ()
 
     @property
     def short_id(self) -> str:
@@ -145,6 +198,7 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
     name = ""
     bundle = "unknown"
     turns: int | None = None
+    tags: tuple[str, ...] = ()
     if (session_dir / METADATA_FILENAME).is_file():
         try:
             metadata = store.get_metadata(session_id)
@@ -153,6 +207,7 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
             raw_turns = metadata.get("turn_count")
             if isinstance(raw_turns, int) and not isinstance(raw_turns, bool):
                 turns = raw_turns
+            tags = _coerce_tags(metadata.get(TAGS_KEY))
         except (FileNotFoundError, OSError, ValueError):
             pass
     return SessionSummary(
@@ -162,6 +217,7 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
         messages=_message_count(store, session_id),
         mtime=mtime,
         turns=turns,
+        tags=tags,
     )
 
 
@@ -375,20 +431,164 @@ def take_pending_directive(store: SessionStore, session_id: str) -> str:
     return directive
 
 
+@dataclass(frozen=True)
+class TagOutcome:
+    """Result of one tag read or mutation over a stored session.
+
+    ``tags`` is always the session's full resulting set (sorted); ``changed``
+    is the subset actually added/removed this call; ``rejected`` echoes inputs
+    that could not be a valid tag. ``ok`` is False only on resolve/IO failure
+    or a cap breach, with ``error`` set.
+    """
+
+    ok: bool
+    session_id: str
+    tags: tuple[str, ...] = ()
+    changed: tuple[str, ...] = ()
+    rejected: tuple[str, ...] = ()
+    error: str = ""
+
+
+def _normalize_inputs(raw_tags: Iterable[str]) -> tuple[list[str], list[str]]:
+    """Split raw inputs into (valid normalized, deduped) and (rejected)."""
+    valid: list[str] = []
+    rejected: list[str] = []
+    for raw in raw_tags:
+        text = raw if isinstance(raw, str) else str(raw)
+        tag = normalize_tag(text)
+        if tag is None:
+            stripped = text.strip()
+            if stripped and stripped not in rejected:
+                rejected.append(stripped)
+        elif tag not in valid:
+            valid.append(tag)
+    return valid, rejected
+
+
+def ensure_session_dir(store: SessionStore, session_id: str, *, bundle: str = "unknown") -> bool:
+    """Persist a minimal metadata shell for a not-yet-saved session.
+
+    A fresh live session persists lazily; tagging it (like ``/rename``) must
+    still land, so write a stub ``metadata.json`` first when the dir is absent.
+    Returns True when the session dir exists afterwards.
+    """
+    if store.exists(session_id):
+        return True
+    try:
+        store.save(session_id, [], {"session_id": session_id, "bundle": bundle})
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def read_tags(store: SessionStore, session_id: str) -> tuple[str, ...]:
+    """Best-effort sorted tag tuple for one session ( () on any read error )."""
+    try:
+        metadata = store.get_metadata(session_id)
+    except (FileNotFoundError, OSError, ValueError):
+        return ()
+    return _coerce_tags(metadata.get(TAGS_KEY))
+
+
+def get_tags(store: SessionStore, session_id: str) -> TagOutcome:
+    """Read a session's tags; resolves *session_id* as a prefix."""
+    try:
+        resolved = resolve(store, session_id)
+    except FileNotFoundError:
+        return TagOutcome(False, session_id, error=f"no session found matching '{session_id}'")
+    except ValueError as error:
+        return TagOutcome(False, session_id, error=str(error))
+    return TagOutcome(True, resolved, tags=read_tags(store, resolved))
+
+
+def add_tags(store: SessionStore, session_id: str, tags: Iterable[str]) -> TagOutcome:
+    """Attach one or more tags to a session (deduped, sorted, capped).
+
+    Invalid inputs are reported in ``rejected`` and skipped. An add that would
+    push the session past :data:`MAX_TAGS` is refused whole (``ok=False``, no
+    write) so the caller can prune first.
+    """
+    try:
+        resolved = resolve(store, session_id)
+    except FileNotFoundError:
+        return TagOutcome(False, session_id, error=f"no session found matching '{session_id}'")
+    except ValueError as error:
+        return TagOutcome(False, session_id, error=str(error))
+    valid, rejected = _normalize_inputs(tags)
+    current = read_tags(store, resolved)
+    changed = tuple(tag for tag in valid if tag not in current)
+    union = tuple(sorted(set(current) | set(valid)))
+    if len(union) > MAX_TAGS:
+        return TagOutcome(
+            False,
+            resolved,
+            tags=current,
+            rejected=tuple(rejected),
+            error=f"too many tags (max {MAX_TAGS}); remove some first",
+        )
+    if changed:
+        try:
+            store.update_metadata(resolved, {TAGS_KEY: list(union)})
+        except (FileNotFoundError, OSError, ValueError) as error:
+            return TagOutcome(False, resolved, tags=current, error=f"could not save tags: {error}")
+    return TagOutcome(True, resolved, tags=union, changed=changed, rejected=tuple(rejected))
+
+
+def remove_tags(store: SessionStore, session_id: str, tags: Iterable[str]) -> TagOutcome:
+    """Detach one or more tags from a session (absent tags are a silent no-op)."""
+    try:
+        resolved = resolve(store, session_id)
+    except FileNotFoundError:
+        return TagOutcome(False, session_id, error=f"no session found matching '{session_id}'")
+    except ValueError as error:
+        return TagOutcome(False, session_id, error=str(error))
+    valid, rejected = _normalize_inputs(tags)
+    current = read_tags(store, resolved)
+    remove = set(valid)
+    changed = tuple(tag for tag in current if tag in remove)
+    remaining = tuple(tag for tag in current if tag not in remove)
+    if changed:
+        try:
+            store.update_metadata(resolved, {TAGS_KEY: list(remaining)})
+        except (FileNotFoundError, OSError, ValueError) as error:
+            return TagOutcome(False, resolved, tags=current, error=f"could not save tags: {error}")
+    return TagOutcome(True, resolved, tags=remaining, changed=changed, rejected=tuple(rejected))
+
+
+def sessions_by_tag(store: SessionStore, tag: str) -> list[SessionSummary]:
+    """Newest-first summaries of sessions carrying *tag* ( [] if tag invalid )."""
+    needle = normalize_tag(tag)
+    if needle is None:
+        return []
+    return [summary for summary in list_summaries(store) if needle in summary.tags]
+
+
 __all__ = [
     "MAX_DIRECTIVE_LENGTH",
     "MAX_NAME_LENGTH",
+    "MAX_TAGS",
+    "MAX_TAG_LENGTH",
     "NAME_PATTERN",
     "PENDING_DIRECTIVE_KEY",
+    "TAGS_KEY",
+    "TAG_PATTERN",
     "SessionSummary",
+    "TagOutcome",
+    "add_tags",
     "branch",
     "cleanup",
     "delete",
+    "ensure_session_dir",
     "fork",
     "format_time_ago",
+    "get_tags",
     "list_summaries",
+    "normalize_tag",
+    "read_tags",
+    "remove_tags",
     "rename",
     "resolve",
+    "sessions_by_tag",
     "summary_for",
     "take_pending_directive",
 ]
