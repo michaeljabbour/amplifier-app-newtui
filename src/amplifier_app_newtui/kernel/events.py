@@ -420,6 +420,13 @@ class Notification(_Envelope):
     reason: str = ""
     """The governance escalation / classifier denial reason (the WHY)."""
     choices: tuple[str, ...] = ()
+    descriptions: tuple[str, ...] = ()
+    """Per-choice option help, aligned to ``choices`` (question tool). Empty
+    for governance decisions -- additive, so old readers ignore it."""
+    multiple: bool = False
+    """Question tool: multi-select (the answer is comma-joined labels)."""
+    custom: bool = False
+    """Question tool: a free-text answer is allowed (donor ``custom``)."""
     highlight: str = ""
     action: str = ""
     """The denied action this decision defers (raw command text)."""
@@ -923,6 +930,7 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
             )
         case "user:notification":
             raw_choices = payload.get("choices")
+            raw_descriptions = payload.get("descriptions")
             return Notification(
                 **env,
                 message=_str(payload, "message", "text"),
@@ -934,6 +942,11 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 choices=tuple(str(c) for c in raw_choices)
                 if isinstance(raw_choices, (list, tuple))
                 else (),
+                descriptions=tuple(str(d) for d in raw_descriptions)
+                if isinstance(raw_descriptions, (list, tuple))
+                else (),
+                multiple=bool(payload.get("multiple", False)),
+                custom=bool(payload.get("custom", False)),
                 highlight=_str(payload, "highlight"),
                 action=_str(payload, "action"),
             )

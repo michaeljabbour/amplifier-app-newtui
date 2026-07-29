@@ -464,10 +464,14 @@ class ContextBlock(_FrozenModel):
 
 
 class NeedsYouChoice(_FrozenModel):
-    """One actionable chip on a needs-you decision, e.g. ``yes · push to fork``."""
+    """One actionable chip on a needs-you decision, e.g. ``yes · push to fork``.
+
+    ``description`` is the donor ``question`` tool's per-option help line
+    (blank for governance decisions, which carry only a label)."""
 
     label: str
     answer: str
+    description: str = ""
 
 
 class NeedsYouEntry(_FrozenModel):
@@ -481,6 +485,11 @@ class NeedsYouEntry(_FrozenModel):
     question: str
     reason: str = ""
     choices: tuple[NeedsYouChoice, ...] = ()
+    multiple: bool = False
+    """Question tool: more than one choice may be selected; the submitted
+    answer is the comma-joined labels (donor multi-select)."""
+    custom: bool = False
+    """Question tool: a free-text answer is offered ("type your own")."""
     highlight: str = ""
     """Substring of ``question`` rendered teal (mockup: ``mj/waypoint``)."""
 

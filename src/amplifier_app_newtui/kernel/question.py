@@ -88,6 +88,13 @@ class QuestionPrompt:
         """Option labels -> the needs-you decision's actionable chips."""
         return tuple(option.label for option in self.options if option.label)
 
+    @property
+    def descriptions(self) -> tuple[str, ...]:
+        """Option descriptions aligned index-for-index to :attr:`labels`
+        (blank string where an option carried no description). The donor's
+        per-option help line -- carried through so BOTH clients can render it."""
+        return tuple(option.description for option in self.options if option.label)
+
 
 def parse_questions(raw: object) -> list[QuestionPrompt]:
     """Parse the tool input's ``questions`` into :class:`QuestionPrompt` objects.
@@ -233,6 +240,9 @@ class QuestionTool:
                     prompt.question,
                     reason=prompt.header,
                     choices=prompt.labels,
+                    descriptions=prompt.descriptions,
+                    multiple=prompt.multiple,
+                    custom=prompt.custom,
                 )
                 index_by_id[item.decision_id] = i
         except ValueError as error:
