@@ -1106,6 +1106,51 @@ class NewTuiApp(App[None]):
         message.stop()
         self.action_cycle_mode()
 
+    def on_composer_open_external_editor(self, message: Composer.OpenExternalEditor) -> None:
+        """ctrl+e: suspend the TUI, compose the draft in $VISUAL/$EDITOR, and
+        read it back into the composer (normalized).
+
+        The kernel owns the temp-file round-trip (pure, no Textual); the app
+        owns the terminal suspension, so no pure-logic module ever imports
+        Textual (ADR-0007). Every outcome restores the TUI cleanly -- the
+        draft is only replaced on a successful, non-empty edit; every other
+        path leaves it untouched and explains itself with a notice.
+        """
+        message.stop()
+        import os
+        import subprocess
+
+        from textual.app import SuspendNotSupported
+
+        from ..kernel import external_editor
+
+        seed = self.composer.editor_seed()
+
+        def runner(argv: list[str], cwd: str | None) -> int:
+            # App.suspend hands the real terminal to the editor (donor
+            # renderer.suspend()/resume()); blocking here is fine -- the app
+            # is not painting while suspended.
+            with self.suspend():
+                completed = subprocess.run(argv, cwd=cwd)
+            return completed.returncode
+
+        try:
+            outcome = external_editor.compose_in_editor(
+                seed, runner=runner, environ=os.environ, cwd=None
+            )
+        except SuspendNotSupported:
+            self.show_notice("external editor needs a real terminal (suspend unsupported)")
+            return
+        if outcome.ok:
+            self.composer.apply_editor_result(outcome.text)
+            self.composer.focus_input()
+        elif outcome.status == "no_editor":
+            self.show_notice(outcome.detail)  # setup hint, not an editor error
+        elif outcome.status == "empty":
+            self.show_notice("editor left the draft empty · unchanged")
+        else:
+            self.show_notice(f"editor · {outcome.detail}")
+
     # -- palette / lanes / rewind / needs-you messages ------------------------------------
 
     def on_palette_strip_command_run(self, message: PaletteStrip.CommandRun) -> None:
