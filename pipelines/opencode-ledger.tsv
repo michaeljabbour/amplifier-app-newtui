@@ -1,0 +1,16 @@
+codemode-execute-backend	python	implemented
+codemode-execute-client	both	implemented
+question-tool-backend	python	implemented
+question-tool-client	both	implemented
+model-variant-cycle-backend	python	implemented
+model-variant-cycle-client	both	implemented
+session-tags-backend	python	implemented
+session-tags-client	both	implemented
+prompt-frecency-history-backend	python	implemented
+prompt-frecency-history-client	both	implemented
+context-cost-meter-backend	python	implemented
+context-cost-meter-client	both	implemented
+prompt-stash	both	implemented
+external-editor-compose	both	implemented
+stats-dashboard	python	implemented
+sanitized-export-import	python	implemented
