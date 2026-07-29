@@ -501,9 +501,6 @@ async def test_serve_history_query_empty_prefix_returns_all(tmp_path, monkeypatc
     texts = [e["text"] for e in record["entries"]]
     assert texts[0] == "deploy app"  # frecency top
     assert set(texts) == {"deploy app", "run tests", "check logs", "delete branch"}
-    assert completed is not None
-    assert "Denied" in completed["response"]  # FakeLoop's deny branch
-    assert "tool_post" not in out.kinds()  # write_file did not execute
 
 
 # --------------------------------------------------------------------------
