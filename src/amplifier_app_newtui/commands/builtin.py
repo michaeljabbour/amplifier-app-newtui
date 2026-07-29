@@ -219,7 +219,6 @@ def _cmd_unstash(ctx: CommandContext, args: str) -> None:
             ctx.show_notice("usage: /unstash [n]")
             return
     ctx.recall_stash(index)
->>>>>>> 119e5b2 (feat(opencode): prompt-stash)
 
 
 def _cmd_permissions(ctx: CommandContext, args: str) -> None:
