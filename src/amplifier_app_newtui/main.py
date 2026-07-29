@@ -1138,6 +1138,58 @@ def version() -> None:
 
 
 # --------------------------------------------------------------------------
+# stats -- cross-session cost/usage dashboard (see kernel/stats.py)
+# --------------------------------------------------------------------------
+
+
+@main.command()
+@click.option(
+    "--days",
+    type=int,
+    default=None,
+    help="Window: last N days (0 = today, omit = all time).",
+)
+@click.option(
+    "--models",
+    "models",
+    is_flag=False,
+    flag_value="all",
+    default=None,
+    metavar="[N]",
+    help="Show the per-model rollup: bare --models = all; --models N = top N.",
+)
+@click.option(
+    "--project",
+    "project",
+    default=None,
+    metavar="SLUG",
+    help="Project to aggregate: default current project; 'all' = every project; else a slug.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the report as JSON (machine-readable).")
+def stats(days: int | None, models: str | None, project: str | None, as_json: bool) -> None:
+    """Aggregate cost + token usage ACROSS stored sessions (cross-session dashboard).
+
+    Re-expresses opencode's ``stats`` over newtui's per-project session store: spend and
+    token usage are reconstructed from each session's normalized ``provider_response_usage``
+    events (the same source the live cost footer uses), rolled up by day / model / project.
+
+    \b
+      amplifier-newtui stats                     current project, all time
+      amplifier-newtui stats --days 7 --models   last 7 days + per-model breakdown
+      amplifier-newtui stats --project all       every project (adds a by-project rollup)
+    """
+    from .kernel import stats as stats_kernel
+
+    if days is not None and days < 0:
+        raise click.UsageError("--days must be non-negative (0 = today, omit for all time)")
+    sources, scope = stats_kernel.resolve_sources(project)
+    report = stats_kernel.aggregate(
+        sources, days=days, scope=scope, multi_project=(project == "all")
+    )
+    click.echo(stats_kernel.render(report, models=models, json_output=as_json))
+
+
+# --------------------------------------------------------------------------
 # reset -- data-safe, category-scoped cleaner (see kernel/reset.py, issue #110)
 # --------------------------------------------------------------------------
 
