@@ -168,7 +168,7 @@ class SessionOpsController:
         self._host.show_notice(f"effort · {current or '(default)'} · /effort <level> to set")
 
     def cycle_effort(self) -> None:
-        """ctrl+e: advance the reasoning-effort tier one step (donor variant.cycle)."""
+        """ctrl+b: advance the reasoning-effort tier one step (donor variant.cycle)."""
         if self._ops_starting():
             return
         self._host.run_worker(self._cycle_effort(), exclusive=False)

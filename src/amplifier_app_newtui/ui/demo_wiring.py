@@ -192,7 +192,7 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         self._ticket_seq = 0
         self._build_denied = False
         # In-memory reasoning-effort tier: the scripted demo has no real
-        # orchestrator, but honoring get/set_effort lets the ctrl+e cycle and
+        # orchestrator, but honoring get/set_effort lets the ctrl+b cycle and
         # the footer indicator work fully offline (parity with real sessions).
         self._effort: str | None = None
 

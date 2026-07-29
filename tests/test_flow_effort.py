@@ -1,13 +1,13 @@
-"""Flow test — HGT effort-tier cycle (ctrl+e) + footer indicator.
+"""Flow test — HGT effort-tier cycle (ctrl+b) + footer indicator.
 
 End-to-end over DemoRuntime + Pilot: the donor's ``variant.cycle`` mapped onto
-amplifier's reasoning-effort tier. ctrl+e advances one tier in the canonical
+amplifier's reasoning-effort tier. ctrl+b advances one tier in the canonical
 ring (unset -> none -> minimal -> ... -> xhigh -> none) and the footer surfaces
 an ``effort <tier>`` indicator only once the tier is set.
 
 The binding-registration assert is the regression guard for the real bug the
 forge probe caught: the keymap row + action existed and unit-passed, but
-``ctrl+e`` was missing from ``_GLOBAL_ACTIONS`` so the chord was never bound.
+``ctrl+b`` was missing from ``_GLOBAL_ACTIONS`` so the chord was never bound.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ async def test_ctrl_e_is_bound_as_a_global_chord() -> None:
     # Regression guard: the chord must reach the app as a global priority
     # binding (the keymap row alone is not enough — it must be allow-listed).
     keys = [b.key for b in app_support.global_bindings()]
-    assert "ctrl+e" in keys
+    assert "ctrl+b" in keys
 
 
 @pytest.mark.asyncio
@@ -48,7 +48,7 @@ async def test_ctrl_e_cycles_effort_and_shows_footer_indicator() -> None:
 
         # The ring entry + advance mirrors the backend _next_effort exactly.
         for expected in ("none", "minimal", "low", "medium", "high", "xhigh", "none"):
-            await pilot.press("ctrl+e")
+            await pilot.press("ctrl+b")
             await _settle(pilot)
             assert app.current_effort == expected
             # The change notice matches what /effort shows for the same set.
@@ -66,6 +66,6 @@ async def test_ctrl_e_suppressed_while_an_approval_owns_the_keyboard() -> None:
         app.present_approval("t-1", "Run `pytest -q`?", ("Allow once", "Deny"))
         await pilot.pause()
         assert app.approval_bar is not None
-        # ctrl+e must NOT cycle the tier while the approval is live.
+        # ctrl+b must NOT cycle the tier while the approval is live.
         app.check_action  # sanity: method exists
         assert app.check_action("cycle_effort", ()) is False

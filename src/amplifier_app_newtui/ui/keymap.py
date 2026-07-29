@@ -115,9 +115,10 @@ KEYMAP: tuple[Binding, ...] = (
     _b("cycle_mode", ("shift+tab",), "shift+tab", NO_APPROVAL),
     _b("cycle_permission", ("ctrl+p",), "ctrl-p", NO_APPROVAL),
     # Reasoning-effort tier cycle (HGT: donor variant.cycle; the donor chord
-    # ctrl+t is taken by toggle_lanes). ctrl+e is free in the table and mnemonic
-    # for effort; advances one tier in the canonical ring (xhigh wraps to none).
-    _b("cycle_effort", ("ctrl+e",), "ctrl-e effort", NO_APPROVAL),
+    # ctrl+t is taken by toggle_lanes, and ctrl+e is the external editor's donor
+    # chord — claimed by open_external_editor below). ctrl+b ("boost") is free;
+    # advances one tier in the canonical ring (xhigh wraps to none).
+    _b("cycle_effort", ("ctrl+b",), "ctrl-b effort", NO_APPROVAL),
     # Panels / pickers.
     _b("toggle_lanes", ("ctrl+t",), "ctrl-t", NO_APPROVAL),
     _b("cycle_tail", ("ctrl+o",), "ctrl-o", NO_APPROVAL),
