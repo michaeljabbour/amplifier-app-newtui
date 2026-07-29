@@ -113,6 +113,38 @@ def test_effort_segment_appears_only_when_set() -> None:
     assert " · effort none · " in footer_left_text(shown)
 
 
+# -- context readout (live context tokens + true % of the real window) --------
+
+
+def test_left_text_context_pct_segment_sits_before_cost() -> None:
+    """Donor order (tokens/% then $ spent): the live ``NN% ctx`` readout sits
+    right before the cost part."""
+    state = FooterState(mode_id="plan", cost=Decimal("1.24"), context_pct=41)
+    assert footer_left_text(state) == "mode plan · read-only · 41% ctx · $1.24"
+
+
+def test_left_text_context_tokens_only_when_window_unknown() -> None:
+    """Honest fallback (donor ``model.limit.context ? … : null``): an unknown
+    window omits the % and shows the compact token count alone."""
+    state = FooterState(mode_id="plan", cost=Decimal("1.24"), context_tokens=12_400)
+    assert footer_left_text(state) == "mode plan · read-only · 12k ctx · $1.24"
+
+
+def test_left_text_context_pct_preferred_over_tokens() -> None:
+    """A known window wins: the % form, never the bare token count."""
+    state = FooterState(context_pct=41, context_tokens=12_400)
+    left = footer_left_text(state)
+    assert "41% ctx" in left
+    assert "12k ctx" not in left
+
+
+def test_left_text_no_context_readout_before_usage() -> None:
+    """Both None (no usage yet) → no ctx segment at all (donor renders from the
+    last response, not an empty session); existing golden states are unaffected."""
+    assert "ctx" not in footer_left_text(FooterState())
+    assert "ctx" not in footer_left_text(FULL_STATE)
+
+
 def test_waiting_text_singular_plural_empty() -> None:
     assert footer_waiting_text(FooterState(waiting=1)) == "1 decision waiting · ctrl-y"
     assert footer_waiting_text(FooterState(waiting=3)) == "3 decisions waiting · ctrl-y"
@@ -192,6 +224,24 @@ async def test_footer_paints_plan_count_in_left_segment() -> None:
         bar.update_state(state)
         await pilot.pause()
         assert "Plan 2/4" in _plain(app.query_one("#footer-left", Static))
+
+
+@pytest.mark.asyncio
+async def test_footer_paints_context_readout_in_left_segment() -> None:
+    """The _repaint context branch: ``NN% ctx`` lands in the painted widget,
+    placed identically to the pure text builder (before the cost part)."""
+    app = FooterApp()
+    async with app.run_test(size=(120, 24)) as pilot:
+        bar = app.query_one("#footer", FooterBar)
+        state = FULL_STATE.model_copy(update={"context_pct": 41})
+        bar.update_state(state)
+        await pilot.pause()
+        painted = _plain(app.query_one("#footer-left", Static))
+        # Placement, not full equality: the widget’s own fit ladder may drop
+        # decorations at this width — what matters is the ctx readout paints
+        # immediately before the cost part (donor order), which the cost never
+        # drops so this adjacency is stable.
+        assert "41% ctx · $0.87" in painted
 
 
 @pytest.mark.asyncio
