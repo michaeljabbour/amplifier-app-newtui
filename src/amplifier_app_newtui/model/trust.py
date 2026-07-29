@@ -77,6 +77,11 @@ _TOOL_CAPABILITIES: dict[str, CapabilityClass] = {
     "glob": CapabilityClass.READ,
     "grep": CapabilityClass.READ,
     "search": CapabilityClass.READ,
+    # A model-invocable question pauses the turn to ask the USER (opencode
+    # `question` re-expression). It reads no files and mutates nothing -- READ
+    # auto-allows it wherever tools run (chat/plan/build/auto) and only
+    # brainstorm's "no tools" denies it; the EXEC fallback would wrongly gate it.
+    "question": CapabilityClass.READ,
     "write_file": CapabilityClass.WRITE,
     "edit_file": CapabilityClass.WRITE,
     "apply_patch": CapabilityClass.WRITE,

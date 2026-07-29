@@ -884,6 +884,12 @@ class RealRuntime:
         # something was actually deferred (backward compatible).
         await self._install_deferred_summon(initialized, context)
 
+        # Host-provided `question` tool: routes model question calls through
+        # the shared NeedsYouQueue so BOTH clients answer via the existing
+        # decision path (kernel/serve.py {"op":"decision"} / ui apply_decision).
+        # Mounted onto the live coordinator like the load_bundle summon above.
+        await self._install_question_tool(initialized)
+
         if self._resume_id:
             # Both files: a pre-rename session resumed under this build has
             # UIEvents split across events.jsonl and ui-events.jsonl.
@@ -1541,6 +1547,26 @@ class RealRuntime:
             initialized.unregister_handles.append(
                 injector.register_hooks(initialized.coordinator.hooks)
             )
+
+    async def _install_question_tool(self, initialized: InitializedSession) -> None:
+        """Mount the host-provided ``question`` tool onto the live coordinator.
+
+        The model calls ``question`` to pause the turn and ask the user a
+        structured question; the tool defers it onto the shared
+        :class:`NeedsYouQueue` (surfaced to both clients via the existing
+        ``level=\"decision\"`` notification) and blocks until the user answers
+        through the SAME ``needs_you.answer`` seam the serve ``decision`` op and
+        the TUI ``apply_decision`` already drive. Same mount seam as
+        :meth:`_install_deferred_summon`'s ``load_bundle``. Best-effort: a mount
+        failure degrades to no question tool rather than blocking boot.
+        """
+        from .question import QUESTION_TOOL_NAME, QuestionTool
+
+        tool = QuestionTool(self.needs_you)
+        try:
+            await initialized.coordinator.mount("tools", tool, name=QUESTION_TOOL_NAME)
+        except Exception:  # noqa: BLE001 — degrade to no question tool, never block boot
+            logger.warning("could not mount question tool", exc_info=True)
 
     # -- in-session bundle composition (/bundle load) -----------------------
 
