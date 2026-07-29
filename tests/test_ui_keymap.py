@@ -28,7 +28,7 @@ def test_required_actions_present_with_expected_keys() -> None:
     for binding in KEYMAP:
         by_action.setdefault(binding.action, []).append(binding)
     assert by_action["cycle_mode"][0].keys == ("shift+tab",)
-    assert by_action["cycle_effort"][0].keys == ("ctrl+e",)  # HGT effort cycle
+    assert by_action["cycle_effort"][0].keys == ("ctrl+b",)  # HGT effort cycle
     assert by_action["toggle_lanes"][0].keys == ("ctrl+t",)
     assert by_action["show_ledger"][0].keys == ("ctrl+l",)
     assert by_action["show_needs_you"][0].keys == ("ctrl+y",)

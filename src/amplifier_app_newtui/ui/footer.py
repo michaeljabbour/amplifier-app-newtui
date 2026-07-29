@@ -68,7 +68,7 @@ class FooterState(BaseModel):
     """Reasoning-effort tier (``none``…``xhigh``) shown as an ``effort <tier>``
     part just before the cost. ``None`` = unset/default — the segment is
     omitted entirely, so an untouched session keeps the lean footer (the
-    ctrl+e cycle is what first surfaces it). Mirrors the backend's null-vs-"none"
+    ctrl+b cycle is what first surfaces it). Mirrors the backend's null-vs-"none"
     distinction: null hides the indicator, an explicit ``none`` shows it."""
     session_short: str = ""
     cost: Decimal = Field(default=Decimal("0"), ge=0)

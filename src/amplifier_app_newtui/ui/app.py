@@ -189,7 +189,7 @@ class NewTuiApp(App[None]):
         self.turn_active = False
         # Current reasoning-effort tier for the footer indicator (HGT effort
         # cycle). None = unset/default -> the footer omits the segment; a
-        # value appears once ctrl+e cycles or /effort <level> sets it.
+        # value appears once ctrl+b cycles or /effort <level> sets it.
         self._effort: str | None = None
         # Terminal-window focus (Textual AppFocus/AppBlur, the mode-1004
         # focus report): assumed focused until a blur says otherwise, so
@@ -456,7 +456,7 @@ class NewTuiApp(App[None]):
         """Cache the reasoning-effort tier and repaint the footer indicator.
 
         The SessionOpsController calls this after a successful effort change
-        (ctrl+e cycle or ``/effort <level>``) so the footer's ``effort <tier>``
+        (ctrl+b cycle or ``/effort <level>``) so the footer's ``effort <tier>``
         segment stays honest without an async ``get_effort`` on every repaint.
         """
         self._effort = level
