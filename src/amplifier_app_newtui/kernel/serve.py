@@ -28,6 +28,7 @@ Wire (one JSON object per line):
                 {"op": "tag.remove","session_id": "<id?>", "tags": ["urgent"]}
                 {"op": "tag.list",  "session_id": "<id?>"}
                 {"op": "tag.sessions", "tag": "urgent"}
+                {"op": "context.get"}                    (pull the current context.state meter)
   OUT (stdout)  {"schema_version": 1, "type": "boot.progress",
                  "action": "preparing", "detail": "newtui"}   (before session.started)
                 {"schema_version": 1, "sequence": N, "timestamp": T,
@@ -43,6 +44,9 @@ Wire (one JSON object per line):
                  "ok": true, "session_id": "...", "tags": [...]}
                 {"schema_version": 1, "type": "tag.sessions", "op": "tag.sessions",
                  "ok": true, "tag": "urgent", "sessions": [{"session_id": "...", "name": "...", "tags": [...]}]}
+                {"schema_version": 1, "type": "context.state",
+                 "context_tokens": N, "context_window": W, "context_pct": P,
+                 "cost_usd": "..."}   (context/cost meter; one per provider response + on context.get)
 
 The ``runtime.event`` envelope is byte-identical to the ``run`` JSONL contract
 (``JsonlRecords``); ``approval.required`` is the one record ``run`` cannot emit,
@@ -66,6 +70,8 @@ from contextlib import redirect_stdout
 from typing import IO, Any
 
 from . import session_manager
+from .context_meter import ContextMeter
+from .events import ProviderResponseUsage
 from .jsonl import JsonlRecords
 from .prompt_history import PromptHistoryStore
 from .runtime import RealRuntime
@@ -386,6 +392,26 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
 
     runtime.broker.add_listener(_on_broker_change)
 
+    # Context/cost meter (additive telemetry): fold provider usage into a
+    # renderable context.state snapshot — context tokens used, % of the context
+    # window, running $ spent — reusing the runtime's own CostTracker (so the
+    # running total inherits any resume-seeded prior spend) and the compaction
+    # window the in-process footer/`/context` already meter against. The serve
+    # test fakes carry neither, so both are resolved defensively.
+    meter_cost = getattr(runtime, "cost", None)
+    meter = ContextMeter(cost=meter_cost) if meter_cost is not None else ContextMeter()
+
+    def _emit_context_state() -> None:
+        window = getattr(getattr(runtime, "compaction", None), "max_tokens", None)
+        _emit_raw(
+            out,
+            meter.snapshot(
+                session_id=runtime.session_id,
+                model=getattr(runtime, "model_name", ""),
+                window=window,
+            ),
+        )
+
     # One pump drains normalized events for the whole session. The broker
     # listener owns approval_required (with its id), so it is filtered here.
     async def _pump() -> None:
@@ -394,6 +420,12 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
             if getattr(event, "kind", "") == "approval_required":
                 continue
             _emit_raw(out, records.runtime_event(event).model_dump(mode="json"))
+            # Provider usage advances the meter; push the fresh context.state
+            # right after the event that changed it (donor cadence: one update
+            # per provider response). A new record type existing clients skip.
+            if isinstance(event, ProviderResponseUsage):
+                meter.record(event)
+                _emit_context_state()
 
     pump = asyncio.create_task(_pump())
     turn: asyncio.Task[str] | None = None
@@ -481,6 +513,11 @@ async def serve_loop(runtime: RealRuntime, *, source: IO[str], out: IO[str]) -> 
                 # arms to THIS ladder -- each arm is independent, so the
                 # only adjacency is textual (self-contained additive elif).
                 _emit_raw(out, _history_list_record(runtime, op))
+            elif kind == "context.get":
+                # On-demand pull of the current meter (additive op): initial
+                # paint / manual refresh without waiting for the next provider
+                # response. Same context.state record the pump pushes.
+                _emit_context_state()
     finally:
         # Let an in-flight turn finish (the pump keeps draining its events) so a
         # piped one-shot `submit` completes cleanly on stdin EOF; only then stop
