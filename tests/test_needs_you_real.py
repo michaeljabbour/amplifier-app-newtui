@@ -20,22 +20,22 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.kernel.approval import (
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.kernel.approval import (
     ALLOW_ONCE,
     STANDARD_OPTIONS,
     deferral_highlight,
 )
 
-from amplifier_app_newtui.kernel.governance_hook import GovernanceHook
-from amplifier_app_newtui.kernel.runtime import RealRuntime
-from amplifier_app_newtui.model.blocks import BlockIdAllocator
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.queues import NeedsYouItem, NeedsYouQueue
-from amplifier_app_newtui.model.trust import DenialLog
-from amplifier_app_newtui.ui.reducer import TranscriptReducer
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.runtime_adapter import RealRuntimeAdapter
+from amplifier_app_tui.kernel.governance_hook import GovernanceHook
+from amplifier_app_tui.kernel.runtime import RealRuntime
+from amplifier_app_tui.model.blocks import BlockIdAllocator
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.queues import NeedsYouItem, NeedsYouQueue
+from amplifier_app_tui.model.trust import DenialLog
+from amplifier_app_tui.ui.reducer import TranscriptReducer
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.runtime_adapter import RealRuntimeAdapter
 
 ROOT = "sess-root"
 PUSH = "git push origin main"

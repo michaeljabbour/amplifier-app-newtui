@@ -1,6 +1,6 @@
 """Demo lane: capabilities A(demo), B, C, D through a real PTY.
 
-Launches the shipped ``amplifier-newtui --demo`` binary in a forge PTY at
+Launches the shipped ``amplifier-tui --demo`` binary in a forge PTY at
 a fixed 120x40 and asserts user-visible behavior.  The demo runtime is
 deterministic (virtual clock, seeded RNG, fixed costs), so every assertion
 is exact.  Observation is screen-only by design -- the demo path does not
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import (
+from amplifier_app_tui.kernel.demo import (
     AGENTS_PROMPT,
     BUILD_PROMPT,
     DEMO_BUNDLE,

@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 from amplifier_core import HookResult
 
-from amplifier_app_newtui.kernel.steering import StepBoundaryBridge
-from amplifier_app_newtui.model.queues import (
+from amplifier_app_tui.kernel.steering import StepBoundaryBridge
+from amplifier_app_tui.model.queues import (
     LaneSteeringQueue,
     QueuedMessage,
     SteeringQueue,
@@ -113,7 +113,7 @@ def test_real_runtime_lane_steer_applied_emits_child_stamped_narration() -> None
     # Delivery echo: consuming a lane steer emits an "Applying steer: <text>"
     # narration stamped with the CHILD session id so the reducer diverts it
     # into that lane's focus transcript (DESIGN-SPEC §8).
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     runtime = RealRuntime()
     runtime._lane_steer_applied(
@@ -127,7 +127,7 @@ def test_real_runtime_lane_steer_applied_emits_child_stamped_narration() -> None
 
 
 def test_real_runtime_wires_a_shared_lane_steering_queue() -> None:
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     shared = LaneSteeringQueue()
     runtime = RealRuntime(lane_steering=shared)

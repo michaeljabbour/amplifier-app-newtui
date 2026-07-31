@@ -20,11 +20,11 @@ from ._forge import ForgeClient, ForgeSession, resolve_forge
 
 # One tag for every PTY the tier opens, so a crashed run is reaped whole
 # via ``close-tag`` in the session finalizer (SKILL.md fan-out rule).
-BATCH_TAG = "newtui-forge-cap"
+BATCH_TAG = "tui-forge-cap"
 
 # tests/forge/conftest.py -> tests/forge -> tests -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
-NEWTUI_BINARY = REPO_ROOT / ".venv" / "bin" / "amplifier-newtui"
+TUI_BINARY = REPO_ROOT / ".venv" / "bin" / "amplifier-tui"
 
 # Composer placeholder -- a stable single-word boot anchor.
 COMPOSER_ANCHOR = "Message"
@@ -64,22 +64,22 @@ def forge_client() -> Iterator[ForgeClient]:
 
 
 @pytest.fixture(scope="session")
-def newtui_binary() -> Path:
+def tui_binary() -> Path:
     """The shipped console-script, or skip (nothing to drive)."""
-    if not NEWTUI_BINARY.exists():
-        pytest.skip(f"amplifier-newtui binary not found at {NEWTUI_BINARY}")
-    return NEWTUI_BINARY
+    if not TUI_BINARY.exists():
+        pytest.skip(f"amplifier-tui binary not found at {TUI_BINARY}")
+    return TUI_BINARY
 
 
 @pytest.fixture
-def demo_session(forge_client: ForgeClient, newtui_binary: Path) -> Iterator[ForgeSession]:
-    """A freshly booted ``amplifier-newtui --demo`` PTY at a fixed size.
+def demo_session(forge_client: ForgeClient, tui_binary: Path) -> Iterator[ForgeSession]:
+    """A freshly booted ``amplifier-tui --demo`` PTY at a fixed size.
 
     Function-scoped so each capability test gets a clean turn state (the
     demo advances build -> auto -> plan -> ... on each unmatched submit).
     """
     session = forge_client.new(
-        program=str(newtui_binary),
+        program=str(tui_binary),
         args=("--demo",),
         cwd=str(REPO_ROOT),
         cols=COLS,
@@ -106,7 +106,7 @@ def real_lane_skip_reason() -> str | None:
       so the default ``-m forge`` run stays cheap, offline, and green.
     """
     try:
-        from amplifier_app_newtui.kernel import setup
+        from amplifier_app_tui.kernel import setup
 
         providers = setup.configured_providers()
         stored_keys = setup.setup_status().stored_keys

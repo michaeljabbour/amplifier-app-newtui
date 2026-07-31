@@ -1,8 +1,8 @@
-# Architecture Briefing: amplifier-app-newtui (Ground-Up Full-Screen TUI Rebuild)
+# Architecture Briefing: amplifier-app-tui (Ground-Up Full-Screen TUI Rebuild)
 
 **Synthesis of 10 deep-reader findings across amplifier-core, amplifier-foundation, amplifier-app-cli (current + flagship + wave2), amplifier-tui, codex-rs TUI, opencode, and the UI-bridge module family.**
 
-Target repo: `~/dev/amplifier-app-newtui`. Source-of-truth design docs to carry over unchanged:
+Target repo: `~/dev/amplifier-app-tui`. Source-of-truth design docs to carry over unchanged:
 - `/Users/michaeljabbour/dev/amplifier-app-cli/docs/designs/tui-v3-cohesive.md` (presentation spec)
 - `/Users/michaeljabbour/dev/amplifier-app-cli/docs/decisions/ADR-0005-interaction-modes-and-trust-postures.md`
 - `/Users/michaeljabbour/dev/amplifier-app-cli/docs/decisions/ADR-0006-full-screen-pinned-interactive-shell.md`
@@ -43,7 +43,7 @@ dependencies = [
   "pyyaml", "httpx", "filelock",
 ]
 [project.scripts]
-amplifier-newtui = "amplifier_app_newtui.main:main"
+amplifier-tui = "amplifier_app_tui.main:main"
 ```
 
 Build: hatchling + uv, `package=true` — mirror `/Users/michaeljabbour/dev/amplifier-app-cli/pyproject.toml`. Ship `AGENTS.md`, `PRINCIPLES.md`, `SMOKE_TESTS.md` per foundation `PER_REPO_CONVENTIONS.md`.
@@ -52,7 +52,7 @@ Build: hatchling + uv, `package=true` — mirror `/Users/michaeljabbour/dev/ampl
 
 ---
 
-## 2) Event/Hook Contract Between amplifier-core and the New TUI
+## 2) Event/Hook Contract Between amplifier-core and the TUI
 
 ### Attachment mechanism
 
@@ -63,7 +63,7 @@ unregister = session.coordinator.hooks.register(
     event: str,
     handler: async (event: str, data: dict) -> HookResult,  # return HookResult(action="continue")
     priority: int = ...,
-    name: str = "newtui.<concern>",
+    name: str = "tui.<concern>",
 ) 
 ```
 (`/Users/michaeljabbour/dev/amplifier-core/python/amplifier_core/_engine.pyi` — the real API surface. Always import from top-level `amplifier_core`; submodule imports give divergent pure-Python types.)
@@ -124,14 +124,14 @@ Per the integration guide, TUI↔kernel meet at exactly four points, all injecte
 ## 3) Proposed Package Layout
 
 ```
-amplifier-app-newtui/
+amplifier-app-tui/
 ├── pyproject.toml                    # hatchling+uv; amplifier-core>=1.6, foundation git-pinned
 ├── AGENTS.md  PRINCIPLES.md  SMOKE_TESTS.md
 ├── bundle.md                         # the app's REAL bundle — load_bundle()'d, never decorative
 ├── docs/
 │   ├── designs/tui-v3-cohesive.md    # copied forward; stays source of truth
 │   └── decisions/                    # ADR-0005, ADR-0006 carried over + new ADRs
-├── amplifier_app_newtui/
+├── amplifier_app_tui/
 │   ├── main.py                       # thin async click entry; no sync/async bridging
 │   ├── kernel/                       # ALL amplifier-core/foundation touchpoints (no Textual imports)
 │   │   ├── config.py                 # single resolve_config(): discover→load_bundle→compose→prepare (ONCE)

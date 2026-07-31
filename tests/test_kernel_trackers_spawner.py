@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.spawner import (
+from amplifier_app_tui.kernel.spawner import (
     DEPTH_CAPABILITY,
     SPAWN_CAPABILITY,
     SessionSpawner,

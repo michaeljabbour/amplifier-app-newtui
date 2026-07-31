@@ -5,7 +5,7 @@
 **Status:** Decision recorded (gated deliverable). Implementation plan below is ready
 for a follow-up PR.
 **Evidence base:** clean `origin/main` read-only checkout at
-`/Users/michaeljabbour/dev/newtui-wt/base` @ `ac854ef`; donor `amplifier-app-cli`
+`/Users/michaeljabbour/dev/tui-wt/base` @ `ac854ef`; donor `amplifier-app-cli`
 read-only at `/Users/michaeljabbour/dev/amplifier-app-cli`.
 
 ---
@@ -37,57 +37,57 @@ touch the already-decided-and-shipped root surfacing.
 
 Root surfacing (the shipped baseline this decision must not disturb):
 
-- `src/amplifier_app_newtui/ui/reducer.py:1385-1392` — `_tool_pre` routes
+- `src/amplifier_app_tui/ui/reducer.py:1385-1392` — `_tool_pre` routes
   `tool_name == "todo"` to `_update_todo` (root dispatch path only).
-- `src/amplifier_app_newtui/ui/reducer.py:1559-1588` — `_update_todo` builds
+- `src/amplifier_app_tui/ui/reducer.py:1559-1588` — `_update_todo` builds
   `TodoItem`s and calls `self._host.plan_changed(items)`. Its docstring is the
   literal source the issue cites: *"Root-session only: child ToolPre events are
   diverted before dispatch (see `_is_foreign_turn_event`)."* (lines 1566-1567).
-- `src/amplifier_app_newtui/ui/reducer.py:419-422` + `app.py:682-686` —
+- `src/amplifier_app_tui/ui/reducer.py:419-422` + `app.py:682-686` —
   `plan_changed` → `app_support.apply_plan_change` → `sync_plan_surfaces` (the D2
   responsive ladder).
-- `src/amplifier_app_newtui/ui/plan_panel.py:46-95` — `plan_counts`,
+- `src/amplifier_app_tui/ui/plan_panel.py:46-95` — `plan_counts`,
   `format_plan_lines`, `PLAN_MAX_ROWS`: the pure renderer for the root plan strip
   and the `Plan N/M` header.
-- `src/amplifier_app_newtui/ui/app_support.py:627-660` — the wide→narrow ladder:
+- `src/amplifier_app_tui/ui/app_support.py:627-660` — the wide→narrow ladder:
   panel yields below a width threshold, footer carries `plan_counts`.
 
 The diversion (why child todos never reach the plan renderer):
 
-- `src/amplifier_app_newtui/ui/reducer.py:703-707` — `handle()`: if
+- `src/amplifier_app_tui/ui/reducer.py:703-707` — `handle()`: if
   `_is_foreign_turn_event(event)` → `_track_child_activity(event)` and **return**
   (never reaches the root `match`).
-- `src/amplifier_app_newtui/ui/reducer.py:770-801` — `_is_foreign_turn_event`:
+- `src/amplifier_app_tui/ui/reducer.py:770-801` — `_is_foreign_turn_event`:
   any non-root `session_id` carrying `ToolPre/ToolPost/Stream*/OrchestratorComplete`
   is "foreign" and diverted.
-- `src/amplifier_app_newtui/ui/reducer.py:817-825` — child `ToolPre` handler:
+- `src/amplifier_app_tui/ui/reducer.py:817-825` — child `ToolPre` handler:
   labels the op via `_live_op_label(event.tool_name, ...)`; `"todo"` is **not** in
   `_LIVE_TOOL_VERBS` (`reducer.py:151-167`), so it degrades to the generic
   "using todo".
-- `src/amplifier_app_newtui/ui/reducer.py:839-847` — child `ToolPost` appends a
+- `src/amplifier_app_tui/ui/reducer.py:839-847` — child `ToolPost` appends a
   generic `ToolLine` (summary = `_live_op_label(...)`) into the lane transcript —
   i.e. today a delegate's `todo` shows up as a content-free "using todo" row.
 
 The focused-lane transcript surface already exists (PR #17, commit `b62da3e`):
 
-- `src/amplifier_app_newtui/ui/reducer.py:892-965` — `_seed_lane_transcript`,
+- `src/amplifier_app_tui/ui/reducer.py:892-965` — `_seed_lane_transcript`,
   `_append_lane_block`, `lane_transcript(key)`, plus `_LANE_TRANSCRIPT_MAX_BLOCKS`
   bounding. Per-lane block lists keyed by session id, rendered when a lane is focused.
-- `src/amplifier_app_newtui/model/blocks.py:189-213` — `PlanItem`
+- `src/amplifier_app_tui/model/blocks.py:189-213` — `PlanItem`
   (`pending/active/done`) and `PlanBlock` (`kind="plan"`) are first-class
   `TranscriptBlock`s.
-- `src/amplifier_app_newtui/ui/transcript.py:300` + `:881` — `_render_plan` is a
+- `src/amplifier_app_tui/ui/transcript.py:300` + `:881` — `_render_plan` is a
   pure `(PlanBlock, width) → Line[]` renderer, already registered in the block
   dispatch table. **A `PlanBlock` dropped into a lane transcript renders as a real
   checklist today, for free.**
 
 The lane row (the "badge" candidate surface) and its cost:
 
-- `src/amplifier_app_newtui/model/lanes.py:57-113` — `LaneState` is a **frozen**
+- `src/amplifier_app_tui/model/lanes.py:57-113` — `LaneState` is a **frozen**
   pydantic model (`name/glyph/color_token/activity/elapsed/tokens/cost/state`);
   `LaneRecord` wraps it. A badge means a new field here + `for_state` + every
   construction site.
-- `src/amplifier_app_newtui/ui/lanes_panel.py:70-124` — `format_lane_lines` already
+- `src/amplifier_app_tui/ui/lanes_panel.py:70-124` — `format_lane_lines` already
   pads five columns and **elides `activity` then drops the tokens column** under
   width pressure (`_MIN_ACTIVITY_WIDTH`, lines 116-124). The row is width-starved
   already; a sixth column is the first thing to fall off.
@@ -103,7 +103,7 @@ Prior stated decision this issue re-opens:
 
 Architecture rules the plan must honor:
 
-- `docs/decisions/ADR-0007-newtui-ground-up-architecture.md:17-18` — layering
+- `docs/decisions/ADR-0007-tui-ground-up-architecture.md:17-18` — layering
   `ui/ → model/ → kernel/`; `model/` imports neither Textual nor amplifier-core.
 - `docs/decisions/ADR-0007...:114-115` and `docs/BACKLOG.md:7-9` — pure renderer
   transforms; golden/width-matrix tests in the **same** commit.
@@ -116,7 +116,7 @@ app-cli parity (donor, read-only):
 - `amplifier-app-cli/amplifier_app_cli/ui/task_pane.py:13-21` —
   `format_task_pane_text` renders *"root todos and delegated sessions"* — root todos
   plus a delegated-agent **tree** (agent + short session id + status), never a
-  per-subagent checklist. newtui's lanes panel is already the equivalent of that tree.
+  per-subagent checklist. tui's lanes panel is already the equivalent of that tree.
 
 ---
 
@@ -152,7 +152,7 @@ Add a todo counter to each lane row in the ctrl-t lanes panel.
 ### Option C — Focused-lane transcript checklist (recommended)
 
 When a lane is focused, render that delegate's `todo` as the **same** `PlanBlock`
-checklist newtui already renders for the root — but into the lane's own focus
+checklist tui already renders for the root — but into the lane's own focus
 transcript, in place. Nothing enters the global plan strip, the root transcript, or
 the lane row.
 
@@ -201,7 +201,7 @@ no layering violations.
 
 ### Phase 1 — Route the child `todo` payload into a per-lane `PlanBlock`
 
-`src/amplifier_app_newtui/ui/reducer.py`
+`src/amplifier_app_tui/ui/reducer.py`
 
 1. In `_track_child_activity` (`reducer.py:803-890`), add a `todo` guard at the top
    of the `ev.ToolPre()` case (mirroring how `_tool_pre` special-cases `todo` at
@@ -228,7 +228,7 @@ no layering violations.
 
 ### Phase 2 — In-place replace helper for lane transcripts
 
-`src/amplifier_app_newtui/ui/reducer.py`
+`src/amplifier_app_tui/ui/reducer.py`
 
 4. Generalize `_append_lane_block` (`reducer.py:925-947`) or add a sibling
    `_replace_or_append_lane_block(record, block, block_id)` that, if a block with
@@ -239,7 +239,7 @@ no layering violations.
 
 ### Phase 3 — No view change required; verify focus render
 
-`src/amplifier_app_newtui/ui/transcript.py` / `app.py`
+`src/amplifier_app_tui/ui/transcript.py` / `app.py`
 
 5. Confirm the focused-lane render path (the app swapping in `lane_transcript(key)`)
    already dispatches `PlanBlock` through `_render_plan` — it does
@@ -307,7 +307,7 @@ label and the "record the decision here" instruction.
 | **Record the decision (deliverable) with an implementation path** ("Decide + implement"). | Decision recorded here (gated deliverable); a phased, file-path-level **Implementation plan** is ready to lift into a follow-up PR. |
 | **Do not disturb the shipped root surfacing** (PlanPanel + footer, PR #13). | Plan changes only `ui/reducer.py` (child path) + optional view whitelist; **Not in scope** and **Risks** guard `plan_changed`/`PlanPanel`/footer; regression test #4. |
 | **Honor architecture rules** (ADR-0007 pure renderer, goldens same commit, layering). | Reuses `model/` `PlanItem/PlanBlock` and the pure `_render_plan`; adds no `model/` fields; **Test strategy** mandates width-matrix goldens in-commit (`ADR-0007:114-115`, `:17-18`). |
-| **`runtime-parity` — is app-cli parity relevant, and preserved?** | Addressed in **Evidence** (app-cli) + **Options A/C**: app-cli deliberately drops subagent todos from its ambient task pane (`task_status.py:295-300`) and shows only root todos + a delegate tree (`task_pane.py:13-21`). Option C keeps subagent todos out of the ambient strip → parity preserved; the focus-transcript checklist is an additive newtui affordance, not a parity divergence. |
+| **`runtime-parity` — is app-cli parity relevant, and preserved?** | Addressed in **Evidence** (app-cli) + **Options A/C**: app-cli deliberately drops subagent todos from its ambient task pane (`task_status.py:295-300`) and shows only root todos + a delegate tree (`task_pane.py:13-21`). Option C keeps subagent todos out of the ambient strip → parity preserved; the focus-transcript checklist is an additive tui affordance, not a parity divergence. |
 
 ---
 

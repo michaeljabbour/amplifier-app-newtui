@@ -1,6 +1,6 @@
 """Offline end-to-end test of the ``serve`` protocol loop.
 
-Drives :func:`amplifier_app_newtui.kernel.serve.serve_loop` against a REAL
+Drives :func:`amplifier_app_tui.kernel.serve.serve_loop` against a REAL
 ``RealRuntime`` mounted on the fake-module bundle from ``test_runtime_offline``
 (real foundation lifecycle, real ``ApprovalBroker`` through the Rust
 ``process_hook_result`` path) — no API key, no network.
@@ -23,14 +23,14 @@ from typing import IO, Any, cast
 
 import pytest
 
-from amplifier_app_newtui.kernel import serve as serve_module
-from amplifier_app_newtui.kernel.approval import ALLOW_ONCE, DENY
-from amplifier_app_newtui.kernel.compaction import CompactionConfig
-from amplifier_app_newtui.kernel.cost import CostTracker, PricingTable
-from amplifier_app_newtui.kernel.events import ContentBlockEnd, ProviderResponseUsage
-from amplifier_app_newtui.kernel.serve import serve, serve_loop
-from amplifier_app_newtui.kernel.steering import StepBoundaryBridge
-from amplifier_app_newtui.model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
+from amplifier_app_tui.kernel import serve as serve_module
+from amplifier_app_tui.kernel.approval import ALLOW_ONCE, DENY
+from amplifier_app_tui.kernel.compaction import CompactionConfig
+from amplifier_app_tui.kernel.cost import CostTracker, PricingTable
+from amplifier_app_tui.kernel.events import ContentBlockEnd, ProviderResponseUsage
+from amplifier_app_tui.kernel.serve import serve, serve_loop
+from amplifier_app_tui.kernel.steering import StepBoundaryBridge
+from amplifier_app_tui.model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
 
 # Started-runtime + policy-hook helpers; the offline_env fixture comes from
 # conftest (shared with test_runtime_offline).
@@ -165,12 +165,12 @@ class _FakeBootRuntime:
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
         self.broker = self._NoBroker()
         self.session_id = "boot-01"
-        self.bundle_name = "newtui"
+        self.bundle_name = "tui"
         self.model_name = "test-model"
 
     async def start(self) -> None:
         assert self._on_progress is not None, "serve must pass on_progress"
-        self._on_progress("loading", "newtui")
+        self._on_progress("loading", "tui")
         self._on_progress("installing_package", "tool-bash")
         self._on_progress("creating", "session")
 
@@ -196,7 +196,7 @@ async def test_serve_emits_boot_progress_records_before_session_started(monkeypa
         "schema_version": 1,
         "type": "boot.progress",
         "action": "loading",
-        "detail": "newtui",
+        "detail": "tui",
     }
     assert out.lines[1]["action"] == "installing_package"
     assert out.lines[1]["detail"] == "tool-bash"
@@ -227,7 +227,7 @@ class _FakeSteerRuntime:
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
         self.broker = self._NoBroker()
         self.session_id = "steer-01"
-        self.bundle_name = "newtui"
+        self.bundle_name = "tui"
         self.model_name = "test-model"
         self.steering = SteeringQueue()
         self._bridge = StepBoundaryBridge(
@@ -420,7 +420,7 @@ class _HistoryRuntime:
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
         self.broker = self._NoBroker()
         self.session_id = "history-01"
-        self.bundle_name = "newtui"
+        self.bundle_name = "tui"
         self.model_name = "test-model"
         self.project_dir = project_dir
 
@@ -429,7 +429,7 @@ class _HistoryRuntime:
 
 
 def _seed_history(project: Path) -> None:
-    from amplifier_app_newtui.kernel.prompt_history import PromptHistoryStore
+    from amplifier_app_tui.kernel.prompt_history import PromptHistoryStore
 
     store = PromptHistoryStore(project_dir=project)
     for prompt in (
@@ -524,7 +524,7 @@ class _FakeUsageRuntime:
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
         self.broker = self._NoBroker()
         self.session_id = "meter-01"
-        self.bundle_name = "newtui"
+        self.bundle_name = "tui"
         self.model_name = "anthropic/claude-sonnet-4"
         self.steering = SteeringQueue()
         # Deterministic offline pricing (no live/network swap).

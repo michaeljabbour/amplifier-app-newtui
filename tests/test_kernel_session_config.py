@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel.config import (
+from amplifier_app_tui.kernel.config import (
     DEFAULT_BUNDLE,
     BundleNotFoundError,
     SettingsPaths,
@@ -35,7 +35,7 @@ from amplifier_app_newtui.kernel.config import (
     packaged_bundles_dir,
     resolve_config,
 )
-from amplifier_app_newtui.kernel.compaction import (
+from amplifier_app_tui.kernel.compaction import (
     CompactionConfig,
     CompactionRuntimeBinding,
     apply_compaction_settings,
@@ -207,7 +207,7 @@ def test_packaged_default_bundle_is_discoverable(tmp_path: Path) -> None:
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     found = discover_bundle(DEFAULT_BUNDLE, paths)
     assert found is not None
-    assert Path(found) == packaged_bundles_dir() / "newtui.md"
+    assert Path(found) == packaged_bundles_dir() / "tui.md"
 
 
 def test_list_available_bundles(tmp_path: Path) -> None:
@@ -445,18 +445,18 @@ def test_expand_env_placeholders_in_place(monkeypatch: pytest.MonkeyPatch) -> No
     """``${VAR}``/``${VAR:default}`` expand in place (amplifier-app-cli
     ``expand_env_vars`` parity); a whole-value unset ``${VAR}`` is DROPPED
     so providers fall back to their SDK defaults instead of getting ""."""
-    monkeypatch.setenv("NEWTUI_TEST_URL", "https://example.test")
-    monkeypatch.delenv("NEWTUI_TEST_UNSET", raising=False)
+    monkeypatch.setenv("TUI_TEST_URL", "https://example.test")
+    monkeypatch.delenv("TUI_TEST_UNSET", raising=False)
     plan = {
         "providers": [
             {
                 "module": "provider-anthropic",
                 "config": {
-                    "base_url": "${NEWTUI_TEST_URL}",
-                    "unset_whole": "${NEWTUI_TEST_UNSET}",
-                    "unset_partial": "prefix-${NEWTUI_TEST_UNSET}",
-                    "with_default": "${NEWTUI_TEST_UNSET:https://default.test}",
-                    "nested": ["${NEWTUI_TEST_URL}/v1", 7],
+                    "base_url": "${TUI_TEST_URL}",
+                    "unset_whole": "${TUI_TEST_UNSET}",
+                    "unset_partial": "prefix-${TUI_TEST_UNSET}",
+                    "with_default": "${TUI_TEST_UNSET:https://default.test}",
+                    "nested": ["${TUI_TEST_URL}/v1", 7],
                 },
             }
         ],
@@ -783,14 +783,14 @@ def test_packaged_bundle_matches_repo_root_bundle() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    packaged = root / "src" / "amplifier_app_newtui" / "data" / "bundles" / "newtui.md"
+    packaged = root / "src" / "amplifier_app_tui" / "data" / "bundles" / "tui.md"
     assert packaged.read_bytes() == (root / "bundle.md").read_bytes()
 
 
 def test_packaged_bundle_declares_cli_response_contract() -> None:
-    from amplifier_app_newtui.kernel.config import packaged_bundles_dir
+    from amplifier_app_tui.kernel.config import packaged_bundles_dir
 
-    text = (packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8")
+    text = (packaged_bundles_dir() / "tui.md").read_text(encoding="utf-8")
     contract = """## Terminal response contract
 
 You are Amplifier, driven through a full-screen terminal UI. Prefer running
@@ -816,18 +816,18 @@ tools over speculating. This surface renders a supported Markdown subset:
 
 def test_packaged_anchors_pointer_resolves_and_matches_the_wrapper_pin() -> None:
     """`bundle.active: anchors` (a valid app-cli default) must resolve in
-    newtui too — a packaged pointer at the same pinned foundation ref (a
+    tui too — a packaged pointer at the same pinned foundation ref (a
     release tag or SHA; the two must stay in lockstep)."""
     import re
 
     paths = bundle_search_paths(Path("/nonexistent-proj"), Path("/nonexistent-home"))
     uri = discover_bundle("anchors", paths)
     assert uri is not None and uri.endswith("anchors.md")
-    newtui_uri = discover_bundle("newtui", paths)
-    assert newtui_uri is not None
+    tui_uri = discover_bundle("tui", paths)
+    assert tui_uri is not None
     pin = re.search(
         r"amplifier-foundation@([^\s#]+)#subdirectory=bundles/anchors",
-        Path(newtui_uri).read_text(),
+        Path(tui_uri).read_text(),
     )
     assert pin is not None
     assert (
@@ -839,17 +839,17 @@ def test_settings_bundle_falls_back_to_default_with_notice(tmp_path: Path) -> No
     """A settings-configured bundle that can't resolve must degrade to the
     packaged default with a loud notice — not kill the boot ('session
     failed to start · Bundle 'x' not found')."""
-    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+    from amplifier_app_tui.kernel.config import resolve_bundle_source
 
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     name, uri, notice = resolve_bundle_source(None, {"bundle": {"active": "missing-bundle"}}, paths)
     assert name == DEFAULT_BUNDLE
-    assert uri.endswith("newtui.md")
+    assert uri.endswith("tui.md")
     assert notice is not None and "missing-bundle" in notice and DEFAULT_BUNDLE in notice
 
 
 def test_explicit_bundle_flag_still_fails_loud(tmp_path: Path) -> None:
-    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+    from amplifier_app_tui.kernel.config import resolve_bundle_source
 
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     with pytest.raises(BundleNotFoundError):
@@ -860,7 +860,7 @@ def test_explicit_bundle_flag_still_fails_loud(tmp_path: Path) -> None:
 
 
 def test_added_bundle_uris_reads_registry_and_ignores_junk() -> None:
-    from amplifier_app_newtui.kernel.config import added_bundle_uris
+    from amplifier_app_tui.kernel.config import added_bundle_uris
 
     assert added_bundle_uris({}) == {}
     assert added_bundle_uris({"bundle": "nope"}) == {}
@@ -875,21 +875,21 @@ def test_bundle_use_added_name_resolves_to_registered_uri(tmp_path: Path) -> Non
     """`bundle use <added-name>` writes `bundle.active`; boot must resolve that
     name through the `bundle.added` registry to its URI, not silently fall back
     to the default (issue #105)."""
-    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+    from amplifier_app_tui.kernel.config import resolve_bundle_source
 
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     uri = "git+https://github.com/acme/amplifier-bundle-acme@main"
     settings = {"bundle": {"active": "acme", "added": {"acme": uri}}}
     name, resolved, notice = resolve_bundle_source(None, settings, paths)
     assert name == "acme"
-    assert resolved == uri  # the registered URI, NOT the default newtui.md
+    assert resolved == uri  # the registered URI, NOT the default tui.md
     assert notice is None  # honored, not a degraded fallback
 
 
 def test_explicit_added_name_flag_resolves_too(tmp_path: Path) -> None:
     """An explicit bundle arg naming an added registration also resolves via
     the registry (and so no longer fails loud)."""
-    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+    from amplifier_app_tui.kernel.config import resolve_bundle_source
 
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     uri = "git+https://example.com/acme@main"
@@ -903,7 +903,7 @@ def test_explicit_added_name_flag_resolves_too(tmp_path: Path) -> None:
 def test_added_bundle_registered_local_path_is_discovered(tmp_path: Path) -> None:
     """A registered value that is itself a local path/dir is run back through
     discovery so URIs, paths and bare names all load uniformly."""
-    from amplifier_app_newtui.kernel.config import resolve_bundle_name
+    from amplifier_app_tui.kernel.config import resolve_bundle_name
 
     bundle_dir = tmp_path / "checkout"
     bundle_dir.mkdir()
@@ -917,7 +917,7 @@ def test_added_bundle_local_bundle_wins_over_registry(tmp_path: Path) -> None:
     """Precedence: a same-named on-disk bundle overrides a `bundle.added`
     entry — matching `list_bundles`, where a local bundle shadows an added
     registration of the same name."""
-    from amplifier_app_newtui.kernel.config import resolve_bundle_name
+    from amplifier_app_tui.kernel.config import resolve_bundle_name
 
     local_dir = tmp_path / "bundles"
     local_dir.mkdir()
@@ -929,9 +929,9 @@ def test_added_bundle_local_bundle_wins_over_registry(tmp_path: Path) -> None:
 
 def test_added_bundle_precedence_vs_builtin_default(tmp_path: Path) -> None:
     """Precedence vs builtin: registering an entry under the packaged default
-    name never shadows the builtin — `bundle use newtui` still loads the
+    name never shadows the builtin — `bundle use tui` still loads the
     packaged bundle, keeping the guaranteed-working default authoritative."""
-    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+    from amplifier_app_tui.kernel.config import resolve_bundle_source
 
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     settings = {
@@ -942,18 +942,18 @@ def test_added_bundle_precedence_vs_builtin_default(tmp_path: Path) -> None:
     }
     name, resolved, notice = resolve_bundle_source(None, settings, paths)
     assert name == DEFAULT_BUNDLE
-    assert resolved.endswith("newtui.md")  # packaged builtin wins over added URI
+    assert resolved.endswith("tui.md")  # packaged builtin wins over added URI
     assert notice is None
 
 
 def test_added_bundle_no_match_still_falls_back_to_default(tmp_path: Path) -> None:
     """When the active name matches neither a local bundle nor a `bundle.added`
     entry, the default-bundle fallback path is unchanged (loud notice)."""
-    from amplifier_app_newtui.kernel.config import resolve_bundle_source
+    from amplifier_app_tui.kernel.config import resolve_bundle_source
 
     paths = bundle_search_paths(tmp_path, tmp_path / "home")
     settings = {"bundle": {"active": "ghost", "added": {"other": "git+https://x/y@main"}}}
     name, uri, notice = resolve_bundle_source(None, settings, paths)
     assert name == DEFAULT_BUNDLE
-    assert uri.endswith("newtui.md")
+    assert uri.endswith("tui.md")
     assert notice is not None and "ghost" in notice and DEFAULT_BUNDLE in notice

@@ -19,11 +19,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import BlockIdAllocator, TodoItem, TranscriptBlock
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.reducer import LaneSeed, TranscriptReducer
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import BlockIdAllocator, TodoItem, TranscriptBlock
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.reducer import LaneSeed, TranscriptReducer
 
 SID = "root-session"
 

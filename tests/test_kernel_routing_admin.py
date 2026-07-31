@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from amplifier_app_newtui.kernel import bundle_admin, routing_admin
+from amplifier_app_tui.kernel import bundle_admin, routing_admin
 
 
 def _write_matrix(path: Path, data: dict) -> None:

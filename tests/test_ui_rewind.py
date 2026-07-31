@@ -7,15 +7,15 @@ from decimal import Decimal
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.model.turn import Checkpoint
-from amplifier_app_newtui.ui.rewind_strip import (
+from amplifier_app_tui.model.turn import Checkpoint
+from amplifier_app_tui.ui.rewind_strip import (
     CLOSE_HINT,
     FORK_HINT,
     RewindStrip,
     rewind_label,
     rewind_line,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 CHECKPOINTS = (
     Checkpoint(

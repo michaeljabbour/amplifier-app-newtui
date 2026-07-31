@@ -11,11 +11,11 @@ from decimal import Decimal
 
 import pytest
 
-from amplifier_app_newtui.commands.context import ContextUsage
-from amplifier_app_newtui.model.blocks import BlockIdAllocator
-from amplifier_app_newtui.model.queues import NeedsYouQueue, SteeringQueue
-from amplifier_app_newtui.model.trust import DenialLog
-from amplifier_app_newtui.model.turn import OutcomeLedger
+from amplifier_app_tui.commands.context import ContextUsage
+from amplifier_app_tui.model.blocks import BlockIdAllocator
+from amplifier_app_tui.model.queues import NeedsYouQueue, SteeringQueue
+from amplifier_app_tui.model.trust import DenialLog
+from amplifier_app_tui.model.turn import OutcomeLedger
 
 # Share the offline fake-module workspace fixtures so both test_runtime_offline
 # and test_serve_offline resolve them without a by-name import.
@@ -214,7 +214,7 @@ def _offline_pricing(tmp_path, monkeypatch):
     - The process-wide active pricing table is reset to the fallback
       around every test (it is module-level mutable state by design).
     """
-    from amplifier_app_newtui.kernel import cost
+    from amplifier_app_tui.kernel import cost
 
     monkeypatch.setattr(cost, "fetch_live_pricing", lambda timeout=5.0: None)
     monkeypatch.setattr(cost, "PRICING_CACHE_PATH", tmp_path / "pricing_cache.json")

@@ -13,18 +13,18 @@ ABSOLUTE PATHS
 - Donor (SOURCE, READ-ONLY): /Users/michaeljabbour/dev/opencode
     SST "opencode", a TypeScript/Bun client-server monorepo. NEVER import/vendor/copy
     its code — you re-express the CAPABILITY, not the TypeScript.
-- Host A (Python backend + Textual client): /Users/michaeljabbour/dev/amplifier-app-newtui
+- Host A (Python backend + Textual client): /Users/michaeljabbour/dev/amplifier-app-tui
     Branch main. Owns the backend (kernel/model/commands) AND the `serve` stdio
     protocol. ADR-0007 layering: only kernel/ imports amplifier-core/foundation;
     ui/ and commands/ never do; client-visible behavior ships through `serve`.
     Gate == CI: uv run ruff check . && uv run ruff format --check . && uv run pyright src/ && uv run pytest -q
-- Host B (Rust ratatui client): /Users/michaeljabbour/dev/amplifier-app-newtui-rust
-    Branch main. A PURE PROTOCOL CLIENT of Host A's `amplifier-newtui serve` (codex-tui
+- Host B (Rust ratatui client): /Users/michaeljabbour/dev/amplifier-app-tui-rust
+    Branch main. A PURE PROTOCOL CLIENT of Host A's `amplifier-tui serve` (codex-tui
     / codex-core split) — it renders protocol state, owns no session/agent logic. Read
     its MIGRATION.md + PARITY.md and honor that discipline (behavioral-equivalence
     tests; never force-green; keep the Python suite green).
     Gate == CI: cargo test && cargo clippy --all-targets -- -D warnings
-- Pipeline machine (already written, in Host A): /Users/michaeljabbour/dev/amplifier-app-newtui/pipelines/
+- Pipeline machine (already written, in Host A): /Users/michaeljabbour/dev/amplifier-app-tui/pipelines/
     HGT.md (the archetype), opencode-transfer.dot (the graph — the per-capability
     slice + edge logic), OPENCODE.md (triage table: candidates, SKIP list,
     already-have list, per-capability target), opencode-ledger.tsv (EMPTY — you seed
@@ -33,8 +33,8 @@ ABSOLUTE PATHS
     Load it: load_skill("amplifier-skill-forge"). Confirm up: python3 <forge> doctor.
     Forge can boot the Python TUI, the Rust client, AND opencode itself.
 - Worktree roots (create; NEVER touch the primary checkouts):
-    Host A lanes: /Users/michaeljabbour/dev/newtui-wt/<slug>
-    Host B lanes: /Users/michaeljabbour/dev/newtui-rust-wt/<slug>
+    Host A lanes: /Users/michaeljabbour/dev/tui-wt/<slug>
+    Host B lanes: /Users/michaeljabbour/dev/tui-rust-wt/<slug>
 
 MODELS: use claude-opus-4-8 for ALL delegated workers (claude-fable-5 refuses this
 autonomous porting work). You may route Rust implementation to a Rust-strong coder.
@@ -57,7 +57,7 @@ rows) and the keep/drop rationale, THEN proceed.
 PHASE 1 — MAX-PARALLEL BUILD.
 Build a dependency-aware WAVE plan and run it at maximum useful parallelism:
 - One self-delegated claude-opus-4-8 worker PER capability, each in its OWN git
-  worktree per targeted repo (Host A under newtui-wt/, Host B under newtui-rust-wt/).
+  worktree per targeted repo (Host A under tui-wt/, Host B under tui-rust-wt/).
 - All INDEPENDENT capabilities (disjoint files) run concurrently. Ordering
   constraints: (1) a split capability's client row starts only AFTER its backend PR
   is green (the client needs the protocol); (2) capabilities that touch the same file
@@ -77,8 +77,8 @@ Each worker performs the HGT slice (per opencode-transfer.dot):
      CI parity together (the local gate MUST equal what CI runs; never build-now-
      test-later). Regenerate goldens if a pure renderer changed.
   4. UNIT GATE — run the exact host gate(s) above for every targeted repo.
-  5. FORGE GATE — boot the REAL Python TUI (uv run amplifier-newtui --demo) and, for
-     both/split, the REAL Rust client (needs Host A `amplifier-newtui serve` up) via
+  5. FORGE GATE — boot the REAL Python TUI (uv run amplifier-tui --demo) and, for
+     both/split, the REAL Rust client (needs Host A `amplifier-tui serve` up) via
      forge, and assert the capability from the screen. An LLM never declares success;
      the terminal does.
   6. LAND — you (orchestrator) re-verify the gates INDEPENDENTLY, then commit + push +

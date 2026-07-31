@@ -1,4 +1,4 @@
-# Amplifier App — New TUI
+# Amplifier TUI
 
 A full-screen terminal UI for [Amplifier](https://github.com/microsoft/amplifier) — modes, steering, live subagent lanes, rewind, and cost tracking — built directly on amplifier-core and amplifier-foundation.
 
@@ -8,75 +8,73 @@ A full-screen terminal UI for [Amplifier](https://github.com/microsoft/amplifier
 
 ## Install
 
-This app is a front-end for [Amplifier](https://github.com/microsoft/amplifier) — install the platform first, then this app. Like Amplifier, it is developed and tested on macOS, Linux, and WSL. You need `git`; `uv` fetches a suitable Python (3.12+) automatically.
-
-### 1. Install uv
-
 ```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -LsSf https://astral.sh/uv/install.sh | sh                            # 1. get uv (skip if you have it)
+uv tool install git+https://github.com/michaeljabbour/amplifier-app-tui   # 2. install the app
+amplifier-tui init                                                         # 3. pick a provider, save an API key
+amplifier-tui                                                              # 4. go
 ```
 
-### 2. Deploy Amplifier
+That's it. `uv` fetches a suitable Python (3.12+) automatically, and the install pins the tested `amplifier-core` / `amplifier-foundation` versions. Developed and tested on macOS, Linux, and WSL; you need `git`.
 
-*Already have Amplifier set up? Skip to step 3.*
+- **No API key yet?** `amplifier-tui --demo` runs the full UI on a scripted session — free, offline, zero credentials. When you're ready, keys come from your provider (e.g. [console.anthropic.com](https://console.anthropic.com/settings/keys) — the packaged bundle uses Anthropic by default).
+- **Already have `ANTHROPIC_API_KEY` exported?** Skip `init` — the app reads your environment directly (env vars win over saved keys).
+- **`amplifier-tui: command not found`?** Run `uv tool update-shell` and restart your terminal.
+- **Something off?** `amplifier-tui doctor` checks install, PATH, and settings health (exit 0 = ready) and explains each fix. It doesn't check credentials; a missing key surfaces at first real launch (`--demo` never needs one).
+
+Credentials and settings live in `~/.amplifier/` (`keys.env`, `settings.yaml`) — the same configuration the full [Amplifier](https://github.com/microsoft/amplifier) platform uses, in both directions: if you already run Amplifier, the TUI picks up your setup with zero extra configuration.
+
+### Optional: the full Amplifier platform
+
+The TUI bundles everything it needs, but the `amplifier` CLI itself (bundles, sessions, agents — see the [Amplifier README](https://github.com/microsoft/amplifier)) is one command away and shares the same `~/.amplifier/` configuration:
 
 ```sh
 uv tool install git+https://github.com/microsoft/amplifier
-amplifier init     # first-time wizard: pick a provider, save credentials
+amplifier init
 ```
 
-You'll need an API key for your provider (e.g. [console.anthropic.com](https://console.anthropic.com/settings/keys) — the packaged bundle uses Anthropic by default). If `amplifier` isn't found after install, run `uv tool update-shell` and restart your terminal.
-
-`amplifier init` writes your provider credentials and settings to `~/.amplifier/` (`keys.env`, `settings.yaml`) — **this app reads the same configuration**, so once Amplifier works, the TUI works. It also gives you the `amplifier` CLI itself (bundles, sessions, agents — see the [Amplifier README](https://github.com/microsoft/amplifier)).
-
-Already have `ANTHROPIC_API_KEY` exported in your shell? You can skip `amplifier init` — the app reads your environment directly (env vars win over `keys.env`).
-
-### 3. Install this app
+### From a clone (development)
 
 ```sh
-git clone https://github.com/michaeljabbour/amplifier-app-newtui
-cd amplifier-app-newtui
-uv sync            # installs everything, incl. pinned amplifier-core / amplifier-foundation
+git clone https://github.com/michaeljabbour/amplifier-app-tui
+cd amplifier-app-tui
+uv sync                       # installs everything, incl. pinned amplifier-core / amplifier-foundation
+uv run amplifier-tui doctor   # verify: install, PATH, settings health; exit 0 = ready
+uv run amplifier-tui --demo   # try it offline
 ```
 
-### 4. Verify
-
-```sh
-uv run amplifier-newtui doctor   # checks install, PATH, settings health; exit 0 = ready
-uv run amplifier-newtui --demo   # full UI on a scripted session — free, offline, zero credentials
-uv run amplifier-newtui          # a real session (talks to your provider — API usage costs money)
-```
-
-If `doctor` reports findings, it explains each fix. Note that it checks install/PATH/settings health — not credentials; a missing API key surfaces at first real launch (`--demo` never needs one).
+`uv run` works inside the clone, but for daily use prefer the tool install — it gives the app a durable environment, so bundle modules install **once and persist** instead of re-deriving on a volatile project venv at every launch (`uv tool install /path/to/amplifier-app-tui` works on a local clone too).
 
 ## Run
 
 ```sh
-uv run amplifier-newtui            # launch the full-screen TUI (real session)
-uv run amplifier-newtui --demo     # launch with the scripted DemoRuntime (no credentials needed)
+amplifier-tui            # launch the full-screen TUI (real session — talks to your provider)
+amplifier-tui --demo     # launch with the scripted DemoRuntime (no credentials needed)
 ```
+
+Sessions are stored per project directory — `cd` into your project and launch. (Inside a clone without a tool install, prefix commands with `uv run`.)
 
 Options and subcommands:
 
 ```sh
-uv run amplifier-newtui --bundle NAME_OR_URI   # pick a bundle (default: settings/bundled)
-uv run amplifier-newtui doctor                 # setup checkup; exit 1 when findings exist
-uv run amplifier-newtui init                   # set up a provider key in ~/.amplifier/keys.env
-uv run amplifier-newtui sessions               # list stored session ids for this project
-uv run amplifier-newtui resume SESSION_ID      # relaunch the TUI resuming a stored session
-uv run amplifier-newtui run "PROMPT"           # execute one prompt headlessly, print the response
-printf 'PROMPT\n' | uv run amplifier-newtui run # stdin one-shot
-uv run amplifier-newtui run --output-format json "PROMPT"       # JSON-only stdout
-uv run amplifier-newtui run --output-format json-trace "PROMPT" # JSON + normalized event trace
-uv run amplifier-newtui run --output-format jsonl "PROMPT"      # live versioned event stream
-uv run amplifier-newtui allowed-dirs add ../shared --project     # persistent write capability
-uv run amplifier-newtui denied-dirs add .git --project           # persistent write block
-uv run amplifier-newtui bundle list            # bundles from the shared registry (--all incl. deps)
-uv run amplifier-newtui bundle use NAME        # set the active bundle (--global/--project/--local)
-uv run amplifier-newtui update --check-only     # check the mounted bundles/modules for updates
+amplifier-tui --bundle NAME_OR_URI   # pick a bundle (default: settings/bundled)
+amplifier-tui doctor                 # setup checkup; exit 1 when findings exist
+amplifier-tui init                   # set up a provider key in ~/.amplifier/keys.env
+amplifier-tui sessions               # list stored session ids for this project
+amplifier-tui resume SESSION_ID      # relaunch the TUI resuming a stored session
+amplifier-tui run "PROMPT"           # execute one prompt headlessly, print the response
+printf 'PROMPT\n' | amplifier-tui run # stdin one-shot
+amplifier-tui run --output-format json "PROMPT"       # JSON-only stdout
+amplifier-tui run --output-format json-trace "PROMPT" # JSON + normalized event trace
+amplifier-tui run --output-format jsonl "PROMPT"      # live versioned event stream
+amplifier-tui allowed-dirs add ../shared --project     # persistent write capability
+amplifier-tui denied-dirs add .git --project           # persistent write block
+amplifier-tui bundle list            # bundles from the shared registry (--all incl. deps)
+amplifier-tui bundle use NAME        # set the active bundle (--global/--project/--local)
+amplifier-tui update --check-only    # check the mounted bundles/modules for updates
 ```
 
-A *bundle* is a packaged agent configuration — provider + tools + agents + behaviors. The app ships one (`newtui`), so you never need `--bundle` to get started. The `bundle` group (`list · show · use · clear · current · add · remove · update`) reads and writes the same registry and settings the reference `amplifier` CLI uses.
+A *bundle* is a packaged agent configuration — provider + tools + agents + behaviors. The app ships one (`tui`), so you never need `--bundle` to get started. The `bundle` group (`list · show · use · clear · current · add · remove · update`) reads and writes the same registry and settings the reference `amplifier` CLI uses.
 
 JSON modes reserve stdout for machine-readable output; module diagnostics go to stderr.
 `json` and `json-trace` emit one document, while `jsonl` flushes `session.started`,
@@ -95,20 +93,6 @@ tool hard-enforces write paths; the kernel keeps approval and execution path pol
 separate decisions, with `.git`, `.agents`, `.codex`, and `AGENTS.md` protected by default.
 Bundle-native modes such as `careful` can add confirmation policy without weakening that
 path boundary.
-
-### Use it on your own projects
-
-`uv run` works inside this clone, but for real use **install it as a tool** — a
-tool install gives the app a durable environment, so bundle modules install
-**once and persist** instead of being re-derived on every launch. `uv run` re-syncs
-a volatile project venv each time, which puts a fragile module-install burst on the
-boot-critical path; the tool install is the reliable path.
-
-```sh
-uv tool install /path/to/amplifier-app-newtui
-cd ~/code/my-project
-amplifier-newtui                   # sessions are stored per project directory
-```
 
 ### Faster boots (composing fewer bundles)
 
@@ -133,7 +117,7 @@ ever skips:
 /bundle load NAME       # compose a deferred bundle into the live session
 
 # out-of-session
-amplifier-newtui bundle warm NAME     # install a bundle's modules ahead of time
+amplifier-tui bundle warm NAME     # install a bundle's modules ahead of time
 ```
 
 With no `bundle.deferred` set, boot composes exactly what it did before — deferral is
@@ -143,15 +127,15 @@ single-slot modules — providers, orchestrator, context — attach at the next 
 ### Updating / uninstalling
 
 ```sh
-git pull && uv sync                          # update this app (clone workflow)
-uv tool install --reinstall /path/to/clone   # update this app (tool install workflow)
-amplifier-newtui update                       # update the mounted bundles/modules (SHA-compare + re-fetch)
-uv tool upgrade amplifier                    # update the Amplifier platform
-uv tool uninstall amplifier-app-newtui       # remove this app (tool install)
+uv tool install --reinstall git+https://github.com/michaeljabbour/amplifier-app-tui  # update this app
+amplifier-tui update                         # update the mounted bundles/modules (SHA-compare + re-fetch)
+uv tool upgrade amplifier                    # update the Amplifier platform (if installed)
+uv tool uninstall amplifier-app-tui          # remove this app
 uv tool uninstall amplifier                  # remove the Amplifier platform
+git pull && uv sync                          # update a development clone instead
 ```
 
-`amplifier-newtui update --check-only` reports available bundle/module updates without
+`amplifier-tui update --check-only` reports available bundle/module updates without
 changing anything; `--force` runs `uv cache clean` first so `@main` sources genuinely re-fetch.
 
 ## Providers
@@ -186,7 +170,7 @@ The app requests progressive keyboard enhancement (kitty keyboard protocol + xte
 ## Layout
 
 ```
-src/amplifier_app_newtui/   the installable app (kernel / model / ui / commands)
+src/amplifier_app_tui/   the installable app (kernel / model / ui / commands)
 tests/                      offline test suite (no credentials required)
 docs/                       user guide, architecture, design spec, ADRs (docs/notes/ is local scratch, gitignored)
 scripts/                    maintenance utilities (README screenshot regen)
@@ -211,13 +195,13 @@ bundle.md                   the repo's amplifier bundle (packaged copy kept byte
 
 ## Architecture
 
-Four strictly-layered packages ([ADR-0007](docs/decisions/ADR-0007-newtui-ground-up-architecture.md)): `ui/` and `commands/` depend on `model/`; `kernel/` is the **only** package that touches amplifier-core/foundation and never imports Textual; the UI sees the kernel exclusively through normalized `UIEvent`s. The full walk-through — boot, event pipeline, governance, subagents, persistence — is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Four strictly-layered packages ([ADR-0007](docs/decisions/ADR-0007-tui-ground-up-architecture.md)): `ui/` and `commands/` depend on `model/`; `kernel/` is the **only** package that touches amplifier-core/foundation and never imports Textual; the UI sees the kernel exclusively through normalized `UIEvent`s. The full walk-through — boot, event pipeline, governance, subagents, persistence — is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-![newtui architecture and topology](docs/diagrams/newtui-architecture.png)
+![tui architecture and topology](docs/diagrams/tui-architecture.png)
 
-![newtui data flow](docs/diagrams/newtui-dataflow.png)
+![tui data flow](docs/diagrams/tui-dataflow.png)
 
-![newtui and Amplifier integration](docs/diagrams/newtui-amplifier-integration.png)
+![tui and Amplifier integration](docs/diagrams/tui-amplifier-integration.png)
 
 ## Development
 

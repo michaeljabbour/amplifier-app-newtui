@@ -19,7 +19,7 @@ function records(): JsonlRecord[] {
       timestamp: "2026-01-01T00:00:00Z",
       type: "session.started",
       session_id: "s1",
-      bundle: "newtui",
+      bundle: "tui",
       model: "test-model",
     },
     {
@@ -42,7 +42,7 @@ function records(): JsonlRecord[] {
 }
 
 async function fakeCli(payload: JsonlRecord[], exitCode = 0): Promise<{ dir: string; script: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "newtui-sdk-"));
+  const dir = await mkdtemp(join(tmpdir(), "tui-sdk-"));
   const script = join(dir, "fake-cli.mjs");
   await writeFile(
     script,
@@ -67,7 +67,7 @@ test("run sends the prompt over stdin and collects typed events", async () => {
     const result = await client.run("private prompt\nwith newline");
     assert.equal(result.response, "private prompt\nwith newline");
     assert.equal(result.sessionId, "s1");
-    assert.equal(result.bundle, "newtui");
+    assert.equal(result.bundle, "tui");
     assert.deepEqual(result.events.map((record) => record.event.kind), ["prompt_submit"]);
   } finally {
     await rm(fixture.dir, { recursive: true, force: true });

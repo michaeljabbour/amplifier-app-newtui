@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from amplifier_app_newtui.kernel.demo import (
+from amplifier_app_tui.kernel.demo import (
     AGENTS_END_NOTICE,
     AGENTS_PLAN_STEPS,
     APPROVAL_OPTIONS,

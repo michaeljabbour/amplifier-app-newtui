@@ -16,7 +16,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.selection import SELECT_ALL
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     Answer,
     EvidenceBlock,
     Narration,
@@ -30,11 +30,11 @@ from amplifier_app_newtui.model.blocks import (
     TurnRule,
     UserLine,
 )
-from amplifier_app_newtui.model.evidence import EvidenceLink
-from amplifier_app_newtui.ui.live_tail import answer_spans
-from amplifier_app_newtui.ui.needs_you import NeedsYouList
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
-from amplifier_app_newtui.ui.transcript import (
+from amplifier_app_tui.model.evidence import EvidenceLink
+from amplifier_app_tui.ui.live_tail import answer_spans
+from amplifier_app_tui.ui.needs_you import NeedsYouList
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.transcript import (
     BlockWidget,
     CloseEvidence,
     CopyCodeFence,
@@ -392,9 +392,9 @@ async def test_resize_reflow_deferred_while_streaming_then_forced_once() -> None
 async def test_working_status_widget_pulses_spinner() -> None:
     from decimal import Decimal  # noqa: F401
 
-    from amplifier_app_newtui.model.blocks import WorkingStatus
-    from amplifier_app_newtui.model.turn import TurnTelemetry
-    from amplifier_app_newtui.ui.transcript import SPINNER_INTERVAL_SECONDS
+    from amplifier_app_tui.model.blocks import WorkingStatus
+    from amplifier_app_tui.model.turn import TurnTelemetry
+    from amplifier_app_tui.ui.transcript import SPINNER_INTERVAL_SECONDS
 
     # Mockup runTurn: the working-line glyph advances once per second
     # inside the 1000ms tick (the 260ms spinTimer is the title bar's).

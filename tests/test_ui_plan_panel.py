@@ -3,9 +3,9 @@ docs/plans/2026-07-21-ambient-progress-design.md (D1/D2)."""
 
 from __future__ import annotations
 
-from amplifier_app_newtui.model.blocks import TodoItem
-from amplifier_app_newtui.ui.plan_panel import PLAN_MAX_ROWS, format_plan_lines
-from amplifier_app_newtui.ui.segments import line_plain
+from amplifier_app_tui.model.blocks import TodoItem
+from amplifier_app_tui.ui.plan_panel import PLAN_MAX_ROWS, format_plan_lines
+from amplifier_app_tui.ui.segments import line_plain
 
 
 def _items(*statuses: str) -> tuple[TodoItem, ...]:
@@ -79,7 +79,7 @@ def test_plan_panel_width_grows_to_fit_long_items_capped_at_a_third() -> None:
     """At 198 cols the fixed 37-col panel wrapped real plan items while the
     lanes half sat mostly empty — the panel should fit its content, capped
     at a third of the strip so the lanes stay dominant."""
-    from amplifier_app_newtui.ui.plan_panel import plan_panel_width
+    from amplifier_app_tui.ui.plan_panel import plan_panel_width
 
     long_items = (
         TodoItem(content="Fan out parallel agents to survey repo state", status="in_progress"),
@@ -95,7 +95,7 @@ def test_plan_panel_width_grows_to_fit_long_items_capped_at_a_third() -> None:
 
 
 def test_plan_panel_width_never_shrinks_below_the_mockup_37() -> None:
-    from amplifier_app_newtui.ui.plan_panel import PLAN_PANEL_WIDTH, plan_panel_width
+    from amplifier_app_tui.ui.plan_panel import PLAN_PANEL_WIDTH, plan_panel_width
 
     short_items = (
         TodoItem(content="scan provider docs", status="completed"),

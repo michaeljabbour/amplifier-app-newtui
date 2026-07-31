@@ -26,7 +26,7 @@ focused agent's stream. The bottom strip splits horizontally: LanesPanel (left) 
 (right).
 
 ```
-┌─ Amplifier · newtui ──────────────────────────────────── main · $0.42 · ⏱ 1:12 ─┐
+┌─ Amplifier · tui ──────────────────────────────────── main · $0.42 · ⏱ 1:12 ─┐
 │                                                                                  │
 │  ❯ [auto] Spin up a few different agents to figure out what this repo does.      │
 │                                                                                  │

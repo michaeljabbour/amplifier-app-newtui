@@ -1,4 +1,4 @@
-"""``amplifier-newtui routing`` group wiring (click CliRunner).
+"""``amplifier-tui routing`` group wiring (click CliRunner).
 
 Admin logic is unit-tested in ``test_kernel_routing_admin``; this covers the
 CLI plumbing (help/subcommands, list table, use roundtrip + unknown reject)
@@ -13,8 +13,8 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel import bundle_admin
-from amplifier_app_newtui.main import main
+from amplifier_app_tui.kernel import bundle_admin
+from amplifier_app_tui.main import main
 
 
 def _seed_matrix(home: Path, name: str, roles: dict) -> None:
@@ -249,6 +249,6 @@ def test_routing_manage_empty(tmp_path: Path, monkeypatch) -> None:
 
 
 def routing_admin_load(tmp_path: Path) -> dict:
-    from amplifier_app_newtui.kernel import routing_admin
+    from amplifier_app_tui.kernel import routing_admin
 
     return routing_admin.load_all_matrices(routing_admin.discover_matrix_files(tmp_path / "home"))

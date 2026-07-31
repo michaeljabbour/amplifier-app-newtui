@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.commands.improve import (
+from amplifier_app_tui.commands.improve import (
     ApprovalJournal,
     ApprovalTally,
     OverriddenDenial,
@@ -13,7 +13,7 @@ from amplifier_app_newtui.commands.improve import (
     improve_proposals,
     trust_slot_proposals,
 )
-from amplifier_app_newtui.model.trust import CapabilityClass, DenialLog
+from amplifier_app_tui.model.trust import CapabilityClass, DenialLog
 
 
 def test_allowlist_requires_every_ask_approved() -> None:

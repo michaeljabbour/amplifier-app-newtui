@@ -1,4 +1,4 @@
-# AGENTS.md — amplifier-app-newtui
+# AGENTS.md — amplifier-app-tui
 
 Guidance for AI coding agents working in this repo (the Amplifier full-screen
 Textual TUI). The authoritative development guide is
@@ -21,7 +21,7 @@ CI runs exactly: `uv sync --frozen` → `ruff check .` → `pyright src/` → `p
   amplifier-core/foundation; `kernel/` never imports Textual (details:
   [docs/ARCHITECTURE.md §1](docs/ARCHITECTURE.md)).
 - **Bundle byte-identity** — `bundle.md` (repo root) and
-  `src/amplifier_app_newtui/data/bundles/newtui.md` must stay byte-identical;
+  `src/amplifier_app_tui/data/bundles/tui.md` must stay byte-identical;
   after editing one, copy it over the other.
 - **Never mount printing hooks** (`hooks-streaming-ui` and friends) in the
   bundle — they write ANSI to stdout and corrupt the Textual screen.

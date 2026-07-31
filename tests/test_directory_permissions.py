@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from amplifier_app_newtui.kernel.bundle_admin import settings_paths
-from amplifier_app_newtui.kernel.directory_permissions import (
+from amplifier_app_tui.kernel.bundle_admin import settings_paths
+from amplifier_app_tui.kernel.directory_permissions import (
     WRITE_BOUNDARY_DEGRADE_NOTICE,
     DirectoryEntry,
     DirectoryPolicy,

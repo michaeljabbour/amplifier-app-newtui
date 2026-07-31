@@ -3,7 +3,7 @@ thread + event loop, and every interaction marshals across.
 
 Seam: ``_thread_body`` lazily does ``from ..kernel.runtime import
 RealRuntime`` — monkeypatching
-``amplifier_app_newtui.kernel.runtime.RealRuntime`` therefore swaps in
+``amplifier_app_tui.kernel.runtime.RealRuntime`` therefore swaps in
 :class:`FakeRealRuntime` at thread-boot time, so the REAL marshalling
 paths (``call_soon_threadsafe`` / ``run_coroutine_threadsafe``) run
 against a recording fake.
@@ -29,15 +29,15 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 
-from amplifier_app_newtui.kernel.compaction import CompactionConfig
-from amplifier_app_newtui.kernel.events import Notification, PromptSubmit
-from amplifier_app_newtui.kernel.rewind import RewindError
-from amplifier_app_newtui.kernel.session_ops import ModelListing, StatusInfo
-from amplifier_app_newtui.model.config import default_config_state
-from amplifier_app_newtui.model.trust import CapabilityClass, TrustDecision
-from amplifier_app_newtui.ui.runtime_adapter import RealRuntimeAdapter, _AppLoopQueue
+from amplifier_app_tui.kernel.compaction import CompactionConfig
+from amplifier_app_tui.kernel.events import Notification, PromptSubmit
+from amplifier_app_tui.kernel.rewind import RewindError
+from amplifier_app_tui.kernel.session_ops import ModelListing, StatusInfo
+from amplifier_app_tui.model.config import default_config_state
+from amplifier_app_tui.model.trust import CapabilityClass, TrustDecision
+from amplifier_app_tui.ui.runtime_adapter import RealRuntimeAdapter, _AppLoopQueue
 
-SEAM = "amplifier_app_newtui.kernel.runtime.RealRuntime"
+SEAM = "amplifier_app_tui.kernel.runtime.RealRuntime"
 
 # ---------------------------------------------------------------------------
 # Fakes (surfaces pinned by the test spec §3)

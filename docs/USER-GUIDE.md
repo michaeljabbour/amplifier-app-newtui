@@ -10,20 +10,20 @@ rewind, and every key and command. For install/provider setup see the
 ## 1. Launching
 
 ```sh
-uv run amplifier-newtui              # full-screen TUI, real session
-uv run amplifier-newtui --demo       # scripted demo — no credentials needed
-uv run amplifier-newtui --bundle B   # pick a bundle by name or URI
-uv run amplifier-newtui sessions     # list stored sessions for this project
-uv run amplifier-newtui resume ID    # resume a stored session
-uv run amplifier-newtui run "PROMPT" # headless one-shot, prints the answer
-printf 'PROMPT\n' | uv run amplifier-newtui run # stdin one-shot
-uv run amplifier-newtui run --output-format json "PROMPT" # machine-readable stdout
-uv run amplifier-newtui run --output-format jsonl "PROMPT" # live versioned JSONL events
-uv run amplifier-newtui doctor       # setup checkup (exit 1 when findings exist)
-uv run amplifier-newtui init         # set up a provider key in ~/.amplifier/keys.env
-uv run amplifier-newtui bundle list  # bundles from the shared registry (--all for deps)
-uv run amplifier-newtui bundle use B # set the active bundle (--global/--project/--local)
-uv run amplifier-newtui update       # update the mounted bundles/modules (--check-only/--force)
+uv run amplifier-tui              # full-screen TUI, real session
+uv run amplifier-tui --demo       # scripted demo — no credentials needed
+uv run amplifier-tui --bundle B   # pick a bundle by name or URI
+uv run amplifier-tui sessions     # list stored sessions for this project
+uv run amplifier-tui resume ID    # resume a stored session
+uv run amplifier-tui run "PROMPT" # headless one-shot, prints the answer
+printf 'PROMPT\n' | uv run amplifier-tui run # stdin one-shot
+uv run amplifier-tui run --output-format json "PROMPT" # machine-readable stdout
+uv run amplifier-tui run --output-format jsonl "PROMPT" # live versioned JSONL events
+uv run amplifier-tui doctor       # setup checkup (exit 1 when findings exist)
+uv run amplifier-tui init         # set up a provider key in ~/.amplifier/keys.env
+uv run amplifier-tui bundle list  # bundles from the shared registry (--all for deps)
+uv run amplifier-tui bundle use B # set the active bundle (--global/--project/--local)
+uv run amplifier-tui update       # update the mounted bundles/modules (--check-only/--force)
 ```
 
 `bundle` also has `show · current · clear · add · remove · update`; run
@@ -213,7 +213,7 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 Amplifier session through the coordinator (the same calls the reference CLI
 makes). **`/model`** switches the mounted provider's model in place;
 **`/compact`** and **`/clear`** drive the context module directly.
-The packaged newtui bundle also compacts automatically at 80% of its 300k
+The packaged tui bundle also compacts automatically at 80% of its 300k
 window. Override `context.auto_compact`, `context.compact_threshold`, or
 `context.max_tokens` in settings; `/status` shows the effective policy and
 whether accounting is provider-observed or estimated. `/context` uses the effective
@@ -229,7 +229,7 @@ Discovered skills additionally register as first-class commands: `/cranky-old-sa
 in the palette, in the help listing, and at the prompt — and loads that skill.
 
 **Directory capabilities.** The project root is always an implicit allowed write path.
-Top-level `amplifier-newtui allowed-dirs` / `denied-dirs` commands persist global, project,
+Top-level `amplifier-tui allowed-dirs` / `denied-dirs` commands persist global, project,
 or local settings; the slash commands change the current session immediately and persist
 under that session for resume. Permission lists union across scopes, denied paths win, and
 the mounted filesystem tool is the hard enforcement point. `.git`, `.agents`, `.codex`,
@@ -370,7 +370,7 @@ and checkpoints intact.
 
 | Symptom | Try |
 |---|---|
-| Boot fails with a provider error | `uv run amplifier-newtui doctor` — usually missing keys in `~/.amplifier/keys.env` |
+| Boot fails with a provider error | `uv run amplifier-tui doctor` — usually missing keys in `~/.amplifier/keys.env` |
 | shift+enter sends instead of queueing | legacy terminal — use **alt+enter** |
 | Copy does nothing over SSH | enable the iTerm2 clipboard setting above (locally the OS clipboard tool is also used, so this mostly bites remote sessions) |
 | Some tools missing at start | the banner will say so — the bundle partially mounted; doctor explains |

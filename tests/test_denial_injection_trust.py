@@ -13,13 +13,13 @@ Root cause is upstream: three independent housekeeping hooks
 inject a benign, ephemeral ``<system-reminder source="...">`` block, and the
 Claude-Code convention on the first two literally says "do not mention this
 to the user / process silently." Co-located with a no-tools denial they read
-as one adversarial injection. newtui neither authors nor concatenates any of
-it. These tests lock in newtui's side of the trust boundary:
+as one adversarial injection. tui neither authors nor concatenates any of
+it. These tests lock in tui's side of the trust boundary:
 
 * injected reminders — *including* the attributed ``source="..."`` form real
   hooks emit — never replay into the transcript as a user turn;
 * a tool denial that has absorbed injected concealment text is still shown to
-  the user verbatim (newtui never suppresses user-facing output on a
+  the user verbatim (tui never suppresses user-facing output on a
   reminder's say-so).
 """
 
@@ -27,15 +27,15 @@ from __future__ import annotations
 
 import logging
 
-from amplifier_app_newtui.kernel.reminder_trust import (
+from amplifier_app_tui.kernel.reminder_trust import (
     has_concealment_directive,
     is_injected_reminder,
     reminder_source,
 )
-from amplifier_app_newtui.kernel.runtime import restored_history
-from amplifier_app_newtui.model.blocks import Blocked
-from amplifier_app_newtui.ui.segments import lines_plain
-from amplifier_app_newtui.ui.transcript_render import render_block
+from amplifier_app_tui.kernel.runtime import restored_history
+from amplifier_app_tui.model.blocks import Blocked
+from amplifier_app_tui.ui.segments import lines_plain
+from amplifier_app_tui.ui.transcript_render import render_block
 
 # The exact reminder envelopes the three upstream hooks emit (verbatim shape
 # from the installed modules) — the fixtures the trust boundary must handle.
@@ -119,7 +119,7 @@ def test_attributed_reminders_are_dropped_from_replay(caplog) -> None:
         {"role": "system", "content": MODE_REMINDER},  # system role never replays
         {"role": "assistant", "content": [{"type": "text", "text": "Here's what I found."}]},
     ]
-    with caplog.at_level(logging.INFO, logger="amplifier_app_newtui.kernel.runtime"):
+    with caplog.at_level(logging.INFO, logger="amplifier_app_tui.kernel.runtime"):
         pairs = restored_history(transcript)
 
     # Only the genuine human turn and the assistant prose survive; no injected
@@ -141,7 +141,7 @@ def test_attributed_reminders_are_dropped_from_replay(caplog) -> None:
 
 def test_denial_with_injected_concealment_still_renders_to_user() -> None:
     """A denial whose reason/continuation absorbed an injected 'do not tell
-    the user' payload is still shown in full — newtui never honors a
+    the user' payload is still shown in full — tui never honors a
     reminder's say-so to suppress user-facing output."""
     block = Blocked(
         id="d1",

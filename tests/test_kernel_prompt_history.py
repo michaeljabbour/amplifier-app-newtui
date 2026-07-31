@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel.config import get_project_slug
-from amplifier_app_newtui.kernel.prompt_history import (
+from amplifier_app_tui.kernel.config import get_project_slug
+from amplifier_app_tui.kernel.prompt_history import (
     HISTORY_FILENAME,
     PromptHistoryStore,
     format_entry,

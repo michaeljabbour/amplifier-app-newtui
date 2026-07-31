@@ -1,7 +1,7 @@
 """Regenerate the README screenshot (docs/images/demo-session.svg).
 
 Boots the real app headlessly on the offline DemoRuntime — the same
-``NewTuiApp`` + ``DemoRuntimeAdapter`` pairing the flow tests use, driven
+``TuiApp`` + ``DemoRuntimeAdapter`` pairing the flow tests use, driven
 through Textual's Pilot. The scripted seed turn replays on boot, then the
 build prompt is typed so a second turn (tool digests, recap, answer,
 shipped rule, footer cost) completes before the SVG screenshot is saved.
@@ -18,9 +18,9 @@ import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
-from amplifier_app_newtui.kernel.demo import BUILD_PROMPT
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.kernel.demo import BUILD_PROMPT
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO_ROOT / "docs" / "images"
@@ -39,7 +39,7 @@ async def _wait_for(pilot, predicate: Callable[[], object], *, tries: int = 200)
 
 async def main() -> None:
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
 
         def rules() -> int:

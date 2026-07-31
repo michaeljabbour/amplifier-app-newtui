@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel import stats
-from amplifier_app_newtui.kernel.persistence import SessionStore
+from amplifier_app_tui.kernel import stats
+from amplifier_app_tui.kernel.persistence import SessionStore
 
 # claude-sonnet-4 offline fallback price: in 0.003/1k, out 0.015/1k.
 # 1000 in + 500 out -> 0.003 + 0.0075 = 0.0105 per record.
@@ -32,7 +32,7 @@ def _seed(
     *,
     usages: list[dict[str, object]],
     messages: int = 0,
-    bundle: str = "newtui",
+    bundle: str = "tui",
     mtime: float | None = None,
 ) -> None:
     transcript = [{"role": "user", "content": f"m{i}"} for i in range(messages)]
@@ -190,7 +190,7 @@ def test_empty_report_is_zeroed_with_window_days(store: SessionStore) -> None:
 
 
 def test_malformed_usage_record_skipped(store: SessionStore) -> None:
-    store.save("sess", [], {"session_id": "sess", "bundle": "newtui"})
+    store.save("sess", [], {"session_id": "sess", "bundle": "tui"})
     store.append_event("sess", {"kind": "provider_response_usage", "input_tokens": "not-an-int"})
     store.append_event("sess", {"kind": "provider_response_usage", **_u()})
 

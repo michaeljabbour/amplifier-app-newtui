@@ -8,7 +8,7 @@ older call sites still import under their historical names.
 
 from __future__ import annotations
 
-from amplifier_app_newtui.model.formatting import (
+from amplifier_app_tui.model.formatting import (
     format_tokens_compact,
     format_tokens_k,
 )
@@ -41,8 +41,8 @@ def test_surfaces_diverge_on_the_same_count() -> None:
 
 
 def test_historical_reexports_share_the_one_implementation() -> None:
-    from amplifier_app_newtui.commands.context import format_tokens
-    from amplifier_app_newtui.kernel.demo import format_k_tokens
+    from amplifier_app_tui.commands.context import format_tokens
+    from amplifier_app_tui.kernel.demo import format_k_tokens
 
     assert format_tokens is format_tokens_compact
     assert format_k_tokens is format_tokens_k

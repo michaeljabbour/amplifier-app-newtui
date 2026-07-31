@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel import reset
+from amplifier_app_tui.kernel import reset
 
 
 def _populate(home: Path) -> Path:
@@ -276,7 +276,7 @@ def test_run_reset_removes_symlinked_entry_without_following(tmp_path: Path) -> 
 
 
 def test_reinstall_command_builds_uv_argv() -> None:
-    from amplifier_app_newtui.kernel import reset
+    from amplifier_app_tui.kernel import reset
 
     assert reset.reinstall_command("git+x") == ["uv", "tool", "install", "--reinstall", "git+x"]
     assert reset.reinstall_command()[-1] == reset.DEFAULT_INSTALL_SOURCE
@@ -285,7 +285,7 @@ def test_reinstall_command_builds_uv_argv() -> None:
 def test_reinstall_tool_reports_uv_missing(monkeypatch) -> None:
     import subprocess
 
-    from amplifier_app_newtui.kernel import reset
+    from amplifier_app_tui.kernel import reset
 
     def _raise(*a, **k):
         raise FileNotFoundError
@@ -298,7 +298,7 @@ def test_reinstall_tool_reports_uv_missing(monkeypatch) -> None:
 def test_reinstall_tool_success_and_failure(monkeypatch) -> None:
     import subprocess
 
-    from amplifier_app_newtui.kernel import reset
+    from amplifier_app_tui.kernel import reset
 
     class _OK:
         returncode = 0

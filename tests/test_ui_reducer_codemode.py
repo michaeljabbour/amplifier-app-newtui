@@ -12,11 +12,11 @@ the behavioral equivalent (src/ui/reducer.rs codemode_execute tests).
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import BlockIdAllocator, ToolLine
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.reducer import TranscriptReducer, codemode_execute_block
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import BlockIdAllocator, ToolLine
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.reducer import TranscriptReducer, codemode_execute_block
 
 from .test_ui_reducer_outcomes import FakeHost
 

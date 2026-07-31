@@ -14,9 +14,9 @@ from __future__ import annotations
 import pytest
 from textual import events
 
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.notifications import (
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.notifications import (
     ATTENTION_MIN_TURN_SECONDS,
     attention_needed,
     desktop_notifications_supported,
@@ -204,7 +204,7 @@ def test_write_desktop_notification_skips_when_no_real_terminal() -> None:
 
 
 def test_app_focus_events_flip_focus_flag() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     assert app._terminal_focused is True  # assumed focused until a blur
     app.on_app_blur(events.AppBlur())
     assert app._terminal_focused is False
@@ -217,7 +217,7 @@ def test_app_notify_attention_ladder_via_recording_driver(
 ) -> None:
     monkeypatch.setenv("AMPLIFIER_TERMINAL_NOTIFICATIONS", "force")
     monkeypatch.delenv("AMPLIFIER_NOTIFY", raising=False)
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     driver = RecordingDriver()
     app._driver = driver  # type: ignore[assignment]
     bells: list[int] = []

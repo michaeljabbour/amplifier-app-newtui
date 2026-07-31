@@ -8,16 +8,16 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.message import Message
 
-from amplifier_app_newtui.model.modes import get_mode
-from amplifier_app_newtui.ui.composer import (
+from amplifier_app_tui.model.modes import get_mode
+from amplifier_app_tui.ui.composer import (
     Composer,
     ComposerInput,
     ModeBadge,
     active_file_mention,
 )
-from amplifier_app_newtui.ui.file_mentions import FileMentionIntent
-from amplifier_app_newtui.ui.keymap import COMPOSER_PLACEHOLDER
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.file_mentions import FileMentionIntent
+from amplifier_app_tui.ui.keymap import COMPOSER_PLACEHOLDER
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
 class ComposerApp(App[None]):
@@ -237,7 +237,7 @@ def test_long_paste_collapses_to_stub_and_expands() -> None:
 
 @pytest.mark.asyncio
 async def test_staged_image_rides_submit_and_drops_when_placeholder_deleted() -> None:
-    from amplifier_app_newtui.kernel.clipboard import ImageAttachment
+    from amplifier_app_tui.kernel.clipboard import ImageAttachment
 
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
     app = ComposerApp()
@@ -318,7 +318,7 @@ async def test_immediate_identical_paste_replay_is_suppressed() -> None:
     """
     from textual import events
 
-    from amplifier_app_newtui.ui.composer import PASTE_DUPLICATE_WINDOW_SECONDS
+    from amplifier_app_tui.ui.composer import PASTE_DUPLICATE_WINDOW_SECONDS
 
     app = ComposerApp()
     async with app.run_test() as pilot:
@@ -428,10 +428,10 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
     binding copies whichever selection exists and confirms with a notice."""
     from textual.events import MouseDown, MouseMove, MouseUp
 
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     copied: list[str] = []
 
     def _fake_copy(text: str) -> None:
@@ -522,10 +522,10 @@ async def test_settled_drag_selection_copies_automatically() -> None:
     drag-selection must land on the clipboard by itself."""
     from textual.events import MouseDown, MouseMove, MouseUp
 
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     copied: list[str] = []
     app.copy_to_clipboard = lambda text: copied.append(text)  # type: ignore[method-assign]
     async with app.run_test(size=(120, 36)) as pilot:
@@ -570,11 +570,11 @@ async def test_transcript_selection_is_character_ranged() -> None:
     degrade the granularity back to lines."""
     from textual.events import MouseDown, MouseMove, MouseUp
 
-    from amplifier_app_newtui.model.blocks import Answer, Segment
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.model.blocks import Answer, Segment
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     # Keep the copy-on-settle reflex away from the real OS clipboard.
     app.copy_to_clipboard = lambda text: None  # type: ignore[method-assign]
     async with app.run_test(size=(120, 36)) as pilot:
@@ -631,9 +631,9 @@ async def test_native_clipboard_write_does_not_block_the_ui(monkeypatch) -> None
     import threading
     import time
 
-    from amplifier_app_newtui.ui import app_support
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.ui import app_support
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
     finished = threading.Event()
 
@@ -644,7 +644,7 @@ async def test_native_clipboard_write_does_not_block_the_ui(monkeypatch) -> None
 
     monkeypatch.setattr(app_support, "os_clipboard_available", lambda: True)
     monkeypatch.setattr(app_support, "os_clipboard_copy", slow_copy)
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.3)
         # Non-timing proof of non-blocking (replaces a wall-clock

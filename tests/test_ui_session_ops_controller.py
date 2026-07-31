@@ -18,10 +18,10 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.compaction import CompactionConfig
-from amplifier_app_newtui.kernel.session_ops import ModelListing, SkillInfo, StatusInfo
-from amplifier_app_newtui.model.blocks import BlockIdAllocator, TranscriptBlock
-from amplifier_app_newtui.ui.session_ops_controller import SessionOpsController
+from amplifier_app_tui.kernel.compaction import CompactionConfig
+from amplifier_app_tui.kernel.session_ops import ModelListing, SkillInfo, StatusInfo
+from amplifier_app_tui.model.blocks import BlockIdAllocator, TranscriptBlock
+from amplifier_app_tui.ui.session_ops_controller import SessionOpsController
 
 
 class _FakeAdapter:
@@ -318,7 +318,7 @@ def test_manage_mcp_add_usage(controller: SessionOpsController, host: _FakeHost)
 
 
 def test_manage_mcp_list(controller: SessionOpsController, host: _FakeHost, monkeypatch) -> None:
-    from amplifier_app_newtui.kernel import mcp_config
+    from amplifier_app_tui.kernel import mcp_config
 
     monkeypatch.setattr(mcp_config, "mcp_config_path", lambda: Path("/tmp/none.json"))
     monkeypatch.setattr(mcp_config, "read_servers", lambda path: {})

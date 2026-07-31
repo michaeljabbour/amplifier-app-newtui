@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from amplifier_app_newtui.kernel import bundle_admin, source_admin
+from amplifier_app_tui.kernel import bundle_admin, source_admin
 
 
 def _paths(tmp_path: Path):
@@ -97,10 +97,10 @@ def test_remove_force_module_only_leaves_bundle(tmp_path: Path) -> None:
 def test_add_preserves_other_settings_keys(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     path = bundle_admin.scope_file(paths, "global")
-    bundle_admin.write_scope(path, {"bundle": {"active": "newtui"}})
+    bundle_admin.write_scope(path, {"bundle": {"active": "tui"}})
     source_admin.add_source(paths, "module", "tool-x", "/src", "global")
     data = bundle_admin.read_scope(path)
-    assert data["bundle"] == {"active": "newtui"}  # untouched
+    assert data["bundle"] == {"active": "tui"}  # untouched
     assert data["sources"]["modules"] == {"tool-x": "/src"}
 
 

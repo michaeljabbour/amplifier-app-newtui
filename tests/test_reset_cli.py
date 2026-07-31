@@ -1,4 +1,4 @@
-"""``amplifier-newtui reset`` CLI wiring (click CliRunner).
+"""``amplifier-tui reset`` CLI wiring (click CliRunner).
 
 The path/data logic is unit-tested in ``test_kernel_reset``; this covers the
 command plumbing: the taxonomy listing, the dry-run/confirm/--yes guard flow,
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from amplifier_app_newtui.main import main
+from amplifier_app_tui.main import main
 
 
 def _populate(home: Path) -> Path:
@@ -150,21 +150,21 @@ def test_reset_reinstall_yes_invokes_reinstall(tmp_path: Path, monkeypatch) -> N
     home = _populate(tmp_path / ".amplifier")
     calls: list[str] = []
     monkeypatch.setattr(
-        "amplifier_app_newtui.kernel.reset.reinstall_tool",
-        lambda source: calls.append(source) or (True, "reinstalled newtui"),
+        "amplifier_app_tui.kernel.reset.reinstall_tool",
+        lambda source: calls.append(source) or (True, "reinstalled tui"),
     )
     result = CliRunner().invoke(
         main, ["reset", "--home", str(home), "-c", "cache", "--reinstall", "-y"]
     )
     assert result.exit_code == 0
     assert calls, "reinstall_tool should have been invoked"
-    assert "reinstalling newtui" in result.output
+    assert "reinstalling tui" in result.output
 
 
 def test_reset_reinstall_failure_exits_nonzero(tmp_path: Path, monkeypatch) -> None:
     home = _populate(tmp_path / ".amplifier")
     monkeypatch.setattr(
-        "amplifier_app_newtui.kernel.reset.reinstall_tool",
+        "amplifier_app_tui.kernel.reset.reinstall_tool",
         lambda source: (False, "uv not found on PATH"),
     )
     result = CliRunner().invoke(main, ["reset", "--home", str(home), "--reinstall", "-y"])

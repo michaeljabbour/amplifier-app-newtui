@@ -4,8 +4,8 @@ Status: Accepted
 Amended: 2026-07-16 — the default boot posture is **`auto`**, not `chat` (user directive;
 recorded in ADR-0007 §resolution 0 and DESIGN-SPEC §4). The "chat as the safe default"
 language below is superseded on that point.
-Implementation note (newtui): the ctrl-p permission-posture *cycle* described below
-(including the `bypass` posture) is not implemented in amplifier-app-newtui — ctrl+p
+Implementation note (tui): the ctrl-p permission-posture *cycle* described below
+(including the `bypass` posture) is not implemented in amplifier-app-tui — ctrl+p
 shows the current trust posture, and the five interaction modes are the only postures.
 
 ## Context

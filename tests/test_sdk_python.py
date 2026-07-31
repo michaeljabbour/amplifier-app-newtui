@@ -9,7 +9,7 @@ import pytest
 SDK_SRC = Path(__file__).parents[1] / "sdk" / "python" / "src"
 sys.path.insert(0, str(SDK_SRC))
 
-from amplifier_newtui_sdk import (  # noqa: E402
+from amplifier_tui_sdk import (  # noqa: E402
     AmplifierClient,
     AmplifierRunError,
     ProtocolError,
@@ -40,7 +40,7 @@ def _records() -> list[dict[str, object]]:
             "timestamp": "2026-01-01T00:00:00Z",
             "type": "session.started",
             "session_id": "s1",
-            "bundle": "newtui",
+            "bundle": "tui",
             "model": "test-model",
         },
         {
@@ -68,7 +68,7 @@ def test_python_sdk_runs_cli_over_stdin_and_collects_events(tmp_path: Path) -> N
     result = client.run("private prompt\nwith newline")
     assert result.response == "private prompt\nwith newline"
     assert result.session_id == "s1"
-    assert result.bundle == "newtui"
+    assert result.bundle == "tui"
     assert result.model == "test-model"
     assert [event["event"]["kind"] for event in result.events] == ["prompt_submit"]
 

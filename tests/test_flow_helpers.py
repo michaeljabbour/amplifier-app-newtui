@@ -1,6 +1,6 @@
 """Shared helpers for the end-to-end flow tests (``test_flow_*``).
 
-All flow tests drive the REAL app (``NewTuiApp``) over the DemoRuntime
+All flow tests drive the REAL app (``TuiApp``) over the DemoRuntime
 through Textual's Pilot — the UI cannot tell the demo from a real
 session (ADR-0007 §Runtimes). This module holds the polling helper, the
 keystroke typing helper and :class:`GatedDemoAdapter`, which parks the
@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
 SIZE = (120, 50)
 """Default Pilot screen size: everything in the short flows stays visible."""
@@ -36,7 +36,7 @@ async def type_text(pilot, text: str) -> None:
     await pilot.press(*("space" if ch == " " else ch for ch in text))
 
 
-async def set_mode(pilot, app: NewTuiApp, mode_id: str) -> None:
+async def set_mode(pilot, app: TuiApp, mode_id: str) -> None:
     """Put the idle app in *mode_id* via the real ``/mode`` command (§4).
 
     The app now BOOTS in auto mode (DESIGN-SPEC §4 amendment, ADR-0007
@@ -49,17 +49,17 @@ async def set_mode(pilot, app: NewTuiApp, mode_id: str) -> None:
     assert await wait_for(pilot, lambda: app.mode_id == mode_id)
 
 
-def blocks_of(app: NewTuiApp, kind: str) -> list:
+def blocks_of(app: TuiApp, kind: str) -> list:
     return [b for b in app.transcript.blocks if b.kind == kind]
 
 
-def rules(app: NewTuiApp) -> int:
+def rules(app: TuiApp) -> int:
     return sum(b.kind == "turn_rule" for b in app.transcript.blocks)
 
 
-def line_texts(app: NewTuiApp, width: int = 200) -> list[str]:
+def line_texts(app: TuiApp, width: int = 200) -> list[str]:
     """Every rendered transcript line as plain text (spec-string asserts)."""
-    from amplifier_app_newtui.ui.transcript import render_block
+    from amplifier_app_tui.ui.transcript import render_block
 
     return [
         "".join(segment.text for segment in line)
@@ -68,7 +68,7 @@ def line_texts(app: NewTuiApp, width: int = 200) -> list[str]:
     ]
 
 
-async def seed_done(pilot, app: NewTuiApp) -> None:
+async def seed_done(pilot, app: TuiApp) -> None:
     """Wait for the demo seed turn to finish (rule t1 cut, app idle)."""
     assert await wait_for(pilot, lambda: rules(app) >= 1 and not app.turn_active)
 

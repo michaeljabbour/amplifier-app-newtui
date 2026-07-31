@@ -6,7 +6,7 @@ import base64
 
 import pytest
 
-from amplifier_app_newtui.kernel.clipboard import (
+from amplifier_app_tui.kernel.clipboard import (
     ClipboardImageInjector,
     ImageAttachment,
     build_image_message,

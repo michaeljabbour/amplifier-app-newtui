@@ -4,14 +4,14 @@
 // RouteGate looks the issue up in pipelines/categories.tsv and routes it to one
 // of three treatments:
 //
-//   port     — donor study in amplifier-app-cli, re-express through newtui seams
+//   port     — donor study in amplifier-app-cli, re-express through tui seams
 //              (NEVER import/vendor/copy app-cli), gate on unit + forge
 //   internal — fix/refactor/feature; no donor step; gate on unit + forge
 //   decision — design doc in docs/plans/; gate on doc-exists + review; no forge
 //
 // Node types: box = LLM agent (claude-opus-4-8; fable-5 refuses this autonomous
 // work), parallelogram = deterministic tool node (LAST printed line routes edges).
-// Params supplied by the launcher bundle: $newtui_path, $donor_path, $forge_tool.
+// Params supplied by the launcher bundle: $tui_path, $donor_path, $forge_tool.
 //
 // Branch discipline: auto/<slug>, one issue per branch, one PR each, never main.
 
@@ -27,19 +27,19 @@ digraph backlog_attractor {
 
     // --- loop head: any work left? ---
     CheckLedger [shape=parallelogram,
-        tool_command="cd $newtui_path && test \"$(python3 pipelines/ledger.py earliest)\" = NONE && printf done || printf process"]
+        tool_command="cd $tui_path && test \"$(python3 pipelines/ledger.py earliest)\" = NONE && printf done || printf process"]
 
     // --- pick the earliest 'new' issue; capture issue + acceptance verbatim ---
     SelectIssue [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
-        prompt="Run `python3 pipelines/ledger.py earliest` in $newtui_path — it prints '<issue> <slug>'. Read the issue: `gh issue view <issue> -R michaeljabbour/amplifier-app-newtui`. Write (1) .ai/bk_current.md — issue, slug, capability summary, Acceptance section VERBATIM (derive criteria from the body if no explicit section); (2) .ai/bk_current.env — exactly `ISSUE=<issue>` and `SLUG=<slug>`. Delete .ai/bk_retries if present. $goal"]
+        prompt="Run `python3 pipelines/ledger.py earliest` in $tui_path — it prints '<issue> <slug>'. Read the issue: `gh issue view <issue> -R michaeljabbour/amplifier-app-tui`. Write (1) .ai/bk_current.md — issue, slug, capability summary, Acceptance section VERBATIM (derive criteria from the body if no explicit section); (2) .ai/bk_current.env — exactly `ISSUE=<issue>` and `SLUG=<slug>`. Delete .ai/bk_retries if present. $goal"]
 
     // --- deterministic routing via categories.tsv ---
     RouteGate [shape=parallelogram,
-        tool_command="cd $newtui_path && . .ai/bk_current.env && awk -F'\\t' -v i=$ISSUE '$1==i{print $2}' pipelines/categories.tsv | head -1"]
+        tool_command="cd $tui_path && . .ai/bk_current.env && awk -F'\\t' -v i=$ISSUE '$1==i{print $2}' pipelines/categories.tsv | head -1"]
 
     // --- fresh per-issue branch off origin/main (in a worktree, never the user's checkout) ---
     BranchSetup [shape=parallelogram,
-        tool_command="cd $newtui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
+        tool_command="cd $tui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
 
     // ============ decision treatment ============
     DraftDoc [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
@@ -47,7 +47,7 @@ digraph backlog_attractor {
     ReviewDoc [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
         prompt="Critique the new docs/plans/ doc in $work_tree against .ai/bk_current.md acceptance criteria: grounded evidence? real options? actionable plan? Write verdict PASS or a numbered fix list to .ai/bk_review.md, and print the verdict as your last line."]
     DocGate [shape=parallelogram,
-        tool_command="cd $work_tree && test -n \"$(git status --porcelain docs/plans/)\" && grep -q '^PASS' $newtui_path/.ai/bk_review.md && printf pass || printf fail"]
+        tool_command="cd $work_tree && test -n \"$(git status --porcelain docs/plans/)\" && grep -q '^PASS' $tui_path/.ai/bk_review.md && printf pass || printf fail"]
 
     // ============ port treatment (gene-transfer shape) ============
     LocateDonor [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
@@ -55,27 +55,27 @@ digraph backlog_attractor {
 
     // ============ shared implement path (port + internal) ============
     PlanWork [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
-        prompt="Read .ai/bk_current.md (+ .ai/bk_donor.md if present), docs/ARCHITECTURE.md, docs/decisions/ADR-0007-*. Design the change through newtui's kernel/model/ui/commands seams; name exact files, amplifier-core/foundation primitives to reuse, tests and goldens to add. Write .ai/bk_plan.md. THEN author .ai/bk_forge_check.sh: a bash probe using $forge_tool (env FORGE) that boots the real TUI (`uv run amplifier-newtui` in a forge pty, session name auto-<slug>) or runs the new CLI via forge exec, asserts the issue's acceptance behavior from screen/grep, exit 0 on pass. $goal"]
+        prompt="Read .ai/bk_current.md (+ .ai/bk_donor.md if present), docs/ARCHITECTURE.md, docs/decisions/ADR-0007-*. Design the change through tui's kernel/model/ui/commands seams; name exact files, amplifier-core/foundation primitives to reuse, tests and goldens to add. Write .ai/bk_plan.md. THEN author .ai/bk_forge_check.sh: a bash probe using $forge_tool (env FORGE) that boots the real TUI (`uv run amplifier-tui` in a forge pty, session name auto-<slug>) or runs the new CLI via forge exec, asserts the issue's acceptance behavior from screen/grep, exit 0 on pass. $goal"]
     Implement [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
         prompt="Read .ai/bk_plan.md including appended 'Fix N' sections. Implement in $work_tree on the current auto/<slug> branch. Add/extend tests; regenerate goldens for pure-renderer changes. ADR-0007-clean; never import amplifier-app-cli. Run `uv run ruff format .` before finishing, and give any NEW blind `except Exception:` a justified `# noqa: BLE001 — <reason>` (the BLE lint gate is live). Append changed files to .ai/bk_impl.log. $goal"]
     UnitValidate [shape=parallelogram,
-        tool_command="cd $work_tree && uv run ruff check . >/tmp/bk_lint 2>&1 && uv run ruff format --check . >/tmp/bk_fmt 2>&1 && uv run pyright src/ >/tmp/bk_types 2>&1 && uv run pytest -q --cov=src/amplifier_app_newtui --cov-report=term --cov-fail-under=85 >/tmp/bk_test 2>&1 && printf pass || printf fail"]
+        tool_command="cd $work_tree && uv run ruff check . >/tmp/bk_lint 2>&1 && uv run ruff format --check . >/tmp/bk_fmt 2>&1 && uv run pyright src/ >/tmp/bk_types 2>&1 && uv run pytest -q --cov=src/amplifier_app_tui --cov-report=term --cov-fail-under=85 >/tmp/bk_test 2>&1 && printf pass || printf fail"]
     ForgeValidate [shape=parallelogram,
-        tool_command="cd $work_tree && export FORGE=$forge_tool && python3 \"$FORGE\" doctor >/tmp/bk_doctor 2>&1 && bash $newtui_path/.ai/bk_forge_check.sh >/tmp/bk_forge 2>&1 && printf pass || printf fail"]
+        tool_command="cd $work_tree && export FORGE=$forge_tool && python3 \"$FORGE\" doctor >/tmp/bk_doctor 2>&1 && bash $tui_path/.ai/bk_forge_check.sh >/tmp/bk_forge 2>&1 && printf pass || printf fail"]
 
     // --- diagnose / bound retries ---
     AnalyzeFailure [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
         prompt="A gate failed. Read /tmp/bk_lint /tmp/bk_types /tmp/bk_test /tmp/bk_forge /tmp/bk_doctor (or .ai/bk_review.md for decision issues) and .ai/bk_impl.log. Diagnose root cause; append a numbered 'Fix N' section with concrete minimal changes to .ai/bk_plan.md. Do not edit source here. $goal"]
     RetryGate [shape=parallelogram,
-        tool_command="cd $newtui_path && n=$(cat .ai/bk_retries 2>/dev/null || echo 0); n=$((n+1)); echo $n > .ai/bk_retries; test $n -le 3 && printf retry || printf giveup"]
+        tool_command="cd $tui_path && n=$(cat .ai/bk_retries 2>/dev/null || echo 0); n=$((n+1)); echo $n > .ai/bk_retries; test $n -le 3 && printf retry || printf giveup"]
 
     // --- converged: commit, push, PR, ledger, comment ---
     Commit [shape=parallelogram,
-        tool_command="cd $work_tree && . $newtui_path/.ai/bk_current.env && git add -A -- ':!.ai' && git commit -q -m \"auto/$SLUG: close #$ISSUE via backlog attractor\" && git push -q -u origin HEAD && gh pr create --fill --base main --head auto/$SLUG --label auto-pipeline >/tmp/bk_pr 2>&1; cd $newtui_path && python3 pipelines/ledger.py update $ISSUE implemented >/dev/null && gh issue comment $ISSUE -b \"Landed by the backlog attractor pipeline; gates green. PR: $(tail -1 /tmp/bk_pr)\" >/dev/null && printf next"]
+        tool_command="cd $work_tree && . $tui_path/.ai/bk_current.env && git add -A -- ':!.ai' && git commit -q -m \"auto/$SLUG: close #$ISSUE via backlog attractor\" && git push -q -u origin HEAD && gh pr create --fill --base main --head auto/$SLUG --label auto-pipeline >/tmp/bk_pr 2>&1; cd $tui_path && python3 pipelines/ledger.py update $ISSUE implemented >/dev/null && gh issue comment $ISSUE -b \"Landed by the backlog attractor pipeline; gates green. PR: $(tail -1 /tmp/bk_pr)\" >/dev/null && printf next"]
 
     // --- could not converge: acknowledge + human handoff ---
     MarkBlocked [shape=parallelogram,
-        tool_command="cd $newtui_path && . .ai/bk_current.env && python3 pipelines/ledger.py update $ISSUE acknowledged >/dev/null && gh issue comment $ISSUE -b \"Backlog attractor could not converge after 3 attempts — needs a human. See branch auto/$SLUG and .ai/bk_plan.md.\" >/dev/null && printf next"]
+        tool_command="cd $tui_path && . .ai/bk_current.env && python3 pipelines/ledger.py update $ISSUE acknowledged >/dev/null && gh issue comment $ISSUE -b \"Backlog attractor could not converge after 3 attempts — needs a human. See branch auto/$SLUG and .ai/bk_plan.md.\" >/dev/null && printf next"]
 
     exit [shape=Msquare]
 
@@ -92,9 +92,9 @@ digraph backlog_attractor {
     // same tool_command as BranchSetup (kept in sync — see README)
     BranchSetup  -> LocateDonor
     BranchSetup2 [shape=parallelogram,
-        tool_command="cd $newtui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
+        tool_command="cd $tui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
     BranchSetup3 [shape=parallelogram,
-        tool_command="cd $newtui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
+        tool_command="cd $tui_path && . .ai/bk_current.env && git -C $work_tree checkout -q -B auto/$SLUG origin/main && printf ready"]
     BranchSetup2 -> PlanWork
     BranchSetup3 -> DraftDoc
 

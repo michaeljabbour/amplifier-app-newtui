@@ -11,14 +11,14 @@ from decimal import Decimal
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import (
+from amplifier_app_tui.kernel.demo import (
     DEMO_BANNER,
     DEMO_MODEL,
     DEMO_SESSION_COST_START,
     DEMO_TURN_BY_KEY,
     SEED_PROMPT,
 )
-from amplifier_app_newtui.kernel.events import (
+from amplifier_app_tui.kernel.events import (
     ContentBlockEnd,
     PromptComplete,
     PromptSubmit,
@@ -26,11 +26,11 @@ from amplifier_app_newtui.kernel.events import (
     ToolPost,
     ToolPre,
 )
-from amplifier_app_newtui.ui import app_support
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.runtime_adapter import RuntimeAdapter
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, theme_id
+from amplifier_app_tui.ui import app_support
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.runtime_adapter import RuntimeAdapter
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, theme_id
 
 from .test_flow_helpers import set_mode
 
@@ -46,7 +46,7 @@ async def _wait_for(pilot, predicate, *, tries: int = 80) -> bool:
 @pytest.mark.asyncio
 async def test_demo_boot_banner_seed_and_typed_turn() -> None:
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         assert app.theme == theme_id(DEFAULT_THEME)
 
@@ -98,7 +98,7 @@ async def test_demo_boot_banner_seed_and_typed_turn() -> None:
 @pytest.mark.asyncio
 async def test_demo_build_turn_reaches_approval_bar() -> None:
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         await _wait_for(
             pilot,
@@ -129,7 +129,7 @@ async def test_demo_build_turn_reaches_approval_bar() -> None:
 @pytest.mark.asyncio
 async def test_demo_full_sequence_all_five_turns() -> None:
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
 
         def rules() -> int:
@@ -191,7 +191,7 @@ async def test_resume_cost_baseline_set_in_adapter_start_reaches_reducer() -> No
     """Resumed prior spend learned in ``start()`` lands in footer $ and
     checkpoint ``cost_at`` (spec §11: one session cost basis everywhere)."""
     adapter = _LateBaselineAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(
             pilot,
@@ -214,7 +214,7 @@ async def test_real_turn_pulse_survives_the_bottom_ride() -> None:
     ``_consume_events``) and live turns lost the pulse and the digest."""
     sid = "live-root"
     adapter = RuntimeAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         adapter.queue.put_nowait(PromptSubmit(session_id=sid, prompt="hi"))
         adapter.queue.put_nowait(
@@ -279,7 +279,7 @@ async def test_resume_replay_rebuilds_full_transcript_at_announce_ready() -> Non
         ),
         PromptComplete(session_id=sid, ts=4.0, response="All done."),
     )
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(
             pilot, lambda: any(b.kind == "turn_rule" for b in app.transcript.blocks)
@@ -305,7 +305,7 @@ async def test_footer_state_carries_bare_model_name() -> None:
     footer as the bare model name (``anthropic/x`` → ``x``)."""
     adapter = RuntimeAdapter()
     adapter.model_name = "anthropic/claude-fable-5"
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)):
         assert app_support.footer_state(app).model == "claude-fable-5"
 
@@ -313,9 +313,9 @@ async def test_footer_state_carries_bare_model_name() -> None:
 @pytest.mark.asyncio
 async def test_provider_usage_repaints_footer_before_prompt_complete() -> None:
     adapter = RuntimeAdapter()
-    adapter.bundle_name = "newtui"
+    adapter.bundle_name = "tui"
     adapter.session_short = "live01"
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         await adapter.queue.put(
             PromptSubmit(session_id="root", prompt="measure live spend", ts=1.0)
@@ -344,10 +344,10 @@ def test_boot_progress_after_exit_is_a_silent_noop() -> None:
     Textual app exited; painting the splash then raised NoActiveAppError and
     spammed the terminal post-exit.
     """
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
-    app = NewTuiApp(DemoRuntimeAdapter())
+    app = TuiApp(DemoRuntimeAdapter())
     assert not app.is_running
     # Outside any active-app context — exactly the post-exit situation.
     app.boot_progress("activating", "dep-amplifier-data")

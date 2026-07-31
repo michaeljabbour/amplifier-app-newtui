@@ -1,10 +1,10 @@
 # Spike + Decision: `microsoft/amplifier-agent` as the runtime integration layer
 
-- **Issue:** [#54](https://github.com/michaeljabbour/amplifier-app-newtui/issues/54) — *Evaluate microsoft/amplifier-agent as the runtime integration layer (spike + decision doc)*
+- **Issue:** [#54](https://github.com/michaeljabbour/amplifier-app-tui/issues/54) — *Evaluate microsoft/amplifier-agent as the runtime integration layer (spike + decision doc)*
 - **Status:** Decided — **Stay core-native (amplifier-foundation direct); do NOT adopt now.** Keep a scoped door open for a headless-only `run` adapter, gated on three concrete upstream capabilities.
 - **Date:** 2026-07-22
 - **Type:** Spike / decision doc (no code changes — this doc is the deliverable). Intended durable home when merged: `docs/plans/2026-07-22-amplifier-agent-eval.md`. **No ADR** is cut, because the recommendation is to *not* change the runtime layer.
-- **Evidence base:** read-only checkout of `origin/main` at `/Users/michaeljabbour/dev/newtui-wt/base`; shallow read-only clone of `microsoft/amplifier-agent` at `/tmp/amplifier-agent-eval-clone` (default branch, protocol `0.3.0`). Every `file:line` cite below was opened and verified during this spike.
+- **Evidence base:** read-only checkout of `origin/main` at `/Users/michaeljabbour/dev/tui-wt/base`; shallow read-only clone of `microsoft/amplifier-agent` at `/tmp/amplifier-agent-eval-clone` (default branch, protocol `0.3.0`). Every `file:line` cite below was opened and verified during this spike.
 
 ---
 
@@ -12,16 +12,16 @@
 
 The amplifier team asked (2026-07-22): *"Is there a reason not to use `microsoft/amplifier-agent` as the primary way to leverage the Amplifier layer(s)? That is where we're putting all of our investment … thin adapters to allow usage in other harnesses. Today you can call it like a chat completion endpoint for a quick wire-up."*
 
-newtui today builds **directly on amplifier-core / amplifier-foundation**: it composes a wrapper bundle, attaches **in-process hook handlers** to the live coordinator, and normalizes the entire engine firehose into one typed `UIEvent` queue. Its differentiating features — token streaming with fence holdback, subagent lanes + live tail, a structured approval broker, step-boundary steering, rewind, truthful compaction/cost accounting, and an upstream-drift event canary — **all live on that firehose**.
+tui today builds **directly on amplifier-core / amplifier-foundation**: it composes a wrapper bundle, attaches **in-process hook handlers** to the live coordinator, and normalizes the entire engine firehose into one typed `UIEvent` queue. Its differentiating features — token streaming with fence holdback, subagent lanes + live tail, a structured approval broker, step-boundary steering, rewind, truthful compaction/cost accounting, and an upstream-drift event canary — **all live on that firehose**.
 
-The question is narrow and answerable: **which `amplifier-agent` consumption surface, if any, can carry newtui's event contract without regressing those features — and is the investment-sharing upside worth the integration cost?**
+The question is narrow and answerable: **which `amplifier-agent` consumption surface, if any, can carry tui's event contract without regressing those features — and is the investment-sharing upside worth the integration cost?**
 
 `amplifier-agent` exposes three surfaces (README; `docs/LAYERS_AND_RELEASES.md`):
 1. **chat-completions HTTP** (`serve chat-completions` → `POST /v1/chat/completions`, SSE) — the "quick wire-up."
 2. **stdio ndjson** (`run --output json --display ndjson`) — one turn per subprocess, JSON envelope on stdout, ndjson diagnostics on stderr.
 3. **`amplifier_agent_lib` in-process** — transport-free Python the host can embed.
 
-This spike assesses all three against newtui's `CONSUMED_EVENTS`, plus four cross-cutting concerns the issue calls out: **bundle-composition control**, **session-dir compatibility**, **cost/usage fidelity**, and a **prototype behind the existing `RuntimeAdapter` seam** ("count what breaks").
+This spike assesses all three against tui's `CONSUMED_EVENTS`, plus four cross-cutting concerns the issue calls out: **bundle-composition control**, **session-dir compatibility**, **cost/usage fidelity**, and a **prototype behind the existing `RuntimeAdapter` seam** ("count what breaks").
 
 > **Method note (read-only constraint).** The task forbids code changes, so the "prototype behind `RuntimeAdapter`" was executed as a **static integration trace** — reading both public APIs end-to-end and enumerating each load-bearing subsystem that would break — rather than a running spike branch. That is sufficient here because the decisive finding is structural (an absent seam), which a static trace establishes definitively; it does not depend on runtime behavior. §7 lists what breaks.
 
@@ -29,18 +29,18 @@ This spike assesses all three against newtui's `CONSUMED_EVENTS`, plus four cros
 
 ## 2. Evidence
 
-### 2.1 What newtui consumes today (amplifier-app-newtui @ `origin/main`)
+### 2.1 What tui consumes today (amplifier-app-tui @ `origin/main`)
 
 - **The event contract is wide.** `kernel/queue_bridge.py:30` — `CONSUMED_EVENTS` enumerates **39** raw hook kinds (the issue's "~32 + delegate/*"): both streaming channels, tool lifecycle, content-block boundaries, `orchestrator:complete`, execution/turn lifecycle, provider telemetry (`provider:response/error/retry/throttle`), `context:compaction`, session lifecycle (`session:start/end/fork/resume`), approvals (`approval:required/granted/denied`), cancellation (`cancel:requested/completed`), the **subagent-lane family** (`task:*` **and** `delegate:agent_spawned/completed/resumed/cancelled/error`), `user:notification`, and `recipe:approval`.
-- **One normalization boundary → 31 typed events.** `kernel/events.py` defines the frozen `UIEvent` union (31 `_Envelope` subclasses). ADR-0007 §"Event architecture": *"All amplifier-core events are normalized at exactly ONE boundary … Both channels consumed … Never reconstruct one from the other."* (`docs/decisions/ADR-0007-newtui-ground-up-architecture.md`).
-- **A drift canary treats missing kinds as a defect.** `kernel/queue_bridge.py:110` — *"Anything else the engine publishes but `CONSUMED_EVENTS` does not name is upstream drift and must surface, not vanish."* newtui's contract is *maximalist by design*; a lossy upstream is a regression, not a convenience.
+- **One normalization boundary → 31 typed events.** `kernel/events.py` defines the frozen `UIEvent` union (31 `_Envelope` subclasses). ADR-0007 §"Event architecture": *"All amplifier-core events are normalized at exactly ONE boundary … Both channels consumed … Never reconstruct one from the other."* (`docs/decisions/ADR-0007-tui-ground-up-architecture.md`).
+- **A drift canary treats missing kinds as a defect.** `kernel/queue_bridge.py:110` — *"Anything else the engine publishes but `CONSUMED_EVENTS` does not name is upstream drift and must surface, not vanish."* tui's contract is *maximalist by design*; a lossy upstream is a regression, not a convenience.
 - **Hooks are attached in-process to the live coordinator.** `kernel/runtime.py:380` `class RealRuntime`; boot registers on the coordinator's `hooks`: the `QueueBridge` across all events (`runtime.py:622`), the drift canary (`:628`), `GovernanceHook` on `tool:pre` (`:634/:645`), the recipes bridge (`:661`), `StepBoundaryBridge` on `provider:request` (`:662/:673`), the `IncrementalSaver` (`:680`), and a `ClipboardImageInjector` on `provider:request` (`:691‑693`). It passes `approval_system`/`display_system` **into** `prepared.create_session(...)` (`kernel/session_factory.py:283‑285`).
 - **Steering is a `provider:request` hook.** `kernel/steering.py:28` `EVENTS = ("provider:request",)`; `:6` returns `HookResult(action="inject_context", context_injection_role="user")`. Mid-turn injection has no equivalent across a subprocess or an Engine boundary.
 - **Governance is two-axis on `tool:pre`.** `kernel/governance_hook.py:194` `EVENTS = ("prompt:submit", "tool:pre")`; maps trust decisions to `HookResult` `continue` / `ask_user` (structured approval) / `deny` (deny-and-continue). ADR-0007 §Approvals: the `ApprovalTicket` carries *"unique id, command, cwd, rule, capability class"* and verbatim "Allow once / Allow always / Deny" scoping — richer than a boolean accept/decline.
 - **Rewind calls foundation directly.** `kernel/rewind.py:136` `fork_session`, `:184` `fork_session_in_memory` — confirm-then-trim forking with no surface on any `amplifier-agent` layer.
 - **Session dir is `~/.amplifier/projects/...`.** `kernel/persistence.py:5‑8` and `:117` — `~/.amplifier/projects/<slug>/sessions/<id>/` with `transcript.jsonl` + `metadata.json` + **`ui-events.jsonl`** (append-only normalized UIEvents, ADR-0007 §9); cost re-seeds from that log on resume.
 - **The insertion seam already exists.** `ui/runtime_adapter.py:41` `class RuntimeAdapter` (base contract; owns `queue`, `steering`, `needs_you`, `denial_log`), `:245` `class RealRuntimeAdapter`. ADR-0007 §Runtimes: *"the UI cannot tell demo from real"* — any runtime that can fill `asyncio.Queue[UIEvent]` and honor the adapter methods drops in here.
-- **Bundle control is a hard requirement.** `bundle.md:12‑15` / `:101‑106` — newtui is *"a THIN WRAPPER"* that **suppresses printing hooks and OSC/BEL `hooks-notify` at boot** (built-in suppression list + `hooks.suppress`), keeps `hooks-logging` native, and adds its own stdout-free `hooks-notify-push`. `AGENTS.md:26` restates the non-negotiable: *"Never mount printing hooks … they write ANSI to stdout and corrupt the Textual screen."* Overlay + suppression + roster control are load-bearing, not incidental.
+- **Bundle control is a hard requirement.** `bundle.md:12‑15` / `:101‑106` — tui is *"a THIN WRAPPER"* that **suppresses printing hooks and OSC/BEL `hooks-notify` at boot** (built-in suppression list + `hooks.suppress`), keeps `hooks-logging` native, and adds its own stdout-free `hooks-notify-push`. `AGENTS.md:26` restates the non-negotiable: *"Never mount printing hooks … they write ANSI to stdout and corrupt the Textual screen."* Overlay + suppression + roster control are load-bearing, not incidental.
 
 ### 2.2 What `amplifier-agent` actually exposes (microsoft/amplifier-agent, protocol `0.3.0`)
 
@@ -51,7 +51,7 @@ This spike assesses all three against newtui's `CONSUMED_EVENTS`, plus four cros
 - **The real in-process path is a private, bundle-hardwired factory.** `src/amplifier_agent_lib/_runtime.py` `make_turn_handler` (underscore-private module): it `load_and_prepare_cached()` **their** vendored bundle, creates a **fresh session per turn**, then on the coordinator registers `display.emit` (`:360`), `approval.request` (`:362`), **mounts their streaming hook** (`:368`), and registers `session.spawn` (`:429`). This is the only place arbitrary hooks get attached — and it is not public API; it is welded to their bundle, their streaming hook, and their session-per-turn model.
 - **Their bundle is fixed and cache-keyed.** `LAYERS_AND_RELEASES.md` §2 — bundle `amplifier-agent-behavioral-anchor`, a fixed module roster (providers, `loop-streaming`, `context-simple`, a tool set, seven hooks, six vendored agents). `src/amplifier_agent_lib/bundle/cache.py:71` `load_and_prepare_cached(aaa_version)` keys on `sha256(bundle.md)`. `bundle/loader.py:23` accepts an override path, **but the Engine / `_runtime` / cache path uses the vendored bundle**; host input is limited to per-module config overlays via `merge_config` (D5, `_runtime.py:100‑116`). There is **no per-hook suppression seam** and no roster-replacement seam on the embed path.
 - **Their state dir differs.** `src/amplifier_agent_lib/persistence.py:100` `amplifier_agent_home()` → `~/.amplifier-agent/` (override `$AMPLIFIER_AGENT_HOME`); `:130` `state_root()` → `<home>/state/`; sessions bucket under `state/workspaces/<slug>/sessions/<id>/`. No `ui-events.jsonl` equivalent.
-- **Cost fidelity on the `usage` event is actually good but boundary-only.** `hook_streaming.py` `on_llm_response` / `on_orchestrator_complete` emit `usage` with `inputTokens/outputTokens`, optional `cost` **as a Decimal-string** (precision preserved), `cacheRead/WriteTokens`, and `sessionCostTotal` via `collect_contributions("session.cost")`. Per-subagent cost is tagged only by `agentName` string — coarser than newtui's per-lane Decimal ledger + resume re-seed.
+- **Cost fidelity on the `usage` event is actually good but boundary-only.** `hook_streaming.py` `on_llm_response` / `on_orchestrator_complete` emit `usage` with `inputTokens/outputTokens`, optional `cost` **as a Decimal-string** (precision preserved), `cacheRead/WriteTokens`, and `sessionCostTotal` via `collect_contributions("session.cost")`. Per-subagent cost is tagged only by `agentName` string — coarser than tui's per-lane Decimal ledger + resume re-seed.
 - **Steering / rewind / cancel are absent from the lib surface.** A repo-wide grep of `src/amplifier_agent_lib/` for `provider:request`, `inject_context`, `fork_session`, `rewind`, and turn-level `interrupt`/`cancel` returns only approval-timeout `cancel` and crash-recovery transcript repair — **no mid-turn context injection, no fork/rewind, no turn interrupt**.
 
 ---
@@ -60,7 +60,7 @@ This spike assesses all three against newtui's `CONSUMED_EVENTS`, plus four cros
 
 Legend: **✓** carried faithfully · **~** partial / lossy · **✗** dropped. "ndjson" and "lib Engine" columns are identical in fidelity because the lib's Engine emits through the **same** 9-type `DisplaySystem` taxonomy the ndjson face serializes (`hook_streaming.py` is the shared translator).
 
-| newtui `CONSUMED_EVENTS` (grouped) | chat-completions | ndjson `run` | `amplifier_agent_lib` (Engine) | Notes |
+| tui `CONSUMED_EVENTS` (grouped) | chat-completions | ndjson `run` | `amplifier_agent_lib` (Engine) | Notes |
 |---|:--:|:--:|:--:|---|
 | `llm:stream_block_start` | ✗ | ✗ | ✗ | No open boundary on the wire |
 | `llm:stream_block_delta` | ~ | ✓ | ✓ | Text ok; block index/identity lost |
@@ -72,7 +72,7 @@ Legend: **✓** carried faithfully · **~** partial / lossy · **✗** dropped. 
 | `content_block:start` / `:end` | ✗ | ~ | ~ | `end` → `result/delta` text only; `start` dropped |
 | `orchestrator:complete` | ✗ | ~ | ~ | Reduced to a `usage` cost rollup |
 | `execution:start` / `:end` | ✗ | ✗ | ✗ | — |
-| `prompt:submit` / `:complete` | n/a | n/a | n/a | newtui synthesizes these itself |
+| `prompt:submit` / `:complete` | n/a | n/a | n/a | tui synthesizes these itself |
 | `provider:response` | ✗ | ~ | ~ | Surfaces as `usage` |
 | `provider:error` | ✗ | ~ | ~ | Generic `error` |
 | `provider:retry` / `:throttle` | ✗ | ✗ | ✗ | Lost provider-health telemetry |
@@ -85,7 +85,7 @@ Legend: **✓** carried faithfully · **~** partial / lossy · **✗** dropped. 
 | `user:notification` | ✗ | ~ | ~ | Loosely → `progress` |
 | `recipe:approval` | ✗ | ✗ | ✗ | No recipe approval gate on the wire |
 
-**Tally:** of 39 consumed kinds, the 9-type surface carries ~5 faithfully, ~9 partially, and **drops ~25** — including every load-bearing differentiator: streaming boundaries, the `delegate:*` lane lifecycle, steering's `provider:request` seam, compaction, session lifecycle, cancel, and recipes. The gap list **decides feasibility**: no `amplifier-agent` surface can carry newtui's contract without regressing the product.
+**Tally:** of 39 consumed kinds, the 9-type surface carries ~5 faithfully, ~9 partially, and **drops ~25** — including every load-bearing differentiator: streaming boundaries, the `delegate:*` lane lifecycle, steering's `provider:request` seam, compaction, session lifecycle, cancel, and recipes. The gap list **decides feasibility**: no `amplifier-agent` surface can carry tui's contract without regressing the product.
 
 ---
 
@@ -95,7 +95,7 @@ Legend: **✓** carried faithfully · **~** partial / lossy · **✗** dropped. 
 Replace `kernel/runtime.py`'s foundation-direct boot with `amplifier_agent_lib.Engine` (or the ndjson subprocess) behind a new `RuntimeAdapter`.
 
 - **Pros:** inherits upstream investment (credential handling, protocol evolution, bundle caching, state migration/repair); the amplifier team's stated direction; smaller kernel surface long-term.
-- **Cons (decisive):** the Engine funnels everything through the **9-type `DisplaySystem`** (`notifications.py:29`), which is strictly narrower than `CONSUMED_EVENTS`. The one place arbitrary hooks attach (`_runtime.make_turn_handler`) is **private and welded to their bundle + streaming hook + session-per-turn**. You cannot get the raw firehose *and* keep upstream's convenience — the transport-free part of the lib (`prepared.create_session` + your own hooks) is **exactly what newtui already does**, so adopting it adds their bundle/state/taxonomy constraints while removing nothing we hand-roll. Steering, rewind, cancel, structured approvals, lanes, and compaction all regress (§3, §7). **Rejected.**
+- **Cons (decisive):** the Engine funnels everything through the **9-type `DisplaySystem`** (`notifications.py:29`), which is strictly narrower than `CONSUMED_EVENTS`. The one place arbitrary hooks attach (`_runtime.make_turn_handler`) is **private and welded to their bundle + streaming hook + session-per-turn**. You cannot get the raw firehose *and* keep upstream's convenience — the transport-free part of the lib (`prepared.create_session` + your own hooks) is **exactly what tui already does**, so adopting it adds their bundle/state/taxonomy constraints while removing nothing we hand-roll. Steering, rewind, cancel, structured approvals, lanes, and compaction all regress (§3, §7). **Rejected.**
 
 ### Option B — Partial adopt: `amplifier-agent` for the headless `run` path only
 Keep foundation-direct for the interactive TUI; add an `amplifier-agent`-backed adapter for the non-interactive `run`/`resume` CLI (`main.py`), where the full firehose isn't rendered.
@@ -104,10 +104,10 @@ Keep foundation-direct for the interactive TUI; add an `amplifier-agent`-backed 
 - **Cons:** it forks reality — the headless path would run **their** bundle (different tool/agent roster than the TUI wrapper; no suppression/overlay control, `bundle/cache.py:71` + `_runtime.py`), persist to **their** state dir (`~/.amplifier-agent/state/workspaces/...`, `persistence.py:100/130`) instead of `~/.amplifier/projects/...` (`persistence.py:117`), and produce no `ui-events.jsonl`. Net: **a `run` session and a TUI session could not share history or resume each other**, and cost re-seed diverges. Real cost, thin benefit **today**. **Deferred, not taken now** (see §5 gating conditions).
 
 ### Option C — Stay core-native (amplifier-foundation direct), share findings upstream
-Keep `kernel/` on amplifier-core/foundation. Treat `amplifier-agent` as a **peer consumer** of the same kernel, not a layer above newtui. Hand the amplifier team the §3 gap table and §8 asks so their "thin adapter for other harnesses" investment can eventually cover a firehose consumer like this TUI.
+Keep `kernel/` on amplifier-core/foundation. Treat `amplifier-agent` as a **peer consumer** of the same kernel, not a layer above tui. Hand the amplifier team the §3 gap table and §8 asks so their "thin adapter for other harnesses" investment can eventually cover a firehose consumer like this TUI.
 
 - **Pros:** zero regression to lanes/approvals/steering/rewind/cost/compaction/canary; keeps the single normalization boundary and drift canary intact; matches the standing "amplifier-native first" directive and the sanctioned APPLICATION_INTEGRATION_GUIDE app-side pattern; the `RuntimeAdapter` seam (`ui/runtime_adapter.py:41`) remains the clean future insertion point if/when upstream grows the surface.
-- **Cons:** newtui keeps hand-rolling prepare/mount and does **not** inherit upstream's credential/state/protocol investment yet; ongoing responsibility to track core hook-event drift (already mitigated by the canary, `queue_bridge.py:110`); requires a good-faith written hand-back so the divergence is a documented, revisited decision rather than a silent fork.
+- **Cons:** tui keeps hand-rolling prepare/mount and does **not** inherit upstream's credential/state/protocol investment yet; ongoing responsibility to track core hook-event drift (already mitigated by the canary, `queue_bridge.py:110`); requires a good-faith written hand-back so the divergence is a documented, revisited decision rather than a silent fork.
 
 ---
 
@@ -115,7 +115,7 @@ Keep `kernel/` on amplifier-core/foundation. Treat `amplifier-agent` as a **peer
 
 **Adopt Option C: stay core-native (amplifier-foundation direct) as the primary and interactive runtime layer. Do not adopt `amplifier-agent` now.**
 
-Rationale in one line: **newtui is a firehose consumer; every `amplifier-agent` surface is a 9-type funnel, and the lib exposes no public seam to attach our own hooks or inject our own bundle without reimplementing foundation-direct anyway.** The three surfaces resolve cleanly:
+Rationale in one line: **tui is a firehose consumer; every `amplifier-agent` surface is a 9-type funnel, and the lib exposes no public seam to attach our own hooks or inject our own bundle without reimplementing foundation-direct anyway.** The three surfaces resolve cleanly:
 
 - **chat-completions face → non-fit** (confirmed): OpenAI-shaped assistant text + reasoning only; no hooks, lanes, approvals, or steering on the wire. This is the right tool for "quick wire-ups," not for this TUI. It becomes viable only if the wire grows those event families.
 - **stdio ndjson face → non-fit for the contract**: the ndjson diagnostics stream *is* the 9-type taxonomy (`notifications.py:29`); the §3 gap table shows it drops ~25 of 39 kinds, including the entire `delegate:*` lane lifecycle. Fine for headless one-shot text; cannot drive the transcript.
@@ -137,7 +137,7 @@ Option C is a **no-runtime-change** decision, so the "implementation" is (a) rec
 
 **Phase 0 — Land the decision (this repo).**
 - Promote this file to `docs/plans/2026-07-22-amplifier-agent-eval.md` (dated-plan convention).
-- Add a one-line pointer under "Runtimes" in `docs/decisions/ADR-0007-newtui-ground-up-architecture.md` — *"amplifier-agent evaluated 2026-07-22; stay core-native, see docs/plans/2026-07-22-amplifier-agent-eval.md"* — so the choice is discoverable without reopening the spike. **No ADR supersession** (ADR-0007 §Runtimes stands unchanged).
+- Add a one-line pointer under "Runtimes" in `docs/decisions/ADR-0007-tui-ground-up-architecture.md` — *"amplifier-agent evaluated 2026-07-22; stay core-native, see docs/plans/2026-07-22-amplifier-agent-eval.md"* — so the choice is discoverable without reopening the spike. **No ADR supersession** (ADR-0007 §Runtimes stands unchanged).
 - Note in `docs/ARCHITECTURE.md §1` that `ui/runtime_adapter.py:RuntimeAdapter` is the sanctioned insertion point for any future amplifier-agent-backed runtime.
 
 **Phase 1 — Keep the seam honest (cheap insurance, already mostly present).**
@@ -147,8 +147,8 @@ Option C is a **no-runtime-change** decision, so the "implementation" is (a) rec
 - File an upstream issue on `microsoft/amplifier-agent` containing the §3 gap table and the §8 asks, framed as "what the wire/lib must grow to carry a firehose TUI." Reference `notifications.py:29`, `protocol_points/base.py:28`, and `_runtime.py:make_turn_handler` so the asks are concrete.
 
 **Phase 3 — Gated, optional headless adapter (only if §5 gates clear).**
-- New file `src/amplifier_app_newtui/ui/runtime_adapter_agent.py` — `class AmplifierAgentRuntimeAdapter(RuntimeAdapter)` used **only** by the `run`/`resume` CLI in `src/amplifier_app_newtui/main.py`, never by the interactive TUI.
-- New file `src/amplifier_app_newtui/kernel/agent_bridge.py` — translate the (by-then-expanded) display taxonomy back into `kernel/events.py` `UIEvent`s at the one boundary; wire the caller-supplied bundle from `kernel/config.py` and point state at `~/.amplifier/projects/...`.
+- New file `src/amplifier_app_tui/ui/runtime_adapter_agent.py` — `class AmplifierAgentRuntimeAdapter(RuntimeAdapter)` used **only** by the `run`/`resume` CLI in `src/amplifier_app_tui/main.py`, never by the interactive TUI.
+- New file `src/amplifier_app_tui/kernel/agent_bridge.py` — translate the (by-then-expanded) display taxonomy back into `kernel/events.py` `UIEvent`s at the one boundary; wire the caller-supplied bundle from `kernel/config.py` and point state at `~/.amplifier/projects/...`.
 - Contract test replaying a captured session through both runtimes to prove headless↔TUI resume parity **before** shipping.
 
 ---
@@ -180,7 +180,7 @@ Option C is a **no-runtime-change** decision, so the "implementation" is (a) rec
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Staying core-native diverges from the amplifier team's investment direction | High | Med | Explicit written hand-back (§6 Phase 2) with the §3 gap table + asks below; re-evaluate on each `amplifier-agent` minor that touches the display taxonomy or exposes a bundle/hook seam. |
-| Upstream core changes a hook event newtui consumes | Med | Med | Drift canary already fails loudly (`queue_bridge.py:110`); pinned `amplifier-core>=1.6.0` (ADR-0007 §Stack); lockfile committed. |
+| Upstream core changes a hook event tui consumes | Med | Med | Drift canary already fails loudly (`queue_bridge.py:110`); pinned `amplifier-core>=1.6.0` (ADR-0007 §Stack); lockfile committed. |
 | "Quick wire-up" pressure to ship chat-completions anyway | Med | High | This doc records the concrete non-fit (§3); revisit only if the wire grows hook/lane/approval/steering events. |
 | Missed a private/undocumented lib seam for raw hooks | Low | Med | Traced `engine.py`, `_runtime.py`, `protocol_points/base.py`, `hook_streaming.py`, `spawn.py`, `wire_approval_provider.py`; the sole hook-attach site is the private, bundle-welded `make_turn_handler`. If upstream later publicizes an equivalent, Phase 3 becomes viable. |
 | Headless-only adapter (if built) forks history/state | Med (only in Phase 3) | High | §5 gate #2 (host-configurable state root) is a hard precondition; Phase 3 blocked on the cross-runtime resume parity test. |

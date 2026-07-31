@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from amplifier_app_newtui.kernel.demo import BRAINSTORM_PROMPT, BUILD_PROMPT
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.live_tail import LiveTail
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.kernel.demo import BRAINSTORM_PROMPT, BUILD_PROMPT
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.live_tail import LiveTail
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 from textual._doc import take_svg_screenshot
 from textual.app import App, ComposeResult
 
@@ -42,7 +42,7 @@ def test_double_esc_rewind_snapshot(monkeypatch) -> None:
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("COLORTERM", "truecolor")
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
 
     async def interrupt_then_rewind(pilot) -> None:
         await seed_done(pilot, app)
@@ -70,7 +70,7 @@ def test_plan_panel_bottom_strip_snapshot(monkeypatch) -> None:
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("COLORTERM", "truecolor")
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
 
     async def run_build(pilot) -> None:
         await seed_done(pilot, app)

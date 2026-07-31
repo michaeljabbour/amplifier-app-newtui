@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import (
+from amplifier_app_tui.kernel.demo import (
     APPROVAL_OPTIONS,
     AUTO_BLOCK_CONTINUATION,
     AUTO_BLOCK_REASON,
@@ -22,15 +22,15 @@ from amplifier_app_newtui.kernel.demo import (
     PYTEST_APPROVAL_PROMPT,
     build_denied_spec,
 )
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.app_support import APPROVAL_NOTICE
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.footer import (
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.app_support import APPROVAL_NOTICE
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.footer import (
     footer_left_text,
     footer_right_text,
     footer_waiting_text,
 )
-from amplifier_app_newtui.ui.transcript import render_block
+from amplifier_app_tui.ui.transcript import render_block
 
 from .test_flow_helpers import (
     SIZE,
@@ -43,7 +43,7 @@ from .test_flow_helpers import (
 )
 
 
-async def _reach_pytest_approval(pilot, app: NewTuiApp) -> None:
+async def _reach_pytest_approval(pilot, app: TuiApp) -> None:
     """Seed, switch to chat (the app boots in auto — §4 amendment), then
     run the build turn up to its chat-mode pytest approval."""
     await seed_done(pilot, app)
@@ -55,7 +55,7 @@ async def _reach_pytest_approval(pilot, app: NewTuiApp) -> None:
 
 @pytest.mark.asyncio
 async def test_approval_bar_replaces_composer_arrows_and_confirm() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _reach_pytest_approval(pilot, app)
         bar = app.approval_bar
@@ -103,7 +103,7 @@ async def test_ctrl_y_parks_live_ticket_into_needs_you_answerable_later() -> Non
     the needs-you queue WITHOUT resolving it (deny-and-continue), hands
     the composer back, and the parked decision is answerable later."""
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await _reach_pytest_approval(pilot, app)
         assert adapter.needs_you.pending_count == 0
@@ -148,7 +148,7 @@ async def test_ctrl_y_parks_live_ticket_into_needs_you_answerable_later() -> Non
 
 @pytest.mark.asyncio
 async def test_approval_keeps_keyboard_when_lanes_toggle_while_open() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _reach_pytest_approval(pilot, app)
 
@@ -170,7 +170,7 @@ async def test_approval_keeps_keyboard_when_lanes_toggle_while_open() -> None:
 
 @pytest.mark.asyncio
 async def test_esc_denies_blocked_line_and_turn_continues() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _reach_pytest_approval(pilot, app)
 
@@ -202,7 +202,7 @@ async def test_esc_denies_blocked_line_and_turn_continues() -> None:
 @pytest.mark.asyncio
 async def test_auto_mode_deferred_decision_ctrl_y_needs_you_flow() -> None:
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         # Build turn first (approve), then the auto turn.
         await _reach_pytest_approval(pilot, app)
@@ -270,7 +270,7 @@ async def test_deferred_decision_rings_the_attention_bell(monkeypatch) -> None:
     turn close-outs (< ATTENTION_MIN_TURN_SECONDS) stay silent."""
     monkeypatch.delenv("AMPLIFIER_NOTIFY", raising=False)
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     rings: list[str] = []
     monkeypatch.setattr(app, "bell", lambda: rings.append("bell"))
     async with app.run_test(size=SIZE) as pilot:
@@ -302,7 +302,7 @@ async def test_needs_you_chip_stays_visible_and_clickable_after_late_wrap(size) 
     at wrapped (120) and unwrapped (160) widths alike.
     """
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=size) as pilot:
         await _reach_pytest_approval(pilot, app)
         await pilot.press("enter")
@@ -345,10 +345,10 @@ async def test_tail_anchor_holds_through_wrapped_answer_growth() -> None:
     """The standing anchor also covers generic late wrap growth: a long
     answer line that wraps to many rows at a narrow width must not leave
     the tail stranded above the bottom."""
-    from amplifier_app_newtui.model.blocks import Answer, Narration, Segment
+    from amplifier_app_tui.model.blocks import Answer, Narration, Segment
 
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(60, 20)) as pilot:
         await seed_done(pilot, app)
         view = app.transcript
@@ -370,9 +370,9 @@ async def test_kernel_parked_deferral_flows_rich_through_needs_you(monkeypatch) 
     app must NOT park a duplicate, ctrl-y must render the kernel item's
     choices/reason/highlight, and acting must narrate the action and
     record the /improve override under the denied-action key."""
-    from amplifier_app_newtui.kernel.approval import STANDARD_OPTIONS
-    from amplifier_app_newtui.kernel.events import Notification
-    from amplifier_app_newtui.ui.runtime_adapter import (
+    from amplifier_app_tui.kernel.approval import STANDARD_OPTIONS
+    from amplifier_app_tui.kernel.events import Notification
+    from amplifier_app_tui.ui.runtime_adapter import (
         RealRuntimeAdapter,
         RuntimeAdapter,
     )
@@ -383,7 +383,7 @@ async def test_kernel_parked_deferral_flows_rich_through_needs_you(monkeypatch) 
     # queue resolution and narration paths are what this flow exercises.
     monkeypatch.setattr(RealRuntimeAdapter, "start", RuntimeAdapter.start)
     adapter = RealRuntimeAdapter(bundle="x")
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     rings: list[str] = []
     monkeypatch.setattr(app, "bell", lambda: rings.append("bell"))
     async with app.run_test(size=SIZE) as pilot:

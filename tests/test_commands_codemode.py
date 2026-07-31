@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from amplifier_app_newtui.commands.builtin import build_registry
-from amplifier_app_newtui.commands.codemode import (
+from amplifier_app_tui.commands.builtin import build_registry
+from amplifier_app_tui.commands.codemode import (
     CODEMODE_COMMAND,
     build_codemode_block,
     governed_catalog,
 )
-from amplifier_app_newtui.model.blocks import ToolLine
+from amplifier_app_tui.model.blocks import ToolLine
 
 
 def test_codemode_is_a_during_group_builtin() -> None:

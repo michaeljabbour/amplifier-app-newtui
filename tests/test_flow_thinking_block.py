@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.model.blocks import Thinking
-from amplifier_app_newtui.ui.app import NewTuiApp
+from amplifier_app_tui.model.blocks import Thinking
+from amplifier_app_tui.ui.app import TuiApp
 
 from .test_flow_helpers import (
     SIZE,
@@ -24,7 +24,7 @@ from .test_flow_helpers import (
 @pytest.mark.asyncio
 async def test_ctrl_g_toggles_durable_thinking_block_in_place() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.transcript.append(Thinking(id=app.allocator.next_id(), text="weigh A\npick B"))
@@ -45,7 +45,7 @@ async def test_ctrl_g_toggles_durable_thinking_block_in_place() -> None:
 @pytest.mark.asyncio
 async def test_enter_on_focused_thinking_block_toggles_and_syncs_history() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         block = Thinking(id=app.allocator.next_id(), text="reason it out")
@@ -65,7 +65,7 @@ async def test_ctrl_g_falls_back_to_live_tail_without_durable_thinking() -> None
     """No durable thinking block yet → ctrl-g still drives the live-tail
     reveal (PR #128), so the two surfaces coexist."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         # A withheld (empty-text) block is present but not expandable, so the

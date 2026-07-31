@@ -163,7 +163,7 @@ export class AmplifierClient {
   private readonly env: Readonly<Record<string, string>>;
 
   constructor(options: AmplifierClientOptions = {}) {
-    this.command = options.command ?? ["amplifier-newtui"];
+    this.command = options.command ?? ["amplifier-tui"];
     if (this.command.length === 0) {
       throw new TypeError("command must not be empty");
     }

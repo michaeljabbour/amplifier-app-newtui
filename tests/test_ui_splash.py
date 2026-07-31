@@ -13,11 +13,11 @@ import contextvars
 
 import pytest
 
-from amplifier_app_newtui.ui import splash
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.runtime_adapter import RuntimeAdapter
-from amplifier_app_newtui.ui.segments import line_plain
-from amplifier_app_newtui.ui.splash import (
+from amplifier_app_tui.ui import splash
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.runtime_adapter import RuntimeAdapter
+from amplifier_app_tui.ui.segments import line_plain
+from amplifier_app_tui.ui.splash import (
     FALLBACK,
     WORDMARK,
     art_for,
@@ -150,18 +150,18 @@ class _SlowBootAdapter(RuntimeAdapter):
 
 class _FailBootAdapter(RuntimeAdapter):
     async def start(self, ready) -> None:  # noqa: ANN001
-        self.app.boot_progress("preparing", "newtui")
+        self.app.boot_progress("preparing", "tui")
         raise RuntimeError("no provider configured")
 
 
-def _splash_widgets(app: NewTuiApp) -> list:  # noqa: ANN401
+def _splash_widgets(app: TuiApp) -> list:  # noqa: ANN401
     return list(app.query("#boot-splash"))
 
 
 @pytest.mark.asyncio
 async def test_splash_mounts_during_boot_and_dissolves_on_ready() -> None:
     adapter = _SlowBootAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(pilot, lambda: bool(_splash_widgets(app)))
         widget = _splash_widgets(app)[0]
@@ -195,7 +195,7 @@ async def test_boot_progress_from_contextless_callback_still_animates() -> None:
     through the app's message pump, so the splash must visibly animate here.
     """
     adapter = RuntimeAdapter()  # its instant ready() fires before we boot; harmless
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         contextvars.Context().run(app.boot_progress, "installing", "amplifier-foundation")
         assert await _wait_for(pilot, lambda: bool(_splash_widgets(app)))
@@ -211,7 +211,7 @@ async def test_boot_progress_from_contextless_callback_still_animates() -> None:
 @pytest.mark.asyncio
 async def test_boot_failure_removes_splash_immediately() -> None:
     adapter = _FailBootAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(
             pilot,

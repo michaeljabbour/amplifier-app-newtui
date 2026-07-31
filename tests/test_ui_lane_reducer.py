@@ -9,8 +9,8 @@ only through the turn reducer's dispatch.
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import (
     Answer,
     BlockIdAllocator,
     Segment,
@@ -19,8 +19,8 @@ from amplifier_app_newtui.model.blocks import (
     TranscriptBlock,
     UserLine,
 )
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.ui.lane_reducer import (
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.ui.lane_reducer import (
     LANE_TAIL_NOTIFY_SECONDS,
     LaneReducer,
     _LANE_TRANSCRIPT_MAX_BLOCKS,

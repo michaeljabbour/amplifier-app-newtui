@@ -15,12 +15,12 @@ fallback table, which ``FALLBACK_PRICING`` here mirrors):
 
 The values are hard-coded so this test is self-contained at runtime (CI
 has no ``~/dev/amplifier-app-cli`` checkout). The reference computes in
-floats; newtui computes in Decimal — parity is asserted far tighter than
+floats; tui computes in Decimal — parity is asserted far tighter than
 the backlog's "to the cent" (within $0.000001).
 
 Deliberately excluded: ``gpt-4o-mini``-family models. The reference's
 offline fallback matcher is first-match, so ``gpt-4o`` shadows
-``gpt-4o-mini`` there (models are priced at gpt-4o rates); newtui's
+``gpt-4o-mini`` there (models are priced at gpt-4o rates); tui's
 longest-prefix lookup prices them correctly. Live Helicone data uses
 exact-match operators, so the divergence is fallback-only.
 """
@@ -31,7 +31,7 @@ from decimal import Decimal
 
 import pytest
 
-from amplifier_app_newtui.kernel.cost import estimate_cost
+from amplifier_app_tui.kernel.cost import estimate_cost
 
 _TOLERANCE = Decimal("0.000001")
 
@@ -75,12 +75,12 @@ def test_estimate_cost_matches_appcli_estimator(
     assert cost is not None, f"{provider}/{model} must be priceable on the fallback table"
     delta = abs(cost - Decimal(expected))
     assert delta <= _TOLERANCE, (
-        f"{provider}/{model}: newtui ${cost} vs app-cli ${expected} (Δ={delta})"
+        f"{provider}/{model}: tui ${cost} vs app-cli ${expected} (Δ={delta})"
     )
 
 
 def test_provider_inference_matches_explicit_provider() -> None:
-    """app-cli passes provider explicitly; newtui may infer it from the
+    """app-cli passes provider explicitly; tui may infer it from the
     model name — both paths must price identically for the fixtures."""
     for provider, model, inp, out, cread, cwrite, _expected in PARITY_FIXTURES:
         if provider == "azure":

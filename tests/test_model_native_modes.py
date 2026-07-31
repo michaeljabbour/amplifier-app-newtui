@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from amplifier_app_newtui.model.native_modes import (
+from amplifier_app_tui.model.native_modes import (
     ActiveNativeModes,
     native_badge_text,
     posture_conflict_notice,

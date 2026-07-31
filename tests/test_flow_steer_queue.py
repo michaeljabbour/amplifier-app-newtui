@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import AUTO_MODE_NOTICE, BUILD_END_NOTICE
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.app_support import QUEUED_NOTICE, STEER_NOTICE
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.footer import footer_left_text, footer_right_text
-from amplifier_app_newtui.ui.transcript import render_block
+from amplifier_app_tui.kernel.demo import AUTO_MODE_NOTICE, BUILD_END_NOTICE
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.app_support import QUEUED_NOTICE, STEER_NOTICE
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.footer import footer_left_text, footer_right_text
+from amplifier_app_tui.ui.transcript import render_block
 
 from .test_flow_helpers import (
     SIZE,
@@ -30,7 +30,7 @@ from .test_flow_helpers import (
 )
 
 
-async def _start_gated_turn(pilot, app: NewTuiApp) -> None:
+async def _start_gated_turn(pilot, app: TuiApp) -> None:
     """Seed, switch to chat (the app boots in auto — §4 amendment) so the
     build turn keeps its pytest approval, then park it mid-turn on the gate."""
     await seed_done(pilot, app)
@@ -43,7 +43,7 @@ async def _start_gated_turn(pilot, app: NewTuiApp) -> None:
 @pytest.mark.asyncio
 async def test_enter_mid_turn_steers_echo_and_applies_at_step_boundary() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await _start_gated_turn(pilot, app)
         assert app.footer_bar.state.context == "running"
@@ -89,7 +89,7 @@ async def test_enter_mid_turn_steers_echo_and_applies_at_step_boundary() -> None
 @pytest.mark.asyncio
 async def test_shift_enter_mid_turn_queues_strip_q1_and_auto_drains() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await _start_gated_turn(pilot, app)
 
@@ -156,7 +156,7 @@ async def test_leftover_steer_discarded_at_turn_end() -> None:
     silently discarded at turn end (runTurn start resets ``this.steer``)
     — it never rolls forward as a turn the user never sent."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await _start_gated_turn(pilot, app)
         await type_text(pilot, "never applied")
@@ -180,7 +180,7 @@ async def test_leftover_steer_discarded_at_turn_end() -> None:
 @pytest.mark.asyncio
 async def test_second_steer_queues_full_next_turn_message() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await _start_gated_turn(pilot, app)
         await type_text(pilot, "first steer")
@@ -203,7 +203,7 @@ async def test_second_steer_queues_full_next_turn_message() -> None:
 
 @pytest.mark.asyncio
 async def test_idle_shift_enter_just_sends() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         # chat mode: the build turn parks at its pytest approval, giving a

@@ -1,12 +1,12 @@
 # Design: Forge-driven capability test tier
 
-**Issue:** [#49](https://github.com/michaeljabbour/amplifier-app-newtui/issues/49) — "Forge-driven
+**Issue:** [#49](https://github.com/michaeljabbour/amplifier-app-tui/issues/49) — "Forge-driven
 capability test tier: validate the real TUI through a real terminal"
 **Status:** proposed · **Author:** backlog-attractor worker · **Date:** 2026-07-22
 **Slug:** `forge-capability-tier`
 
 > This is a design/decision doc only. No code lands with it. All line citations were verified
-> against the read-only `origin/main` checkout at `/Users/michaeljabbour/dev/newtui-wt/base` and
+> against the read-only `origin/main` checkout at `/Users/michaeljabbour/dev/tui-wt/base` and
 > the forge helper at `~/.claude/skills/amplifier-skill-forge`.
 
 ---
@@ -22,7 +22,7 @@ design choice — and it is also the exact blind spot this issue targets.
   network.
 - End-to-end flow tests drive the **`DemoRuntime`**, a scripted producer with "no bundle, no network,
   no credentials" (`docs/ARCHITECTURE.md:225`). ADR-0007 makes the demo's fidelity a *contract*:
-  "the UI cannot tell the difference" (`docs/decisions/ADR-0007-newtui-ground-up-architecture.md:87`;
+  "the UI cannot tell the difference" (`docs/decisions/ADR-0007-tui-ground-up-architecture.md:87`;
   `DEVELOPMENT.md:45-46`).
 - Widget tests use Textual **Pilot headless driving** and a `FakeCommandContext`
   (`tests/conftest.py:21-169`; `DEVELOPMENT.md:81-83`). Pilot renders to an in-process virtual
@@ -84,9 +84,9 @@ Enumerated capabilities to assert end-to-end:
   (`SKILL.md` "Before the first Forge operation"; `README.md` Requirements).
 - Fan-out lifecycle: `--tag` every session, reap with `close-tag` (`SKILL.md` Rules).
 
-**What the app exposes to drive** (`/Users/michaeljabbour/dev/newtui-wt/base`):
+**What the app exposes to drive** (`/Users/michaeljabbour/dev/tui-wt/base`):
 
-- Console entry `amplifier-newtui = amplifier_app_newtui.main:main` (`pyproject.toml:20-21`).
+- Console entry `amplifier-tui = amplifier_app_tui.main:main` (`pyproject.toml:20-21`).
 - `--demo` swaps `DemoRuntimeAdapter` for `RealRuntimeAdapter`; that adapter choice "is the *only*
   place demo and real diverge" (`main.py:41-49`; `docs/ARCHITECTURE.md:185-187`).
 - Real boot = foundation 7-step lifecycle, `prepare()` once, then `create_initialized_session`;
@@ -134,7 +134,7 @@ Enumerated capabilities to assert end-to-end:
 
 ### Option 1 — Pure in-process PTY harness (pexpect / `pty.openpty`), no forge
 
-Spawn `amplifier-newtui` under a Python PTY directly from pytest; scrape the fd.
+Spawn `amplifier-tui` under a Python PTY directly from pytest; scrape the fd.
 
 - **+** No external daemon; self-contained; nothing new to install in CI.
 - **−** Re-implements exactly what forge already gives: ANSI stripping, rendered-viewport reads,
@@ -161,7 +161,7 @@ Use forge but assert purely on `screen`/`grep` text.
 A pytest tier marked `@pytest.mark.forge` that shells out to `forge.py` via a thin Python client, with
 two lanes selected by credential presence:
 
-- **Demo lane (always on):** launch `amplifier-newtui --demo` in a forge PTY at fixed cols. Assert
+- **Demo lane (always on):** launch `amplifier-tui --demo` in a forge PTY at fixed cols. Assert
   boot-to-composer, `/status` + `/model` + palette, and a full demo turn (streaming, plan panel,
   footer cost), and the agents fan-out (lanes, ctrl+o tail focus, delegate summary) via bounded
   `wait` on *single-token anchors* + `screen` structural checks. Deterministic (virtual clock, fixed
@@ -187,7 +187,7 @@ two lanes selected by credential presence:
 ## Decision / Recommendation
 
 **Adopt Option 3.** Build a new opt-in pytest tier, `tests/forge/`, marked `@pytest.mark.forge` and
-**excluded from the default gate**, that drives the shipped `amplifier-newtui` binary through a real
+**excluded from the default gate**, that drives the shipped `amplifier-tui` binary through a real
 PTY via `amplifier-skill-forge`'s `forge.py`. Observation is **ledger-primary** (assert on the
 session's append-only `ui-events.jsonl` where a real session exists) and **screen-secondary** (bounded
 `forge wait`/`screen` on single-token anchors for UI-presence and for the non-persisting demo lane).
@@ -212,7 +212,7 @@ Guiding principles, each traceable to evidence:
 
 ## Implementation plan (phased, concrete file paths)
 
-All paths under the writable repo `/Users/michaeljabbour/dev/amplifier-app-newtui`.
+All paths under the writable repo `/Users/michaeljabbour/dev/amplifier-app-tui`.
 
 ### Phase 0 — Scaffolding & marker (no assertions yet)
 
@@ -234,7 +234,7 @@ All paths under the writable repo `/Users/michaeljabbour/dev/amplifier-app-newtu
 
 ### Phase 1 — Demo lane (Capabilities A-demo, B, C, D)
 
-`tests/forge/test_capability_demo.py`, launching `.venv/bin/amplifier-newtui --demo`:
+`tests/forge/test_capability_demo.py`, launching `.venv/bin/amplifier-tui --demo`:
 
 - **A (boot to composer):** `wait` for a stable composer/footer anchor token (e.g. the bundle name in
   `#footer-bar`, `ARCHITECTURE.md:325`); assert the composer prompt is present on `screen`.

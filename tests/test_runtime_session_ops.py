@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.runtime import RealRuntime
-from amplifier_app_newtui.kernel.session_ops import ModelListing, StatusInfo
+from amplifier_app_tui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel.session_ops import ModelListing, StatusInfo
 
 
 class FakeProvider:

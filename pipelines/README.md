@@ -5,7 +5,7 @@
 > [`backlog.dot`](backlog.dot) (the routed generalization of gene-transfer.dot below) with the
 > orchestration loop run by an interactive amplifier session acting as the engine:
 > `self`-delegated claude-opus-4-8 workers (one per issue, 4 parallel lanes in git worktrees
-> under `~/dev/newtui-wt/`), deterministic gates re-verified independently by the orchestrator
+> under `~/dev/tui-wt/`), deterministic gates re-verified independently by the orchestrator
 > before every PR, ledger advanced via `ledger.py`. Retries used: 1 (issue #43, real bug found
 > by the independent gate re-run). Operational lessons baked into the graph/docs:
 > **(1)** `attractor-profile-anthropic` child agents failed intermittently
@@ -21,12 +21,12 @@
 
 A fully-automated [attractor](https://github.com/microsoft/amplifier-bundle-attractor)
 pipeline that ports capabilities from **amplifier-app-cli** (the donor) into
-**amplifier-app-newtui**, one open issue at a time, gating each transfer on the unit
+**amplifier-app-tui**, one open issue at a time, gating each transfer on the unit
 suite **and** a real-terminal [forge](../../.claude/skills/amplifier-skill-forge) check
 before it opens a PR.
 
 "Gene transfer" is deliberate: the pipeline moves the **capability**, re-expressed
-through newtui's own `kernel`/`model`/`ui`/`commands` seams under ADR-0007 — it never
+through tui's own `kernel`/`model`/`ui`/`commands` seams under ADR-0007 — it never
 imports, vendors, or copies amplifier-app-cli code (there are zero dependency ties today
 and this keeps it that way). This mirrors amplifier's shipped `semport.dot` cross-repo
 port fixture ("Strategy SF": the agent edits files directly, a deterministic tool node
@@ -39,7 +39,7 @@ already fixed on its own branch). The backlog is heterogeneous, so the pipeline 
 issue to the right treatment rather than porting everything the same way:
 
 - **amplifier-app-cli capability ports** (#43–#48, #51, #52) — the original gene-transfer
-  shape: find the donor construct, re-express it through newtui's seams under ADR-0007
+  shape: find the donor construct, re-express it through tui's seams under ADR-0007
   (never importing app-cli), gate on unit + forge.
 - **Internal fixes / refactors / features** (#22–#42, minus decisions) — no donor; study the
   issue and the relevant code, implement, gate on unit + forge.
@@ -125,7 +125,7 @@ under `logs_root` — `./runs/` for the bundle-config path, or a temp dir
 
 ```sh
 FORGE=~/.claude/skills/amplifier-skill-forge/tools/forge.py
-REPO=/Users/michaeljabbour/dev/amplifier-app-newtui
+REPO=/Users/michaeljabbour/dev/amplifier-app-tui
 
 # progress: which capabilities are left (primary signal)
 python3 "$FORGE" exec "python3 pipelines/ledger.py stats" --cwd "$REPO"   # e.g. implemented=5 new=3

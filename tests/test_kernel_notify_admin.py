@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel import notify_admin
-from amplifier_app_newtui.kernel.bundle_admin import read_scope, settings_paths
+from amplifier_app_tui.kernel import notify_admin
+from amplifier_app_tui.kernel.bundle_admin import read_scope, settings_paths
 
 
 def _paths(tmp_path: Path):

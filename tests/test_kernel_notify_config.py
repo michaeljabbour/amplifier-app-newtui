@@ -12,13 +12,13 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from amplifier_app_newtui.kernel.config import (
+from amplifier_app_tui.kernel.config import (
     apply_notification_ladder_env,
     inject_notifications_config,
     merged_push_settings,
     notification_settings,
 )
-from amplifier_app_newtui.ui import notifications
+from amplifier_app_tui.ui import notifications
 
 PUSH_HOOK = "hooks-notify-push"
 

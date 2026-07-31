@@ -18,9 +18,9 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.session_ops import ModelListing, StatusInfo
-from amplifier_app_newtui.model.blocks import BlockIdAllocator
-from amplifier_app_newtui.ui.runtime_adapter import RuntimeAdapter
+from amplifier_app_tui.kernel.session_ops import ModelListing, StatusInfo
+from amplifier_app_tui.model.blocks import BlockIdAllocator
+from amplifier_app_tui.ui.runtime_adapter import RuntimeAdapter
 
 # ---------------------------------------------------------------------------
 # T1 — neutral-return table for every public async stub

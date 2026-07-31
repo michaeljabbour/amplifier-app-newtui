@@ -17,12 +17,12 @@ import asyncio
 import pytest
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel.config import (
+from amplifier_app_tui.kernel.config import (
     ProviderNotConfiguredError,
     apply_run_overrides,
 )
-from amplifier_app_newtui.kernel.persistence import SessionStore
-from amplifier_app_newtui.main import main
+from amplifier_app_tui.kernel.persistence import SessionStore
+from amplifier_app_tui.main import main
 
 # ---------------------------------------------------------------------------
 # kernel seam: apply_run_overrides is ephemeral (no settings persistence)
@@ -125,7 +125,7 @@ class CapturingRuntime:
 @pytest.fixture
 def capture(monkeypatch) -> type[CapturingRuntime]:
     CapturingRuntime.instances = []
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", CapturingRuntime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", CapturingRuntime)
     return CapturingRuntime
 
 
@@ -166,8 +166,8 @@ def test_provider_alone_threads_without_model(capture) -> None:
 def test_resume_flag_seeds_from_named_session(capture, tmp_path, monkeypatch) -> None:
     store = SessionStore(base_dir=tmp_path / "sessions")
     full_id = "a1b2c3d4e5f600000000000000000000"
-    store.save(full_id, [{"role": "user", "content": "earlier"}], {"bundle": "newtui"})
-    monkeypatch.setattr("amplifier_app_newtui.main._session_store", lambda: store)
+    store.save(full_id, [{"role": "user", "content": "earlier"}], {"bundle": "tui"})
+    monkeypatch.setattr("amplifier_app_tui.main._session_store", lambda: store)
 
     result = CliRunner().invoke(main, ["run", "--resume", full_id[:8], "next"])
     assert result.exit_code == 0
@@ -199,7 +199,7 @@ def test_unknown_mode_errors(capture) -> None:
 
 def test_unknown_resume_session_errors(capture, tmp_path, monkeypatch) -> None:
     store = SessionStore(base_dir=tmp_path / "sessions")
-    monkeypatch.setattr("amplifier_app_newtui.main._session_store", lambda: store)
+    monkeypatch.setattr("amplifier_app_tui.main._session_store", lambda: store)
     result = CliRunner().invoke(main, ["run", "--resume", "deadbeef", "hello"])
     assert result.exit_code == 1
     assert "no session found" in result.stderr
@@ -210,8 +210,8 @@ def test_ambiguous_resume_prefix_errors(capture, tmp_path, monkeypatch) -> None:
     store = SessionStore(base_dir=tmp_path / "sessions")
     for suffix in ("1", "2"):
         sid = "aaaa" + suffix + "0" * 27
-        store.save(sid, [{"role": "user", "content": "x"}], {"bundle": "newtui"})
-    monkeypatch.setattr("amplifier_app_newtui.main._session_store", lambda: store)
+        store.save(sid, [{"role": "user", "content": "x"}], {"bundle": "tui"})
+    monkeypatch.setattr("amplifier_app_tui.main._session_store", lambda: store)
     result = CliRunner().invoke(main, ["run", "--resume", "aaaa", "hello"])
     assert result.exit_code == 1
     assert capture.instances == []

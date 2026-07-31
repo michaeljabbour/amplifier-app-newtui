@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
 from .test_flow_helpers import SIZE, blocks_of, seed_done
 
@@ -31,11 +31,11 @@ CHILD_A = "child-aaaaaaaaaaaaaaaa"
 CHILD_B = "child-bbbbbbbbbbbbbbbb"
 
 
-def _start_turn(app: NewTuiApp) -> None:
+def _start_turn(app: TuiApp) -> None:
     app.reducer.handle(ev.PromptSubmit(prompt="fan out", ts=1.0, session_id=ROOT))
 
 
-def _spawn(app: NewTuiApp, sub: str, name: str) -> None:
+def _spawn(app: TuiApp, sub: str, name: str) -> None:
     app.reducer.handle(
         ev.AgentSpawned(
             session_id=ROOT,
@@ -47,7 +47,7 @@ def _spawn(app: NewTuiApp, sub: str, name: str) -> None:
     )
 
 
-def _delta(app: NewTuiApp, sub: str, text: str) -> None:
+def _delta(app: TuiApp, sub: str, text: str) -> None:
     app.reducer.handle(
         ev.StreamBlockDelta(
             session_id=sub,
@@ -63,7 +63,7 @@ def _delta(app: NewTuiApp, sub: str, text: str) -> None:
 @pytest.mark.asyncio
 async def test_main_chat_tail_appears_under_working_line_while_child_streams() -> None:
     """Rust: test_main_chat_tail_appears_under_working_line_while_child_streams."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         _start_turn(app)
@@ -86,7 +86,7 @@ async def test_main_chat_tail_appears_under_working_line_while_child_streams() -
 @pytest.mark.asyncio
 async def test_main_chat_tail_switches_to_most_recent_streamer() -> None:
     """Rust: test_main_chat_tail_switches_to_most_recent_streamer."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         _start_turn(app)
@@ -104,7 +104,7 @@ async def test_main_chat_tail_switches_to_most_recent_streamer() -> None:
 @pytest.mark.asyncio
 async def test_main_chat_tail_clears_on_lane_completion_and_turn_end() -> None:
     """Rust: test_main_chat_tail_clears_on_lane_completion_and_turn_end."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         _start_turn(app)
@@ -142,7 +142,7 @@ async def test_main_chat_tail_absent_when_lanes_panel_focused() -> None:
     """Rust: test_main_chat_tail_absent_when_lanes_panel_focused (adapted:
     the ratatui client has no panel keyboard focus, so its equivalent
     suppression state is a focused lane's transcript filling the screen)."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         _start_turn(app)

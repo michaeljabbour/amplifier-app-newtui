@@ -7,8 +7,8 @@ span-joined text, skipping trailing non-Answer blocks and
 
 from __future__ import annotations
 
-from amplifier_app_newtui.commands.copy import last_answer_text
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.commands.copy import last_answer_text
+from amplifier_app_tui.model.blocks import (
     Answer,
     Segment,
     ToolLine,

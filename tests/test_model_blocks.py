@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     GLYPH_BLOCKED,
     GLYPH_PLAN_ACTIVE,
     GLYPH_PLAN_DONE,
@@ -45,8 +45,8 @@ from amplifier_app_newtui.model.blocks import (
     UserLine,
     WorkingStatus,
 )
-from amplifier_app_newtui.model.evidence import EvidenceLink
-from amplifier_app_newtui.model.turn import TurnTelemetry
+from amplifier_app_tui.model.evidence import EvidenceLink
+from amplifier_app_tui.model.turn import TurnTelemetry
 
 _ADAPTER: TypeAdapter = TypeAdapter(TranscriptBlock)
 

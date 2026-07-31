@@ -19,10 +19,10 @@ from typing import Any
 import pytest
 from amplifier_foundation import RUNTIME_SKILL_OVERLAY_CAPABILITY
 
-from amplifier_app_newtui.kernel.governance_hook import GovernanceHook
-from amplifier_app_newtui.kernel.spawner import SessionSpawner
-from amplifier_app_newtui.model.queues import NeedsYouQueue
-from amplifier_app_newtui.model.trust import DenialLog
+from amplifier_app_tui.kernel.governance_hook import GovernanceHook
+from amplifier_app_tui.kernel.spawner import SessionSpawner
+from amplifier_app_tui.model.queues import NeedsYouQueue
+from amplifier_app_tui.model.trust import DenialLog
 
 WRITE_PROBE = ("write_file", {"file_path": "/repo/a.py"})
 READ_PROBE = ("read_file", {"path": "/repo/a.py"})

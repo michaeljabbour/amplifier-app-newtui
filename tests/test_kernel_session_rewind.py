@@ -13,12 +13,12 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.rewind import (
+from amplifier_app_tui.kernel.rewind import (
     ForkOutcome,
     RewindController,
     RewindError,
 )
-from amplifier_app_newtui.model.turn import (
+from amplifier_app_tui.model.turn import (
     OutcomeLedger,
     TurnOutcome,
     TurnTelemetry,
@@ -51,7 +51,7 @@ def make_session_dir(tmp_path: Path, turns: int = 3) -> Path:
         lines.append(json.dumps({"role": "assistant", "content": f"answer {n}"}))
     (session_dir / "transcript.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (session_dir / "metadata.json").write_text(
-        json.dumps({"session_id": "parent-session", "bundle": "newtui", "model": "claude"}),
+        json.dumps({"session_id": "parent-session", "bundle": "tui", "model": "claude"}),
         encoding="utf-8",
     )
     return session_dir
@@ -235,7 +235,7 @@ async def test_fork_in_memory_context_failure_leaves_ledger() -> None:
 @pytest.mark.asyncio
 async def test_real_runtime_fork_rewinds_live_context_confirm_then_trim() -> None:
     """RealRuntime.fork: in-memory fork + context.set_messages(), then trim."""
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     class FakeContext:
         def __init__(self) -> None:
@@ -285,7 +285,7 @@ async def test_real_runtime_fork_refuses_while_turn_executing() -> None:
     """s9 guard: ``context.set_messages()`` under a live provider loop
     corrupts turn numbering — RealRuntime.fork must refuse while a
     submit() turn is executing, leaving ledger and context untouched."""
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     class FakeContext:
         def __init__(self) -> None:

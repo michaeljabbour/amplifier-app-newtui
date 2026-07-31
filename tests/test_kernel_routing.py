@@ -1,7 +1,7 @@
 """Model-routing wiring: settings bridge + spawner preference application.
 
 Routing affects delegated sub-agents only and is single-provider-safe
-(unmounted providers are skipped). These cover the newtui glue: the
+(unmounted providers are skipped). These cover the tui glue: the
 settings→hook-config bridge and the spawner's routing application order.
 """
 
@@ -13,13 +13,13 @@ from types import SimpleNamespace
 
 import amplifier_foundation.spawn_utils as su
 
-from amplifier_app_newtui.kernel.config import (
+from amplifier_app_tui.kernel.config import (
     ROUTING_MATRIX_BUNDLE_URI,
     composed_overlay_uris,
     inject_routing_config,
     routing_enabled,
 )
-from amplifier_app_newtui.kernel.spawner import _apply_routing, _as_preferences
+from amplifier_app_tui.kernel.spawner import _apply_routing, _as_preferences
 
 
 # -- settings bridge --------------------------------------------------------

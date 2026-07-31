@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel.cost import (
+from amplifier_app_tui.kernel.cost import (
     CostTracker,
     ModelPricing,
     PricingTable,
@@ -27,8 +27,8 @@ from amplifier_app_newtui.kernel.cost import (
     start_live_pricing,
     sum_prior_cost,
 )
-from amplifier_app_newtui.kernel.events import ContentBlockEnd, ProviderResponseUsage, normalize
-from amplifier_app_newtui.kernel.persistence import SessionStore
+from amplifier_app_tui.kernel.events import ContentBlockEnd, ProviderResponseUsage, normalize
+from amplifier_app_tui.kernel.persistence import SessionStore
 
 # --------------------------------------------------------------------------
 # estimate_cost
@@ -254,7 +254,7 @@ def test_restore_from_legacy_only_session_dir(tmp_path: Path) -> None:
     events.jsonl (mixed foreign hook records and corrupt lines skipped)."""
     import json
 
-    from amplifier_app_newtui.kernel.persistence import LEGACY_EVENTS_FILENAME
+    from amplifier_app_tui.kernel.persistence import LEGACY_EVENTS_FILENAME
 
     store = SessionStore(base_dir=tmp_path / "sessions")
     store.session_dir("s1").mkdir(parents=True)
@@ -279,7 +279,7 @@ def test_restore_sums_split_legacy_and_current_files(tmp_path: Path) -> None:
     events.jsonl and ui-events.jsonl — both halves count once."""
     import json
 
-    from amplifier_app_newtui.kernel.persistence import LEGACY_EVENTS_FILENAME
+    from amplifier_app_tui.kernel.persistence import LEGACY_EVENTS_FILENAME
 
     store = SessionStore(base_dir=tmp_path / "sessions")
     store.session_dir("s1").mkdir(parents=True)

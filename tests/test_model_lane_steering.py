@@ -11,7 +11,7 @@ import itertools
 
 import pytest
 
-from amplifier_app_newtui.model.queues import (
+from amplifier_app_tui.model.queues import (
     MAX_QUEUE_ITEMS,
     LaneSteeringQueue,
 )

@@ -42,7 +42,7 @@ todo ToolPre (root session only — children diverted at reducer.handle(), reduc
 reducer._update_todo (reducer.py:1133)  ──►  host.plan_changed(items)   [NO transcript block]
                                                    │
                                                    ▼
-                                    NewTuiApp.plan_changed (ui/app.py)
+                                    TuiApp.plan_changed (ui/app.py)
                                                    │
                                                    ▼
                               app_support.sync_plan_surfaces(app)
@@ -95,7 +95,7 @@ it pass → run the full gate → commit. Do not batch tasks into one commit.
 
 ## Task 1 — Pure formatter: `format_plan_lines`
 
-**Files:** create `src/amplifier_app_newtui/ui/plan_panel.py`, create `tests/test_ui_plan_panel.py`
+**Files:** create `src/amplifier_app_tui/ui/plan_panel.py`, create `tests/test_ui_plan_panel.py`
 
 ### 1a. Write the failing test
 
@@ -107,9 +107,9 @@ docs/plans/2026-07-21-ambient-progress-design.md (D1/D2)."""
 
 from __future__ import annotations
 
-from amplifier_app_newtui.model.blocks import TodoItem
-from amplifier_app_newtui.ui.plan_panel import PLAN_MAX_ROWS, format_plan_lines
-from amplifier_app_newtui.ui.segments import line_plain
+from amplifier_app_tui.model.blocks import TodoItem
+from amplifier_app_tui.ui.plan_panel import PLAN_MAX_ROWS, format_plan_lines
+from amplifier_app_tui.ui.segments import line_plain
 
 
 def _items(*statuses: str) -> tuple[TodoItem, ...]:
@@ -176,11 +176,11 @@ Run it:
 uv run pytest tests/test_ui_plan_panel.py -q
 ```
 
-**Expect: FAIL** — `ModuleNotFoundError: No module named 'amplifier_app_newtui.ui.plan_panel'`.
+**Expect: FAIL** — `ModuleNotFoundError: No module named 'amplifier_app_tui.ui.plan_panel'`.
 
 ### 1b. Implement
 
-Create `src/amplifier_app_newtui/ui/plan_panel.py`:
+Create `src/amplifier_app_tui/ui/plan_panel.py`:
 
 ```python
 """Ambient plan strip (design 2026-07-21 D1/D2): the ``todo`` tool's live
@@ -340,7 +340,7 @@ painting; its behavior is exercised in Tasks 5/8. The formatter is the tested un
 uv run pytest tests/test_ui_plan_panel.py -q        # expect: 5 passed
 uv run ruff check .                                  # expect: All checks passed!
 uv run pyright src/                                  # expect: 0 errors
-git add src/amplifier_app_newtui/ui/plan_panel.py tests/test_ui_plan_panel.py
+git add src/amplifier_app_tui/ui/plan_panel.py tests/test_ui_plan_panel.py
 git commit -m "ui: PlanPanel widget + pure plan-line formatter (ambient progress D1/D2)"
 ```
 
@@ -348,7 +348,7 @@ git commit -m "ui: PlanPanel widget + pure plan-line formatter (ambient progress
 
 ## Task 2 — Reducer: `plan_changed()` reroutes the `todo` tool away from the transcript
 
-**Files:** `src/amplifier_app_newtui/ui/reducer.py`, `src/amplifier_app_newtui/ui/app.py`
+**Files:** `src/amplifier_app_tui/ui/reducer.py`, `src/amplifier_app_tui/ui/app.py`
 (minimal stub), `tests/test_ui_reducer_outcomes.py` (FakeHost), `tests/test_ui_transcript_render.py`
 
 ### 2a. Write the failing test
@@ -362,11 +362,11 @@ def test_todo_tool_reroutes_to_plan_changed_never_the_transcript() -> None:
     host.plan_changed(); no TodoBlock, no tool_line, no digest entry."""
     import sys
 
-    from amplifier_app_newtui.kernel import events as ev
-    from amplifier_app_newtui.model.blocks import BlockIdAllocator
-    from amplifier_app_newtui.model.lanes import LaneRegistry
-    from amplifier_app_newtui.model.turn import OutcomeLedger
-    from amplifier_app_newtui.ui.reducer import TranscriptReducer
+    from amplifier_app_tui.kernel import events as ev
+    from amplifier_app_tui.model.blocks import BlockIdAllocator
+    from amplifier_app_tui.model.lanes import LaneRegistry
+    from amplifier_app_tui.model.turn import OutcomeLedger
+    from amplifier_app_tui.ui.reducer import TranscriptReducer
 
     sys.path.insert(0, "tests")
     from test_ui_reducer_outcomes import FakeHost
@@ -421,7 +421,7 @@ def test_todo_tool_reroutes_to_plan_changed_never_the_transcript() -> None:
 ```
 
 In `tests/test_ui_reducer_outcomes.py`, extend `FakeHost` (class at line 35): add `TodoItem` to
-the existing `amplifier_app_newtui.model.blocks` import at the top of the file, add to
+the existing `amplifier_app_tui.model.blocks` import at the top of the file, add to
 `__init__` (after `self.stream_events...`, line 42):
 
 ```python
@@ -447,7 +447,7 @@ by the FakeHost edit, then the real failure: `assert len(host.plan_changes) == 2
 
 ### 2b. Implement
 
-All edits in `src/amplifier_app_newtui/ui/reducer.py`:
+All edits in `src/amplifier_app_tui/ui/reducer.py`:
 
 1. **Protocol** — in `ReducerHost` (lines 297-314), directly after
    `def lanes_changed(self) -> None: ...` (line 309), add:
@@ -466,7 +466,7 @@ All edits in `src/amplifier_app_newtui/ui/reducer.py`:
         transcript (design 2026-07-21 D1/D3).
 
         The printing ``hooks-todo-display`` is stripped under the TUI, so
-        newtui renders the list itself from the tool call's ``todos``
+        tui renders the list itself from the tool call's ``todos``
         payload (``create``/``update`` ops carry the full list; ``list``
         carries none). Root-session only: child ToolPre events are
         diverted before dispatch (see ``_is_foreign_turn_event``).
@@ -500,8 +500,8 @@ All edits in `src/amplifier_app_newtui/ui/reducer.py`:
             return
 ```
 
-5. **App stub** (keeps `NewTuiApp` satisfying the protocol so pyright stays green this commit) —
-   in `src/amplifier_app_newtui/ui/app.py`: add `TodoItem` to the `..model.blocks` import
+5. **App stub** (keeps `TuiApp` satisfying the protocol so pyright stays green this commit) —
+   in `src/amplifier_app_tui/ui/app.py`: add `TodoItem` to the `..model.blocks` import
    (lines 14-21), add to `__init__` near `self._lanes_fanout_open` (line 177):
 
 ```python
@@ -533,7 +533,7 @@ renderer and union are untouched until Task 6.
 
 ## Task 3 — Demo runtime: `todo` beats light the panel offline
 
-**Files:** `src/amplifier_app_newtui/kernel/demo.py`, `tests/test_kernel_demo_turns.py`
+**Files:** `src/amplifier_app_tui/kernel/demo.py`, `tests/test_kernel_demo_turns.py`
 
 The demo currently emits **zero** `todo` tool calls (verified by grep). The store turns
 (`run_build_turn` / `run_auto_turn` → `_run_store_turn`, demo.py:1017) already walk a plan via
@@ -586,7 +586,7 @@ uv run pytest tests/test_kernel_demo_turns.py -q
 
 ### 3b. Implement
 
-In `src/amplifier_app_newtui/kernel/demo.py`:
+In `src/amplifier_app_tui/kernel/demo.py`:
 
 1. After `_plan` (lines 862-881) add:
 
@@ -641,7 +641,7 @@ git add -A && git commit -m "demo: store turns emit todo beats mirroring the pla
 
 ## Task 4 — App wiring: bottom strip + responsive sync
 
-**Files:** `src/amplifier_app_newtui/ui/app.py`, `src/amplifier_app_newtui/ui/app_support.py`,
+**Files:** `src/amplifier_app_tui/ui/app.py`, `src/amplifier_app_tui/ui/app_support.py`,
 create `tests/test_flow_plan_panel.py`
 
 ### 4a. Write the failing test
@@ -656,8 +656,8 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import BUILD_PROMPT
-from amplifier_app_newtui.ui.app import NewTuiApp
+from amplifier_app_tui.kernel.demo import BUILD_PROMPT
+from amplifier_app_tui.ui.app import TuiApp
 
 from .test_flow_helpers import SIZE, GatedDemoAdapter, blocks_of, seed_done, wait_for
 
@@ -665,7 +665,7 @@ from .test_flow_helpers import SIZE, GatedDemoAdapter, blocks_of, seed_done, wai
 @pytest.mark.asyncio
 async def test_plan_panel_lights_up_mid_turn_and_collapses_when_done() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(BUILD_PROMPT)
@@ -688,7 +688,7 @@ async def test_plan_panel_lights_up_mid_turn_and_collapses_when_done() -> None:
 @pytest.mark.asyncio
 async def test_plan_panel_hides_below_90_cols() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(80, 40)) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(BUILD_PROMPT)
@@ -705,11 +705,11 @@ Run:
 uv run pytest tests/test_flow_plan_panel.py -q
 ```
 
-**Expect: FAIL** — `AttributeError: 'NewTuiApp' object has no attribute 'plan_panel'`.
+**Expect: FAIL** — `AttributeError: 'TuiApp' object has no attribute 'plan_panel'`.
 
 ### 4b. Implement
 
-In `src/amplifier_app_newtui/ui/app_support.py`, add near `footer_state` (line 571):
+In `src/amplifier_app_tui/ui/app_support.py`, add near `footer_state` (line 571):
 
 ```python
 PLAN_PANEL_MIN_WIDTH = 90
@@ -717,13 +717,13 @@ PLAN_PANEL_MIN_WIDTH = 90
 falls back to the footer (design D2 responsive ladder)."""
 
 
-def apply_plan_change(app: NewTuiApp, items: tuple[TodoItem, ...]) -> None:
+def apply_plan_change(app: TuiApp, items: tuple[TodoItem, ...]) -> None:
     """Reducer pushed a new root todo list — repaint the ambient surfaces."""
     app.plan_items = tuple(items)
     sync_plan_surfaces(app)
 
 
-def sync_plan_surfaces(app: NewTuiApp) -> None:
+def sync_plan_surfaces(app: TuiApp) -> None:
     """One decision point for the plan's responsive ladder (D2).
 
     Wide (≥ 90 cols) with todos → the bottom-strip panel; otherwise the
@@ -743,7 +743,7 @@ refreshes title + footer.) Add `TodoItem` to app_support's `..model.blocks` impo
 already there, and add `"apply_plan_change"`, `"sync_plan_surfaces"`, `"PLAN_PANEL_MIN_WIDTH"`
 to its `__all__`.
 
-In `src/amplifier_app_newtui/ui/app.py` (total net growth here must stay ≤ ~20 lines):
+In `src/amplifier_app_tui/ui/app.py` (total net growth here must stay ≤ ~20 lines):
 
 1. Imports: extend `from textual.containers import Container` → `import Container, Horizontal`;
    add `from .plan_panel import PlanPanel` to the relative-import block (near
@@ -795,7 +795,7 @@ uv run pytest tests/test_flow_lanes.py tests/test_ui_snapshots.py -q
     # If the snapshot FAILS, your strip is taking up rows while empty. Fix the CSS
     # (height: auto + display:none children); do NOT regenerate the old snapshot to paper over it.
 uv run pytest -q && uv run ruff check . && uv run pyright src/
-wc -l src/amplifier_app_newtui/ui/app.py             # expect: ≤ 1234 (was 1214 — ADR-0007
+wc -l src/amplifier_app_tui/ui/app.py             # expect: ≤ 1234 (was 1214 — ADR-0007
                                                      # budget is already blown; do not add to the debt)
 git add -A && git commit -m "ui: bottom strip — lanes left, plan panel right, resize-aware (D2)"
 ```
@@ -804,7 +804,7 @@ git add -A && git commit -m "ui: bottom strip — lanes left, plan panel right, 
 
 ## Task 5 — Footer fallback: `Plan N/M` below 90 cols
 
-**Files:** `src/amplifier_app_newtui/ui/footer.py`, `src/amplifier_app_newtui/ui/app_support.py`,
+**Files:** `src/amplifier_app_tui/ui/footer.py`, `src/amplifier_app_tui/ui/app_support.py`,
 `tests/test_ui_footer.py`, `tests/test_flow_plan_panel.py`
 
 ### 5a. Write the failing tests
@@ -823,7 +823,7 @@ In `tests/test_flow_plan_panel.py`, extend `test_plan_panel_hides_below_90_cols`
 first `assert not app.plan_panel.display`:
 
 ```python
-        from amplifier_app_newtui.ui.footer import footer_left_text
+        from amplifier_app_tui.ui.footer import footer_left_text
 
         assert "Plan 0/3" in footer_left_text(app.footer_bar.state)
 ```
@@ -845,7 +845,7 @@ is `extra="forbid"`).
 
 ### 5b. Implement
 
-In `src/amplifier_app_newtui/ui/footer.py`:
+In `src/amplifier_app_tui/ui/footer.py`:
 
 1. `FooterState` (after `waiting`, line 65):
 
@@ -875,12 +875,12 @@ In `src/amplifier_app_newtui/ui/footer.py`:
    `_repaint` follows. `_update_wrap` already measures via `footer_left_text`, so wrapping keeps
    working for free.)
 
-In `src/amplifier_app_newtui/ui/app_support.py`:
+In `src/amplifier_app_tui/ui/app_support.py`:
 
 4. Add next to `sync_plan_surfaces`:
 
 ```python
-def plan_footer_counts(app: NewTuiApp) -> tuple[int, int]:
+def plan_footer_counts(app: TuiApp) -> tuple[int, int]:
     """``(done, total)`` for the footer — (0, 0) unless the panel is hidden
     while todos exist (the count never shows twice; design D2)."""
     if not app.plan_items or app.plan_panel.display:
@@ -911,7 +911,7 @@ git add -A && git commit -m "footer: Plan N/M fallback while the plan panel is h
 
 ## Task 6 — Retire `TodoBlock`: renderer, union kind, goldens (ONE commit)
 
-**Files:** `src/amplifier_app_newtui/ui/transcript.py`, `src/amplifier_app_newtui/model/blocks.py`,
+**Files:** `src/amplifier_app_tui/ui/transcript.py`, `src/amplifier_app_tui/model/blocks.py`,
 `tests/goldens/regen.py`, `tests/goldens/transcript_w{40,80,97,120}.txt`,
 `tests/test_ui_transcript_render.py`, `docs/ARCHITECTURE.md`
 
@@ -927,7 +927,7 @@ git add -A && git commit -m "footer: Plan N/M fallback while the plan panel is h
 `set(kinds) == set(_RENDERERS)`. Start by deleting the renderer entry, run, watch it fail, then
 finish the sweep:
 
-1. `src/amplifier_app_newtui/ui/transcript.py`: delete `"todo": _render_todo,` (line 814).
+1. `src/amplifier_app_tui/ui/transcript.py`: delete `"todo": _render_todo,` (line 814).
 
 ```
 uv run pytest tests/test_golden_widths.py -q
@@ -939,7 +939,7 @@ uv run pytest tests/test_golden_widths.py -q
 
 2. `transcript.py`: delete `_render_todo` and `TODO_BAR_WIDTH` (lines 321-370); remove
    `TodoBlock,` from the import at line 67.
-3. `src/amplifier_app_newtui/model/blocks.py`: delete the `TodoBlock` class (lines 219-227);
+3. `src/amplifier_app_tui/model/blocks.py`: delete the `TodoBlock` class (lines 219-227);
    delete `| TodoBlock` from the union (line 477); delete `"TodoBlock",` from `__all__`
    (line 531). Keep `TodoStatus` + `TodoItem`, and reword `TodoItem`'s docstring to drop the
    dead cross-reference:
@@ -986,7 +986,7 @@ git add -A && git commit -m "model/ui: retire TodoBlock — plan lives in the am
 ### 7a. Write the failing test
 
 Append to `tests/test_ui_snapshots.py` (add `BUILD_PROMPT` to the existing
-`amplifier_app_newtui.kernel.demo` import):
+`amplifier_app_tui.kernel.demo` import):
 
 ```python
 _PLAN_SNAPSHOT = (
@@ -1003,7 +1003,7 @@ def test_plan_panel_bottom_strip_snapshot(monkeypatch) -> None:
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("COLORTERM", "truecolor")
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
 
     async def run_build(pilot) -> None:
         await seed_done(pilot, app)
@@ -1039,13 +1039,13 @@ os.environ["COLORTERM"] = "truecolor"
 
 from textual._doc import take_svg_screenshot
 
-from amplifier_app_newtui.kernel.demo import BUILD_PROMPT
-from amplifier_app_newtui.ui.app import NewTuiApp
+from amplifier_app_tui.kernel.demo import BUILD_PROMPT
+from amplifier_app_tui.ui.app import TuiApp
 from tests.test_flow_helpers import SIZE, GatedDemoAdapter, seed_done, wait_for
 from tests.test_ui_snapshots import _PLAN_SNAPSHOT, _clean_svg
 
 adapter = GatedDemoAdapter()
-app = NewTuiApp(adapter)
+app = TuiApp(adapter)
 
 async def run_build(pilot) -> None:
     await seed_done(pilot, app)
@@ -1090,7 +1090,7 @@ uv run ruff check .
     # expect: All checks passed!
 uv run pyright src/
     # expect: 0 errors, 0 warnings
-uv run amplifier-newtui --demo
+uv run amplifier-tui --demo
     # manual check: submit the build-turn demo prompt; watch the plan panel appear
     # bottom-right, progress ▶ through 3 steps, and collapse to "Plan 3/3".
     # Resize the terminal below 90 cols: panel hides, footer shows "Plan N/M".

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.model.config import (
+from amplifier_app_tui.model.config import (
     CONFIG_CATEGORIES,
     ConfigItem,
     ConfigSnapshotView,

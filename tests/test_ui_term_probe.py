@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from amplifier_app_newtui.ui.term_probe import probe_kitty_protocol
+from amplifier_app_tui.ui.term_probe import probe_kitty_protocol
 
 
 def test_kitty_protocol_terminals_detected() -> None:
@@ -52,7 +52,7 @@ def test_patch_legacy_alt_named_keys_restores_alt_enter() -> None:
     """
     from textual._xterm_parser import XTermParser
 
-    from amplifier_app_newtui.ui.term_probe import patch_legacy_alt_named_keys
+    from amplifier_app_tui.ui.term_probe import patch_legacy_alt_named_keys
 
     patch_legacy_alt_named_keys()
     patch_legacy_alt_named_keys()  # idempotent — wraps once

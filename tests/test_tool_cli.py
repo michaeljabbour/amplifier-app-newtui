@@ -13,8 +13,8 @@ import json
 
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel.session_ops import ToolDescriptor, ToolInvocation
-from amplifier_app_newtui.main import _parse_tool_args, main
+from amplifier_app_tui.kernel.session_ops import ToolDescriptor, ToolInvocation
+from amplifier_app_tui.main import _parse_tool_args, main
 
 
 class FakeRuntime:
@@ -22,7 +22,7 @@ class FakeRuntime:
     last_allow_writes: bool | None = None
 
     def __init__(self, *, bundle=None) -> None:
-        self.bundle_name = bundle or "newtui"
+        self.bundle_name = bundle or "tui"
 
     async def start(self) -> None:
         # Boot noise must land on stderr, never the machine-readable stdout.
@@ -65,7 +65,7 @@ class FailingRuntime(FakeRuntime):
 
 
 def _patch(monkeypatch, runtime=FakeRuntime) -> None:
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", runtime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", runtime)
 
 
 # -- _parse_tool_args (pure) ------------------------------------------------
@@ -132,7 +132,7 @@ def test_tool_list_json_is_one_document(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["status"] == "success"
-    assert payload["bundle"] == "newtui"
+    assert payload["bundle"] == "tui"
     names = [t["name"] for t in payload["tools"]]
     assert names == ["bash", "noexec", "read_file"]
     assert payload["tools"][1]["invokable"] is False

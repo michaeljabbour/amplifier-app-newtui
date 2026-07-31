@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from amplifier_app_newtui.kernel.git_yield import GitDiffSnapshot
-from amplifier_app_newtui.kernel.runtime import (
+from amplifier_app_tui.kernel.git_yield import GitDiffSnapshot
+from amplifier_app_tui.kernel.runtime import (
     TURN_ABORTED_MARKER,
     RealRuntime,
     restored_history,

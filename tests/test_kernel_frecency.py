@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.frecency import (
+from amplifier_app_tui.kernel.frecency import (
     RankedPrompt,
     frecency_score,
     rank_history,

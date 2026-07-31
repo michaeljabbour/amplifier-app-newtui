@@ -12,7 +12,7 @@
 //      free here — the discipline that matters is triage (most of opencode should
 //      NOT be ported; see OPENCODE.md).
 //   2. TWO TARGETS THAT ARE NOT PEERS.
-//        $newtui_path  — Python/Textual app. Owns the BACKEND (kernel/model/
+//        $tui_path  — Python/Textual app. Owns the BACKEND (kernel/model/
 //                        commands + the `serve` stdio protocol) and one client UI.
 //        $rust_path    — Rust/ratatui app. A pure protocol CLIENT of the Python
 //                        `serve` backend (codex-tui/codex-core split). It renders
@@ -37,11 +37,11 @@
 // MODELS: claude-opus-4-8 on every LLM node (fable-5 refuses autonomous porting;
 //   opus-4-8 is the verified worker here). Route Implement to a rust-strong coder
 //   for TARGET in {both,split} if you prefer.
-// PATHS (launch params): donor_path, newtui_path, rust_path, forge_tool.
+// PATHS (launch params): donor_path, tui_path, rust_path, forge_tool.
 
 digraph opencode_transfer {
     graph [
-        goal="Re-express each opencode capability in pipelines/opencode-ledger.tsv through the amplifier clients' OWN seams. HARD RULES: NEVER import, vendor, or copy opencode source (it is TypeScript; you are moving the capability, not the code). Python target ($newtui_path) obeys ADR-0007: kernel/ is the ONLY layer importing amplifier-core/foundation; ui/ and commands/ never touch amplifier-core; pure renderers are golden-tested in the same commit; client-visible backend behavior is exposed through the `serve` stdio protocol. Rust target ($rust_path) is a pure protocol CLIENT of Python `serve` — it renders protocol state, owns no session/agent logic, and its ported units carry behavioral-equivalence tests (MIGRATION.md discipline). One ledger row per loop; done when no 'new' rows remain.",
+        goal="Re-express each opencode capability in pipelines/opencode-ledger.tsv through the amplifier clients' OWN seams. HARD RULES: NEVER import, vendor, or copy opencode source (it is TypeScript; you are moving the capability, not the code). Python target ($tui_path) obeys ADR-0007: kernel/ is the ONLY layer importing amplifier-core/foundation; ui/ and commands/ never touch amplifier-core; pure renderers are golden-tested in the same commit; client-visible backend behavior is exposed through the `serve` stdio protocol. Rust target ($rust_path) is a pure protocol CLIENT of Python `serve` — it renders protocol state, owns no session/agent logic, and its ported units carry behavioral-equivalence tests (MIGRATION.md discipline). One ledger row per loop; done when no 'new' rows remain.",
         default_fidelity="truncate",
         default_thread_id="opencode-transfer",
         default_max_retry="3"
@@ -51,35 +51,35 @@ digraph opencode_transfer {
 
     // --- loop head: any work left? (deterministic) ---
     CheckLedger [shape=parallelogram,
-        tool_command="cd $newtui_path && test \"$(LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py earliest)\" = NONE && printf done || printf process"]
+        tool_command="cd $tui_path && test \"$(LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py earliest)\" = NONE && printf done || printf process"]
 
     // --- pick the earliest 'new' capability; capture its target + donor pointer ---
     SelectCapability [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
-        prompt="In $newtui_path run `LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py earliest` — it prints '<slug> <target>'. Open pipelines/OPENCODE.md and read the triage-table row for <slug> (its one-line capability summary and its opencode donor pointer). Write TWO files under $newtui_path/.ai/: (1) oc_current.md — slug, target, the one-paragraph capability summary, and the donor pointer VERBATIM; (2) oc_current.env — exactly two lines `SLUG=<slug>` and `TARGET=<target>`. Delete .ai/oc_retries if present. $goal"]
+        prompt="In $tui_path run `LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py earliest` — it prints '<slug> <target>'. Open pipelines/OPENCODE.md and read the triage-table row for <slug> (its one-line capability summary and its opencode donor pointer). Write TWO files under $tui_path/.ai/: (1) oc_current.md — slug, target, the one-paragraph capability summary, and the donor pointer VERBATIM; (2) oc_current.env — exactly two lines `SLUG=<slug>` and `TARGET=<target>`. Delete .ai/oc_retries if present. $goal"]
 
     // --- fresh per-capability branch in each target repo (deterministic) ---
     BranchSetup [shape=parallelogram,
-        tool_command="cd $newtui_path && set -a && . .ai/oc_current.env && set +a && rm -f .ai/oc_retries && git stash -q --include-untracked -- ':!.ai' 2>/dev/null; git checkout -q main && git pull -q --ff-only 2>/dev/null; git checkout -q -B opencode/$SLUG; case \"$TARGET\" in both|split) cd $rust_path && git checkout -q main && git pull -q --ff-only 2>/dev/null; git checkout -q -B opencode/$SLUG;; esac; printf ready"]
+        tool_command="cd $tui_path && set -a && . .ai/oc_current.env && set +a && rm -f .ai/oc_retries && git stash -q --include-untracked -- ':!.ai' 2>/dev/null; git checkout -q main && git pull -q --ff-only 2>/dev/null; git checkout -q -B opencode/$SLUG; case \"$TARGET\" in both|split) cd $rust_path && git checkout -q main && git pull -q --ff-only 2>/dev/null; git checkout -q -B opencode/$SLUG;; esac; printf ready"]
 
     // --- study the donor capability WITHOUT copying it (TS -> behavioral contract) ---
     LocateDonor [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
-        prompt="Read $newtui_path/.ai/oc_current.md. In the opencode donor at $donor_path, locate the construct(s) implementing this capability (start from the donor pointer; TS/Effect-TS). Record the BEHAVIORAL CONTRACT ONLY — inputs, outputs, config keys, protocol/wire shape, edge cases, and any user-facing UX contract — in $newtui_path/.ai/oc_donor.md. Do NOT copy source; you are documenting the gene, not grafting a TypeScript organ. Note explicitly which parts are backend logic vs pure client render (this determines what lands in Python vs the Rust client). $goal"]
+        prompt="Read $tui_path/.ai/oc_current.md. In the opencode donor at $donor_path, locate the construct(s) implementing this capability (start from the donor pointer; TS/Effect-TS). Record the BEHAVIORAL CONTRACT ONLY — inputs, outputs, config keys, protocol/wire shape, edge cases, and any user-facing UX contract — in $tui_path/.ai/oc_donor.md. Do NOT copy source; you are documenting the gene, not grafting a TypeScript organ. Note explicitly which parts are backend logic vs pure client render (this determines what lands in Python vs the Rust client). $goal"]
 
     // --- design the re-expression per target + author the forge probe(s) ---
     PlanTransfer [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
-        prompt="Read .ai/oc_current.md, .ai/oc_donor.md, and (Python) docs/ARCHITECTURE.md + docs/decisions/ADR-0007-*; (Rust, if TARGET in {both,split}) $rust_path/MIGRATION.md + $rust_path/PARITY.md. Design how to re-express this capability through the amplifier clients' OWN seams, per TARGET: python => name the exact kernel/model/ui/commands files and, if the client must see it, the `serve` protocol addition; both => the pure client render in Python (ui/) AND Rust (src/ui/), each with tests/goldens; split => the Python backend + `serve` addition FIRST, then the client render in both. List the amplifier-native primitives to reuse and every test/golden to add. Write the plan to .ai/oc_plan.md. THEN author acceptance probe(s) to .ai/oc_forge_check.sh: a bash script using the forge helper (env $FORGE) that boots the REAL Python TUI, and — if TARGET in {both,split} — the REAL Rust binary (`amplifier-newtui-rs`) too, and asserts the capability from `screen`/`grep`; exit 0 on success, non-zero otherwise. Derive assertions from the donor's user-facing contract. $goal"]
+        prompt="Read .ai/oc_current.md, .ai/oc_donor.md, and (Python) docs/ARCHITECTURE.md + docs/decisions/ADR-0007-*; (Rust, if TARGET in {both,split}) $rust_path/MIGRATION.md + $rust_path/PARITY.md. Design how to re-express this capability through the amplifier clients' OWN seams, per TARGET: python => name the exact kernel/model/ui/commands files and, if the client must see it, the `serve` protocol addition; both => the pure client render in Python (ui/) AND Rust (src/ui/), each with tests/goldens; split => the Python backend + `serve` addition FIRST, then the client render in both. List the amplifier-native primitives to reuse and every test/golden to add. Write the plan to .ai/oc_plan.md. THEN author acceptance probe(s) to .ai/oc_forge_check.sh: a bash script using the forge helper (env $FORGE) that boots the REAL Python TUI, and — if TARGET in {both,split} — the REAL Rust binary (`amplifier-tui-rs`) too, and asserts the capability from `screen`/`grep`; exit 0 on success, non-zero otherwise. Derive assertions from the donor's user-facing contract. $goal"]
 
     // --- implement on the branch(es) ---
     Implement [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
-        prompt="Read .ai/oc_plan.md (including any appended 'Fix N' sections) and .ai/oc_current.env for TARGET. Implement it with file tools on the current branch(es): Python changes in $newtui_path (ADR-0007-clean: no opencode import, amplifier-core only in kernel/, client-visible behavior via the serve protocol, pure renderers golden-tested); Rust changes in $rust_path when TARGET in {both,split} (idiomatic ratatui client consuming the protocol, behavioral-equivalence tests per MIGRATION.md — never force-green). Add/extend tests; regenerate goldens if you touched a pure renderer. Do NOT run the suites yourself — the next node does. Append a bullet list of files changed (per repo) to .ai/oc_impl.log. $goal"]
+        prompt="Read .ai/oc_plan.md (including any appended 'Fix N' sections) and .ai/oc_current.env for TARGET. Implement it with file tools on the current branch(es): Python changes in $tui_path (ADR-0007-clean: no opencode import, amplifier-core only in kernel/, client-visible behavior via the serve protocol, pure renderers golden-tested); Rust changes in $rust_path when TARGET in {both,split} (idiomatic ratatui client consuming the protocol, behavioral-equivalence tests per MIGRATION.md — never force-green). Add/extend tests; regenerate goldens if you touched a pure renderer. Do NOT run the suites yourself — the next node does. Append a bullet list of files changed (per repo) to .ai/oc_impl.log. $goal"]
 
     // --- deterministic gate 1: target-aware lint + types + unit suites ---
     UnitValidate [shape=parallelogram,
-        tool_command="cd $newtui_path && set -a && . .ai/oc_current.env && set +a; ok=1; { uv run ruff check . && uv run ruff format --check . && uv run pyright src/ && uv run pytest -q; } >/tmp/oc_py 2>&1 || ok=0; case \"$TARGET\" in both|split) { cd $rust_path && cargo test --quiet && cargo clippy --all-targets --quiet -- -D warnings; } >/tmp/oc_rs 2>&1 || ok=0;; esac; test $ok = 1 && printf pass || printf fail"]
+        tool_command="cd $tui_path && set -a && . .ai/oc_current.env && set +a; ok=1; { uv run ruff check . && uv run ruff format --check . && uv run pyright src/ && uv run pytest -q; } >/tmp/oc_py 2>&1 || ok=0; case \"$TARGET\" in both|split) { cd $rust_path && cargo test --quiet && cargo clippy --all-targets --quiet -- -D warnings; } >/tmp/oc_rs 2>&1 || ok=0;; esac; test $ok = 1 && printf pass || printf fail"]
 
     // --- deterministic gate 2: capability through the real terminal(s) (forge) ---
     ForgeValidate [shape=parallelogram,
-        tool_command="cd $newtui_path && export FORGE=$forge_tool && python3 \"$FORGE\" doctor >/tmp/oc_forge_doctor 2>&1 && bash .ai/oc_forge_check.sh >/tmp/oc_forge 2>&1 && printf pass || printf fail"]
+        tool_command="cd $tui_path && export FORGE=$forge_tool && python3 \"$FORGE\" doctor >/tmp/oc_forge_doctor 2>&1 && bash .ai/oc_forge_check.sh >/tmp/oc_forge 2>&1 && printf pass || printf fail"]
 
     // --- diagnose a failing gate and append a concrete fix ---
     AnalyzeFailure [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
@@ -87,15 +87,15 @@ digraph opencode_transfer {
 
     // --- bound the retry loop; give up gracefully after 3 ---
     RetryGate [shape=parallelogram,
-        tool_command="cd $newtui_path && n=$(cat .ai/oc_retries 2>/dev/null || echo 0); n=$((n+1)); echo $n > .ai/oc_retries; test $n -le 3 && printf retry || printf giveup"]
+        tool_command="cd $tui_path && n=$(cat .ai/oc_retries 2>/dev/null || echo 0); n=$((n+1)); echo $n > .ai/oc_retries; test $n -le 3 && printf retry || printf giveup"]
 
     // --- converged: commit + PR in each target repo, mark implemented ---
     Commit [shape=parallelogram,
-        tool_command="cd $newtui_path && set -a && . .ai/oc_current.env && set +a && git add -A -- ':!.ai' && git commit -q -m \"feat(opencode): $SLUG\" && git push -q -u origin HEAD && gh pr create --fill --base main --head opencode/$SLUG --label opencode-transfer >/tmp/oc_pr_py 2>&1; case \"$TARGET\" in both|split) cd $rust_path && git add -A && git commit -q -m \"feat(opencode): $SLUG\" && git push -q -u origin HEAD && gh pr create --fill --base main --head opencode/$SLUG --label opencode-transfer >/tmp/oc_pr_rs 2>&1;; esac; cd $newtui_path && LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py update $SLUG implemented >/dev/null && printf next"]
+        tool_command="cd $tui_path && set -a && . .ai/oc_current.env && set +a && git add -A -- ':!.ai' && git commit -q -m \"feat(opencode): $SLUG\" && git push -q -u origin HEAD && gh pr create --fill --base main --head opencode/$SLUG --label opencode-transfer >/tmp/oc_pr_py 2>&1; case \"$TARGET\" in both|split) cd $rust_path && git add -A && git commit -q -m \"feat(opencode): $SLUG\" && git push -q -u origin HEAD && gh pr create --fill --base main --head opencode/$SLUG --label opencode-transfer >/tmp/oc_pr_rs 2>&1;; esac; cd $tui_path && LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py update $SLUG implemented >/dev/null && printf next"]
 
     // --- could not converge: hand back to a human, keep going ---
     MarkBlocked [shape=parallelogram,
-        tool_command="cd $newtui_path && set -a && . .ai/oc_current.env && set +a && mkdir -p .ai/oc_blocked && cp .ai/oc_plan.md .ai/oc_blocked/$SLUG.md 2>/dev/null; LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py update $SLUG acknowledged >/dev/null && git checkout -q main; case \"$TARGET\" in both|split) cd $rust_path && git checkout -q main;; esac; printf next"]
+        tool_command="cd $tui_path && set -a && . .ai/oc_current.env && set +a && mkdir -p .ai/oc_blocked && cp .ai/oc_plan.md .ai/oc_blocked/$SLUG.md 2>/dev/null; LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py update $SLUG acknowledged >/dev/null && git checkout -q main; case \"$TARGET\" in both|split) cd $rust_path && git checkout -q main;; esac; printf next"]
 
     exit [shape=Msquare]
 

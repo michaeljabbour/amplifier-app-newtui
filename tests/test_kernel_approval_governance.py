@@ -7,14 +7,14 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.approval import STANDARD_OPTIONS, ApprovalBroker
-from amplifier_app_newtui.kernel.governance_hook import (
+from amplifier_app_tui.kernel.approval import STANDARD_OPTIONS, ApprovalBroker
+from amplifier_app_tui.kernel.governance_hook import (
     GovernanceHook,
     OfflineAutoClassifier,
 )
-from amplifier_app_newtui.kernel.directory_permissions import DirectoryPolicy
-from amplifier_app_newtui.model.queues import NeedsYouQueue
-from amplifier_app_newtui.model.trust import CapabilityClass, DenialLog, resolve
+from amplifier_app_tui.kernel.directory_permissions import DirectoryPolicy
+from amplifier_app_tui.model.queues import NeedsYouQueue
+from amplifier_app_tui.model.trust import CapabilityClass, DenialLog, resolve
 
 ROOT = "sess-root"
 
@@ -621,7 +621,7 @@ _OFFLINE_CASES = (
 async def test_two_stage_default_is_byte_identical_to_offline() -> None:
     """No evaluator -> the two-stage classifier reproduces the bare offline
     verdict (allowed AND reason) for every case: the default is unchanged."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     offline = OfflineAutoClassifier()
     two_stage = TwoStageAutoClassifier()  # provider stage OFF by default
@@ -638,7 +638,7 @@ async def test_two_stage_default_is_byte_identical_to_offline() -> None:
 @pytest.mark.asyncio
 async def test_two_stage_provider_can_tighten_an_offline_allow() -> None:
     """An offline ALLOW the provider denies is TIGHTENED to a deny."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     evaluator = _RecordingEvaluator((False, "risky at the margin"))
     two_stage = TwoStageAutoClassifier(evaluator)
@@ -657,7 +657,7 @@ async def test_two_stage_provider_can_tighten_an_offline_allow() -> None:
 @pytest.mark.asyncio
 async def test_two_stage_provider_confirm_keeps_offline_allow() -> None:
     """A provider ALLOW merely confirms -> verdict stays byte-identical to offline."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     offline = OfflineAutoClassifier()
     base = await offline.classify(
@@ -680,7 +680,7 @@ async def test_two_stage_provider_confirm_keeps_offline_allow() -> None:
 async def test_two_stage_provider_cannot_open_an_offline_deny() -> None:
     """The provider is NEVER consulted on an offline DENY, and an allow verdict
     can never downgrade a deny into an allow (fail-closed floor holds)."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     evaluator = _RecordingEvaluator((True, "provider would allow"))
     two_stage = TwoStageAutoClassifier(evaluator)
@@ -709,7 +709,7 @@ async def test_two_stage_provider_cannot_open_an_offline_deny() -> None:
 async def test_two_stage_provider_error_degrades_to_offline_never_opens() -> None:
     """A raising provider degrades to the offline verdict (fail-safe). Offline
     allowed -> still allowed (the floor), NOT opened beyond it."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     class Boom:
         async def evaluate(self, **kwargs: Any) -> tuple[bool, str]:
@@ -737,7 +737,7 @@ async def test_two_stage_provider_timeout_degrades_to_offline() -> None:
     """A provider that exceeds the bounded timeout degrades to offline."""
     import asyncio
 
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     class Slow:
         async def evaluate(self, **kwargs: Any) -> tuple[bool, str]:
@@ -759,7 +759,7 @@ async def test_two_stage_provider_timeout_degrades_to_offline() -> None:
 async def test_two_stage_provider_junk_return_degrades_to_offline() -> None:
     """A provider that returns a malformed (non-verdict) value is junk ->
     degrade to offline rather than trust it."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     class Junk:
         async def evaluate(self, **kwargs: Any) -> Any:
@@ -781,7 +781,7 @@ async def test_two_stage_provider_is_reasoning_blind_no_free_text() -> None:
     """The provider stage sees ONLY structured action metadata -- action,
     capability, target -- never the free-text user messages (reasoning-blind
     hardening: nothing to talk it into allowing)."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     evaluator = _RecordingEvaluator((True, "ok"))
     two_stage = TwoStageAutoClassifier(evaluator)
@@ -803,7 +803,7 @@ async def test_two_stage_wired_through_governance_seam_tightens_and_defers() -> 
     """End-to-end through the real GovernanceHook seam: an enabled provider
     stage tightens an offline-allowed action into a deny-and-continue that
     parks a needs-you decision (production governance path, injected stub)."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     classifier = TwoStageAutoClassifier(_RecordingEvaluator((False, "escalate to human")))
     hook, _, needs_you, log = make_hook("auto", classifier=classifier)
@@ -819,7 +819,7 @@ async def test_two_stage_wired_through_governance_seam_tightens_and_defers() -> 
 async def test_two_stage_wired_through_seam_error_falls_back_to_offline() -> None:
     """End-to-end: a broken provider evaluator degrades to the offline floor,
     so an offline-allowed action still continues (never fails open)."""
-    from amplifier_app_newtui.kernel.governance_hook import TwoStageAutoClassifier
+    from amplifier_app_tui.kernel.governance_hook import TwoStageAutoClassifier
 
     class Boom:
         async def evaluate(self, **kwargs: Any) -> tuple[bool, str]:

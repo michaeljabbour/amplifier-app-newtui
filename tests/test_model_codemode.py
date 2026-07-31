@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.model.codemode import (
+from amplifier_app_tui.model.codemode import (
     CODE_MODE_TOOL,
     RUNTIME_SEARCH_TOOL,
     Diagnostic,

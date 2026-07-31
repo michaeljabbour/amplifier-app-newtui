@@ -12,10 +12,10 @@ from decimal import Decimal
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import DEMO_EVIDENCE, DEMO_MEMORY_TOKENS
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.transcript import render_block
+from amplifier_app_tui.kernel.demo import DEMO_EVIDENCE, DEMO_MEMORY_TOKENS
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.transcript import render_block
 
 from .test_flow_helpers import SIZE, blocks_of, seed_done, type_text, wait_for
 
@@ -26,7 +26,7 @@ def _line(block, index: int, width: int = 200) -> str:
 
 @pytest.mark.asyncio
 async def test_ctrl_l_prints_session_ledger() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await pilot.press("ctrl+l")
@@ -49,7 +49,7 @@ async def test_ctrl_l_prints_session_ledger() -> None:
 
 @pytest.mark.asyncio
 async def test_clicking_final_answer_prints_evidence_block() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         answer = next(b for b in blocks_of(app, "answer") if getattr(b, "evidence_refs", ()))
@@ -75,7 +75,7 @@ async def test_clicking_final_answer_prints_evidence_block() -> None:
 async def test_evidence_block_keys_select_expand_and_close() -> None:
     """Spec §10: the header's advertised keys actually work —
     ←/→ select (header 1/N tracks), enter expand, esc close."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         answer = next(b for b in blocks_of(app, "answer") if getattr(b, "evidence_refs", ()))
@@ -116,7 +116,7 @@ async def test_evidence_block_keys_select_expand_and_close() -> None:
 
 @pytest.mark.asyncio
 async def test_context_command_prints_usage_grid_and_bar() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         # Seed turn usage: 83.9k output tokens + the 8k persistent cached

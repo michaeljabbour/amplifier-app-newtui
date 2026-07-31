@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.commands.builtin import BUILTIN_COMMANDS, build_registry
+from amplifier_app_tui.commands.builtin import BUILTIN_COMMANDS, build_registry
 
 from .conftest import FakeCommandContext
 

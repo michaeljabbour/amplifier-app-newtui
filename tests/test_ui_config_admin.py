@@ -1,7 +1,7 @@
 """``/config`` slash-command controller (``ui/config_admin``).
 
 Fake host + adapter over a real
-:class:`~amplifier_app_newtui.model.config.SessionConfigState`, so the
+:class:`~amplifier_app_tui.model.config.SessionConfigState`, so the
 show/toggle/set/diff/save round-trips are exercised end-to-end with no
 Textual and no live session (mirrors ``test_ui_directory_admin``).
 """
@@ -14,13 +14,13 @@ from typing import Any
 import pytest
 import yaml
 
-from amplifier_app_newtui.kernel import config_ops
-from amplifier_app_newtui.model.blocks import Answer
-from amplifier_app_newtui.model.config import (
+from amplifier_app_tui.kernel import config_ops
+from amplifier_app_tui.model.blocks import Answer
+from amplifier_app_tui.model.config import (
     ConfigSnapshotView,
     default_config_state,
 )
-from amplifier_app_newtui.ui.config_admin import manage
+from amplifier_app_tui.ui.config_admin import manage
 
 
 class FakeConfigAdapter:

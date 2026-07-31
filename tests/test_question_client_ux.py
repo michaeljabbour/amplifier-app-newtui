@@ -9,24 +9,24 @@ multi-select answer is the donor's comma-joined labels.
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.kernel.question import parse_questions
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.kernel.question import parse_questions
+from amplifier_app_tui.model.blocks import (
     GLYPH_CHECKBOX_EMPTY,
     BlockIdAllocator,
     NeedsYouBlock,
     NeedsYouChoice,
     NeedsYouEntry,
 )
-from amplifier_app_newtui.model.queues import NeedsYouQueue
-from amplifier_app_newtui.ui.app_support import needs_you_block
-from amplifier_app_newtui.ui.needs_you import (
+from amplifier_app_tui.model.queues import NeedsYouQueue
+from amplifier_app_tui.ui.app_support import needs_you_block
+from amplifier_app_tui.ui.needs_you import (
     NeedsYouList,
     multi_answer,
     multi_chip_text,
     option_description_line,
 )
-from amplifier_app_newtui.ui.transcript_render import render_block
+from amplifier_app_tui.ui.transcript_render import render_block
 
 
 def _plain(lines) -> list[str]:

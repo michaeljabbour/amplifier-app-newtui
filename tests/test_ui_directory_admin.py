@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.ui.directory_admin import manage
+from amplifier_app_tui.ui.directory_admin import manage
 
 
 class FakeAdapter:

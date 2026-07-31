@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from amplifier_app_newtui.kernel import bundle_admin
+from amplifier_app_tui.kernel import bundle_admin
 
 
 def _paths(tmp_path: Path):

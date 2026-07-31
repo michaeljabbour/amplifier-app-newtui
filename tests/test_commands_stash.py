@@ -6,7 +6,7 @@ The handlers are thin: they parse args and delegate through the
 
 from __future__ import annotations
 
-from amplifier_app_newtui.commands.builtin import build_registry
+from amplifier_app_tui.commands.builtin import build_registry
 
 
 def test_stashes_delegates_to_list(fake_command_context) -> None:

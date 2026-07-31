@@ -20,8 +20,8 @@ from typing import IO, Any, cast
 
 import pytest
 
-from amplifier_app_newtui.kernel.serve import _next_effort, serve_loop
-from amplifier_app_newtui.kernel.session_ops import EFFORT_LEVELS
+from amplifier_app_tui.kernel.serve import _next_effort, serve_loop
+from amplifier_app_tui.kernel.session_ops import EFFORT_LEVELS
 from tests.test_runtime_offline import _started_runtime
 from tests.test_serve_offline import _Capture, _PipeStdin, _wait_until
 

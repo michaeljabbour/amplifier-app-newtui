@@ -14,16 +14,16 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.commands.registry import CommandContext, CommandSpec
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.commands.registry import CommandContext, CommandSpec
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
 from .test_flow_helpers import SIZE, blocks_of, seed_done, type_text, wait_for
 
 
 @pytest.mark.asyncio
 async def test_runtime_registered_verb_shows_in_palette_and_dispatches() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         ran: list[str] = []
@@ -57,7 +57,7 @@ async def test_runtime_registered_verb_shows_in_palette_and_dispatches() -> None
 
 @pytest.mark.asyncio
 async def test_unregistered_verb_is_unknown_again() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         spec = CommandSpec(

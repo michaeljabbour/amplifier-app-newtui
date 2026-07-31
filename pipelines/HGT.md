@@ -4,7 +4,7 @@ A **named, parameterized capability-transfer archetype.** Where `gene-transfer.d
 was *vertical* (one donor → one host, same amplifier ecosystem), **HGT is
 horizontal**: it moves a capability across a *species boundary* (a foreign codebase,
 any language) and expresses it in **one or more hosts** — each in the host's own
-machinery, never by grafting foreign tissue. `opencode → {newtui-py, newtui-rust}`
+machinery, never by grafting foreign tissue. `opencode → {tui-py, tui-rust}`
 is HGT **instance #1**.
 
 Biology earns the name: horizontal gene transfer is how a trait crosses between
@@ -17,7 +17,7 @@ never copy the donor's code.**
 | Knob | What it is | Example (instance #1) |
 |---|---|---|
 | **`sources`** | One or more donor repos, read-only. Any language. | `/Users/michaeljabbour/dev/opencode` |
-| **`hosts`** | One or more target repos, each tagged `path:kind`. `kind` selects the gate stack. A host may be a **new/empty repo** — HGT scaffolds it. | `…/amplifier-app-newtui:python` · `…/amplifier-app-newtui-rust:rust` |
+| **`hosts`** | One or more target repos, each tagged `path:kind`. `kind` selects the gate stack. A host may be a **new/empty repo** — HGT scaffolds it. | `…/amplifier-app-tui:python` · `…/amplifier-app-tui-rust:rust` |
 | **`scope_prompt`** | Free-text that decides **what** transfers and what's excluded. This is "the opencode component controlled by a prompt." | *"Port opencode capabilities absent from both clients; skip cloud/hosted/plugin-system features; …"* |
 
 Per-capability the ledger row names which host role(s) it lands in (`target`), so the
@@ -35,7 +35,7 @@ throughout the build, not just to validate at the end:
 - **Acceptance-first** — the `PlanTransfer` node authors the forge probe *before* any
   code, from the donor's user-facing contract. The probe is the spec.
 - **Validate** — `ForgeValidate` boots the real target TUI(s) (Python Textual **and**
-  the Rust `amplifier-newtui-rs` client) and asserts the capability through a real
+  the Rust `amplifier-tui-rs` client) and asserts the capability through a real
   terminal. An LLM never declares success; the terminal does.
 
 **2. Feature + tests + CI co-built as one atom.**
@@ -62,13 +62,13 @@ different layers). HGT models "which host, which layer" as data (the ledger
 | `kind` | Unit gate (also the CI gate) | Forge boot |
 |---|---|---|
 | `python` | `ruff check` · `ruff format --check` · `pyright src/` · `pytest -q` (+coverage if the repo enforces it) | real Python TUI |
-| `rust` | `cargo test` · `cargo clippy --all-targets -- -D warnings` (+ the paired Python suite stays green — protocol-client discipline) | real `amplifier-newtui-rs` (needs the Python `serve` backend up) |
+| `rust` | `cargo test` · `cargo clippy --all-targets -- -D warnings` (+ the paired Python suite stays green — protocol-client discipline) | real `amplifier-tui-rs` (needs the Python `serve` backend up) |
 | `new:<lang>` | `./ci/gate.sh` — scaffolded by transfer #1 alongside the feature | whatever the new app boots as |
 
 ## Instance #1 — opencode → both clients
 
 - **Graph:** [`opencode-transfer.dot`](opencode-transfer.dot) — HGT with
-  `sources=opencode`, `hosts={newtui:python, newtui-rust:rust}`.
+  `sources=opencode`, `hosts={tui:python, tui-rust:rust}`.
 - **Scope + triage:** [`OPENCODE.md`](OPENCODE.md) — candidate/skip/already-have
   tables. The scope_prompt is applied as a **gap-check first**: only capabilities
   absent from *both* clients get seeded.

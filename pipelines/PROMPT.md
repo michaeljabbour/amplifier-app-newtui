@@ -1,13 +1,13 @@
 # Paste-in prompt
 
 Paste the block below into an interactive `amplifier` session started from the repo root
-(`/Users/michaeljabbour/dev/amplifier-app-newtui`). It hands amplifier the objective and the
+(`/Users/michaeljabbour/dev/amplifier-app-tui`). It hands amplifier the objective and the
 guardrails and lets it decide how to stand up and run the pipeline.
 
 ---
 
 **Objective.** Stand up an attractor pipeline that drives the *entire* open backlog of this
-repository (amplifier-app-newtui) to done — every issue in `pipelines/ledger.tsv` (the open
+repository (amplifier-app-tui) to done — every issue in `pipelines/ledger.tsv` (the open
 GitHub issues #22–#54; #21 is already fixed on a separate branch). Then run it, fully
 automated, to completion. You have broad agency over *how*; the constraints below are the only
 hard rules.
@@ -17,7 +17,7 @@ hard rules.
   and `pipelines/README.md` are a working starting point I built. The `.dot` is shaped for the
   amplifier-app-cli *capability ports*; treat it as a template, not gospel.
 - The backlog is heterogeneous. Read each issue (`gh issue view <n> -R
-  michaeljabbour/amplifier-app-newtui`; labels categorize them) and route it to the right
+  michaeljabbour/amplifier-app-tui`; labels categorize them) and route it to the right
   treatment: app-cli capability ports, internal reliability/security fixes, refactors,
   rendering/feature work, and a few decision/spike issues whose deliverable is a design doc in
   `docs/plans/`, not code. Extend or author whatever pipeline graph(s) fit — you own the graph

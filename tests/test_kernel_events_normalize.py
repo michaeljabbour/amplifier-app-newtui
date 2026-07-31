@@ -6,7 +6,7 @@ RESEARCH-BRIEF §2 — and asserts the typed UIEvents that come out.
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel.events import (
+from amplifier_app_tui.kernel.events import (
     AgentCompleted,
     AgentResumed,
     AgentSpawned,
@@ -329,7 +329,7 @@ def test_missing_payload_never_crashes() -> None:
 
 
 def test_delegate_agent_lifecycle_aliases() -> None:
-    from amplifier_app_newtui.kernel.queue_bridge import QueueBridge
+    from amplifier_app_tui.kernel.queue_bridge import QueueBridge
 
     assert "delegate:agent_spawned" in QueueBridge.EVENTS
     assert "delegate:agent_completed" in QueueBridge.EVENTS
@@ -431,8 +431,8 @@ class TestUsageFromContentBlockEnd:
     def test_synthesizes_usage_with_provider_cost(self) -> None:
         from decimal import Decimal
 
-        from amplifier_app_newtui.kernel.cost import cost_of
-        from amplifier_app_newtui.kernel.events import (
+        from amplifier_app_tui.kernel.cost import cost_of
+        from amplifier_app_tui.kernel.events import (
             normalize,
             usage_from_content_block_end,
         )
@@ -463,7 +463,7 @@ class TestUsageFromContentBlockEnd:
         assert cost_of(usage) == Decimal("1.1061075")
 
     def test_no_usage_payload_returns_none(self) -> None:
-        from amplifier_app_newtui.kernel.events import (
+        from amplifier_app_tui.kernel.events import (
             normalize,
             usage_from_content_block_end,
         )
@@ -477,7 +477,7 @@ class TestUsageFromContentBlockEnd:
     def test_bridge_emits_usage_before_block_end(self) -> None:
         import asyncio
 
-        from amplifier_app_newtui.kernel.queue_bridge import QueueBridge
+        from amplifier_app_tui.kernel.queue_bridge import QueueBridge
 
         async def run() -> list[str]:
             queue: asyncio.Queue = asyncio.Queue()
@@ -500,7 +500,7 @@ class TestUsageFromContentBlockEnd:
     def test_bridge_emits_usage_once_for_multi_block_response(self) -> None:
         import asyncio
 
-        from amplifier_app_newtui.kernel.queue_bridge import QueueBridge
+        from amplifier_app_tui.kernel.queue_bridge import QueueBridge
 
         async def run() -> list[str]:
             queue: asyncio.Queue = asyncio.Queue()
@@ -541,7 +541,7 @@ class TestParseEvent:
     def test_round_trips_a_persisted_record(self) -> None:
         from decimal import Decimal
 
-        from amplifier_app_newtui.kernel.events import parse_event
+        from amplifier_app_tui.kernel.events import parse_event
 
         event = ProviderResponseUsage(
             session_id="root01",
@@ -553,7 +553,7 @@ class TestParseEvent:
         assert parsed == event
 
     def test_rejects_foreign_and_malformed_records(self) -> None:
-        from amplifier_app_newtui.kernel.events import parse_event
+        from amplifier_app_tui.kernel.events import parse_event
 
         # Raw hook payloads from other writers sharing the file.
         assert parse_event({"event": "tool:pre", "tool_name": "bash"}) is None

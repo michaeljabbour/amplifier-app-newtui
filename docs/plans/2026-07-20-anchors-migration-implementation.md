@@ -11,9 +11,9 @@
 > **Execution:** Use the subagent-driven-development workflow to implement this plan.
 > **For execution:** `/execute-plan`
 
-**Goal:** Replace amplifier-app-newtui's vendored `newtui` bundle with a thin wrapper that composes foundation's `anchors` bundle (the amplifier-app-cli default) plus TUI-specific overlays, and adapt the kernel so everything anchors brings works in the TUI.
+**Goal:** Replace amplifier-app-tui's vendored `tui` bundle with a thin wrapper that composes foundation's `anchors` bundle (the amplifier-app-cli default) plus TUI-specific overlays, and adapt the kernel so everything anchors brings works in the TUI.
 
-**Architecture:** `bundle.md` keeps `name: newtui` (discovery unchanged) but becomes a thin wrapper: an `includes:` of anchors pinned to foundation SHA `93615d9847ce40313cc0d60583cb886de4337f9e`, plus only a default provider (`provider-anthropic`) and two TUI-specific tools (`tool-mcp`, `tool-team-pulse`). The kernel's hardcoded `_PRINTING_HOOKS` strip becomes a settings-extensible suppressed-hooks mechanism (defaults: the four printers + `hooks-logging`, which would double-write the app-owned `events.jsonl`), with a user-visible notice at boot. Resume gains a bundle-mismatch notice. The event pipeline (normalize → queue bridge → task tracker) learns the three `delegate:*` event names it doesn't yet handle, so anchors' `tool-delegate` drives the subagent lanes.
+**Architecture:** `bundle.md` keeps `name: tui` (discovery unchanged) but becomes a thin wrapper: an `includes:` of anchors pinned to foundation SHA `93615d9847ce40313cc0d60583cb886de4337f9e`, plus only a default provider (`provider-anthropic`) and two TUI-specific tools (`tool-mcp`, `tool-team-pulse`). The kernel's hardcoded `_PRINTING_HOOKS` strip becomes a settings-extensible suppressed-hooks mechanism (defaults: the four printers + `hooks-logging`, which would double-write the app-owned `events.jsonl`), with a user-visible notice at boot. Resume gains a bundle-mismatch notice. The event pipeline (normalize → queue bridge → task tracker) learns the three `delegate:*` event names it doesn't yet handle, so anchors' `tool-delegate` drives the subagent lanes.
 
 **Tech Stack:** Python 3.12, pytest (offline suite), ruff, pyright, PyYAML, Graphviz (`/opt/homebrew/bin/dot`), amplifier-core/foundation (kernel layer only).
 
@@ -21,11 +21,11 @@
 
 ## Ground rules (read before Task 1)
 
-- **Repo:** `/Users/michaeljabbour/dev/amplifier-app-newtui`, branch `main`. Run everything from the repo root.
+- **Repo:** `/Users/michaeljabbour/dev/amplifier-app-tui`, branch `main`. Run everything from the repo root.
 - **Layering:** `ui/` → `model/` → `kernel/`. Only `kernel/` imports amplifier-core/foundation. `kernel/` never imports Textual. This plan only touches `kernel/`, `tests/`, `bundle.md`, and docs.
 - **Test suite is offline.** `uv run pytest -q` must pass with no network and no credentials (~2 min). Do NOT add any test that fetches the real anchors bundle — real composition is proven by the live smoke in Phase 3.
 - **Formatting:** run `uv run ruff format <changed files only>`. NEVER `ruff format .` — the repo is not globally format-clean and CI only runs `ruff check .`.
-- **Bundle byte-identity:** after any edit to `bundle.md`, copy it over `src/amplifier_app_newtui/data/bundles/newtui.md` and verify with `cmp`. This is a PR checklist item and an existing test (`tests/test_kernel_session_config.py:562`).
+- **Bundle byte-identity:** after any edit to `bundle.md`, copy it over `src/amplifier_app_tui/data/bundles/tui.md` and verify with `cmp`. This is a PR checklist item and an existing test (`tests/test_kernel_session_config.py:562`).
 - **Golden files:** this plan does not touch the transcript renderer, so `tests/goldens/` must NOT change. If a golden test fails, you broke something — do not regenerate.
 - **Commits:** conventional commits, one per green task, each ending with the Amplifier footer:
 
@@ -56,7 +56,7 @@ EOF
 |---|---|
 | Pinned foundation SHA for the anchors include | `git ls-remote https://github.com/microsoft/amplifier-foundation main` → `93615d9847ce40313cc0d60583cb886de4337f9e` (resolved 2026-07-20; re-resolve ONLY if instructed) |
 | anchors bundle contents (300k context, tool roster incl. tool-delegate/todo/apply-patch/recipes, hooks incl. todo-reminder/todo-display/session-naming/mode/approval + streaming-ui/status-context/redaction/logging via includes, 6 `anchors:*` agents) | `~/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/bundles/anchors/bundle.md` |
-| `_PRINTING_HOOKS` frozenset (FOUR entries: hooks-streaming-ui, hooks-todo-display, hooks-insight-blocks, hooks-inline-blocks) | `src/amplifier_app_newtui/kernel/runtime.py:90-97` |
+| `_PRINTING_HOOKS` frozenset (FOUR entries: hooks-streaming-ui, hooks-todo-display, hooks-insight-blocks, hooks-inline-blocks) | `src/amplifier_app_tui/kernel/runtime.py:90-97` |
 | `_strip_printing_hooks` def / sole call site | `runtime.py:142` / `runtime.py:299` (inside `RealRuntime.start()`, which both the TUI and the headless `run` subcommand use — one call site serves both paths) |
 | Settings-resolver pattern to copy | `write_boundary_setting()` at `kernel/directory_permissions.py:39-43`, tested at `tests/test_directory_permissions.py:64-69` |
 | Session metadata already carries the bundle name | `runtime.py:397` — `base_metadata={"bundle": resolved.bundle_name}` fed to `IncrementalSaver`; merged into `metadata.json` on every save (`kernel/persistence.py:366-374`) |
@@ -65,7 +65,7 @@ EOF
 | Tracker SUBSCRIBED tuple lacks all `delegate:*` names | `kernel/trackers/task_status.py:33-40` |
 | `CONSUMED_EVENTS` has spawned/completed but NOT resumed/cancelled/error | `kernel/queue_bridge.py:59-66` |
 | tool-delegate payload shapes (spawn path: `agent` + `sub_session_id`; resume path: child id under **`session_id`**, no `sub_session_id`) | `~/.amplifier/cache/amplifier-foundation-c909465861f9d6ce/modules/tool-delegate/amplifier_module_tool_delegate/__init__.py:979,1100,1151,1175,1237,1270,1303,1341,1364` |
-| `DEFAULT_BUNDLE = "newtui"` — do NOT change | `kernel/config.py:39` |
+| `DEFAULT_BUNDLE = "tui"` — do NOT change | `kernel/config.py:39` |
 
 ### Pin honesty (state this in docs and PR description)
 
@@ -86,7 +86,7 @@ The existing bundle-content tests assert the vendored shape and must be rewritte
 **Step 1: Replace the entire contents of `tests/test_bundle_agents.py` with:**
 
 ```python
-"""Guard: the packaged newtui bundle is a THIN WRAPPER over anchors.
+"""Guard: the packaged tui bundle is a THIN WRAPPER over anchors.
 
 The bundle composes foundation's `anchors` bundle (SHA-pinned includes) and
 overlays only a default provider, tool-mcp, and tool-team-pulse. Everything
@@ -104,7 +104,7 @@ import re
 
 import yaml
 
-from amplifier_app_newtui.kernel.config import packaged_bundles_dir
+from amplifier_app_tui.kernel.config import packaged_bundles_dir
 
 ANCHORS_INCLUDE_RE = re.compile(
     r"^git\+https://github\.com/microsoft/amplifier-foundation"
@@ -113,7 +113,7 @@ ANCHORS_INCLUDE_RE = re.compile(
 
 
 def _frontmatter() -> dict:
-    text = (packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8")
+    text = (packaged_bundles_dir() / "tui.md").read_text(encoding="utf-8")
     assert text.startswith("---"), "bundle must open with a YAML frontmatter fence"
     data = yaml.safe_load(text.split("---", 2)[1])
     assert isinstance(data, dict)
@@ -121,8 +121,8 @@ def _frontmatter() -> dict:
 
 
 def test_wrapper_keeps_bundle_name() -> None:
-    """Discovery/override mechanics depend on the name staying `newtui`."""
-    assert _frontmatter().get("bundle", {}).get("name") == "newtui"
+    """Discovery/override mechanics depend on the name staying `tui`."""
+    assert _frontmatter().get("bundle", {}).get("name") == "tui"
 
 
 def test_wrapper_includes_sha_pinned_anchors() -> None:
@@ -179,17 +179,17 @@ Do NOT commit yet — Task 2 turns these red tests green and commits both togeth
 
 **Files:**
 - Rewrite: `bundle.md` (repo root — replace entire contents)
-- Sync: `src/amplifier_app_newtui/data/bundles/newtui.md` (byte-identical copy)
+- Sync: `src/amplifier_app_tui/data/bundles/tui.md` (byte-identical copy)
 
 **Step 1: Replace the entire contents of `bundle.md` with EXACTLY this** (the `## Terminal response contract` section must stay byte-for-byte identical to today's — `tests/test_kernel_session_config.py:572` asserts the exact block):
 
 ````markdown
 ---
 bundle:
-  name: newtui
+  name: tui
   version: 0.2.0
   description: |
-    Thin wrapper bundle for amplifier-app-newtui — the Amplifier full-screen
+    Thin wrapper bundle for amplifier-app-tui — the Amplifier full-screen
     Textual TUI. Composes foundation's `anchors` bundle (the amplifier-app-cli
     default: streaming orchestrator, 300k context, standard tool roster with
     tool-delegate subagents, and six bundle-local agents) and overlays only
@@ -233,10 +233,10 @@ tools:
       key: ""
 ---
 
-# Amplifier NewTUI Bundle
+# Amplifier TUI Bundle
 
 This is the app's REAL bundle — `resolve_config()` discovers it by name
-(`newtui`), loads it via foundation's `load_bundle`, composes any settings
+(`tui`), loads it via foundation's `load_bundle`, composes any settings
 overlays (`bundle.app`), and `prepare()`s it exactly once per app start.
 
 It is a THIN WRAPPER: the session (streaming orchestrator + 300k context),
@@ -248,7 +248,7 @@ system.md). Printing hooks and `hooks-logging` composed in via anchors are
 stripped at boot by the app kernel's suppressed-hooks mechanism.
 
 A packaged copy ships inside the wheel at
-`amplifier_app_newtui/data/bundles/newtui.md` (lowest-precedence search
+`amplifier_app_tui/data/bundles/tui.md` (lowest-precedence search
 path); project (`.amplifier/bundles/`) and user (`~/.amplifier/bundles/`)
 bundles override it by name.
 
@@ -274,8 +274,8 @@ tools over speculating. This surface renders a supported Markdown subset:
 
 Run:
 ```sh
-cp bundle.md src/amplifier_app_newtui/data/bundles/newtui.md
-cmp bundle.md src/amplifier_app_newtui/data/bundles/newtui.md && echo IDENTICAL
+cp bundle.md src/amplifier_app_tui/data/bundles/tui.md
+cmp bundle.md src/amplifier_app_tui/data/bundles/tui.md && echo IDENTICAL
 ```
 Expected: `IDENTICAL` (no other output — `cmp` is silent on match).
 
@@ -295,9 +295,9 @@ Run:
 ```sh
 uv run ruff format tests/test_bundle_agents.py
 uv run ruff check .
-git add bundle.md src/amplifier_app_newtui/data/bundles/newtui.md tests/test_bundle_agents.py tests/test_kernel_session_config.py
+git add bundle.md src/amplifier_app_tui/data/bundles/tui.md tests/test_bundle_agents.py tests/test_kernel_session_config.py
 ```
-Commit (pattern from Ground rules): `feat: replace vendored newtui bundle with thin wrapper over SHA-pinned anchors`
+Commit (pattern from Ground rules): `feat: replace vendored tui bundle with thin wrapper over SHA-pinned anchors`
 
 ---
 
@@ -307,7 +307,7 @@ Copy the `write_boundary_setting` pattern: pure function, merged-settings dict i
 
 **Files:**
 - Test: `tests/test_runtime_offline.py` (add tests next to `test_strip_printing_hooks_removes_line_mode_printers`, currently line 570)
-- Modify: `src/amplifier_app_newtui/kernel/runtime.py`
+- Modify: `src/amplifier_app_tui/kernel/runtime.py`
 
 **Step 1: Write the failing test** — add to `tests/test_runtime_offline.py` (module-level sync test, same style as the existing strip test):
 
@@ -315,7 +315,7 @@ Copy the `write_boundary_setting` pattern: pure function, merged-settings dict i
 def test_suppressed_hooks_setting_defaults_and_union() -> None:
     """Built-in suppression list (4 printers + hooks-logging) unions with the
     hooks.suppress settings key; junk shapes fall back to the defaults."""
-    from amplifier_app_newtui.kernel.runtime import (
+    from amplifier_app_tui.kernel.runtime import (
         _SUPPRESSED_HOOKS_DEFAULT,
         suppressed_hooks_setting,
     )
@@ -348,7 +348,7 @@ Expected: FAIL with `ImportError: cannot import name '_SUPPRESSED_HOOKS_DEFAULT'
 
 **Step 3: Write the minimal implementation**
 
-In `src/amplifier_app_newtui/kernel/runtime.py`, directly BELOW the existing `_PRINTING_HOOKS` block (after its docstring, ~line 106), add:
+In `src/amplifier_app_tui/kernel/runtime.py`, directly BELOW the existing `_PRINTING_HOOKS` block (after its docstring, ~line 106), add:
 
 ```python
 _SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-logging"})
@@ -381,9 +381,9 @@ Expected: PASS (1 passed)
 
 **Step 5: Lint and commit**
 
-Run: `uv run ruff format src/amplifier_app_newtui/kernel/runtime.py tests/test_runtime_offline.py && uv run ruff check . && uv run pyright src/`
+Run: `uv run ruff format src/amplifier_app_tui/kernel/runtime.py tests/test_runtime_offline.py && uv run ruff check . && uv run pyright src/`
 Expected: clean.
-`git add src/amplifier_app_newtui/kernel/runtime.py tests/test_runtime_offline.py`
+`git add src/amplifier_app_tui/kernel/runtime.py tests/test_runtime_offline.py`
 Commit: `feat: settings-extensible suppressed-hooks resolver (hooks.suppress)`
 
 ---
@@ -394,7 +394,7 @@ Replaces `_strip_printing_hooks`. The new function strips every suppressed hook 
 
 **Files:**
 - Test: `tests/test_runtime_offline.py` (REPLACE `test_strip_printing_hooks_removes_line_mode_printers`, lines 570-587)
-- Modify: `src/amplifier_app_newtui/kernel/runtime.py`
+- Modify: `src/amplifier_app_tui/kernel/runtime.py`
 
 **Step 1: Write the failing tests** — in `tests/test_runtime_offline.py`, DELETE the function `test_strip_printing_hooks_removes_line_mode_printers` (lines 570-587) and add in its place:
 
@@ -402,7 +402,7 @@ Replaces `_strip_printing_hooks`. The new function strips every suppressed hook 
 def test_apply_hook_suppression_strips_and_notifies() -> None:
     """Suppressed hooks (printers + hooks-logging) are stripped from the
     mount plan and ONE notification names exactly what was removed."""
-    from amplifier_app_newtui.kernel.runtime import _apply_hook_suppression
+    from amplifier_app_tui.kernel.runtime import _apply_hook_suppression
 
     emitted = []
     plan = {
@@ -432,7 +432,7 @@ def test_apply_hook_suppression_strips_and_notifies() -> None:
 
 
 def test_apply_hook_suppression_settings_extension_and_odd_shapes() -> None:
-    from amplifier_app_newtui.kernel.runtime import _apply_hook_suppression
+    from amplifier_app_tui.kernel.runtime import _apply_hook_suppression
 
     emitted = []
     plan = {"hooks": [{"module": "hooks-custom"}, {"module": "hooks-mode"}]}
@@ -452,7 +452,7 @@ def test_apply_hook_suppression_settings_extension_and_odd_shapes() -> None:
 Run: `uv run pytest tests/test_runtime_offline.py::test_apply_hook_suppression_strips_and_notifies tests/test_runtime_offline.py::test_apply_hook_suppression_settings_extension_and_odd_shapes -q`
 Expected: FAIL with `ImportError: cannot import name '_apply_hook_suppression'`
 
-**Step 3: Write the minimal implementation** in `src/amplifier_app_newtui/kernel/runtime.py`:
+**Step 3: Write the minimal implementation** in `src/amplifier_app_tui/kernel/runtime.py`:
 
 3a. Add `Notification` to the events import at lines 29-37 (keep alphabetical):
 
@@ -554,9 +554,9 @@ Expected: PASS. If anything still references `_strip_printing_hooks`, you missed
 
 **Step 5: Lint, typecheck, commit**
 
-Run: `uv run ruff format src/amplifier_app_newtui/kernel/runtime.py tests/test_runtime_offline.py && uv run ruff check . && uv run pyright src/`
+Run: `uv run ruff format src/amplifier_app_tui/kernel/runtime.py tests/test_runtime_offline.py && uv run ruff check . && uv run pyright src/`
 Expected: clean.
-`git add src/amplifier_app_newtui/kernel/runtime.py tests/test_runtime_offline.py`
+`git add src/amplifier_app_tui/kernel/runtime.py tests/test_runtime_offline.py`
 Commit: `feat: generalize printing-hook strip into observable suppressed-hooks mechanism`
 
 ---
@@ -567,9 +567,9 @@ Commit: `feat: generalize printing-hook strip into observable suppressed-hooks m
 
 **Files:**
 - Test: `tests/test_runtime_offline.py` (add after `test_offline_resume_restores_transcript_and_turn_base`, line 530)
-- Modify: `src/amplifier_app_newtui/kernel/runtime.py`
+- Modify: `src/amplifier_app_tui/kernel/runtime.py`
 
-**Step 1: Write the failing test** — add to `tests/test_runtime_offline.py`. It needs one extra import at the top of the file: add `from amplifier_app_newtui.kernel.persistence import SessionStore` below the existing `RealRuntime` import (line 36).
+**Step 1: Write the failing test** — add to `tests/test_runtime_offline.py`. It needs one extra import at the top of the file: add `from amplifier_app_tui.kernel.persistence import SessionStore` below the existing `RealRuntime` import (line 36).
 
 ```python
 async def test_offline_resume_notices_bundle_mismatch(offline_env) -> None:
@@ -616,7 +616,7 @@ async def test_offline_resume_notices_bundle_mismatch(offline_env) -> None:
 Run: `uv run pytest tests/test_runtime_offline.py::test_offline_resume_notices_bundle_mismatch -q`
 Expected: FAIL on the final `assert any(...)` — `notices` contains no bundle-mismatch message (it may contain other notifications; that is why the assert matches the exact phrase).
 
-**Step 3: Write the minimal implementation** in `src/amplifier_app_newtui/kernel/runtime.py`, inside `start()`:
+**Step 3: Write the minimal implementation** in `src/amplifier_app_tui/kernel/runtime.py`, inside `start()`:
 
 3a. Capture the stored bundle at the resume load (currently line ~311-319). Change:
 
@@ -669,8 +669,8 @@ Expected: PASS.
 
 **Step 5: Lint, typecheck, commit**
 
-Run: `uv run ruff format src/amplifier_app_newtui/kernel/runtime.py tests/test_runtime_offline.py && uv run ruff check . && uv run pyright src/`
-`git add src/amplifier_app_newtui/kernel/runtime.py tests/test_runtime_offline.py`
+Run: `uv run ruff format src/amplifier_app_tui/kernel/runtime.py tests/test_runtime_offline.py && uv run ruff check . && uv run pyright src/`
+`git add src/amplifier_app_tui/kernel/runtime.py tests/test_runtime_offline.py`
 Commit: `feat: notice when a session resumes under a different bundle`
 
 ---
@@ -684,7 +684,7 @@ Run:
 uv run ruff check .
 uv run pyright src/
 uv run pytest -q
-cmp bundle.md src/amplifier_app_newtui/data/bundles/newtui.md && echo IDENTICAL
+cmp bundle.md src/amplifier_app_tui/data/bundles/tui.md && echo IDENTICAL
 ```
 Expected: all clean, `IDENTICAL`, zero failed tests (baseline before this plan: 982 passed / 1 xfailed; the count will have shifted by this plan's additions/deletions — what matters is 0 failed).
 
@@ -696,13 +696,13 @@ Commit (if needed): `fix: phase-1 gate cleanup`
 
 # Phase 2 — Delegation compatibility (5 tasks)
 
-anchors mounts `tool-delegate` (spawning through the `session.spawn` capability newtui's SessionSpawner registers — that part already works). What is missing: three `delegate:*` event names in normalize, the tracker subscription list, and the queue-bridge consumption list. Payload shapes are verified from tool-delegate source (see reference table): **spawn-path** events carry `agent` + `sub_session_id`; **resume-path** events carry the CHILD id under `session_id` with no `sub_session_id`.
+anchors mounts `tool-delegate` (spawning through the `session.spawn` capability tui's SessionSpawner registers — that part already works). What is missing: three `delegate:*` event names in normalize, the tracker subscription list, and the queue-bridge consumption list. Payload shapes are verified from tool-delegate source (see reference table): **spawn-path** events carry `agent` + `sub_session_id`; **resume-path** events carry the CHILD id under `session_id` with no `sub_session_id`.
 
 ### Task 7: Normalize `delegate:agent_resumed` → AgentSpawned (TDD)
 
 **Files:**
 - Test: `tests/test_kernel_events_normalize.py` (append at end)
-- Modify: `src/amplifier_app_newtui/kernel/events.py` (after line 741, the end of the completed arm)
+- Modify: `src/amplifier_app_tui/kernel/events.py` (after line 741, the end of the completed arm)
 
 **Step 1: Write the failing test:**
 
@@ -728,7 +728,7 @@ def test_delegate_resumed_reopens_lane_as_agent_spawned() -> None:
 Run: `uv run pytest tests/test_kernel_events_normalize.py::test_delegate_resumed_reopens_lane_as_agent_spawned -q`
 Expected: FAIL with `assert isinstance(event, AgentSpawned)` → `event is None` (normalize's `case _` returns None).
 
-**Step 3: Write the minimal implementation** — in `src/amplifier_app_newtui/kernel/events.py`, after the `"task:agent_completed" | ...` case arm (ends line 741), add:
+**Step 3: Write the minimal implementation** — in `src/amplifier_app_tui/kernel/events.py`, after the `"task:agent_completed" | ...` case arm (ends line 741), add:
 
 ```python
         case "delegate:agent_resumed":
@@ -751,8 +751,8 @@ Expected: PASS (all — existing normalize tests untouched).
 
 **Step 5: Lint and commit**
 
-Run: `uv run ruff format src/amplifier_app_newtui/kernel/events.py tests/test_kernel_events_normalize.py && uv run ruff check . && uv run pyright src/`
-`git add src/amplifier_app_newtui/kernel/events.py tests/test_kernel_events_normalize.py`
+Run: `uv run ruff format src/amplifier_app_tui/kernel/events.py tests/test_kernel_events_normalize.py && uv run ruff check . && uv run pyright src/`
+`git add src/amplifier_app_tui/kernel/events.py tests/test_kernel_events_normalize.py`
 Commit: `feat: normalize delegate:agent_resumed as a lane re-open`
 
 ---
@@ -763,7 +763,7 @@ Commit: `feat: normalize delegate:agent_resumed as a lane re-open`
 
 **Files:**
 - Test: `tests/test_kernel_events_normalize.py` (append)
-- Modify: `src/amplifier_app_newtui/kernel/events.py`
+- Modify: `src/amplifier_app_tui/kernel/events.py`
 
 **Step 1: Write the failing tests:**
 
@@ -851,8 +851,8 @@ Expected: PASS (all).
 
 **Step 5: Lint and commit**
 
-Run: `uv run ruff format src/amplifier_app_newtui/kernel/events.py tests/test_kernel_events_normalize.py && uv run ruff check . && uv run pyright src/`
-`git add src/amplifier_app_newtui/kernel/events.py tests/test_kernel_events_normalize.py`
+Run: `uv run ruff format src/amplifier_app_tui/kernel/events.py tests/test_kernel_events_normalize.py && uv run ruff check . && uv run pyright src/`
+`git add src/amplifier_app_tui/kernel/events.py tests/test_kernel_events_normalize.py`
 Commit: `feat: normalize delegate cancelled/error as lane completions`
 
 ---
@@ -863,7 +863,7 @@ Two changes: (a) the `EVENTS` tuple gains all five `delegate:*` names; (b) `cons
 
 **Files:**
 - Test: `tests/test_kernel_trackers.py` (add after `test_task_tracker_ignores_root_session_events`, line 326)
-- Modify: `src/amplifier_app_newtui/kernel/trackers/task_status.py`
+- Modify: `src/amplifier_app_tui/kernel/trackers/task_status.py`
 
 **Step 1: Write the failing tests:**
 
@@ -948,7 +948,7 @@ def test_task_tracker_delegate_cancelled_shows_cancelled() -> None:
 Run: `uv run pytest tests/test_kernel_trackers.py -q`
 Expected: the four new tests FAIL — the subscription test on the missing names; spawn/complete/resume/cancelled tests on `active_count == 0` / `lane is None` (unsubscribed names still normalize, but `consume` is only reached through hooks in production — here `consume` IS called directly, so spawn/complete/resume actually PASS already via normalize; the subscription test and the "cancelled" activity assertion are the ones that must fail. Read the failures and confirm at least `test_task_tracker_subscribes_to_delegate_lifecycle` and `test_task_tracker_delegate_cancelled_shows_cancelled` are red for the right reasons before proceeding).
 
-**Step 3: Write the minimal implementation** in `src/amplifier_app_newtui/kernel/trackers/task_status.py`:
+**Step 3: Write the minimal implementation** in `src/amplifier_app_tui/kernel/trackers/task_status.py`:
 
 3a. Replace the `EVENTS` tuple (lines 33-40) with:
 
@@ -992,8 +992,8 @@ Expected: PASS (all — in particular `test_task_tracker_legacy_event_names` sti
 
 **Step 5: Lint and commit**
 
-Run: `uv run ruff format src/amplifier_app_newtui/kernel/trackers/task_status.py tests/test_kernel_trackers.py && uv run ruff check . && uv run pyright src/`
-`git add src/amplifier_app_newtui/kernel/trackers/task_status.py tests/test_kernel_trackers.py`
+Run: `uv run ruff format src/amplifier_app_tui/kernel/trackers/task_status.py tests/test_kernel_trackers.py && uv run ruff check . && uv run pyright src/`
+`git add src/amplifier_app_tui/kernel/trackers/task_status.py tests/test_kernel_trackers.py`
 Commit: `feat: task tracker consumes the full delegate:* lifecycle`
 
 ---
@@ -1004,7 +1004,7 @@ Commit: `feat: task tracker consumes the full delegate:* lifecycle`
 
 **Files:**
 - Test: `tests/test_kernel_trackers.py` (QueueBridge section, after line ~345)
-- Modify: `src/amplifier_app_newtui/kernel/queue_bridge.py`
+- Modify: `src/amplifier_app_tui/kernel/queue_bridge.py`
 
 **Step 1: Write the failing tests:**
 
@@ -1065,8 +1065,8 @@ Expected: PASS (all).
 
 **Step 5: Lint and commit**
 
-Run: `uv run ruff format src/amplifier_app_newtui/kernel/queue_bridge.py tests/test_kernel_trackers.py && uv run ruff check . && uv run pyright src/`
-`git add src/amplifier_app_newtui/kernel/queue_bridge.py tests/test_kernel_trackers.py`
+Run: `uv run ruff format src/amplifier_app_tui/kernel/queue_bridge.py tests/test_kernel_trackers.py && uv run ruff check . && uv run pyright src/`
+`git add src/amplifier_app_tui/kernel/queue_bridge.py tests/test_kernel_trackers.py`
 Commit: `feat: queue bridge consumes delegate resumed/cancelled/error`
 
 ---
@@ -1101,9 +1101,9 @@ Docs tasks have no unit tests; the verification step for each is the stated grep
 ```
 
 **Step 2:** Update the three context rows (lines 51-53) — change each "Default" cell:
-- `context.max_tokens`: `` `200000` in the packaged newtui bundle `` → `` `300000` (inherited from the composed anchors bundle) ``
-- `context.compact_threshold`: `` `0.8` in the packaged newtui bundle `` → `` `0.8` (inherited from the composed anchors bundle) ``
-- `context.auto_compact`: `` `true` in the packaged newtui bundle `` → `` `true` (inherited from the composed anchors bundle) ``
+- `context.max_tokens`: `` `200000` in the packaged tui bundle `` → `` `300000` (inherited from the composed anchors bundle) ``
+- `context.compact_threshold`: `` `0.8` in the packaged tui bundle `` → `` `0.8` (inherited from the composed anchors bundle) ``
+- `context.auto_compact`: `` `true` in the packaged tui bundle `` → `` `true` (inherited from the composed anchors bundle) ``
 
 **Step 3:** Around line 74, update `The base bundle mounts hooks-mode + hooks-approval + tool-mode matching the reference` to say these arrive **via the composed anchors bundle** (same modules, same configs).
 
@@ -1128,7 +1128,7 @@ Docs tasks have no unit tests; the verification step for each is the stated grep
 ```
 (adjust the leading sentence fragment so the paragraph still reads; check the surrounding lines 195-200 first.)
 
-**Step 2:** §7.2 (line 435+): the bullet `The bundle-native stack remains mounted to match `anchors`:` becomes `The bundle-native stack arrives FROM the composed `anchors` bundle (the packaged newtui bundle is a thin wrapper that includes anchors at a pinned SHA):`.
+**Step 2:** §7.2 (line 435+): the bullet `The bundle-native stack remains mounted to match `anchors`:` becomes `The bundle-native stack arrives FROM the composed `anchors` bundle (the packaged tui bundle is a thin wrapper that includes anchors at a pinned SHA):`.
 
 **Step 3:** Mounted-modules/bundle inventory sweep — run:
 
@@ -1163,16 +1163,16 @@ Update every hit to the anchors-composition reality. Re-run — expected: no mat
 ### Task 15: Diagrams
 
 **Files:**
-- Modify: `docs/diagrams/newtui-architecture.dot` (lines 80-89, `cluster_bundle`)
-- Modify: `docs/diagrams/newtui-amplifier-integration.dot` (line 19, `bundle_md` node)
-- Check/modify: `.ai/diagrams/newtui-architecture.dot` (mirror copy — line 81 has the same label)
+- Modify: `docs/diagrams/tui-architecture.dot` (lines 80-89, `cluster_bundle`)
+- Modify: `docs/diagrams/tui-amplifier-integration.dot` (line 19, `bundle_md` node)
+- Check/modify: `.ai/diagrams/tui-architecture.dot` (mirror copy — line 81 has the same label)
 - Regenerate: three PNGs + one SVG
 
-**Step 1:** In `docs/diagrams/newtui-architecture.dot`, replace the `cluster_bundle` subgraph (lines 80-89) with:
+**Step 1:** In `docs/diagrams/tui-architecture.dot`, replace the `cluster_bundle` subgraph (lines 80-89) with:
 
 ```dot
         subgraph cluster_bundle {
-            label="newtui bundle — thin wrapper over anchors (packaged: data/bundles/newtui.md)\n_apply_hook_suppression(): printers + hooks-logging stripped at boot";
+            label="tui bundle — thin wrapper over anchors (packaged: data/bundles/tui.md)\n_apply_hook_suppression(): printers + hooks-logging stripped at boot";
             style="rounded,filled"; fillcolor="#EDF2F7"; color="#2D3748";
             anchors_inc [label="includes: anchors @ pinned SHA\n(amplifier-foundation bundles/anchors)", fillcolor="#E2E8F0"];
             orch [label="orchestrator: loop-streaming\n(extended thinking) — via anchors", fillcolor="#E2E8F0"];
@@ -1184,21 +1184,21 @@ Update every hit to the anchors-composition reality. Re-run — expected: no mat
         }
 ```
 
-**Step 2:** In `docs/diagrams/newtui-amplifier-integration.dot`, replace the `bundle_md` node (line 19) with:
+**Step 2:** In `docs/diagrams/tui-amplifier-integration.dot`, replace the `bundle_md` node (line 19) with:
 
 ```dot
-        bundle_md     [label="bundle: newtui.md (thin wrapper)\nincludes: anchors @ pinned SHA (amplifier-foundation)\nloop-streaming · context-simple 300k · provider-anthropic (overlay)\nfs/bash/web/search/todo/apply-patch/delegate/skills/mode/recipes + mcp/team-pulse\nhooks via anchors (printers + logging suppressed) · 6 anchors agents", fillcolor="#fff3cd"];
+        bundle_md     [label="bundle: tui.md (thin wrapper)\nincludes: anchors @ pinned SHA (amplifier-foundation)\nloop-streaming · context-simple 300k · provider-anthropic (overlay)\nfs/bash/web/search/todo/apply-patch/delegate/skills/mode/recipes + mcp/team-pulse\nhooks via anchors (printers + logging suppressed) · 6 anchors agents", fillcolor="#fff3cd"];
 ```
 
-**Step 3:** Mirror check: `diff docs/diagrams/newtui-architecture.dot .ai/diagrams/newtui-architecture.dot`. If the only differences are your Step-1 edits, copy the file over: `cp docs/diagrams/newtui-architecture.dot .ai/diagrams/newtui-architecture.dot`. If they diverged before this plan, leave `.ai/` alone and note it in the commit body.
+**Step 3:** Mirror check: `diff docs/diagrams/tui-architecture.dot .ai/diagrams/tui-architecture.dot`. If the only differences are your Step-1 edits, copy the file over: `cp docs/diagrams/tui-architecture.dot .ai/diagrams/tui-architecture.dot`. If they diverged before this plan, leave `.ai/` alone and note it in the commit body.
 
 **Step 4:** Regenerate renders:
 
 ```sh
-/opt/homebrew/bin/dot -Tpng docs/diagrams/newtui-architecture.dot -o docs/diagrams/newtui-architecture.png
-/opt/homebrew/bin/dot -Tpng docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui-amplifier-integration.png
-/opt/homebrew/bin/dot -Tpng docs/diagrams/newtui-dataflow.dot -o docs/diagrams/newtui-dataflow.png
-/opt/homebrew/bin/dot -Tsvg docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui-amplifier-integration.svg
+/opt/homebrew/bin/dot -Tpng docs/diagrams/tui-architecture.dot -o docs/diagrams/tui-architecture.png
+/opt/homebrew/bin/dot -Tpng docs/diagrams/tui-amplifier-integration.dot -o docs/diagrams/tui-amplifier-integration.png
+/opt/homebrew/bin/dot -Tpng docs/diagrams/tui-dataflow.dot -o docs/diagrams/tui-dataflow.png
+/opt/homebrew/bin/dot -Tsvg docs/diagrams/tui-amplifier-integration.dot -o docs/diagrams/tui-amplifier-integration.svg
 ```
 Expected: exit 0 each, PNGs/SVG regenerated (a `dot` syntax error means a malformed label — fix and re-run).
 
@@ -1215,7 +1215,7 @@ uv sync --frozen
 uv run ruff check .
 uv run pyright src/
 uv run pytest -q
-cmp bundle.md src/amplifier_app_newtui/data/bundles/newtui.md && echo IDENTICAL
+cmp bundle.md src/amplifier_app_tui/data/bundles/tui.md && echo IDENTICAL
 grep -rn "_strip_printing_hooks\|_PRINTING_HOOKS\b" src/ tests/ docs/*.md ; echo "grep exit: $?"
 ```
 Expected: sync clean, lint clean, pyright clean, 0 failed tests, `IDENTICAL`, and the grep exits 1 (no stale references — `docs/notes/` is intentionally excluded).
@@ -1228,7 +1228,7 @@ Expected: sync clean, lint clean, pyright clean, 0 failed tests, `IDENTICAL`, an
 
 This is the ONE place real composition is proven: the offline suite deliberately never fetches anchors. First boot with the new bundle fetches anchors + its modules from git — allow several minutes.
 
-**Tooling:** load the `amplifier-skill-forge` skill and drive `uv run amplifier-newtui` in a persistent PTY session per that skill's workflow. Launch from the repo root so the packaged wrapper resolves. If any assert fails: capture the evidence (screen dump + file paths), STOP, and report — do not improvise fixes inside the smoke; take the failure back through a normal TDD task.
+**Tooling:** load the `amplifier-skill-forge` skill and drive `uv run amplifier-tui` in a persistent PTY session per that skill's workflow. Launch from the repo root so the packaged wrapper resolves. If any assert fails: capture the evidence (screen dump + file paths), STOP, and report — do not improvise fixes inside the smoke; take the failure back through a normal TDD task.
 
 **Assert (a) — delegation drives the lanes (the Phase 2 fix under test):**
 Submit a prompt that forces a delegation, e.g. `Delegate to the explorer agent: summarize README.md in two sentences.` Watch the screen: a subagent lane must appear AND the working line's agent count must increment (`1 agent`). This is precisely the TaskStatusTracker + `delegate:*` path.
@@ -1243,12 +1243,12 @@ path = glob.glob('$HOME/.amplifier/projects/*/sessions/<session-id>/events.jsonl
 kinds = set()
 for line in open(path):
     record = json.loads(line)
-    assert 'kind' in record, f'non-newtui record (hooks-logging leaked?): {record}'
+    assert 'kind' in record, f'non-tui record (hooks-logging leaked?): {record}'
     kinds.add(record['kind'])
 print('OK — single-writer format;', len(kinds), 'kinds')
 "
 ```
-Expected: every line is a newtui UIEvent dump with a `kind` field (hooks-logging writes a different schema — any line without `kind` is a double-writer leak). Also confirm the boot notice listed the suppressed hooks on screen (`suppressed hooks: …`).
+Expected: every line is a tui UIEvent dump with a `kind` field (hooks-logging writes a different schema — any line without `kind` is a double-writer leak). Also confirm the boot notice listed the suppressed hooks on screen (`suppressed hooks: …`).
 
 **Assert (c) — body composition across includes (asserted offline, never yet verified live):**
 The composed system prompt must carry BOTH the wrapper's terminal response contract AND anchors' behavioral principles. Pick a distinctive phrase from each source first:
@@ -1269,7 +1269,7 @@ Submit: `Use your todo tool to plan a 3-step task list for tidying a git repo, t
 
 **Step 1:** `git log --oneline main..HEAD` (or since the plan started) — confirm every commit is green-suite and conventional.
 **Step 2:** Run the full gate one final time (same commands as Task 16, Step 1). Expected: all clean.
-**Step 3:** Present the work for review with: the four live-smoke assert outcomes, the partial-pin caveat, and the resume-notice behavior (old sessions resuming under the new stack will show the "was newtui, now newtui" — nothing, since the NAME is unchanged; the notice fires only for sessions stored under a *different* bundle name, e.g. `offline` test bundles or user-overridden bundles — say this plainly so nobody expects a notice for the anchors transition itself, where the bundle name stays `newtui`).
+**Step 3:** Present the work for review with: the four live-smoke assert outcomes, the partial-pin caveat, and the resume-notice behavior (old sessions resuming under the new stack will show the "was tui, now tui" — nothing, since the NAME is unchanged; the notice fires only for sessions stored under a *different* bundle name, e.g. `offline` test bundles or user-overridden bundles — say this plainly so nobody expects a notice for the anchors transition itself, where the bundle name stays `tui`).
 
 ---
 

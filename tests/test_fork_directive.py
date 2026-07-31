@@ -4,7 +4,7 @@
 This suite pins the added capability: ``session fork`` (CLI) and ``/fork``
 (in-session) snapshot the parent context into a new session AND seed it with
 a starting *directive* so the child is *primed* — a later
-``amplifier-newtui resume <child>`` runs that instruction first.
+``amplifier-tui resume <child>`` runs that instruction first.
 
 Everything runs against a scratch store / scratch ``$HOME``; nothing touches
 the developer's real ``~/.amplifier``. True detached/background execution is
@@ -22,11 +22,11 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel import session_manager as sm
-from amplifier_app_newtui.kernel.persistence import SessionStore
-from amplifier_app_newtui.main import main
-from amplifier_app_newtui.ui import app_support
-from amplifier_app_newtui.ui.runtime_adapter import RealRuntimeAdapter, RuntimeAdapter
+from amplifier_app_tui.kernel import session_manager as sm
+from amplifier_app_tui.kernel.persistence import SessionStore
+from amplifier_app_tui.main import main
+from amplifier_app_tui.ui import app_support
+from amplifier_app_tui.ui.runtime_adapter import RealRuntimeAdapter, RuntimeAdapter
 
 PARENT_CONTEXT = [
     {"role": "user", "content": "wire the auth refactor"},
@@ -46,7 +46,7 @@ def store(tmp_path: Path) -> SessionStore:
 
 def test_fork_seeds_child_with_parent_context_and_directive(store: SessionStore) -> None:
     ok, child_id = sm.fork(
-        store, "parent-1", PARENT_CONTEXT, "continue the refactor with tests", bundle="newtui"
+        store, "parent-1", PARENT_CONTEXT, "continue the refactor with tests", bundle="tui"
     )
     assert ok
     assert child_id != "parent-1"
@@ -59,7 +59,7 @@ def test_fork_seeds_child_with_parent_context_and_directive(store: SessionStore)
     # ... AND lineage points back at the parent.
     assert metadata["parent_id"] == "parent-1"
     assert "forked_at" in metadata
-    assert metadata["bundle"] == "newtui"
+    assert metadata["bundle"] == "tui"
     assert metadata["name"].startswith("fork-")
 
 
@@ -135,7 +135,7 @@ def scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SessionStore:
 
 
 def _seed(store: SessionStore, session_id: str) -> None:
-    store.save(session_id, PARENT_CONTEXT, {"session_id": session_id, "bundle": "newtui"})
+    store.save(session_id, PARENT_CONTEXT, {"session_id": session_id, "bundle": "tui"})
 
 
 def test_cli_session_fork_creates_primed_child(scratch: SessionStore) -> None:
@@ -153,7 +153,7 @@ def test_cli_session_fork_creates_primed_child(scratch: SessionStore) -> None:
     assert transcript == PARENT_CONTEXT
     assert metadata["pending_directive"] == "add the missing tests"
     assert metadata["parent_id"] == "parent001"
-    assert metadata["bundle"] == "newtui"
+    assert metadata["bundle"] == "tui"
 
 
 def test_cli_session_fork_prefix_and_name(scratch: SessionStore) -> None:
@@ -206,7 +206,7 @@ class _FakeCoordinator:
 
 
 def _runtime_with_live_session(store: SessionStore) -> Any:
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     runtime = RealRuntime(bundle=None)
     runtime._store = store
@@ -214,7 +214,7 @@ def _runtime_with_live_session(store: SessionStore) -> Any:
         session_id="live-parent",
         coordinator=_FakeCoordinator(_FakeContext(PARENT_CONTEXT)),
     )
-    runtime.bundle_name = "newtui"
+    runtime.bundle_name = "tui"
     return runtime
 
 
@@ -229,7 +229,7 @@ def test_runtime_fork_session_snapshots_live_context(store: SessionStore) -> Non
 
 
 def test_runtime_fork_session_before_start_is_guarded(store: SessionStore) -> None:
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     runtime = RealRuntime(bundle=None)  # no _store / _initialized yet
     ok, detail = asyncio.run(runtime.fork_session("go"))

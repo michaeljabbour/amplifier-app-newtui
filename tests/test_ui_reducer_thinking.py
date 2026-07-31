@@ -11,11 +11,11 @@ Offline: fake events straight into the reducer, no Textual.
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import BlockIdAllocator, Thinking
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.reducer import TranscriptReducer
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import BlockIdAllocator, Thinking
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.reducer import TranscriptReducer
 
 from .test_ui_reducer_outcomes import FakeHost
 
@@ -121,7 +121,7 @@ def test_thinking_end_without_start_appends_defensively() -> None:
 
 def test_thinking_does_not_bleed_into_answer_channel() -> None:
     """A thinking content block must never be treated as durable answer text."""
-    from amplifier_app_newtui.model.blocks import Answer
+    from amplifier_app_tui.model.blocks import Answer
 
     reducer, host = make_reducer()
     reducer.handle(ev.PromptSubmit(session_id="root", prompt="think", ts=1.0))

@@ -12,11 +12,11 @@ uv sync                              # install / update dependencies
 uv run pytest -q                     # full suite (offline, no credentials, ~90 files)
 uv run pytest tests/test_ui_reducer_outcomes.py   # one file
 uv run pytest -q -k "steer"                       # by keyword
-uv run pytest -q --cov=src/amplifier_app_newtui --cov-report=term  # with coverage
+uv run pytest -q --cov=src/amplifier_app_tui --cov-report=term  # with coverage
 uv run ruff check .                  # lint
 uv run pyright src/                  # types
 (cd sdk/typescript && npm ci && npm test)  # TypeScript SDK build + tests
-uv run amplifier-newtui --demo       # eyeball changes on the scripted session
+uv run amplifier-tui --demo       # eyeball changes on the scripted session
 ```
 
 CI (`.github/workflows/ci.yml`) runs exactly: `uv sync --frozen` → `ruff check .` →
@@ -58,7 +58,7 @@ trial then — don't flip `typeCheckingMode` until that number is small.
 
 ## The rules the code holds itself to
 
-These are the [ADR-0007](decisions/ADR-0007-newtui-ground-up-architecture.md) invariants
+These are the [ADR-0007](decisions/ADR-0007-tui-ground-up-architecture.md) invariants
 reviewers will hold your PR to (details in [ARCHITECTURE.md §1](ARCHITECTURE.md)):
 
 1. **Layering** — `ui/` → `model/` → `kernel/`. `kernel/` never imports Textual; `model/`
@@ -97,10 +97,10 @@ not noise.
 uv run python scripts/regen_screenshot.py
 
 # Architecture diagrams (requires graphviz)
-dot -Tpng docs/diagrams/newtui-architecture.dot -o docs/diagrams/newtui-architecture.png
-dot -Tpng docs/diagrams/newtui-dataflow.dot -o docs/diagrams/newtui-dataflow.png
-dot -Tpng docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui-amplifier-integration.png
-dot -Tsvg docs/diagrams/newtui-amplifier-integration.dot -o docs/diagrams/newtui-amplifier-integration.svg
+dot -Tpng docs/diagrams/tui-architecture.dot -o docs/diagrams/tui-architecture.png
+dot -Tpng docs/diagrams/tui-dataflow.dot -o docs/diagrams/tui-dataflow.png
+dot -Tpng docs/diagrams/tui-amplifier-integration.dot -o docs/diagrams/tui-amplifier-integration.png
+dot -Tsvg docs/diagrams/tui-amplifier-integration.dot -o docs/diagrams/tui-amplifier-integration.svg
 ```
 
 ## Test suite map
@@ -122,7 +122,7 @@ look at `test_runtime_offline.py` for how to fake the provider side.
 
 ## Forge capability tier (opt-in, out of the default gate)
 
-`tests/forge/` drives the **real** shipped `amplifier-newtui` binary through a real PTY via
+`tests/forge/` drives the **real** shipped `amplifier-tui` binary through a real PTY via
 the `amplifier-skill-forge` terminal daemon — the one seam every other test fakes (real
 event stream, real governance hook, real terminal). It is marked `@pytest.mark.forge` and
 **excluded from the default gate** (`addopts = -m "not forge"` in `pyproject.toml`), so
@@ -136,7 +136,7 @@ scripts/forge_capability.sh                # same, after a `forge doctor` health
 
 Two credential-adaptive lanes:
 
-- **Demo lane** (`test_capability_demo.py`, always on) — launches `amplifier-newtui --demo`
+- **Demo lane** (`test_capability_demo.py`, always on) — launches `amplifier-tui --demo`
   at a fixed 120×40 and asserts boot→composer, `/status` + `/model` + palette, a full demo
   turn (streaming, plan panel, footer cost), and the agents fan-out (lanes, ctrl+o tail
   focus, delegate summary). Deterministic (virtual clock, fixed costs); screen-observed.
@@ -158,7 +158,7 @@ not from code:
 - `bundle.md` at the repo root is a **thin wrapper**: it `includes:` foundation's `anchors`
   bundle (tracked at `amplifier-foundation@main` — see "Anchors ref lifecycle" below) and
   overlays only a default provider, `tool-mcp`, and `tool-team-pulse`. The packaged copy at
-  `src/amplifier_app_newtui/data/bundles/newtui.md` must stay **byte-identical** (compare
+  `src/amplifier_app_tui/data/bundles/tui.md` must stay **byte-identical** (compare
   with `diff` after editing).
 - Users can point `--bundle` at any bundle file/URI, drop bundles into
   `.amplifier/bundles/` (project) or `~/.amplifier/bundles/` (global), or overlay modules
@@ -182,19 +182,19 @@ policy (issue #53):
   (`v2.1.x`) do **not** ship `bundles/anchors` — only `@main` carries it — so `@main` is the
   only fetchable source today, and it matches how the shared registry resolves `anchors`.
 - **How updates flow.** Tracking `@main` means composition changes (roster, behaviors) *and*
-  anchors' internal module/behavior fixes all arrive on the next fetch. `amplifier-newtui
+  anchors' internal module/behavior fixes all arrive on the next fetch. `amplifier-tui
   update` refreshes the runtime cache (`--force` runs `uv cache clean` for a true re-fetch).
   This is the "bump" — there is no static SHA to hand-edit on the happy path.
 - **How staleness surfaces (instead of silence).** Anchors is *included*, and foundation's
   per-bundle `check_bundle_status` deliberately skips included-bundle URIs, so its freshness
   was previously invisible. `kernel/updater.py:anchors_status()` checks it directly (an
-  offline-safe `git ls-remote` compare against the local cache) and both `amplifier-newtui
-  update --check-only` and `amplifier-newtui doctor` now report `anchors up to date` /
+  offline-safe `git ls-remote` compare against the local cache) and both `amplifier-tui
+  update --check-only` and `amplifier-tui doctor` now report `anchors up to date` /
   `anchors is behind upstream …` / `… check unavailable (offline)`. Offline degrades to a
   neutral note — never a false "stale" finding.
 - **Three copies, kept in lockstep.** The anchors include ref appears in **three** live files
   (`kernel/updater.py:pin_files`): repo-root `bundle.md`, the byte-identical packaged
-  `newtui.md`, and the packaged `anchors.md` pointer. Anti-drift is enforced by
+  `tui.md`, and the packaged `anchors.md` pointer. Anti-drift is enforced by
   `tests/test_kernel_session_config.py` (byte-identity + a three-way ref-match).
 - **Changing the tracked ref.** Use `uv run python scripts/bump_anchors_ref.py <ref>` — it
   rewrites all three copies atomically and re-verifies byte-identity + lockstep before writing
@@ -212,6 +212,6 @@ policy (issue #53):
 - [ ] Event added/changed? `kernel/events.py` is the only boundary touched, `DemoRuntime` updated, both channels respected
 - [ ] Key added? `ui/keymap.py` table only (footer hints follow automatically)
 - [ ] `bundle.md` changed? All **three** anchors-ref copies updated in lockstep (`bundle.md`,
-      packaged `newtui.md` byte-identically, packaged `anchors.md`) — use `scripts/bump_anchors_ref.py`
+      packaged `tui.md` byte-identically, packaged `anchors.md`) — use `scripts/bump_anchors_ref.py`
 - [ ] User-visible behavior changed? [USER-GUIDE.md](USER-GUIDE.md) updated; strings match [DESIGN-SPEC.md](DESIGN-SPEC.md)
 - [ ] Docs assets stale? Regenerate screenshot/diagrams (commands above)

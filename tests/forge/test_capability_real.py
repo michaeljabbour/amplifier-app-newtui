@@ -20,11 +20,11 @@ from collections.abc import Iterator
 
 import pytest
 
-from amplifier_app_newtui.kernel.persistence import SessionStore
+from amplifier_app_tui.kernel.persistence import SessionStore
 
 from ._forge import ForgeClient, ForgeSession
 from ._ledger import ledger_cost, newest_session_id, poll_events, store_for
-from .conftest import BATCH_TAG, NEWTUI_BINARY, REPO_ROOT, real_lane_skip_reason
+from .conftest import BATCH_TAG, TUI_BINARY, REPO_ROOT, real_lane_skip_reason
 
 _SKIP_REASON = real_lane_skip_reason()
 
@@ -42,9 +42,9 @@ _TRIVIAL_PROMPT = "reply with the single word: ready"
 
 @pytest.fixture
 def real_session(forge_client: ForgeClient) -> Iterator[ForgeSession]:
-    """A freshly booted real ``amplifier-newtui`` PTY (no --demo)."""
+    """A freshly booted real ``amplifier-tui`` PTY (no --demo)."""
     session = forge_client.new(
-        program=str(NEWTUI_BINARY),
+        program=str(TUI_BINARY),
         args=(),
         cwd=str(REPO_ROOT),
         cols=120,
@@ -89,7 +89,7 @@ def test_real_resume_reseeds_cost_from_ledger(
 
     # Resume in a fresh PTY and assert the transcript + cost re-seed.
     resumed = forge_client.new(
-        program=str(NEWTUI_BINARY),
+        program=str(TUI_BINARY),
         args=("resume", session_id),
         cwd=str(REPO_ROOT),
         cols=120,

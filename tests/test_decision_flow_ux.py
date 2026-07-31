@@ -16,26 +16,26 @@ the same names):
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import (
     BlockIdAllocator,
     Blocked,
     NeedsYouBlock,
     NeedsYouEntry,
 )
-from amplifier_app_newtui.model.formatting import DIGEST_MAX_CHARS, command_digest
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.app_support import needs_you_block, needs_you_display_question
-from amplifier_app_newtui.ui.needs_you import decision_why_line
-from amplifier_app_newtui.ui.plan_panel import (
+from amplifier_app_tui.model.formatting import DIGEST_MAX_CHARS, command_digest
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.app_support import needs_you_block, needs_you_display_question
+from amplifier_app_tui.ui.needs_you import decision_why_line
+from amplifier_app_tui.ui.plan_panel import (
     PLAN_DRILL_EXTRA,
     PLAN_MAX_ROWS,
     format_plan_lines,
     plan_drill_notice,
 )
-from amplifier_app_newtui.ui.reducer import TranscriptReducer
-from amplifier_app_newtui.ui.transcript_render import render_block
+from amplifier_app_tui.ui.reducer import TranscriptReducer
+from amplifier_app_tui.ui.transcript_render import render_block
 from tests.test_ui_reducer_outcomes import FakeHost
 
 HEREDOC = (
@@ -219,7 +219,7 @@ def test_plain_denial_line_is_unchanged_and_not_expandable() -> None:
 def test_needs_you_compact_rows_with_why_line() -> None:
     # Park through the REAL queue: its sanitizer collapses the multi-line
     # action to one line (exactly what governance-parked items look like).
-    from amplifier_app_newtui.model.queues import NeedsYouQueue
+    from amplifier_app_tui.model.queues import NeedsYouQueue
 
     queue = NeedsYouQueue()
     item = queue.defer(
@@ -296,8 +296,8 @@ def test_decision_notification_normalizes_deferral_detail() -> None:
 
 
 def test_plan_drilldown_cycles_rows() -> None:
-    from amplifier_app_newtui.model.blocks import TodoItem
-    from amplifier_app_newtui.ui.plan_panel import PlanPanel
+    from amplifier_app_tui.model.blocks import TodoItem
+    from amplifier_app_tui.ui.plan_panel import PlanPanel
 
     panel = PlanPanel()
     items = tuple(

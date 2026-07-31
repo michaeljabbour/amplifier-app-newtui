@@ -11,12 +11,12 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.surface_hint import (
+from amplifier_app_tui.kernel.surface_hint import (
     SURFACE_HINT_SOURCE,
     SurfaceHintInjector,
     surface_hint_text,
 )
-from amplifier_app_newtui.model.terminal import TerminalSurface
+from amplifier_app_tui.model.terminal import TerminalSurface
 
 ROOT = "sess-root"
 
@@ -170,9 +170,9 @@ def test_register_hooks_priority_and_name() -> None:
     hooks = FakeHooks()
     injector = SurfaceHintInjector(ROOT, TerminalSurface(), FakeContext())
     unregister = injector.register_hooks(hooks)
-    assert hooks.registered == [("provider:request", 940, "newtui-surface-hint")]
+    assert hooks.registered == [("provider:request", 940, "tui-surface-hint")]
     unregister()
-    assert hooks.unregistered == ["newtui-surface-hint"]
+    assert hooks.unregistered == ["tui-surface-hint"]
 
 
 def test_register_hooks_tolerates_non_callable_unregister() -> None:

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.lanes import LaneRegistry
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.lanes import LaneRegistry
 
 from .test_ui_reducer_outcomes import FakeHost, make_reducer
 
@@ -201,9 +201,9 @@ def test_live_session_cost_moves_before_turn_close() -> None:
 
 def test_tick_advances_lanes_and_fires_lanes_changed() -> None:
     host = CountingHost("auto")
-    from amplifier_app_newtui.model.blocks import BlockIdAllocator
-    from amplifier_app_newtui.model.turn import OutcomeLedger
-    from amplifier_app_newtui.ui.reducer import TranscriptReducer
+    from amplifier_app_tui.model.blocks import BlockIdAllocator
+    from amplifier_app_tui.model.turn import OutcomeLedger
+    from amplifier_app_tui.ui.reducer import TranscriptReducer
 
     reducer = TranscriptReducer(
         host,

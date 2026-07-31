@@ -82,7 +82,7 @@ the quoted symbols/strings, not the numbers):
 
 | What | Where |
 |---|---|
-| `_DELTA_NOTIFY_SECONDS = 0.05` | `src/amplifier_app_newtui/kernel/trackers/stream_status.py:35` |
+| `_DELTA_NOTIFY_SECONDS = 0.05` | `src/amplifier_app_tui/kernel/trackers/stream_status.py:35` |
 | Child `Stream*` diversion | `ui/reducer.py:519-550` (`_is_foreign_turn_event`) |
 | Child activity labels (KEEP) | `ui/reducer.py:552-615` (`_track_child_activity`, `StreamBlockDelta` arm at 597-598) |
 | `ReducerHost` protocol | `ui/reducer.py:297-314` |
@@ -112,7 +112,7 @@ changes, anything in `kernel/events.py` or `kernel/trackers/`.
 
 ## Task 1 — `LaneRegistry` tail focus (model layer)
 
-**Files:** `src/amplifier_app_newtui/model/lanes.py`, `tests/test_model_turn_queues_lanes.py`
+**Files:** `src/amplifier_app_tui/model/lanes.py`, `tests/test_model_turn_queues_lanes.py`
 
 **1a. Write the failing test.** Append to `tests/test_model_turn_queues_lanes.py` (match its
 existing imports — it already imports `LaneRegistry`; add the import if missing):
@@ -240,11 +240,11 @@ git add -A && git commit -m "model: LaneRegistry tail focus — most-recent defa
 
 ## Task 2 — `LiveTail` lane mode (dim `┆` gutter, 3-line cap, root wins)
 
-**Files:** `src/amplifier_app_newtui/ui/live_tail.py`, `tests/test_ui_transcript_live_tail.py`
+**Files:** `src/amplifier_app_tui/ui/live_tail.py`, `tests/test_ui_transcript_live_tail.py`
 
 **2a. Write the failing tests.** Append to `tests/test_ui_transcript_live_tail.py` (it already
 has `TailHarness`, `_tail`, and `pytest`; add `lane_tail_markup` to the existing
-`from amplifier_app_newtui.ui.live_tail import (...)` block):
+`from amplifier_app_tui.ui.live_tail import (...)` block):
 
 ```python
 # -- lane mode (design doc D4: focused-lane live tail) --------------------------
@@ -375,7 +375,7 @@ git add -A && git commit -m "ui: LiveTail lane mode — dim ┆-guttered 3-line 
 
 ## Task 3 — Reducer: tail routing, focus, throttle (new `ReducerHost` methods)
 
-**Files:** `src/amplifier_app_newtui/ui/reducer.py`, new `tests/test_ui_reducer_lane_tail.py`
+**Files:** `src/amplifier_app_tui/ui/reducer.py`, new `tests/test_ui_reducer_lane_tail.py`
 
 **3a. Write the failing tests.** Create `tests/test_ui_reducer_lane_tail.py`:
 
@@ -396,11 +396,11 @@ never a transcript block).
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import BlockIdAllocator, TranscriptBlock
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.reducer import LANE_TAIL_NOTIFY_SECONDS, TranscriptReducer
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import BlockIdAllocator, TranscriptBlock
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.reducer import LANE_TAIL_NOTIFY_SECONDS, TranscriptReducer
 
 ROOT = "root-session"
 CHILD_A = "child-aaaaaaaaaaaaaaaa"
@@ -681,7 +681,7 @@ git add -A && git commit -m "ui: reducer lane-tail routing — buffered, throttl
 
 ## Task 4 — Reducer: root preemption + ephemerality (clear rules)
 
-**Files:** `src/amplifier_app_newtui/ui/reducer.py`, `tests/test_ui_reducer_lane_tail.py`
+**Files:** `src/amplifier_app_tui/ui/reducer.py`, `tests/test_ui_reducer_lane_tail.py`
 
 **4a. Write the failing tests.** Append to `tests/test_ui_reducer_lane_tail.py`:
 
@@ -804,7 +804,7 @@ git add -A && git commit -m "ui: reducer lane-tail lifecycle — root preempts i
 
 ## Task 5 — App wiring: the two new host methods
 
-**Files:** `src/amplifier_app_newtui/ui/app.py`
+**Files:** `src/amplifier_app_tui/ui/app.py`
 
 No new test in this task (the flow test in Task 9 exercises this wiring end-to-end); the
 gate here is pyright + the existing suite.
@@ -847,7 +847,7 @@ git add -A && git commit -m "ui: app implements the lane_tail ReducerHost method
 
 ## Task 6 — LanesPanel `▸` marker on the tailed lane
 
-**Files:** `src/amplifier_app_newtui/ui/lanes_panel.py`, `tests/test_ui_lanes.py`
+**Files:** `src/amplifier_app_tui/ui/lanes_panel.py`, `tests/test_ui_lanes.py`
 
 **6a. Write the failing test.** Append to `tests/test_ui_lanes.py` (it already imports from
 `lanes_panel`; extend the import to include `format_lane_lines` and `LaneState` from
@@ -986,8 +986,8 @@ git add -A && git commit -m "ui: lanes panel ▸ marker on the tailed lane (alig
 
 ## Task 7 — ctrl+o binding: cycle the tailed lane
 
-**Files:** `src/amplifier_app_newtui/ui/keymap.py`, `src/amplifier_app_newtui/ui/app_support.py`,
-`src/amplifier_app_newtui/ui/app.py`, `src/amplifier_app_newtui/ui/lanes_panel.py`,
+**Files:** `src/amplifier_app_tui/ui/keymap.py`, `src/amplifier_app_tui/ui/app_support.py`,
+`src/amplifier_app_tui/ui/app.py`, `src/amplifier_app_tui/ui/lanes_panel.py`,
 `tests/test_ui_keymap.py`, `tests/test_flow_lanes.py`
 
 ctrl+o is verified free: taken chords are ctrl+t/l/y/r/p/j/d/c/v (+Textual's ctrl+q quit).
@@ -1071,7 +1071,7 @@ git add -A && git commit -m "ui: ctrl+o cycles the tailed lane; lanes header adv
 
 ## Task 8 — Demo: child-session stream bursts in the agents turn
 
-**Files:** `src/amplifier_app_newtui/kernel/demo.py`
+**Files:** `src/amplifier_app_tui/kernel/demo.py`
 
 The demo must emit the SAME typed events a real runtime produces (ADR-0007) so the tail is
 visible offline in `--demo`. Child events differ from root events only in their envelope:
@@ -1173,7 +1173,7 @@ async def test_lane_tail_streams_mid_fanout_then_clears() -> None:
     """Design doc D4: focused-lane deltas fill LiveTail while the root is
     idle; ctrl+o moves the ▸ pin; the tail is ephemeral at turn end."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(AGENTS_PROMPT)
@@ -1228,8 +1228,8 @@ so this snapshot locks the **LiveTail widget in lane mode** in a minimal timer-f
 `test_double_esc_rewind_snapshot` (test_ui_snapshots.py).
 
 **10a. Write the test.** Append to `tests/test_ui_snapshots.py` (add
-`from textual.app import App, ComposeResult`, `from amplifier_app_newtui.ui.live_tail
-import LiveTail`, and `from amplifier_app_newtui.ui.themes import DEFAULT_THEME,
+`from textual.app import App, ComposeResult`, `from amplifier_app_tui.ui.live_tail
+import LiveTail`, and `from amplifier_app_tui.ui.themes import DEFAULT_THEME,
 register_themes, theme_id` to the imports):
 
 ```python
@@ -1437,7 +1437,7 @@ Expected: `0 errors, 0 warnings`.
 **Goldens check:** Phase 3 must not have touched any `ui/transcript.py` renderer. Confirm:
 
 ```
-git diff --stat main -- src/amplifier_app_newtui/ui/transcript.py tests/goldens/
+git diff --stat main -- src/amplifier_app_tui/ui/transcript.py tests/goldens/
 ```
 
 Expected for THIS phase's commits: no changes beyond what Phases 1-2 already merged. If you
@@ -1447,7 +1447,7 @@ amend it into the renderer commit.
 **Manual smoke (offline, no credentials):**
 
 ```
-uv run amplifier-newtui --demo
+uv run amplifier-tui --demo
 ```
 
 Type the agents demo prompt (`run the DTU reality check across provider docs, store, and

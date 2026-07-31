@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import (
+from amplifier_app_tui.kernel.demo import (
     BUILD_PROMPT,
     DEMO_LANE_BY_NAME,
     INTERRUPTED_RECAP,
 )
-from amplifier_app_newtui.model.blocks import Answer, BlockIdAllocator
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import lane_focus_blocks
+from amplifier_app_tui.model.blocks import Answer, BlockIdAllocator
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import lane_focus_blocks
 
 from .test_flow_helpers import (
     SIZE,
@@ -34,7 +34,7 @@ from .test_flow_helpers import (
 @pytest.mark.asyncio
 async def test_esc_interrupts_running_turn_with_recap_and_interrupted_rule() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, BUILD_PROMPT)

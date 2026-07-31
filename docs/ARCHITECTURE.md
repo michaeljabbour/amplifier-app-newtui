@@ -1,9 +1,9 @@
 # Architecture
 
-How `amplifier-app-newtui` actually works: the layers, the seams, and the data flows.
+How `amplifier-app-tui` actually works: the layers, the seams, and the data flows.
 This document describes the code as built. For *what the app must look and behave like*, see
 [DESIGN-SPEC.md](DESIGN-SPEC.md); for *why it is shaped this way*, see
-[ADR-0007](decisions/ADR-0007-newtui-ground-up-architecture.md); for the research that grounded
+[ADR-0007](decisions/ADR-0007-tui-ground-up-architecture.md); for the research that grounded
 the stack choice, see [RESEARCH-BRIEF.md](RESEARCH-BRIEF.md).
 
 | Document | Role |
@@ -11,7 +11,7 @@ the stack choice, see [RESEARCH-BRIEF.md](RESEARCH-BRIEF.md).
 | [README.md](../README.md) | Quick orientation, run instructions, provider config |
 | [DESIGN-SPEC.md](DESIGN-SPEC.md) | Checkbox-testable behavioral requirements (TUI v3 — Cohesive) |
 | [design-v3-cohesive.html](design-v3-cohesive.html) | Executable mockup — ground truth for exact strings, colors, timing |
-| [ADR-0007](decisions/ADR-0007-newtui-ground-up-architecture.md) | The architecture decision record (layering, event contract, 13 resolutions) |
+| [ADR-0007](decisions/ADR-0007-tui-ground-up-architecture.md) | The architecture decision record (layering, event contract, 13 resolutions) |
 | **This document** | The implemented architecture, module by module |
 
 ---
@@ -44,9 +44,9 @@ into it.
 ```
 
 Rendered diagrams live in [diagrams/](diagrams/):
-[newtui-architecture.png](diagrams/newtui-architecture.png) (topology),
-[newtui-dataflow.png](diagrams/newtui-dataflow.png) (a turn, end to end), and
-[newtui-amplifier-integration.png](diagrams/newtui-amplifier-integration.png) (how the app
+[tui-architecture.png](diagrams/tui-architecture.png) (topology),
+[tui-dataflow.png](diagrams/tui-dataflow.png) (a turn, end to end), and
+[tui-amplifier-integration.png](diagrams/tui-amplifier-integration.png) (how the app
 plugs into the Amplifier platform). Regeneration commands are in
 [DEVELOPMENT.md](DEVELOPMENT.md).
 
@@ -92,7 +92,7 @@ These are the rules the whole design hangs on. Every one is enforced by tests an
 ## 2. Package layout
 
 ```
-src/amplifier_app_newtui/
+src/amplifier_app_tui/
 ├── main.py            click entry point: TUI launch, --demo, run/sessions/resume/doctor,
 │                       init, update, and the bundle group (list/show/use/…)
 ├── kernel/            amplifier adapter layer (no Textual)
@@ -138,9 +138,9 @@ src/amplifier_app_newtui/
 │   ├── builtin.py         registration of all built-ins (thin glue)
 │   ├── skills.py          discovered skills registered as first-class commands (+ shortcut aliases)
 │   └── copy/export/improve/doctor/permissions/context.py   pure command logic
-├── data/bundles/newtui.md   packaged default bundle (byte-identical to repo bundle.md)
+├── data/bundles/tui.md   packaged default bundle (byte-identical to repo bundle.md)
 └── ui/                Textual layer
-    ├── app.py             NewTuiApp composition root
+    ├── app.py             TuiApp composition root
     ├── app_support.py     esc-chain, approval bar mount, fork confirm, footer state
     ├── command_context.py AppCommandContext: CommandContext protocol → running app
     ├── runtime_adapter.py RuntimeAdapter seam; RealRuntimeAdapter (thread marshalling)
@@ -183,7 +183,7 @@ plus sequence/terminal invariants, and exposes the normalized runtime records as
 iterator. “The CLI is the API” keeps TUI, automation, and SDK behavior on one surface.
 
 `_launch_tui` picks the adapter — `DemoRuntimeAdapter` for `--demo`, otherwise
-`RealRuntimeAdapter(bundle, resume_id)` — and hands it to `NewTuiApp`. That adapter choice is
+`RealRuntimeAdapter(bundle, resume_id)` — and hands it to `TuiApp`. That adapter choice is
 the *only* place demo and real diverge.
 
 ### 3.2 Real boot (`kernel/runtime.py` → `RealRuntime.start()`)
@@ -193,7 +193,7 @@ the *only* place demo and real diverge.
    - deep-merge three settings scopes: `~/.amplifier/settings.yaml` →
      `<project>/.amplifier/settings.yaml` → `.amplifier/settings.local.yaml`;
    - discover the bundle: CLI `--bundle` → settings `bundle.active` → the packaged default
-     (`newtui`, byte-identical copy of the repo's `bundle.md`);
+     (`tui`, byte-identical copy of the repo's `bundle.md`);
    - foundation lifecycle: `load_bundle` → compose settings overlays → `prepare()` exactly
      once; then apply module overrides and expand `${VAR}` / `${VAR:default}` placeholders
      into the mount plan.
@@ -260,7 +260,7 @@ approvals/cancel (`ApprovalRequired/Granted/Denied`, `CancelRequested/Completed`
 `content_block:end` usage data, because the streaming orchestrator does not fire
 `provider:response`. Providers repeat that usage on every block in a response, so the
 bridge emits telemetry only for the final block. Resume replay applies the same
-exactly-once rule and repairs logs written by older NewTUI builds that recorded every
+exactly-once rule and repairs logs written by older TUI builds that recorded every
 repeated block usage.
 
 An **event-drift canary** guards `CONSUMED_EVENTS` against upstream renames/additions.
@@ -292,11 +292,11 @@ log) and the call surface (`submit / interrupt / fork / turn_spec / evidence_lin
 
 ```
 composer keypress
-  → Textual message → NewTuiApp handler → adapter.submit()      (thread hop, real mode)
+  → Textual message → TuiApp handler → adapter.submit()      (thread hop, real mode)
     → RealRuntime.submit: emit PromptSubmit, snapshot git, session.execute()
       → orchestrator ⇄ provider ⇄ tools; coordinator hooks fire
         → QueueBridge.normalize() → UIEvent → asyncio.Queue     (thread hop back)
-          → NewTuiApp._consume_events() → TranscriptReducer.handle(event)
+          → TuiApp._consume_events() → TranscriptReducer.handle(event)
             → ReducerHost calls (append/replace/remove block, notices, lanes…)
               → TranscriptView / LiveTail widget updates → Textual paints
 ```
@@ -312,7 +312,7 @@ this file; as built it has grown to roughly double that — helper logic lives i
 `app_support.py` and the widgets, and further extraction is the standing direction:
 
 ```
-NewTuiApp
+TuiApp
 ├── TitleBar #title-bar             spinner · "<state> — <bundle> — <session>"
 ├── Container #transcript-region    (1fr; layered)
 │   ├── TranscriptView #transcript  durable history: selectable archive + widget tail
@@ -326,7 +326,7 @@ NewTuiApp
 ```
 
 `TitleBar` owns the only 260 ms active-turn spinner timer. Each changed frame
-is emitted as a Textual message; `NewTuiApp` mirrors a higher-motion braille
+is emitted as a Textual message; `TuiApp` mirrors a higher-motion braille
 frame to the native terminal window/tab title with a sanitized, bounded OSC 0
 write while the in-app chrome keeps the product's star pulse.
 The timer is stopped at idle, and unmount restores a static application title.
@@ -341,7 +341,7 @@ and session tallies (tokens, cost). Events dispatch through a `match` table.
 Crucially, the reducer **never touches widgets**. It acts through the narrow `ReducerHost`
 protocol (`append_block / replace_block / remove_block / show_notice / turn_started /
 turn_finished / lanes_changed / stream_opened / stream_delta / stream_closed / …`),
-implemented by `NewTuiApp`. Widgets talk *back* only via Textual messages
+implemented by `TuiApp`. Widgets talk *back* only via Textual messages
 (`Composer.Submit`, `ApprovalBar.Resolved`, `LanesPanel.FocusLane`, …). The result is a
 unidirectional loop: events flow down through the reducer; intents flow up as messages.
 
@@ -502,7 +502,7 @@ Two policies share Amplifier's hook/approval mechanism:
   hard write-path enforcement point, with deny taking precedence. The resolved project
   root is always injected into `allowed_write_paths`; configured lists union rather than
   replacing it.
-- The bundle-native stack arrives FROM the composed `anchors` bundle (the packaged newtui
+- The bundle-native stack arrives FROM the composed `anchors` bundle (the packaged tui
   bundle is a thin wrapper that includes anchors at a pinned SHA):
 
 - **`hooks-mode`** (`tool:pre`, pri −20) reads `session_state["active_mode"]` and, per the

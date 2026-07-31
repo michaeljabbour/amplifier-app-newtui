@@ -125,7 +125,7 @@ wheels = [
 ]
 
 [[package]]
-name = "amplifier-app-newtui"
+name = "amplifier-app-tui"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

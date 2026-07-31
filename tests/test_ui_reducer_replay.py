@@ -13,16 +13,16 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import (
     BlockIdAllocator,
     DelegateSummaryBlock,
     TodoItem,
     TranscriptBlock,
 )
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.reducer import TranscriptReducer
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.reducer import TranscriptReducer
 
 from .test_ui_reducer_delegates import SID, FakeHost, _env
 

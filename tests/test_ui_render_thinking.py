@@ -7,13 +7,13 @@ expands.
 
 from __future__ import annotations
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     GLYPH_CHEVRON_COLLAPSED,
     GLYPH_CHEVRON_EXPANDED,
     Thinking,
 )
-from amplifier_app_newtui.ui.segments import lines_plain
-from amplifier_app_newtui.ui.transcript import render_block
+from amplifier_app_tui.ui.segments import lines_plain
+from amplifier_app_tui.ui.transcript import render_block
 
 
 def _plain(block: Thinking, width: int = 97) -> list[str]:
@@ -64,7 +64,7 @@ def test_withheld_thinking_ignores_expanded_flag() -> None:
 
 def test_block_round_trips_through_json() -> None:
     """The discriminated union serializes/deserializes losslessly (replay)."""
-    from amplifier_app_newtui.model.blocks import TranscriptBlock
+    from amplifier_app_tui.model.blocks import TranscriptBlock
     from pydantic import TypeAdapter
 
     adapter = TypeAdapter(TranscriptBlock)

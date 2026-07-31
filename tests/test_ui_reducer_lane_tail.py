@@ -8,11 +8,11 @@ never a transcript block).
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import BlockIdAllocator, TranscriptBlock
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.reducer import LANE_TAIL_NOTIFY_SECONDS, TranscriptReducer
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import BlockIdAllocator, TranscriptBlock
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.reducer import LANE_TAIL_NOTIFY_SECONDS, TranscriptReducer
 
 ROOT = "root-session"
 CHILD_A = "child-aaaaaaaaaaaaaaaa"

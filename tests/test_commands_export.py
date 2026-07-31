@@ -10,12 +10,12 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from amplifier_app_newtui.commands.export import (
+from amplifier_app_tui.commands.export import (
     export_filename,
     render_transcript_markdown,
     write_export,
 )
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     Answer,
     Narration,
     Segment,

@@ -1,4 +1,4 @@
-"""``amplifier-newtui init`` wiring (click CliRunner).
+"""``amplifier-tui init`` wiring (click CliRunner).
 
 Provider discovery is stubbed so the test is offline and deterministic;
 keys are written to a ``tmp_path`` keys file, never the real ~/.amplifier.
@@ -10,9 +10,9 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-import amplifier_app_newtui.main as main_mod
-from amplifier_app_newtui.kernel import routing_admin, setup
-from amplifier_app_newtui.main import main
+import amplifier_app_tui.main as main_mod
+from amplifier_app_tui.kernel import routing_admin, setup
+from amplifier_app_tui.main import main
 
 _CHOICES = (
     setup.ProviderChoice(

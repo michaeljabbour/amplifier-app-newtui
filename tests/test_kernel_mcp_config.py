@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from amplifier_app_newtui.kernel import mcp_config
+from amplifier_app_tui.kernel import mcp_config
 
 
 def test_add_read_remove_stdio_server(tmp_path: Path) -> None:

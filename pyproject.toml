@@ -1,5 +1,5 @@
 [project]
-name = "amplifier-app-newtui"
+name = "amplifier-app-tui"
 version = "0.1.0"
 description = "Full-screen Textual TUI for the Amplifier AI development platform (v3 Cohesive)"
 license = "MIT"
@@ -11,8 +11,8 @@ dependencies = [
     "amplifier-core>=1.6.0",
     "amplifier-foundation",
     # team_pulse_lib is the unpublished peer that tool-team-pulse (composed by
-    # the packaged newtui bundle) imports at mount(). The bundle installs it via
-    # a root shim; newtui pulls only the module subdir, so we install the lib
+    # the packaged tui bundle) imports at mount(). The bundle installs it via
+    # a root shim; tui pulls only the module subdir, so we install the lib
     # here — without it, tool-team-pulse fails to mount on a clean env (it is
     # meant to degrade gracefully, not hard-fail). Retire once it hits PyPI.
     "team-pulse-lib",
@@ -25,13 +25,13 @@ dependencies = [
 ]
 
 [project.scripts]
-amplifier-newtui = "amplifier_app_newtui.main:main"
+amplifier-tui = "amplifier_app_tui.main:main"
 
 [tool.uv]
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/amplifier_app_newtui"]
+packages = ["src/amplifier_app_tui"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

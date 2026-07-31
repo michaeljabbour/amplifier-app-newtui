@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from amplifier_app_newtui.ui.app_support import (
+from amplifier_app_tui.ui.app_support import (
     ATTENTION_MIN_TURN_SECONDS,
     EscSequence,
     attention_bell_needed,
     native_modes_segments,
 )
-from amplifier_app_newtui.ui.keymap import ESC_BACKTRACK_WINDOW_SECONDS
+from amplifier_app_tui.ui.keymap import ESC_BACKTRACK_WINDOW_SECONDS
 
 
 def test_native_modes_use_full_terminal_width() -> None:

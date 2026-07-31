@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel import session_manager as sm
-from amplifier_app_newtui.kernel.persistence import METADATA_FILENAME, SessionStore
+from amplifier_app_tui.kernel import session_manager as sm
+from amplifier_app_tui.kernel.persistence import METADATA_FILENAME, SessionStore
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def _seed(
     session_id: str,
     *,
     name: str = "",
-    bundle: str = "newtui",
+    bundle: str = "tui",
     messages: int = 0,
     turns: int | None = None,
 ) -> None:
@@ -220,20 +220,20 @@ def test_cleanup_days_zero_removes_all(store: SessionStore) -> None:
 
 def test_branch_snapshots_into_new_session(store: SessionStore) -> None:
     messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
-    ok, branch_id = sm.branch(store, "parent-1", messages, name="spike", bundle="newtui")
+    ok, branch_id = sm.branch(store, "parent-1", messages, name="spike", bundle="tui")
     assert ok
     assert branch_id != "parent-1"
     metadata = store.get_metadata(branch_id)
     assert metadata["parent_id"] == "parent-1"
     assert metadata["name"] == "spike"
-    assert metadata["bundle"] == "newtui"
+    assert metadata["bundle"] == "tui"
     assert "branched_at" in metadata
     transcript, _ = store.load(branch_id)
     assert transcript == messages
 
 
 def test_branch_default_name(store: SessionStore) -> None:
-    ok, branch_id = sm.branch(store, "parent", [], bundle="newtui")
+    ok, branch_id = sm.branch(store, "parent", [], bundle="tui")
     assert ok
     assert store.get_metadata(branch_id)["name"].startswith("branch-")
 

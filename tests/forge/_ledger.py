@@ -18,8 +18,8 @@ from collections.abc import Callable, Iterable
 from decimal import Decimal
 from pathlib import Path
 
-from amplifier_app_newtui.kernel.cost import sum_prior_cost
-from amplifier_app_newtui.kernel.persistence import SessionStore
+from amplifier_app_tui.kernel.cost import sum_prior_cost
+from amplifier_app_tui.kernel.persistence import SessionStore
 
 
 def store_for(project_dir: Path | None = None) -> SessionStore:

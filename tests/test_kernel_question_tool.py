@@ -22,7 +22,7 @@ import asyncio
 
 import pytest
 
-from amplifier_app_newtui.kernel.question import (
+from amplifier_app_tui.kernel.question import (
     QUESTION_TOOL_NAME,
     QuestionOption,
     QuestionPrompt,
@@ -30,9 +30,9 @@ from amplifier_app_newtui.kernel.question import (
     format_output,
     parse_questions,
 )
-from amplifier_app_newtui.kernel.steering import StepBoundaryBridge
-from amplifier_app_newtui.model.queues import NeedsYouQueue, SteeringQueue
-from amplifier_app_newtui.model.trust import CapabilityClass, classify_tool, resolve
+from amplifier_app_tui.kernel.steering import StepBoundaryBridge
+from amplifier_app_tui.model.queues import NeedsYouQueue, SteeringQueue
+from amplifier_app_tui.model.trust import CapabilityClass, classify_tool, resolve
 
 
 async def _wait_pending(queue: NeedsYouQueue, count: int = 1) -> None:

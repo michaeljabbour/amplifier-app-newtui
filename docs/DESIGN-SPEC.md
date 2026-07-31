@@ -36,7 +36,7 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 
 ## 2. Screen layout (top → bottom)
 
-1. **Title bar** (bg-chrome): centered title `amplifier-app-newtui — Amplifier — <state> — <bundle> — <session-short>`; while running, prefix with orange spinner glyph cycling `✳ ✦ ✧ ✦` every ~260ms and mirror a visibly rotating braille frame into native terminal chrome; title's `<state>` reflects current plan step (lowercased) or `ready` / `planning` / `brainstorming` / `✳ coordinating N agents`.
+1. **Title bar** (bg-chrome): centered title `amplifier-app-tui — Amplifier — <state> — <bundle> — <session-short>`; while running, prefix with orange spinner glyph cycling `✳ ✦ ✧ ✦` every ~260ms and mirror a visibly rotating braille frame into native terminal chrome; title's `<state>` reflects current plan step (lowercased) or `ready` / `planning` / `brainstorming` / `✳ coordinating N agents`.
 2. **Transcript** (bg-term): scrollable region, the main body.
 3. **Notice slot**: transient right-aligned dim text floating at transcript bottom edge (auto-dismiss ~4s), e.g. `mode plan · read-only`, `steer queued · shift+enter queues a full next-turn message`.
 4. **Overlay strips** (each a bordered strip above composer, shown when active):

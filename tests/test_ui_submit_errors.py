@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.runtime_adapter import RuntimeAdapter
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.runtime_adapter import RuntimeAdapter
 
 
 class _RaisingAdapter(RuntimeAdapter):
@@ -35,7 +35,7 @@ async def _wait_for(pilot, predicate, *, tries: int = 120) -> bool:  # noqa: ANN
 @pytest.mark.asyncio
 async def test_turn_exception_shows_notice_and_keeps_app_alive() -> None:
     adapter = _RaisingAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
 
     notices: list[str] = []
     async with app.run_test(size=(110, 40)) as pilot:
@@ -73,7 +73,7 @@ async def test_cancelled_turn_is_not_reported_as_failure() -> None:
             raise asyncio.CancelledError
 
     adapter = _CancelAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     notices: list[str] = []
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(pilot, lambda: app._splash is None)

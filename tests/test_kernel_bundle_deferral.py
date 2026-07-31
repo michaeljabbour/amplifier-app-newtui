@@ -9,7 +9,7 @@ configured, boot composes exactly what it did before.
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel.config import (
+from amplifier_app_tui.kernel.config import (
     boot_overlay_uris,
     composed_overlay_uris,
     deferred_bundle_entries,
