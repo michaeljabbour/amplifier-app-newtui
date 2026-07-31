@@ -1,7 +1,8 @@
 """Title bar chrome (DESIGN-SPEC §2 item 1).
 
-Centered title ``amplifier-app-tui — Amplifier — <state> — <bundle> —
-<session-short>`` on the ``bg-chrome`` background. While a turn is
+Centered title ``amplifier — <state> — <bundle> — <session-short>`` on
+the ``bg-chrome`` background. The brand is always plain ``amplifier`` —
+only the terminal command is amplifier-tui. While a turn is
 running the title is prefixed with an orange spinner glyph cycling
 ``✳ ✦ ✧ ✦`` every ~260ms (Textual timer).
 
@@ -33,8 +34,7 @@ TERMINAL_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 TERMINAL_TITLE_MAX_CHARS = 180
 """Keep macOS terminal tabs useful when a plan step has a long title."""
 
-APP_TITLE_NAME = "amplifier-app-tui"
-PRODUCT_NAME = "Amplifier"
+APP_TITLE_NAME = "amplifier"
 
 
 def terminal_title_sequence(title: str) -> str:
@@ -152,7 +152,7 @@ class TitleBar(Static):
             self.post_message(self.TitleChanged(title, terminal_title))
 
     def _plain_title(self) -> str:
-        parts = [APP_TITLE_NAME, PRODUCT_NAME, self.state_text]
+        parts = [APP_TITLE_NAME, self.state_text]
         if self.bundle:
             parts.append(self.bundle)
         if self.session_short:
@@ -201,7 +201,6 @@ class TitleBar(Static):
 
 __all__ = [
     "APP_TITLE_NAME",
-    "PRODUCT_NAME",
     "SPINNER_INTERVAL",
     "TERMINAL_SPINNER_FRAMES",
     "TERMINAL_TITLE_MAX_CHARS",
