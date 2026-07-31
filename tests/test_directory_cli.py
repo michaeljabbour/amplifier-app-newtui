@@ -6,9 +6,9 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel import bundle_admin
-from amplifier_app_newtui.kernel.directory_permissions import configured_entries
-from amplifier_app_newtui.main import main
+from amplifier_app_tui.kernel import bundle_admin
+from amplifier_app_tui.kernel.directory_permissions import configured_entries
+from amplifier_app_tui.main import main
 
 
 def test_allowed_dirs_add_list_remove_roundtrip(tmp_path: Path, monkeypatch) -> None:

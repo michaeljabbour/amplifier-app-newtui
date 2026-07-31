@@ -1,15 +1,15 @@
 # Rust Migration Tracker
 
 > **MOVED (2026-07-27).** The Rust client no longer lives in this repo. `rust-mvp/` was
-> extracted into a standalone repo — `~/dev/amplifier-app-newtui-rust`, GitHub
-> [`michaeljabbour/amplifier-app-newtui-rust`](https://github.com/michaeljabbour/amplifier-app-newtui-rust)
+> extracted into a standalone repo — `~/dev/amplifier-app-tui-rust`, GitHub
+> [`michaeljabbour/amplifier-app-tui-rust`](https://github.com/michaeljabbour/amplifier-app-tui-rust)
 > (private) — with full history preserved via `git subtree split`. This file is frozen at
 > the split point; the ledger continues as `MIGRATION.md` in the new repo. The Rust client
 > finds this Python checkout via `AMPLIFIER_PY_CHECKOUT` or as a sibling directory.
 
-Incremental, verification-gated port of `amplifier-app-newtui` (Python/Textual) to Rust
+Incremental, verification-gated port of `amplifier-app-tui` (Python/Textual) to Rust
 (ratatui) under `rust-mvp/`. Architecture: the Rust app is a pure protocol CLIENT of the
-existing Python `serve` backend (`amplifier-newtui serve`) over stdio JSON — the
+existing Python `serve` backend (`amplifier-tui serve`) over stdio JSON — the
 codex-tui / codex-core split. amplifier-core / amplifier-foundation / Python app behavior
 are untouched.
 
@@ -138,12 +138,12 @@ Python backend behind `serve`.
 
 The CLI entry point (`main.py`) is a launcher plus an admin CLI. Only the TUI-launch path
 migrates; everything else is `n/a (na-cli)` — CLI administration the Rust *client* never
-needed (it stays available as `amplifier-newtui <cmd>` beside the Rust binary).
+needed (it stays available as `amplifier-tui <cmd>` beside the Rust binary).
 
 | Unit | Python source | Python tests pinned | Status | Caveats |
 |---|---|---|---|---|
 | launch flags | main.py interactive group / `serve` options | (Rust pins: main::test_launch_flags_assemble_backend_command, test_app_seeds_initial_mode, test_app_defaults_to_auto_without_initial_mode) | verified | `--bundle`/`--provider`(-p)/`--model`(-m)/`--mode`/`--resume` parsed by main.rs `parse_launch_flags` (click grammar: `--flag value` and `--flag=value`) and forwarded as backend `serve` args; `--mode` also seeds the opening posture |
-| backend resolution (real session by default) | main.py `_interactive_launch` | main::test_launch_flags_assemble_backend_command (resolve_backend arms: env override / checkout / PATH) + main::test_spawn_failure_boots_into_boot_failure_diagnosis | verified | `resolve_backend`: `AMPLIFIER_SERVE_CMD` wins outright; inside the checkout spawns the REAL `uv run --project <checkout> amplifier-newtui serve`; otherwise the installed `amplifier-newtui serve` from PATH. NO scripted fallback: a spawn failure boots into announce_boot_failure's exact diagnosis (`⊘ session failed to start · backend spawn failed (…)` + doctor hint) with an `UnspawnedBackend` runtime seat that answers any submit with an honest turn-failed error; `backend/serve_mock.py` survives only as the cross-process test's fixture |
+| backend resolution (real session by default) | main.py `_interactive_launch` | main::test_launch_flags_assemble_backend_command (resolve_backend arms: env override / checkout / PATH) + main::test_spawn_failure_boots_into_boot_failure_diagnosis | verified | `resolve_backend`: `AMPLIFIER_SERVE_CMD` wins outright; inside the checkout spawns the REAL `uv run --project <checkout> amplifier-tui serve`; otherwise the installed `amplifier-tui serve` from PATH. NO scripted fallback: a spawn failure boots into announce_boot_failure's exact diagnosis (`⊘ session failed to start · backend spawn failed (…)` + doctor hint) with an `UnspawnedBackend` runtime seat that answers any submit with an honest turn-failed error; `backend/serve_mock.py` survives only as the cross-process test's fixture |
 | exit resume hint | main.py `_print_resume_hint` | main::test_resume_hint_exact_text_after_session_started | verified | exact two-line farewell after a `session.started` id; demo/unstarted sessions print nothing |
 | serve error records | kernel/serve.py error records | main::test_boot_error_record_dismisses_splash_with_exact_diagnosis, test_midsession_error_and_backend_exit_notices | verified | `WireEvent::Error`: during boot → `announce_boot_failure` verbatim (`⊘ session failed to start · <detail>` + doctor hint, Python app_support strings; blank message falls back to the exception type); mid-turn → `turn failed · <error>` notice matching Python `_submit_prompt`'s except-arm, including its defect of leaving `turn_active` true (notice only, no turn close-out) |
 | backend-exit detection | — (Rust-only hardening) | main::test_backend_eof_before_identity_runs_boot_failure_diagnosis, test_midsession_error_and_backend_exit_notices | verified | `Msg::BackendExited` on backend stdout EOF: pre-identity runs the same boot-failure diagnosis (previously the splash hung forever; Python has no analogue — the backend is in-process); mid-session posts `backend exited · session lost — ctrl+d to quit`; a trailing EOF never clobbers an already-rendered error diagnosis |
@@ -170,14 +170,14 @@ needed (it stays available as `amplifier-newtui <cmd>` beside the Rust binary).
 
 | Unit | Status | Caveats |
 |---|---|---|
-| sdk/python + sdk/typescript, tests/test_sdk_python.py | n/a (na-cli) | thin clients of the headless `amplifier-newtui run --output-format jsonl` CLI, not the TUI — nothing for the Rust client to port |
+| sdk/python + sdk/typescript, tests/test_sdk_python.py | n/a (na-cli) | thin clients of the headless `amplifier-tui run --output-format jsonl` CLI, not the TUI — nothing for the Rust client to port |
 | tests/forge/ | n/a (na-harness) | real-PTY tests driving the *Python* app through the forge daemon; the Rust equivalents are the headless flow tests in main.rs, the `#[ignore]` core_client::live_serve_end_to_end live e2e, and the PERFORMANCE.md forge benchmark |
 
 ## Layer 5 — Integration
 
 | Unit | Status | Caveats |
 |---|---|---|
-| Rust UI ↔ `amplifier-newtui serve` live end-to-end (real model turn; approvals by ticket id) | verified | 2026-07-26: live turn through the assembled reducer pipeline — real answer "pong", session_cost $1.1459575 from real usage records; approval round-trip proven with `serve --mode build` (ticket approval-1 answered "Allow once" over stdin; ping.txt written). Pinned as #[ignore] core_client::live_serve_end_to_end (run with --ignored; ~$1.15/turn from fresh-session cache write) |
+| Rust UI ↔ `amplifier-tui serve` live end-to-end (real model turn; approvals by ticket id) | verified | 2026-07-26: live turn through the assembled reducer pipeline — real answer "pong", session_cost $1.1459575 from real usage records; approval round-trip proven with `serve --mode build` (ticket approval-1 answered "Allow once" over stdin; ping.txt written). Pinned as #[ignore] core_client::live_serve_end_to_end (run with --ignored; ~$1.15/turn from fresh-session cache write) |
 
 ## Layer 6 — Parity pass
 
@@ -215,11 +215,11 @@ both codebases' comments already claimed "thinking").
 ## Log / caveats
 
 - 2026-07-27: REPO SPLIT — rust-mvp/ extracted to the standalone repo
-  ~/dev/amplifier-app-newtui-rust (github michaeljabbour/amplifier-app-newtui-rust,
+  ~/dev/amplifier-app-tui-rust (github michaeljabbour/amplifier-app-tui-rust,
   private), history preserved via `git subtree split` (37 commits). Cross-repo couplings
   reworked there: the cost.py drift canary, the launcher's dev-checkout detection, and
   the live serve e2e now resolve the Python checkout via AMPLIFIER_PY_CHECKOUT or the
-  sibling ../amplifier-app-newtui (loud skip / PATH fallthrough when absent). This repo's
+  sibling ../amplifier-app-tui (loud skip / PATH fallthrough when absent). This repo's
   Python suite has no rust-mvp dependency; kernel/serve.py remains the backend the Rust
   client spawns. This tracker is frozen — the ledger continues in the new repo.
 - 2026-07-27: scaffolding purge (no mock/demo code on production paths). REMOVED from
@@ -228,7 +228,7 @@ both codebases' comments already claimed "thinking").
   backend spawn failure / missing key (replaced by the honest boot-failure diagnosis via
   a new `UnspawnedBackend` runtime seat + synthesized SpawnError record; new test
   main::test_spawn_failure_boots_into_boot_failure_diagnosis), the serve_mock production
-  fallback in `resolve_backend` (outside a checkout it now spawns `amplifier-newtui
+  fallback in `resolve_backend` (outside a checkout it now spawns `amplifier-tui
   serve` from PATH), the legacy pre-assembly `DemoRuntime` in runtime.rs (dead code —
   ScriptedDemoRuntime superseded it), and the `cargo mock` alias. KEPT deliberately:
   `--demo` + ScriptedDemoRuntime/DemoScript/demo_wiring/DemoAdapter (Python `--demo`

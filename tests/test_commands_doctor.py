@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from amplifier_app_newtui.commands.doctor import (
+from amplifier_app_tui.commands.doctor import (
     CheckResult,
     DoctorReport,
     McpServerStats,
@@ -19,8 +19,8 @@ from amplifier_app_newtui.commands.doctor import (
     run_checks,
     run_standalone,
 )
-from amplifier_app_newtui.commands.improve import ApprovalTally
-from amplifier_app_newtui.kernel.updater import AnchorsStatus
+from amplifier_app_tui.commands.improve import ApprovalTally
+from amplifier_app_tui.kernel.updater import AnchorsStatus
 
 
 def _ok(name: str, message: str) -> CheckResult:
@@ -32,8 +32,8 @@ def _finding(name: str, message: str) -> CheckResult:
 
 
 def test_check_install_healthy_and_broken() -> None:
-    assert check_install("amplifier-app-newtui").ok
-    assert check_install("amplifier-app-newtui").message == "install healthy"
+    assert check_install("amplifier-app-tui").ok
+    assert check_install("amplifier-app-tui").message == "install healthy"
     broken = check_install("definitely-not-a-package-xyz")
     assert not broken.ok
     assert "not found" in broken.message
@@ -136,7 +136,7 @@ def test_run_checks_includes_stale_anchors_finding() -> None:
     stale = AnchorsStatus(ref="main", has_update=True, cached_commit="a1", remote_commit="b2")
     report = run_checks(
         settings_paths=(),
-        package="amplifier-app-newtui",
+        package="amplifier-app-tui",
         executable="python3",
         anchors_status=stale,
     )
@@ -180,7 +180,7 @@ def test_run_checks_end_to_end(tmp_path: Path) -> None:
         mcp_stats=(),
         approval_tallies=(),
         settings_paths=(tmp_path / "settings.yaml",),
-        package="amplifier-app-newtui",
+        package="amplifier-app-tui",
         executable="python3",
     )
     assert report.finding_count == 0
@@ -200,7 +200,7 @@ def test_render_text_matches_mockup_row_shapes() -> None:
     )
     text = render_text(report)
     lines = text.splitlines()
-    assert lines[0] == "amplifier-newtui doctor"
+    assert lines[0] == "amplifier-tui doctor"
     assert "Doctor  1 finding · nothing changed yet" in lines
     assert "  ✔ install healthy · PATH clean · settings parse" in lines
     assert "  1 2 MCP servers unused in 30 days · cost 4.1k tok/session" in lines
@@ -211,18 +211,18 @@ def test_run_standalone_exit_codes(tmp_path: Path) -> None:
     code = run_standalone(
         mcp_stats=(McpServerStats(name="dead", last_used_days_ago=None, tokens_per_session=500),),
         settings_paths=(tmp_path / "settings.yaml",),
-        package="amplifier-app-newtui",
+        package="amplifier-app-tui",
         executable="python3",
         echo=printed.append,
     )
     assert code == 1
-    assert "amplifier-newtui doctor" in printed[0]
+    assert "amplifier-tui doctor" in printed[0]
     assert "✔" in printed[0]
 
     printed.clear()
     code = run_standalone(
         settings_paths=(tmp_path / "settings.yaml",),
-        package="amplifier-app-newtui",
+        package="amplifier-app-tui",
         executable="python3",
         echo=printed.append,
     )

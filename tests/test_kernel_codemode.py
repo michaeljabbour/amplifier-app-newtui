@@ -11,12 +11,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from amplifier_app_newtui.kernel.codemode import (
+from amplifier_app_tui.kernel.codemode import (
     SandboxRunner,
     ToolInvokerError,
     audit_program,
 )
-from amplifier_app_newtui.model.codemode import DiagnosticKind, ExecutionLimits
+from amplifier_app_tui.model.codemode import DiagnosticKind, ExecutionLimits
 
 # Generous wall-clock guard so a harness bug fails fast instead of hanging CI.
 _SAFE = ExecutionLimits(timeout_ms=10_000)

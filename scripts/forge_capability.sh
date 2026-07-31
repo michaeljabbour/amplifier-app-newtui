@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the forge-driven capability tier (issue #49).
 #
-# The tier drives the shipped `amplifier-newtui` binary through a real PTY via
+# The tier drives the shipped `amplifier-tui` binary through a real PTY via
 # the amplifier-skill-forge daemon. It is opt-in and excluded from the default
 # gate (`addopts = -m "not forge"`), so this wrapper re-selects it with
 # `-m forge` after a `forge doctor` health check.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from amplifier_app_newtui.ui.reducer import _lane_result_summary
+from amplifier_app_tui.ui.reducer import _lane_result_summary
 
 
 def test_strips_heading_and_inline_markdown() -> None:

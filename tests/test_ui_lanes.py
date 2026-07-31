@@ -7,15 +7,15 @@ from decimal import Decimal
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.model.lanes import LaneRecord, LaneState, lane_labels
-from amplifier_app_newtui.ui.lanes_panel import (
+from amplifier_app_tui.model.lanes import LaneRecord, LaneState, lane_labels
+from amplifier_app_tui.ui.lanes_panel import (
     LANE_MOTION_INTERVAL_SECONDS,
     LANES_HEADER,
     LanesPanel,
     format_lane_lines,
     lane_elapsed,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
 def _record(
@@ -138,7 +138,7 @@ async def test_panel_lists_aligned_lanes_and_selects_first() -> None:
         assert panel.display
         assert panel.lane_lines == format_lane_lines(tuple(r.lane for r in RECORDS))
         assert panel.selected_record is RECORDS[0]
-        from amplifier_app_newtui.ui.lanes_panel import _LaneRow  # test-only
+        from amplifier_app_tui.ui.lanes_panel import _LaneRow  # test-only
 
         rows = list(panel.query(_LaneRow))
         assert [r.line for r in rows] == list(panel.lane_lines)
@@ -158,7 +158,7 @@ async def test_active_lane_labels_shimmer_and_stop_when_all_done() -> None:
         await pilot.pause(LANE_MOTION_INTERVAL_SECONDS + 0.08)
         assert panel._motion_frame > start
 
-        from amplifier_app_newtui.ui.lanes_panel import _LaneRow  # test-only
+        from amplifier_app_tui.ui.lanes_panel import _LaneRow  # test-only
 
         row = panel.query_one(_LaneRow)
         assert any(span.style.bold for span in row.render().spans)
@@ -177,7 +177,7 @@ async def test_live_telemetry_patches_rows_without_remounting_motion() -> None:
         panel.show_panel()
         await pilot.pause()
 
-        from amplifier_app_newtui.ui.lanes_panel import _LaneRow  # test-only
+        from amplifier_app_tui.ui.lanes_panel import _LaneRow  # test-only
 
         row = panel.query_one(_LaneRow)
         updated = _record("s1", "researcher", "working", "reading README.md", 42, "0.10", 120000)
@@ -392,7 +392,7 @@ async def test_lane_tail_mounts_under_focused_row_then_drops(monkeypatch) -> Non
     """Issue #90: the focused lane's live tail renders directly under that
     lane's row (co-located with its agent), and drops on focus change / clear."""
     monkeypatch.setenv("TERM", "xterm-256color")
-    from amplifier_app_newtui.ui.lanes_panel import _LaneRow, _LaneTail
+    from amplifier_app_tui.ui.lanes_panel import _LaneRow, _LaneTail
 
     app = LanesHost()
     async with app.run_test() as pilot:

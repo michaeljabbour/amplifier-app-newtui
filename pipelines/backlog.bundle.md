@@ -31,8 +31,8 @@ session:
       logs_root: ./runs
       params:
         donor_path: /Users/michaeljabbour/dev/amplifier-app-cli
-        newtui_path: /Users/michaeljabbour/dev/amplifier-app-newtui
-        work_tree: /Users/michaeljabbour/dev/newtui-wt/wt1
+        tui_path: /Users/michaeljabbour/dev/amplifier-app-tui
+        work_tree: /Users/michaeljabbour/dev/tui-wt/wt1
         forge_tool: /Users/michaeljabbour/.claude/skills/amplifier-skill-forge/tools/forge.py
 ---
 

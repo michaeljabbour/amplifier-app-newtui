@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.events import normalize
-from amplifier_app_newtui.kernel.persistence import (
+from amplifier_app_tui.kernel.events import normalize
+from amplifier_app_tui.kernel.persistence import (
     EVENTS_FILENAME,
     LEGACY_EVENTS_FILENAME,
     METADATA_FILENAME,
@@ -38,7 +38,7 @@ def test_save_load_roundtrip(store: SessionStore) -> None:
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
     ]
-    metadata = {"session_id": "s1", "bundle": "newtui"}
+    metadata = {"session_id": "s1", "bundle": "tui"}
     store.save("s1", transcript, metadata)
 
     loaded_transcript, loaded_metadata = store.load("s1")
@@ -324,7 +324,7 @@ async def test_incremental_saver_debounces_on_message_count(store: SessionStore)
         store,
         "s1",
         session=FakeSession(context),
-        base_metadata={"bundle": "newtui", "model": "claude-sonnet-4"},
+        base_metadata={"bundle": "tui", "model": "claude-sonnet-4"},
     )
 
     context.messages = [{"role": "user", "content": "hi"}]
@@ -336,7 +336,7 @@ async def test_incremental_saver_debounces_on_message_count(store: SessionStore)
 
     transcript, metadata = store.load("s1")
     assert len(transcript) == 2
-    assert metadata["bundle"] == "newtui"
+    assert metadata["bundle"] == "tui"
     assert metadata["turn_count"] == 1
     assert metadata["incremental"] is True
     assert "created" in metadata

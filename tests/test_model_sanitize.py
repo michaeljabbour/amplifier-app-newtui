@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.model.redaction import REDACTION_PLACEHOLDER
-from amplifier_app_newtui.model.sanitize import (
+from amplifier_app_tui.model.redaction import REDACTION_PLACEHOLDER
+from amplifier_app_tui.model.sanitize import (
     TOOL_IO_PLACEHOLDER,
     USER_PLACEHOLDER,
     redact_home_paths,
@@ -148,6 +148,6 @@ def test_sanitize_transcript_with_tool_io() -> None:
 
 
 def test_sanitize_metadata_redacts_working_dir() -> None:
-    out = sanitize_metadata({"working_dir": "/Users/alice/proj", "bundle": "newtui"})
+    out = sanitize_metadata({"working_dir": "/Users/alice/proj", "bundle": "tui"})
     assert out["working_dir"] == "/Users/[user]/proj"
-    assert out["bundle"] == "newtui"
+    assert out["bundle"] == "tui"

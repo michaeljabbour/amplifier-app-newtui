@@ -13,18 +13,18 @@ import re
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import (
+from amplifier_app_tui.kernel.demo import (
     AGENTS_END_NOTICE,
     AGENTS_PROMPT,
     BUILD_PROMPT,
     DEMO_LANE_BY_NAME,
     DEMO_SESSION_ID,
 )
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.footer import footer_right_text
-from amplifier_app_newtui.ui.lanes_panel import LANES_HEADER
-from amplifier_app_newtui.ui.needs_you import focused_lane_banner
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.footer import footer_right_text
+from amplifier_app_tui.ui.lanes_panel import LANES_HEADER
+from amplifier_app_tui.ui.needs_you import focused_lane_banner
 
 from .test_flow_helpers import (
     SIZE,
@@ -51,7 +51,7 @@ TAILED_PANEL_LINES = [
 ]
 
 
-async def _run_agents_turn(pilot, app: NewTuiApp) -> None:
+async def _run_agents_turn(pilot, app: TuiApp) -> None:
     await seed_done(pilot, app)
     app.submit_prompt(AGENTS_PROMPT)
     assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
@@ -59,7 +59,7 @@ async def _run_agents_turn(pilot, app: NewTuiApp) -> None:
 
 @pytest.mark.asyncio
 async def test_ctrl_t_toggles_lanes_panel_with_tree_in_transcript() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _run_agents_turn(pilot, app)
         assert len(app.lanes.lanes) == 3
@@ -111,7 +111,7 @@ async def test_typing_passes_through_focused_lanes_panel_to_composer() -> None:
     """Mockup keydown (the composer input keeps focus while lanesOpen):
     printable keys typed while the panel holds focus are never swallowed —
     '/' opens the palette and text lands in the composer (type-to-steer)."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _run_agents_turn(pilot, app)
         # Auto-opened at fan-out; ctrl-t twice gives the panel keyboard focus.
@@ -154,7 +154,7 @@ async def test_lanes_panel_tri_state_matches_mockup_mid_turn() -> None:
     """DESIGN-SPEC §8: ◐ teal running/working, ✔ dim done — live lanes carry
     the reducer's stream activity once the child bursts land (Phase 3)."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(AGENTS_PROMPT)
@@ -180,7 +180,7 @@ async def test_replayed_agents_turn_reopens_done_lanes() -> None:
     (demo replay) — the panel must show the live tri-state again, not a
     stale ``✔ … done`` carried over from the first run."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(AGENTS_PROMPT)
@@ -208,7 +208,7 @@ async def test_lane_tail_streams_mid_fanout_then_clears() -> None:
     lane's row while the root is idle; ctrl+o moves the ▸ pin; the tail is
     ephemeral at turn end."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(AGENTS_PROMPT)
@@ -231,7 +231,7 @@ async def test_lane_tail_streams_mid_fanout_then_clears() -> None:
 
 @pytest.mark.asyncio
 async def test_focus_lane_child_transcript_banner_and_esc_back() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _run_agents_turn(pilot, app)
         # The panel auto-opened at fan-out (display only); ctrl-t twice
@@ -287,7 +287,7 @@ async def test_focus_lane_child_transcript_banner_and_esc_back() -> None:
 @pytest.mark.asyncio
 async def test_title_shows_coordinating_agents_while_running() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(AGENTS_PROMPT)
@@ -302,7 +302,7 @@ async def test_title_shows_coordinating_agents_while_running() -> None:
 
 @pytest.mark.asyncio
 async def test_approval_arriving_while_lane_focused_returns_to_parent() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _run_agents_turn(pilot, app)
         # Auto-opened at fan-out; ctrl-t twice gives it keyboard focus.
@@ -330,7 +330,7 @@ async def test_approval_arriving_while_lane_focused_returns_to_parent() -> None:
 async def test_esc_chain_holds_while_lanes_panel_owns_the_keyboard() -> None:
     """Spec §5 / mockup onKeyDown: Esc order is lane-focus → palette →
     rewind → lanes → interrupt, even while the lanes panel holds focus."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
 
@@ -363,7 +363,7 @@ async def test_esc_chain_holds_while_lanes_panel_owns_the_keyboard() -> None:
 async def test_esc_chain_holds_while_palette_strip_owns_the_keyboard() -> None:
     """Spec §5: lane-focus unfocuses before the palette closes, even when
     the palette strip itself holds keyboard focus (e.g. after a click)."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _run_agents_turn(pilot, app)
         # Auto-opened at fan-out; ctrl-t twice gives it keyboard focus.

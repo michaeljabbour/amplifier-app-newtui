@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.ui.keymap import (
+from amplifier_app_tui.ui.keymap import (
     ALL_CONTEXTS,
     COMPOSER_PLACEHOLDER,
     ESC_BACKTRACK_WINDOW_SECONDS,

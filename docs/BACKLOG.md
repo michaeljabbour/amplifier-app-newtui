@@ -1,6 +1,6 @@
 # Backlog
 
-**The backlog lives in [GitHub issues](https://github.com/michaeljabbour/amplifier-app-newtui/issues).**
+**The backlog lives in [GitHub issues](https://github.com/michaeljabbour/amplifier-app-tui/issues).**
 This file indexes them (background, file:line evidence, and acceptance criteria live in each
 issue) alongside the shipped ledger and non-goals.
 
@@ -28,82 +28,82 @@ touches amplifier-core.
 
 | Issue | Status | Item |
 |---|---|---|
-| [#21](https://github.com/michaeljabbour/amplifier-app-newtui/issues/21) 🔴 | ✅ #89 | Turn exception crashes the whole TUI (run_worker `exit_on_error` + no except in the submit chain) |
-| [#22](https://github.com/michaeljabbour/amplifier-app-newtui/issues/22) | ✅ #77 | Hardening pass: compaction task ref, queue locks, silent cleanup swallow, empty-resume + malformed-settings notices, dead `ApprovalBroker.defer` |
-| [#23](https://github.com/michaeljabbour/amplifier-app-newtui/issues/23) | ✅ #61 | Secret-scrub transcripts, `/export`, `/copy` (only metadata.json is redacted today) |
-| [#24](https://github.com/michaeljabbour/amplifier-app-newtui/issues/24) | ✅ #62 | H1: shell write gating is command-list based — `python3 -c`/`sed -i`/`curl -o` bypass |
-| [#25](https://github.com/michaeljabbour/amplifier-app-newtui/issues/25) | ✅ #63 | H2: `write_boundary: "open"` default — no app-level write gate outside the project |
-| [#26](https://github.com/michaeljabbour/amplifier-app-newtui/issues/26) | ✅ #55 (decision doc) | Governance: classifier allows unrecognized EXEC by default — decide posture |
-| [#27](https://github.com/michaeljabbour/amplifier-app-newtui/issues/27) | ✅ #64 | ui-events.jsonl hot path: per-token open/write/close; deltas filtered on read not write |
-| [#28](https://github.com/michaeljabbour/amplifier-app-newtui/issues/28) | ✅ #65 | Behavioral test gaps: real AppCommandContext, RealRuntime op wrappers, wall-clock flake |
-| [#29](https://github.com/michaeljabbour/amplifier-app-newtui/issues/29) | 🟢 open | Hygiene: `ruff format` landed via #92 (superseded #66, closed unmerged). **Open:** BLE001 lint select, pyright strict verdict docs, token-formatter dedup |
-| [#30](https://github.com/michaeljabbour/amplifier-app-newtui/issues/30) | ✅ #69 | Collapse the session-op passthrough ladder (14 ops × 5 sites → one typed dispatch) |
-| [#31](https://github.com/michaeljabbour/amplifier-app-newtui/issues/31) | ✅ #70 | Extract SessionOpsController from ui/app.py |
-| [#32](https://github.com/michaeljabbour/amplifier-app-newtui/issues/32) | ✅ #71 | Extract LaneReducer from TranscriptReducer |
-| [#33](https://github.com/michaeljabbour/amplifier-app-newtui/issues/33) | ✅ #72 | Lift the pure `_render_*` functions out of transcript.py (zero-risk split) |
+| [#21](https://github.com/michaeljabbour/amplifier-app-tui/issues/21) 🔴 | ✅ #89 | Turn exception crashes the whole TUI (run_worker `exit_on_error` + no except in the submit chain) |
+| [#22](https://github.com/michaeljabbour/amplifier-app-tui/issues/22) | ✅ #77 | Hardening pass: compaction task ref, queue locks, silent cleanup swallow, empty-resume + malformed-settings notices, dead `ApprovalBroker.defer` |
+| [#23](https://github.com/michaeljabbour/amplifier-app-tui/issues/23) | ✅ #61 | Secret-scrub transcripts, `/export`, `/copy` (only metadata.json is redacted today) |
+| [#24](https://github.com/michaeljabbour/amplifier-app-tui/issues/24) | ✅ #62 | H1: shell write gating is command-list based — `python3 -c`/`sed -i`/`curl -o` bypass |
+| [#25](https://github.com/michaeljabbour/amplifier-app-tui/issues/25) | ✅ #63 | H2: `write_boundary: "open"` default — no app-level write gate outside the project |
+| [#26](https://github.com/michaeljabbour/amplifier-app-tui/issues/26) | ✅ #55 (decision doc) | Governance: classifier allows unrecognized EXEC by default — decide posture |
+| [#27](https://github.com/michaeljabbour/amplifier-app-tui/issues/27) | ✅ #64 | ui-events.jsonl hot path: per-token open/write/close; deltas filtered on read not write |
+| [#28](https://github.com/michaeljabbour/amplifier-app-tui/issues/28) | ✅ #65 | Behavioral test gaps: real AppCommandContext, RealRuntime op wrappers, wall-clock flake |
+| [#29](https://github.com/michaeljabbour/amplifier-app-tui/issues/29) | 🟢 open | Hygiene: `ruff format` landed via #92 (superseded #66, closed unmerged). **Open:** BLE001 lint select, pyright strict verdict docs, token-formatter dedup |
+| [#30](https://github.com/michaeljabbour/amplifier-app-tui/issues/30) | ✅ #69 | Collapse the session-op passthrough ladder (14 ops × 5 sites → one typed dispatch) |
+| [#31](https://github.com/michaeljabbour/amplifier-app-tui/issues/31) | ✅ #70 | Extract SessionOpsController from ui/app.py |
+| [#32](https://github.com/michaeljabbour/amplifier-app-tui/issues/32) | ✅ #71 | Extract LaneReducer from TranscriptReducer |
+| [#33](https://github.com/michaeljabbour/amplifier-app-tui/issues/33) | ✅ #72 | Lift the pure `_render_*` functions out of transcript.py (zero-risk split) |
 
 ## Rendering & model contract
 
 | Issue | Status | Item |
 |---|---|---|
-| [#34](https://github.com/michaeljabbour/amplifier-app-newtui/issues/34) | ✅ #78 | Polish: italic, reading measure, checkbox glyphs, OSC 8 links, fence-copy, elapsed format |
-| [#35](https://github.com/michaeljabbour/amplifier-app-newtui/issues/35) | ✅ #67 | Width-aware surface hint at `provider:request` |
+| [#34](https://github.com/michaeljabbour/amplifier-app-tui/issues/34) | ✅ #78 | Polish: italic, reading measure, checkbox glyphs, OSC 8 links, fence-copy, elapsed format |
+| [#35](https://github.com/michaeljabbour/amplifier-app-tui/issues/35) | ✅ #67 | Width-aware surface hint at `provider:request` |
 
 ## Runtime parity & perf
 
 | Issue | Status | Item |
 |---|---|---|
-| [#36](https://github.com/michaeljabbour/amplifier-app-newtui/issues/36) | ✅ #56 (decision doc) | Lane/subagent todo surfacing (root-only today) |
-| [#37](https://github.com/michaeljabbour/amplifier-app-newtui/issues/37) | ✅ #79 | Hybrid transcript history — ADR-0007 perf escalation (5k blocks miss frame budget) |
-| [#38](https://github.com/michaeljabbour/amplifier-app-newtui/issues/38) | ✅ #73 | Child sessions bypass TUI posture gating; runtime skill overlays not propagated |
-| [#39](https://github.com/michaeljabbour/amplifier-app-newtui/issues/39) | ✅ #74 | Per-lane steering (queue a message to a running delegate) |
-| [#40](https://github.com/michaeljabbour/amplifier-app-newtui/issues/40) | ✅ #75 | Post-rewind ghost turns on resume |
-| [#41](https://github.com/michaeljabbour/amplifier-app-newtui/issues/41) | ✅ #76 | Approval bar → needs-you parking |
-| [#42](https://github.com/michaeljabbour/amplifier-app-newtui/issues/42) | ✅ #68 | Lane label aliasing + historical mode badges |
+| [#36](https://github.com/michaeljabbour/amplifier-app-tui/issues/36) | ✅ #56 (decision doc) | Lane/subagent todo surfacing (root-only today) |
+| [#37](https://github.com/michaeljabbour/amplifier-app-tui/issues/37) | ✅ #79 | Hybrid transcript history — ADR-0007 perf escalation (5k blocks miss frame budget) |
+| [#38](https://github.com/michaeljabbour/amplifier-app-tui/issues/38) | ✅ #73 | Child sessions bypass TUI posture gating; runtime skill overlays not propagated |
+| [#39](https://github.com/michaeljabbour/amplifier-app-tui/issues/39) | ✅ #74 | Per-lane steering (queue a message to a running delegate) |
+| [#40](https://github.com/michaeljabbour/amplifier-app-tui/issues/40) | ✅ #75 | Post-rewind ghost turns on resume |
+| [#41](https://github.com/michaeljabbour/amplifier-app-tui/issues/41) | ✅ #76 | Approval bar → needs-you parking |
+| [#42](https://github.com/michaeljabbour/amplifier-app-tui/issues/42) | ✅ #68 | Lane label aliasing + historical mode badges |
 
 ## CLI / session parity (Bucket B — nice-to-have; core parity done)
 
 | Issue | Status | Item |
 |---|---|---|
-| [#43](https://github.com/michaeljabbour/amplifier-app-newtui/issues/43) | ✅ #80 | First-run onboarding gate + provider management |
-| [#44](https://github.com/michaeljabbour/amplifier-app-newtui/issues/44) | ✅ #83 | `/config` live editing |
-| [#45](https://github.com/michaeljabbour/amplifier-app-newtui/issues/45) | ✅ #82 | Session-manager ops (delete/rename/background, resume picker) |
-| [#46](https://github.com/michaeljabbour/amplifier-app-newtui/issues/46) | ✅ #81 | `source` command group + `routing list/use` CLI |
-| [#47](https://github.com/michaeljabbour/amplifier-app-newtui/issues/47) | ✅ #84 | Desktop/OSC 777 notifications beyond the shipped bell |
-| [#48](https://github.com/michaeljabbour/amplifier-app-newtui/issues/48) | ✅ #85 | `@mention` expansion in the runtime path — decide + implement |
+| [#43](https://github.com/michaeljabbour/amplifier-app-tui/issues/43) | ✅ #80 | First-run onboarding gate + provider management |
+| [#44](https://github.com/michaeljabbour/amplifier-app-tui/issues/44) | ✅ #83 | `/config` live editing |
+| [#45](https://github.com/michaeljabbour/amplifier-app-tui/issues/45) | ✅ #82 | Session-manager ops (delete/rename/background, resume picker) |
+| [#46](https://github.com/michaeljabbour/amplifier-app-tui/issues/46) | ✅ #81 | `source` command group + `routing list/use` CLI |
+| [#47](https://github.com/michaeljabbour/amplifier-app-tui/issues/47) | ✅ #84 | Desktop/OSC 777 notifications beyond the shipped bell |
+| [#48](https://github.com/michaeljabbour/amplifier-app-tui/issues/48) | ✅ #85 | `@mention` expansion in the runtime path — decide + implement |
 
 ## Amplifier-team feedback round (2026-07-22)
 
 | Issue | Status | Item |
 |---|---|---|
-| [#51](https://github.com/michaeljabbour/amplifier-app-newtui/issues/51) | ✅ #86 | Mount `context-intelligence-logging` behavior; custom telemetry destinations |
-| [#52](https://github.com/michaeljabbour/amplifier-app-newtui/issues/52) | ✅ #87 | Routing-matrix: mount `hooks-routing` (settings bridge + spawner glue already shipped) |
-| [#53](https://github.com/michaeljabbour/amplifier-app-newtui/issues/53) | ✅ #59 (decision doc) | Anchors pin lifecycle: automate pin bumps, surface staleness |
-| [#54](https://github.com/michaeljabbour/amplifier-app-newtui/issues/54) | ✅ #60 (decision doc) | Evaluate `microsoft/amplifier-agent` as the runtime integration layer (spike + decision doc) |
+| [#51](https://github.com/michaeljabbour/amplifier-app-tui/issues/51) | ✅ #86 | Mount `context-intelligence-logging` behavior; custom telemetry destinations |
+| [#52](https://github.com/michaeljabbour/amplifier-app-tui/issues/52) | ✅ #87 | Routing-matrix: mount `hooks-routing` (settings bridge + spawner glue already shipped) |
+| [#53](https://github.com/michaeljabbour/amplifier-app-tui/issues/53) | ✅ #59 (decision doc) | Anchors pin lifecycle: automate pin bumps, surface staleness |
+| [#54](https://github.com/michaeljabbour/amplifier-app-tui/issues/54) | ✅ #60 (decision doc) | Evaluate `microsoft/amplifier-agent` as the runtime integration layer (spike + decision doc) |
 
 (Provider loading needed no new issue — it already works via `config.providers` +
-`keys.env` and is documented in SETTINGS.md; the UX on top is [#43](https://github.com/michaeljabbour/amplifier-app-newtui/issues/43).)
+`keys.env` and is documented in SETTINGS.md; the UX on top is [#43](https://github.com/michaeljabbour/amplifier-app-tui/issues/43).)
 
 ## Self-improving harness
 
 | Issue | Status | Item |
 |---|---|---|
-| [#49](https://github.com/michaeljabbour/amplifier-app-newtui/issues/49) | 🟢 open | Forge-driven capability test tier — validate the real TUI through a real terminal. Design/decision merged (#57); **implementation in progress** on `auto/forge-capability-tier-impl` |
-| [#50](https://github.com/michaeljabbour/amplifier-app-newtui/issues/50) | ✅ #58 (decision doc) | Self-improvement loop over skills/harness (SkillOpt discipline, AIDE² safeguards; references documented in-issue) |
+| [#49](https://github.com/michaeljabbour/amplifier-app-tui/issues/49) | 🟢 open | Forge-driven capability test tier — validate the real TUI through a real terminal. Design/decision merged (#57); **implementation in progress** on `auto/forge-capability-tier-impl` |
+| [#50](https://github.com/michaeljabbour/amplifier-app-tui/issues/50) | ✅ #58 (decision doc) | Self-improvement loop over skills/harness (SkillOpt discipline, AIDE² safeguards; references documented in-issue) |
 
 ## Follow-ups filed during the campaign (open)
 
 | Issue | Status | Item |
 |---|---|---|
-| [#90](https://github.com/michaeljabbour/amplifier-app-newtui/issues/90) | 🟢 open | Live tail: attach the streaming block to the lane/item it's working on (not a detached bottom strip) |
-| [#91](https://github.com/michaeljabbour/amplifier-app-newtui/issues/91) | 🟢 open | Lane "done" row shows raw markdown result instead of a clean summary |
+| [#90](https://github.com/michaeljabbour/amplifier-app-tui/issues/90) | 🟢 open | Live tail: attach the streaming block to the lane/item it's working on (not a detached bottom strip) |
+| [#91](https://github.com/michaeljabbour/amplifier-app-tui/issues/91) | 🟢 open | Lane "done" row shows raw markdown result instead of a clean summary |
 
 ## Non-goals
 
 - **Syntax highlighting in answers.** Doable, but fights the restraint aesthetic
   and churns goldens forever; calm teal verbatim reads better in a transcript
   than rainbow soup.
-- **Ingested-source deletion** (corpus "Delete original" UI) — not a newtui
+- **Ingested-source deletion** (corpus "Delete original" UI) — not a tui
   feature; no amplifier tool exposes a corpus-document delete.
 - **Admin surface** — `module`, `source`-authoring, `tool invoke`, `reset`,
   `--install-completion`, `session cleanup`, replay: one-time/admin operations

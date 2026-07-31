@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.ui.themes import (
+from amplifier_app_tui.ui.themes import (
     DEFAULT_THEME,
     THEME_TOKENS,
     THEMES,
@@ -116,9 +116,9 @@ def test_hex_values_live_only_in_themes_module() -> None:
     import re
     from pathlib import Path
 
-    import amplifier_app_newtui
+    import amplifier_app_tui
 
-    package_root = Path(amplifier_app_newtui.__file__).parent
+    package_root = Path(amplifier_app_tui.__file__).parent
     hex_pattern = re.compile(r"#[0-9a-fA-F]{6}\b")
     offenders: list[str] = []
     for path in package_root.rglob("*.py"):
@@ -132,7 +132,7 @@ def test_hex_values_live_only_in_themes_module() -> None:
 
 def test_theme_command_is_registered() -> None:
     """DESIGN-SPEC §1: theme switchable at runtime via a command surface."""
-    from amplifier_app_newtui.commands.builtin import build_registry
+    from amplifier_app_tui.commands.builtin import build_registry
 
     spec = build_registry().get("/theme")
     assert spec is not None
@@ -141,12 +141,12 @@ def test_theme_command_is_registered() -> None:
 
 @pytest.mark.asyncio
 async def test_theme_switch_at_runtime_via_command() -> None:
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
     from .test_flow_helpers import SIZE, seed_done, type_text
 
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         assert app.theme == theme_id(DEFAULT_THEME)  # default slate

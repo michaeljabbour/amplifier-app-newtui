@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.commands.permissions import (
+from amplifier_app_tui.commands.permissions import (
     DEFAULT_BOUNDARY,
     PermissionSurface,
     SLOT_ORDER,
     TrustSlot,
     mode_default,
 )
-from amplifier_app_newtui.model.trust import CapabilityClass
+from amplifier_app_tui.model.trust import CapabilityClass
 
 
 def test_mode_defaults_match_spec_table() -> None:

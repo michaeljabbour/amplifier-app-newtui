@@ -19,9 +19,9 @@ from pathlib import Path
 import pytest
 from rich.cells import cell_len
 
-from amplifier_app_newtui.model.blocks import TranscriptBlock
-from amplifier_app_newtui.ui.segments import lines_plain
-from amplifier_app_newtui.ui.transcript_render import (
+from amplifier_app_tui.model.blocks import TranscriptBlock
+from amplifier_app_tui.ui.segments import lines_plain
+from amplifier_app_tui.ui.transcript_render import (
     _RENDERERS,  # noqa: PLC2701 — coverage check over the renderer table
     render_block,
 )

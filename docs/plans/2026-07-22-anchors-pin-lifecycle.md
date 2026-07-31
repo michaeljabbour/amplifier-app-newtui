@@ -2,20 +2,20 @@
 
 **Issue:** #53 — *Anchors pin lifecycle: automate pin bumps and surface staleness (why-pinned documented)*
 **Status:** proposed (doc is the deliverable; no code changes here)
-**Scope:** how the newtui wrapper's pinned `anchors` include gets refreshed, and how pin staleness stops being silent.
+**Scope:** how the tui wrapper's pinned `anchors` include gets refreshed, and how pin staleness stops being silent.
 
 All file:line citations below were verified against the read-only `origin/main` checkout at
-`/Users/michaeljabbour/dev/newtui-wt/base`.
+`/Users/michaeljabbour/dev/tui-wt/base`.
 
 ---
 
 ## Problem
 
-The newtui wrapper bundle composes foundation's `anchors` bundle **pinned to a specific
+The tui wrapper bundle composes foundation's `anchors` bundle **pinned to a specific
 foundation commit** (`93615d9847ce40313cc0d60583cb886de4337f9e`). The pin buys reproducible
 boots, but today:
 
-1. **Nothing ever bumps the pin.** `amplifier-newtui update` walks the composed bundles via
+1. **Nothing ever bumps the pin.** `amplifier-tui update` walks the composed bundles via
    foundation's `check_bundle_status` / `update_bundle`; pinned refs report *"no update"* and are
    skipped. New anchors *composition* (roster changes, new behaviors) only lands via a **manual
    40-hex SHA edit**, replicated by hand across multiple packaged copies.
@@ -45,34 +45,34 @@ while keeping the packaged bundle copies from drifting apart.
   `git ls-remote https://github.com/microsoft/amplifier-foundation main`, "re-resolve ONLY if instructed").
 
 **Update tooling skips pinned refs (the core gap):**
-- `src/amplifier_app_newtui/kernel/updater.py:8-13` — docstring: `check_bundle_status` "(SHA compare,
+- `src/amplifier_app_tui/kernel/updater.py:8-13` — docstring: `check_bundle_status` "(SHA compare,
   pinned refs skipped)"; `--force` runs `uv cache clean` so `@main` sources genuinely re-fetch.
-- `src/amplifier_app_newtui/kernel/updater.py:75-106` — `check_bundles()` produces `BundleUpdate`
+- `src/amplifier_app_tui/kernel/updater.py:75-106` — `check_bundles()` produces `BundleUpdate`
   rows; `:88-91` degrades to `[]` when foundation is unavailable (offline-safe pattern to mirror).
-- `src/amplifier_app_newtui/main.py:726-778` — `_update(check_only, yes, force)` renders the "Bundle
+- `src/amplifier_app_tui/main.py:726-778` — `_update(check_only, yes, force)` renders the "Bundle
   updates" table (`:743-749`), computes `stale` (`:751`), and for `--check-only` prints the hint and
   returns 0 (`:756-758`). **This is the exact function to extend with a pin-staleness line.**
 
 **Staleness surface for `/doctor`:**
-- `src/amplifier_app_newtui/commands/doctor.py:52-198` — named checks return `CheckResult(name, ok,
+- `src/amplifier_app_tui/commands/doctor.py:52-198` — named checks return `CheckResult(name, ok,
   message)`; `:201-211` `run_checks(...)` composes the suite; `:187-208` `run_standalone` returns
   exit 0 (no findings) / 1 (findings). A new `check_anchors_pin(...)` slots straight in here.
 
 **The pin actually lives in THREE live files, not two** (the issue says "two copies"):
-- `bundle.md:24` (repo root), `src/amplifier_app_newtui/data/bundles/newtui.md:24` (packaged copy),
-  and **`src/amplifier_app_newtui/data/bundles/anchors.md:13`** (packaged parity pointer). Verified
+- `bundle.md:24` (repo root), `src/amplifier_app_tui/data/bundles/tui.md:24` (packaged copy),
+  and **`src/amplifier_app_tui/data/bundles/anchors.md:13`** (packaged parity pointer). Verified
   via `grep -rn amplifier-foundation@93615d98…` → those three files (the 4th hit,
   `docs/plans/2026-07-20-…md`, is a historical record, not a live pin).
-- `src/amplifier_app_newtui/data/bundles/anchors.md:11-12` — comment: "Keep this SHA in lockstep
-  with the include in newtui.md — a test pins the two together (test_kernel_session_config.py)."
+- `src/amplifier_app_tui/data/bundles/anchors.md:11-12` — comment: "Keep this SHA in lockstep
+  with the include in tui.md — a test pins the two together (test_kernel_session_config.py)."
 
 **The anti-drift tests that already exist:**
 - `tests/test_kernel_session_config.py:594-601` — `test_packaged_bundle_matches_repo_root_bundle`:
-  `packaged.read_bytes() == (root / "bundle.md").read_bytes()` (bundle.md ↔ newtui.md byte-identity).
+  `packaged.read_bytes() == (root / "bundle.md").read_bytes()` (bundle.md ↔ tui.md byte-identity).
 - `tests/test_kernel_session_config.py:631-643` —
   `test_packaged_anchors_pointer_resolves_and_matches_the_wrapper_pin`: regex-extracts
-  `amplifier-foundation@([0-9a-f]{40})` from newtui.md and asserts the same
-  `amplifier-foundation@<sha>` string appears in anchors.md (the anchors ↔ newtui lockstep).
+  `amplifier-foundation@([0-9a-f]{40})` from tui.md and asserts the same
+  `amplifier-foundation@<sha>` string appears in anchors.md (the anchors ↔ tui lockstep).
 
 **Docs + CI context:**
 - `docs/DEVELOPMENT.md:91-110` — "Customizing / swapping the bundle": states the thin-wrapper +
@@ -82,7 +82,7 @@ while keeping the packaged bundle copies from drifting apart.
 - `.github/workflows/` — only `ci.yml` and `pr-title.yml` exist today; a scheduled bump workflow
   would be new. `scripts/` holds only `regen_screenshot.py` — the pattern for a repo maintenance
   script already exists.
-- `src/amplifier_app_newtui/kernel/config.py:398` — `packaged_bundles_dir()`, the offline-safe way to
+- `src/amplifier_app_tui/kernel/config.py:398` — `packaged_bundles_dir()`, the offline-safe way to
   locate the packaged copies from code/tests.
 
 ---
@@ -160,15 +160,15 @@ we don't control; building A's machinery is the prerequisite for B anyway. C thr
 ## Implementation plan (phased, concrete file paths)
 
 ### Phase 0 — shared, offline-safe pin helpers (foundation for everything)
-- `src/amplifier_app_newtui/kernel/updater.py`:
+- `src/amplifier_app_tui/kernel/updater.py`:
   - Add `PIN_FILES: tuple[Path, ...]` — the single source of truth: repo-root `bundle.md`,
-    `data/bundles/newtui.md`, `data/bundles/anchors.md` (resolved relative to
+    `data/bundles/tui.md`, `data/bundles/anchors.md` (resolved relative to
     `packaged_bundles_dir()` / repo root).
   - Add `read_pinned_sha(text: str) -> str | None` — regex `amplifier-foundation@([0-9a-f]{40})`
     (the exact pattern `test_kernel_session_config.py:641` already relies on), tag-tolerant later.
   - Add `@dataclass PinStatus { pinned: str; upstream: str | None; behind_by: int | None;
     is_stale: bool; error: str | None }` and `async def anchors_pin_status(...) -> PinStatus`:
-    read `pinned` from the packaged `newtui.md`; resolve `upstream` from
+    read `pinned` from the packaged `tui.md`; resolve `upstream` from
     `amplifier-foundation@main` (prefer any foundation-provided pin/status helper if one exists;
     else `git ls-remote` for the boolean "different?" and the GitHub compare API
     `…/compare/<pinned>...main` → `behind_by` for the count). Any network failure → `error` set,
@@ -177,12 +177,12 @@ we don't control; building A's machinery is the prerequisite for B anyway. C thr
   `anchors_pin_status` with a monkeypatched resolver for fresh / behind / offline.
 
 ### Phase 1 — surface staleness (Acceptance: `update --check-only` + the `/doctor` bullet)
-- `src/amplifier_app_newtui/main.py:_update` (`726-769`): after the "Bundle updates" table, print one
+- `src/amplifier_app_tui/main.py:_update` (`726-769`): after the "Bundle updates" table, print one
   line from `anchors_pin_status()` — e.g. `anchors pin: ● 12 commits behind upstream (pinned 93615d9)`
   or `✓ anchors pin current`, or dim `anchors pin: upstream check unavailable (offline)`. In
   `--check-only` (`:756-758`) it reports and changes nothing; keep exit-code semantics as
   reporting-only (staleness is informational, consistent with today's "up to date → 0").
-- `src/amplifier_app_newtui/commands/doctor.py`: add `check_anchors_pin(status) -> CheckResult`
+- `src/amplifier_app_tui/commands/doctor.py`: add `check_anchors_pin(status) -> CheckResult`
   (`ok=True` when current or offline; `ok=False` "anchors pin is N commits behind upstream ·
   run scripts/bump_anchors_pin.py" when stale) and include it in `run_checks` (`:201-211`).
 - Tests: `tests/test_commands_doctor.py` — stale status → finding; current → ok; offline → ok (no
@@ -191,11 +191,11 @@ we don't control; building A's machinery is the prerequisite for B anyway. C thr
 ### Phase 2 — the bump mechanism (Acceptance: "working mechanism")
 - `scripts/bump_anchors_pin.py` (mirrors `scripts/regen_screenshot.py` as a repo maintenance script):
   resolve the new SHA (CLI arg, or `git ls-remote …@main`), string-replace the old 40-hex SHA →
-  new across every entry in `updater.PIN_FILES`, then re-assert byte-identity (bundle.md ↔ newtui.md)
+  new across every entry in `updater.PIN_FILES`, then re-assert byte-identity (bundle.md ↔ tui.md)
   and anchors lockstep before writing. Idempotent (no-op when already current). Prints the diff.
   **Does not commit** and does not touch installed wheels — repo source only.
 - `.github/workflows/anchors-pin-bump.yml`: `schedule:` (weekly) + `workflow_dispatch:` → run the
-  script → `uv sync --frozen` → `pytest -q` → a real headless boot (`amplifier-newtui --demo` /
+  script → `uv sync --frozen` → `pytest -q` → a real headless boot (`amplifier-tui --demo` /
   `tests/test_runtime_offline.py`) → open a PR (e.g. `peter-evans/create-pull-request`). Green suite +
   boot is the precondition for the PR; the PR is never auto-merged.
 
@@ -226,8 +226,8 @@ we don't control; building A's machinery is the prerequisite for B anyway. C thr
 - **Existing regression:** `test_packaged_anchors_pointer_resolves_and_matches_the_wrapper_pin`
   (`:631-643`) already fails if the bump misses `anchors.md` — a built-in safety net.
 - **Real boot (CI, in the bump workflow):** `uv sync --frozen` → `pytest -q` → headless
-  `amplifier-newtui --demo` / `tests/test_runtime_offline.py` before any PR is opened.
-- **Manual smoke:** `amplifier-newtui update --check-only` shows the pin line; `amplifier-newtui
+  `amplifier-tui --demo` / `tests/test_runtime_offline.py` before any PR is opened.
+- **Manual smoke:** `amplifier-tui update --check-only` shows the pin line; `amplifier-tui
   doctor` flags a deliberately-stale pin.
 
 ---
@@ -240,7 +240,7 @@ we don't control; building A's machinery is the prerequisite for B anyway. C thr
 | Bump tool forgets a pin copy → silent drift | Single `PIN_FILES` source of truth + the new three-way SHA test + existing lockstep test (`:631-643`) fail CI. |
 | Auto-bump lands a broken anchors composition | CI runs full suite **+ a real boot** before opening the PR; PR is human-reviewed, never auto-merged — preserves the reproducibility gate. |
 | Over-promising reproducibility | Policy text states plainly: bump refreshes only anchors *composition*; internal `behaviors/*.yaml` + module sources still float `@main` and already refresh via `update` (`bundle.md:20-23`, `updater.py:12-13`). |
-| Rewriting a pin inside an installed user's wheel is meaningless | Bump is scoped to repo source (script + CI), **not** a user `amplifier-newtui` subcommand; users only get staleness *reporting*. |
+| Rewriting a pin inside an installed user's wheel is meaningless | Bump is scoped to repo source (script + CI), **not** a user `amplifier-tui` subcommand; users only get staleness *reporting*. |
 | `--check-only` exit code churn breaks CI expectations | Keep staleness informational (exit unchanged); `/doctor` remains the exit-1-on-findings surface. |
 | Foundation later ships a native pin/status helper | `anchors_pin_status` is one function — swap its resolver; callers unaffected. |
 
@@ -263,6 +263,6 @@ enforces byte-identity)."* Plus the "Whichever lands" clause: *surface staleness
 
 **Deviation flagged for the maintainer (intentional, not a gap):** the issue says *"two bundle
 copies."* There are in fact **three** live pin sites — `bundle.md:24`,
-`data/bundles/newtui.md:24`, and `data/bundles/anchors.md:13` — the third enforced by
+`data/bundles/tui.md:24`, and `data/bundles/anchors.md:13` — the third enforced by
 `test_kernel_session_config.py:631-643`. The plan treats all three uniformly; a bump that touched only
 two would break that existing test.

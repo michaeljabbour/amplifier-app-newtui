@@ -4,7 +4,7 @@ Branch: `fix/denial-injection-trust`.
 
 ## The report
 
-Live session — bundle `newtui`, posture `brainstorm` ("no tools"), native mode
+Live session — bundle `tui`, posture `brainstorm` ("no tools"), native mode
 `team-pulse` active. The user asked a question; team-pulse's tools
 (`team_pulse_info`, `team_pulse_search`) and a `mode` call were all **denied**
 by the no-tools posture. The model reported that its context carried a
@@ -16,7 +16,7 @@ The model refused to trust it and surfaced it to the user.
 
 ## Verdict: (b) benign context that reads adversarial under a denial
 
-Not (a) a bundle injecting a "hide from the user" attack, and not (c) a newtui
+Not (a) a bundle injecting a "hide from the user" attack, and not (c) a tui
 rendering bug that concatenates context into denial text. Every piece the model
 saw is a legitimate, ephemeral `<system-reminder source="…">` block emitted by
 an independent housekeeping hook. They co-located in the model's context on the
@@ -46,9 +46,9 @@ applied by three independent hooks — benign in intent, but genuinely
 tools that would justify them stripped) they read as an attack. The model did
 the right thing by refusing to silently obey and surfacing them.
 
-## newtui is not the source — but it had one real trust bug
+## tui is not the source — but it had one real trust bug
 
-newtui neither authors nor concatenates any of this. It renders tool denials
+tui neither authors nor concatenates any of this. It renders tool denials
 as `⊘ blocked` lines verbatim from the tool-result payload
 (`ui/reducer.py::_tool_post`), never folding reminder/context text into them,
 and it filters `<system-reminder>` blocks out of the resume transcript. It
@@ -68,12 +68,12 @@ Trust invariants now regression-covered in `tests/test_denial_injection_trust.py
 
 - injected reminders (bare **and** attributed) never replay as user turns;
 - a denial whose reason/continuation absorbed a "do not tell the user" payload
-  is still rendered to the user in full — newtui never suppresses user-facing
+  is still rendered to the user in full — tui never suppresses user-facing
   output on a reminder's say-so.
 
 ## Upstream ask (foundation / bundles)
 
-These are not newtui bugs to fix in newtui; the honest fix is upstream:
+These are not tui bugs to fix in tui; the honest fix is upstream:
 
 1. **`hooks-todo-reminder` / `hooks-status-context`** — the "NEVER mention this
    reminder to the user / process silently" phrasing is behaviorally a
@@ -87,6 +87,6 @@ These are not newtui bugs to fix in newtui; the honest fix is upstream:
    turn whose tool calls were all denied (they have no tools to justify them),
    or tagging them so a model can tell "housekeeping" from "instruction".
 3. **`is_real_user_message` (foundation `session/messages.py:95,103`)** has the
-   same bare `startswith("<system-reminder>")` blind spot newtui just fixed —
+   same bare `startswith("<system-reminder>")` blind spot tui just fixed —
    attributed reminders slip its "real user message" guard. Worth hardening
    upstream with the same attribute-tolerant match.

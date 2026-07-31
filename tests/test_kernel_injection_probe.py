@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.governance_hook import GovernanceHook
-from amplifier_app_newtui.model.trust import DenialLog
+from amplifier_app_tui.kernel.governance_hook import GovernanceHook
+from amplifier_app_tui.model.trust import DenialLog
 
 ROOT = "sess-root"
 

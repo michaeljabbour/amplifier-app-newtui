@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.commands.registry import (
+from amplifier_app_tui.commands.registry import (
     GROUP_ORDER,
     CommandContext,
     CommandRegistry,

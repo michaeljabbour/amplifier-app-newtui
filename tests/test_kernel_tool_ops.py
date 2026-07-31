@@ -1,6 +1,6 @@
 """Kernel tool-invocation seam: ``describe_tools`` / ``invoke_tool`` + trust gate.
 
-The scriptable ``amplifier-newtui tool invoke`` runs on the SAME coordinator
+The scriptable ``amplifier-tui tool invoke`` runs on the SAME coordinator
 surface the in-session ops already drive (``coordinator.get("tools")`` mapping
 names to objects with an async ``execute`` returning a ``ToolResult``). These
 tests exercise that seam with duck-typed fakes -- no real session, no network --
@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 
-from amplifier_app_newtui.kernel import session_ops, tool_cli
-from amplifier_app_newtui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel import session_ops, tool_cli
+from amplifier_app_tui.kernel.runtime import RealRuntime
 
 
 class FakeResult:

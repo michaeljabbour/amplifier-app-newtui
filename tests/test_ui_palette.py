@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.ui.palette import (
+from amplifier_app_tui.ui.palette import (
     CMD_COL_MIN_WIDTH,
     PALETTE_GROUPS,
     PaletteStrip,
@@ -16,7 +16,7 @@ from amplifier_app_newtui.ui.palette import (
     group_header_text,
     show_group_headers,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
 @dataclass(frozen=True)
@@ -71,8 +71,8 @@ class PaletteHost(App[None]):
 
 def test_real_command_registry_satisfies_palette_protocol() -> None:
     """commands.builtin specs must render as palette rows unchanged."""
-    from amplifier_app_newtui.commands.builtin import BUILTIN_COMMANDS
-    from amplifier_app_newtui.ui.palette import CommandSpec as PaletteCommandSpec
+    from amplifier_app_tui.commands.builtin import BUILTIN_COMMANDS
+    from amplifier_app_tui.ui.palette import CommandSpec as PaletteCommandSpec
 
     assert BUILTIN_COMMANDS
     for spec in BUILTIN_COMMANDS:
@@ -121,7 +121,7 @@ async def test_open_on_slash_shows_group_headers_and_selects_first() -> None:
         assert strip.selected_command is not None
         assert strip.selected_command.name == "/mode"
         # Group headers present, in mockup order, displayed uppercase.
-        from amplifier_app_newtui.ui.palette import _GroupHeader  # test-only
+        from amplifier_app_tui.ui.palette import _GroupHeader  # test-only
 
         headers = [h.group for h in strip.query(_GroupHeader)]
         assert headers == list(PALETTE_GROUPS)
@@ -134,7 +134,7 @@ async def test_narrow_filter_hides_group_headers() -> None:
         strip = app.query_one(PaletteStrip)
         strip.apply_filter("/do")
         await pilot.pause()
-        from amplifier_app_newtui.ui.palette import _GroupHeader  # test-only
+        from amplifier_app_tui.ui.palette import _GroupHeader  # test-only
 
         assert [c.name for c in strip.filtered_commands] == ["/doctor"]
         assert list(strip.query(_GroupHeader)) == []
@@ -182,7 +182,7 @@ async def test_selection_highlight_tracks_selected_row() -> None:
         strip = app.query_one(PaletteStrip)
         strip.apply_filter("/")
         await pilot.pause()
-        from amplifier_app_newtui.ui.palette import _CommandRow  # test-only
+        from amplifier_app_tui.ui.palette import _CommandRow  # test-only
 
         rows = list(strip.query(_CommandRow))
         assert rows[0].has_class("-selected")

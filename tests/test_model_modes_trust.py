@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.model.modes import (
+from amplifier_app_tui.model.modes import (
     DEFAULT_MODE,
     MODE_CYCLE,
     MODE_PROFILES,
@@ -12,7 +12,7 @@ from amplifier_app_newtui.model.modes import (
     cycle_mode,
     get_mode,
 )
-from amplifier_app_newtui.model.trust import (
+from amplifier_app_tui.model.trust import (
     CapabilityClass,
     DenialLog,
     classify_tool,

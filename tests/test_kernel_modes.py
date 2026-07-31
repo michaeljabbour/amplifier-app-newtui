@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import yaml
 
-from amplifier_app_newtui.kernel.config import (
+from amplifier_app_tui.kernel.config import (
     inject_mode_search_paths,
     packaged_modes_dir,
 )

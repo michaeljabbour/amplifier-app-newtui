@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import PLAN_PROMPT, PLAN_RECAP
-from amplifier_app_newtui.model.modes import MODE_PROFILES
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.composer import ModeBadge
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.footer import footer_left_text
-from amplifier_app_newtui.ui.transcript import render_block
+from amplifier_app_tui.kernel.demo import PLAN_PROMPT, PLAN_RECAP
+from amplifier_app_tui.model.modes import MODE_PROFILES
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.composer import ModeBadge
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.footer import footer_left_text
+from amplifier_app_tui.ui.transcript import render_block
 
 from .test_flow_helpers import SIZE, blocks_of, line_texts, rules, seed_done, type_text, wait_for
 
@@ -26,7 +26,7 @@ MODE_CLASSES = ("mode-chat", "mode-plan", "mode-brainstorm", "mode-build", "mode
 
 @pytest.mark.asyncio
 async def test_shift_tab_cycles_modes_with_notice_and_three_place_tint() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         # Boot posture is auto (§4 amendment) — orange badge/edge/footer.
@@ -57,7 +57,7 @@ async def test_shift_tab_cycles_modes_with_notice_and_three_place_tint() -> None
 
 @pytest.mark.asyncio
 async def test_mode_badge_click_cycles() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         assert app.mode_id == "auto"  # boot posture (§4 amendment)
@@ -74,7 +74,7 @@ async def test_mode_badge_click_cycles() -> None:
 
 @pytest.mark.asyncio
 async def test_plan_turn_read_only_block_and_handoff_to_build() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(PLAN_PROMPT)

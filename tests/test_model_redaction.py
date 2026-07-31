@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.model.redaction import (
+from amplifier_app_tui.model.redaction import (
     REDACTION_PLACEHOLDER,
     scrub_text,
     scrub_value,

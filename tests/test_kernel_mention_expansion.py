@@ -15,13 +15,13 @@ from types import SimpleNamespace
 import pytest
 from amplifier_foundation.mentions import BaseMentionResolver
 
-from amplifier_app_newtui.kernel.events import Notification, PromptSubmit
-from amplifier_app_newtui.kernel.git_yield import GitDiffSnapshot
-from amplifier_app_newtui.kernel.mention_expansion import (
+from amplifier_app_tui.kernel.events import Notification, PromptSubmit
+from amplifier_app_tui.kernel.git_yield import GitDiffSnapshot
+from amplifier_app_tui.kernel.mention_expansion import (
     MentionBudget,
     expand_mentions,
 )
-from amplifier_app_newtui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel.runtime import RealRuntime
 
 
 def _resolver(base: Path) -> BaseMentionResolver:

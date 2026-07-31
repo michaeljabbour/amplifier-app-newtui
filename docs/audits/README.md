@@ -1,13 +1,13 @@
-# app-cli → newtui parity audit (2026-07-23)
+# app-cli → tui parity audit (2026-07-23)
 
 A three-lane, read-only audit comparing Microsoft's **amplifier-app-cli** (donor/reference)
-against **amplifier-app-newtui** (this repo, clean main @ `e6b50cd`, 1814 tests green), to
-answer one question: **can newtui fully supplant app-cli** — every function, capability, and
-safeguard? Verdicts judge *capability* parity, not code parity (newtui deliberately
+against **amplifier-app-tui** (this repo, clean main @ `e6b50cd`, 1814 tests green), to
+answer one question: **can tui fully supplant app-cli** — every function, capability, and
+safeguard? Verdicts judge *capability* parity, not code parity (tui deliberately
 re-expresses app-cli behavior through its own kernel/model/ui/commands seams).
 
-Verdict legend: **PARITY** · **PARTIAL** (narrower/weaker) · **MISSING** · **NEWTUI-BETTER**
-(newtui hardens beyond app-cli) · **N/A-BY-DESIGN**.
+Verdict legend: **PARITY** · **PARTIAL** (narrower/weaker) · **MISSING** · **TUI-BETTER**
+(tui hardens beyond app-cli) · **N/A-BY-DESIGN**.
 
 ## Lanes
 
@@ -19,12 +19,12 @@ Verdict legend: **PARITY** · **PARTIAL** (narrower/weaker) · **MISSING** · **
 
 ## Headline result
 
-newtui is at or beyond parity on the large majority of the surface, with **zero wholly-missing
+tui is at or beyond parity on the large majority of the surface, with **zero wholly-missing
 runtime capabilities** and several places where it is materially **stronger** than app-cli
 (protected paths, embedded interpreter-write scan, write-boundary enforcer assertion,
 value-pattern secret scrubbing, child-governance re-registration, approval-timeout floor).
 
-| Lane | PARITY | PARTIAL | MISSING | NEWTUI-BETTER | N/A |
+| Lane | PARITY | PARTIAL | MISSING | TUI-BETTER | N/A |
 |---|---|---|---|---|---|
 | 1 Commands (~78) | 41 | 9 | 10 | 12 | 6 |
 | 2 Safeguards (34) | 20 | 3 | 2 | 6 | 3 |
@@ -34,13 +34,13 @@ value-pattern secret scrubbing, child-governance re-registration, approval-timeo
 
 **Optional-by-default is correct parity, not a regression.** Routing is opt-in on *both* sides:
 app-cli only mounts `hooks-routing` when a `routing:` settings section is present
-(`runtime/config.py:266-300`); newtui only composes the routing-matrix overlay when
+(`runtime/config.py:266-300`); tui only composes the routing-matrix overlay when
 `routing.enabled` or `routing.matrix` is set (`kernel/config.py:279-309`). `routing-matrix`
 being a "well-known" bundle in app-cli's `discovery.py:107-111` feeds only `update`/`list`,
-never session defaults. newtui is actually **more complete** — it composes the whole
+never session defaults. tui is actually **more complete** — it composes the whole
 routing-matrix *bundle* (hook + instructions + skills) and adds an explicit `routing.enabled`
 switch, vs app-cli's bare hook-config append. One narrow divergence: an **overrides-only**
-`routing:` block opts in on app-cli but is inert on newtui (tracked as a low-severity gap).
+`routing:` block opts in on app-cli but is inert on tui (tracked as a low-severity gap).
 
 ## Gap tracker
 

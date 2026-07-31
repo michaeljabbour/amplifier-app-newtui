@@ -12,7 +12,7 @@ from textual.widgets import Static
 
 from rich.cells import cell_len
 
-from amplifier_app_newtui.ui.footer import (
+from amplifier_app_tui.ui.footer import (
     FooterBar,
     FooterState,
     footer_left_text,
@@ -20,7 +20,7 @@ from amplifier_app_newtui.ui.footer import (
     footer_right_text,
     footer_waiting_text,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 FULL_STATE = FooterState(
     mode_id="build",

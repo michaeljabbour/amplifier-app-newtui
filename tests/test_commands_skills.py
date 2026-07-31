@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from amplifier_app_newtui.commands.builtin import build_registry
-from amplifier_app_newtui.commands.skills import register_skill_commands
+from amplifier_app_tui.commands.builtin import build_registry
+from amplifier_app_tui.commands.skills import register_skill_commands
 
 
 def _skill(name: str, description: str = "", shortcut: str = "") -> SimpleNamespace:

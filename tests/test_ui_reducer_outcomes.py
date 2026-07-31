@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import (
     Answer,
     BlockIdAllocator,
     Narration,
@@ -27,10 +27,10 @@ from amplifier_app_newtui.model.blocks import (
     TranscriptBlock,
     TurnRule,
 )
-from amplifier_app_newtui.model.evidence import EvidenceLink
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger
-from amplifier_app_newtui.ui.reducer import TranscriptReducer
+from amplifier_app_tui.model.evidence import EvidenceLink
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger
+from amplifier_app_tui.ui.reducer import TranscriptReducer
 
 
 class FakeHost:
@@ -457,9 +457,9 @@ def test_demo_spec_interrupted_close_out_adds_no_extra_recap() -> None:
 def test_permissions_block_renders_slot_labels_not_bound_methods() -> None:
     """Regression: /permissions once rendered ``<bound method TrustSlot.label …>``
     because ``slot.label`` was never called (found live in forge, 2026-07-16)."""
-    from amplifier_app_newtui.commands.permissions import PermissionSurface
-    from amplifier_app_newtui.model.blocks import BlockIdAllocator
-    from amplifier_app_newtui.ui.app_support import permissions_block
+    from amplifier_app_tui.commands.permissions import PermissionSurface
+    from amplifier_app_tui.model.blocks import BlockIdAllocator
+    from amplifier_app_tui.ui.app_support import permissions_block
 
     surface = PermissionSurface(mode="auto")
     surface.add_exception("uv run pytest")
@@ -475,8 +475,8 @@ def test_permissions_block_renders_slot_labels_not_bound_methods() -> None:
 
 def test_improve_block_empty_state_renders_placeholder_row() -> None:
     """/improve with no evidence must say so, not print a bare header."""
-    from amplifier_app_newtui.commands.improve import build_improve_block
-    from amplifier_app_newtui.ui.transcript import render_block
+    from amplifier_app_tui.commands.improve import build_improve_block
+    from amplifier_app_tui.ui.transcript import render_block
 
     block = build_improve_block("b1", ())
     lines = render_block(block, 120)
@@ -486,8 +486,8 @@ def test_improve_block_empty_state_renders_placeholder_row() -> None:
 
 def test_real_turn_mounts_working_line_immediately_and_ticks() -> None:
     """Supervisor feedback: spec-less (real) turns pulse from second zero."""
-    from amplifier_app_newtui.kernel import events as ev
-    from amplifier_app_newtui.ui.transcript import render_block
+    from amplifier_app_tui.kernel import events as ev
+    from amplifier_app_tui.ui.transcript import render_block
 
     reducer, host = make_reducer("auto")
     reducer.handle(ev.PromptSubmit(session_id="s", prompt="hi", ts=100.0))
@@ -552,7 +552,7 @@ def test_mixed_tool_burst_collapses_to_one_humanized_digest() -> None:
     """A run of many tools between answers is ONE line — not one per tool
     (DESIGN-SPEC §3): ``Read 2 files · searched 1× · ran 1 shell command``
     with every op in the expandable body."""
-    from amplifier_app_newtui.kernel import events as ev
+    from amplifier_app_tui.kernel import events as ev
 
     reducer, host = make_reducer("auto")
     reducer.handle(ev.PromptSubmit(session_id="s", prompt="investigate", ts=0.0))

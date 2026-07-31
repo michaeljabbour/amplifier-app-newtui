@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 
-from amplifier_app_newtui.model.terminal import (
+from amplifier_app_tui.model.terminal import (
     DEFAULT_TERMINAL_COLS,
     MAX_TERMINAL_COLS,
     MIN_TERMINAL_COLS,

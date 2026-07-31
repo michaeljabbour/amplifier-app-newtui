@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.session_ops import SkillInfo
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.kernel.session_ops import SkillInfo
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
 from .test_flow_helpers import SIZE, blocks_of, seed_done, type_text, wait_for
 
@@ -35,7 +35,7 @@ class SkillfulDemoAdapter(DemoRuntimeAdapter):
 
 @pytest.mark.asyncio
 async def test_unknown_slash_shows_notice_and_never_submits_a_turn() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         user_lines = len(blocks_of(app, "user_line"))
@@ -54,7 +54,7 @@ async def test_unknown_slash_shows_notice_and_never_submits_a_turn() -> None:
 @pytest.mark.asyncio
 async def test_skill_name_and_shortcut_register_and_show_in_palette() -> None:
     adapter = SkillfulDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         assert await wait_for(pilot, lambda: app._commands.get("/cosam") is not None)
@@ -70,7 +70,7 @@ async def test_skill_name_and_shortcut_register_and_show_in_palette() -> None:
 @pytest.mark.asyncio
 async def test_shortcut_invokes_the_aliased_skill() -> None:
     adapter = SkillfulDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         assert await wait_for(pilot, lambda: app._commands.get("/cosam") is not None)
@@ -90,7 +90,7 @@ async def test_shortcut_invokes_the_aliased_skill() -> None:
 @pytest.mark.asyncio
 async def test_skill_full_name_invokes_too() -> None:
     adapter = SkillfulDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         assert await wait_for(pilot, lambda: app._commands.get("/cranky-old-sam") is not None)

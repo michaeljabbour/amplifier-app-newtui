@@ -8,8 +8,8 @@ could answer, so every real lane focus showed "no transcript for lane".
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import (
     Answer,
     SessionBanner,
     ToolLine,
@@ -160,7 +160,7 @@ def test_respawn_resets_the_lane_transcript() -> None:
 
 
 def test_lane_transcript_is_bounded_and_keeps_the_seed_rows() -> None:
-    from amplifier_app_newtui.ui.reducer import _LANE_TRANSCRIPT_MAX_BLOCKS
+    from amplifier_app_tui.ui.reducer import _LANE_TRANSCRIPT_MAX_BLOCKS
 
     reducer, _host = make_reducer()
     _start_and_delegate(reducer, "researcher", "s1", "the brief")

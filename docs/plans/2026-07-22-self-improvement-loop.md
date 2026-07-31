@@ -1,9 +1,9 @@
 # Design / Decision — Self-improvement loop over skills & harness (SkillOpt discipline, AIDE² safeguards)
 
-**Issue:** [#50](https://github.com/michaeljabbour/amplifier-app-newtui/issues/50) — *Self-improvement loop over skills/harness*
-**Companion:** [#49](https://github.com/michaeljabbour/amplifier-app-newtui/issues/49) — *Forge-driven capability test tier* (the rollout/eval substrate)
+**Issue:** [#50](https://github.com/michaeljabbour/amplifier-app-tui/issues/50) — *Self-improvement loop over skills/harness*
+**Companion:** [#49](https://github.com/michaeljabbour/amplifier-app-tui/issues/49) — *Forge-driven capability test tier* (the rollout/eval substrate)
 **Status:** Proposed — design only, no code lands with this doc.
-**Evidence rev:** `ac854ef` (read-only checkout of `origin/main` at `/Users/michaeljabbour/dev/newtui-wt/base`).
+**Evidence rev:** `ac854ef` (read-only checkout of `origin/main` at `/Users/michaeljabbour/dev/tui-wt/base`).
 
 > When this doc is accepted it should be promoted to the repo plans convention:
 > `docs/plans/2026-07-22-self-improvement-loop.md`, with a **Status** banner, and
@@ -15,7 +15,7 @@
 ## Problem
 
 Issue #50 asks us to design the **rollout → reflect → validate → deploy** loop that lets
-amplifier-app-newtui improve *its own* skills and harness, using the forge capability tier
+amplifier-app-tui improve *its own* skills and harness, using the forge capability tier
 (#49) as the evaluation substrate. Concretely the deliverable must pin down four things:
 
 1. **What is trainable** — skill docs (SkillOpt-style), harness/prompt scaffolding
@@ -32,12 +32,12 @@ Two facts shape the whole design and are easy to get wrong:
 - **This is NOT the existing `/improve` command.** The repo already ships an `/improve`
   surface, but it is an *in-session config proposer* that mines the approval ledger + denial
   log and **"proposes and never applies silently"** — it does not optimize skill text
-  (`src/amplifier_app_newtui/commands/improve.py:1-19`). The self-improvement loop in #50 is a
+  (`src/amplifier_app_tui/commands/improve.py:1-19`). The self-improvement loop in #50 is a
   distinct, *offline* optimizer that rewrites a skill document and validates the rewrite on
   held-out tasks. The doc must keep these separate so nobody wires them together.
 - **The thing we optimize (a skill doc) lives outside the app's import graph**, and the
   optimizer must too — the architecture forbids leaking optimizer machinery into `kernel/` or
-  `ui/` (ADR-0007 layering, `docs/decisions/ADR-0007-newtui-ground-up-architecture.md:15-19`).
+  `ui/` (ADR-0007 layering, `docs/decisions/ADR-0007-tui-ground-up-architecture.md:15-19`).
 
 ---
 
@@ -54,21 +54,21 @@ Two facts shape the whole design and are easy to get wrong:
   build against beyond the two issues. This design *is* the missing specification.
 
 **Architecture constraints the optimizer must respect**
-- `docs/decisions/ADR-0007-newtui-ground-up-architecture.md:15-19` — enforced layering
+- `docs/decisions/ADR-0007-tui-ground-up-architecture.md:15-19` — enforced layering
   `ui/ → model/ → kernel/ → amplifier-core/foundation`; *"kernel/ never imports Textual.
   model/ imports neither Textual nor amplifier-core."* An import-linter contract enforces it.
-- `docs/decisions/ADR-0007-newtui-ground-up-architecture.md:19` — `ui/app.py` is a
+- `docs/decisions/ADR-0007-tui-ground-up-architecture.md:19` — `ui/app.py` is a
   composition root with a hard <500-line budget. Any harness-level (AIDE²-style) edit that
   touches app code is high-blast-radius and contract-governed.
 
 **The existing `/improve` command — what it is and is NOT**
-- `src/amplifier_app_newtui/commands/improve.py:1-19` — `/improve` mines two evidence streams
+- `src/amplifier_app_tui/commands/improve.py:1-19` — `/improve` mines two evidence streams
   (allowlist candidates from `N/N` approvals; trust-slot suggestions from overridden denials)
   and *"proposes and never applies silently."*
-- `src/amplifier_app_newtui/commands/improve.py:196-213` — `improve_proposals(...)`; the
+- `src/amplifier_app_tui/commands/improve.py:196-213` — `improve_proposals(...)`; the
   `ledger` arg is *"reserved: spend-vs-yield proposals are not spec'd yet"* — i.e. no
   optimization loop exists today.
-- `src/amplifier_app_newtui/commands/builtin.py:442-447` — the `CommandSpec` registers
+- `src/amplifier_app_tui/commands/builtin.py:442-447` — the `CommandSpec` registers
   `/improve` as *"tune config from ledger + denial log"*, tag `skill`.
 - `tests/test_commands_improve.py:1-64` — the command is tested as **pure data-in/data-out**
   (tallies/overrides → proposals). This is the testing discipline the loop's pure functions
@@ -77,7 +77,7 @@ Two facts shape the whole design and are easy to get wrong:
 **Where skills actually come from (the trainable artifact is external)**
 - `bundle.md:56-61` — `tool-skills` is mounted with sources
   `git+https://…/amplifier-foundation@main#subdirectory=skills` **and** `~/.amplifier/skills`.
-  So the skill docs newtui loads are (a) upstream foundation skills and (b) user-dir skills —
+  So the skill docs tui loads are (a) upstream foundation skills and (b) user-dir skills —
   **none are vendored in this repo tree** (`find . -iname SKILL.md` under `src/` returns
   nothing). Consequence: a `deploy` step writes to `~/.amplifier/skills/<skill>/SKILL.md`,
   which wins over the foundation copy by mount priority — an override, not an upstream edit.
@@ -203,7 +203,7 @@ mandatory human checkpoint, once the eval substrate and gate have earned trust o
 4. **First concrete target:** the **terminal-output-contract skill** — the model-side rendering
    contract described in `docs/BACKLOG.md:103-113` (answer-first, terminal-friendly markdown
    subset: no images, tables ≤4 columns, shallow lists, fenced code with language tags). It is
-   **newtui-owned** (not a shared foundation skill, so optimizing it can't leak into other
+   **tui-owned** (not a shared foundation skill, so optimizing it can't leak into other
    harnesses), and its fitness is **deterministically scoreable** by the forge tier plus the
    existing golden width matrix (`docs/DEVELOPMENT.md:50-59`) — the ideal low-risk pilot.
 
@@ -216,7 +216,7 @@ mandatory human checkpoint, once the eval substrate and gate have earned trust o
 
 ## Implementation plan (phased, concrete file paths)
 
-All new machinery lives **outside** `src/amplifier_app_newtui/` (ADR-0007) — in `pipelines/`,
+All new machinery lives **outside** `src/amplifier_app_tui/` (ADR-0007) — in `pipelines/`,
 matching the existing attractor convention (`pipelines/backlog.dot`, `pipelines/gene-transfer.dot`).
 
 ### Phase 0 — Land the spec + wiring (no dependency on #49)
@@ -300,7 +300,7 @@ matching the existing attractor convention (`pipelines/backlog.dot`, `pipelines/
 | Risk | Mitigation |
 |---|---|
 | **Reward hacking / overfitting to visible tasks** (the AIDE² failure mode). | Public/private split — reflect never sees held-out scores; validate gates on held-out only; plus a third-slice generalization check. |
-| **Optimizing a shared foundation skill leaks into other harnesses.** | First target is **newtui-owned** and deploy writes a **user-dir override** (`~/.amplifier/skills/…`, `bundle.md:56-61`); foundation upstream is never edited in place. |
+| **Optimizing a shared foundation skill leaks into other harnesses.** | First target is **tui-owned** and deploy writes a **user-dir override** (`~/.amplifier/skills/…`, `bundle.md:56-61`); foundation upstream is never edited in place. |
 | **Harness edits violate the import-linter / renderer-purity contract** (`ADR-0007…:15-19`, `docs/BACKLOG.md:7-9`). | Harness loop (Phase 5) is human-gated and cannot deploy; its gate additionally requires import-linter, pyright, and the golden matrix to pass. |
 | **Cost runaway from unattended iteration.** | Fixed dollar budget read from real `CostTracker` spend (`docs/BACKLOG.md:53-67`); `BudgetExhausted` halts and records a partial run. |
 | **Confusion with the in-session `/improve` command.** | Explicitly scoped as separate surfaces: `/improve` proposes config from the ledger and never applies (`improve.py:1-19`); this loop is offline skill-doc optimization. Different artifact, different code home (`pipelines/`). |

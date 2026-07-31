@@ -12,14 +12,14 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.message import Message
 
-from amplifier_app_newtui.kernel.frecency import suggest_completion
-from amplifier_app_newtui.ui.composer import Composer
-from amplifier_app_newtui.ui.history_recall import (
+from amplifier_app_tui.kernel.frecency import suggest_completion
+from amplifier_app_tui.ui.composer import Composer
+from amplifier_app_tui.ui.history_recall import (
     RECALL_LABEL,
     HistoryRecallStrip,
     render_recall_line,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
 # --------------------------------------------------------------------------

@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.bundle_summon import (
+from amplifier_app_tui.kernel.bundle_summon import (
     DEFERRED_CATALOG_SOURCE,
     LOAD_BUNDLE_TOOL_NAME,
     DeferredBundleEntry,
@@ -26,7 +26,7 @@ from amplifier_app_newtui.kernel.bundle_summon import (
     catalog_instruction_text,
     read_local_bundle_summary,
 )
-from amplifier_app_newtui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel.runtime import RealRuntime
 
 A = "git+https://github.com/acme/amplifier-bundle-alpha@main"
 B = "git+https://github.com/acme/amplifier-bundle-beta@main#subdirectory=bundles/beta"
@@ -250,9 +250,9 @@ def test_injector_register_hooks_priority_and_name() -> None:
     hooks = FakeHooks()
     injector = DeferredCatalogInjector(ROOT, "catalog body", FakeContext())
     unregister = injector.register_hooks(hooks)
-    assert hooks.registered == [("provider:request", 930, "newtui-deferred-catalog")]
+    assert hooks.registered == [("provider:request", 930, "tui-deferred-catalog")]
     unregister()
-    assert hooks.unregistered == ["newtui-deferred-catalog"]
+    assert hooks.unregistered == ["tui-deferred-catalog"]
 
 
 def test_injector_register_hooks_tolerates_non_callable_unregister() -> None:
@@ -381,7 +381,7 @@ async def test_install_mounts_tool_and_injects_catalog() -> None:
     assert (mount_point, name) == ("tools", "load_bundle")
     assert isinstance(tool, LoadBundleTool)
     # Catalog hook registered; firing it injects the catalog into context.
-    assert coordinator.hooks.registered == [("provider:request", 930, "newtui-deferred-catalog")]
+    assert coordinator.hooks.registered == [("provider:request", 930, "tui-deferred-catalog")]
     assert len(initialized.unregister_handles) == 1
     injector = DeferredCatalogInjector(
         ROOT,
@@ -423,4 +423,4 @@ async def test_install_degrades_when_mount_raises() -> None:
     context = FakeContext([{"role": "system", "content": "sp"}])
     # A mount failure must not blow up boot; the catalog injector still attaches.
     await runtime._install_deferred_summon(initialized, context)
-    assert coordinator.hooks.registered == [("provider:request", 930, "newtui-deferred-catalog")]
+    assert coordinator.hooks.registered == [("provider:request", 930, "tui-deferred-catalog")]

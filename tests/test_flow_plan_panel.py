@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import BUILD_PROMPT
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.footer import footer_left_text
+from amplifier_app_tui.kernel.demo import BUILD_PROMPT
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.footer import footer_left_text
 
 from .test_flow_helpers import SIZE, GatedDemoAdapter, blocks_of, seed_done, wait_for
 
@@ -15,7 +15,7 @@ from .test_flow_helpers import SIZE, GatedDemoAdapter, blocks_of, seed_done, wai
 @pytest.mark.asyncio
 async def test_plan_panel_lights_up_mid_turn_and_collapses_when_done() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(BUILD_PROMPT)
@@ -42,7 +42,7 @@ async def test_plan_panel_lights_up_mid_turn_and_collapses_when_done() -> None:
 @pytest.mark.asyncio
 async def test_plan_panel_hides_below_90_cols() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(80, 40)) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(BUILD_PROMPT)

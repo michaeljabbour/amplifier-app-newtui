@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from amplifier_app_newtui.model.trust import (
+from amplifier_app_tui.model.trust import (
     CapabilityClass,
     classify_tool,
     resolve,

@@ -4,7 +4,7 @@ No API keys, no network. A real foundation lifecycle (``load_bundle`` →
 ``prepare`` → ``create_session``) runs against fake provider / context /
 tool / orchestrator modules written to a temp dir and referenced by a
 temp bundle via ``file://`` sources. One turn is driven end-to-end
-through :class:`~amplifier_app_newtui.kernel.runtime.RealRuntime`'s
+through :class:`~amplifier_app_tui.kernel.runtime.RealRuntime`'s
 queue bridge and the normalized UIEvents are asserted:
 
 - Channel A stream deltas (``llm:stream_block_*`` → ``stream_block_*``)
@@ -32,8 +32,8 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel.approval import ALLOW_ONCE, DENY, STANDARD_OPTIONS
-from amplifier_app_newtui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel.approval import ALLOW_ONCE, DENY, STANDARD_OPTIONS
+from amplifier_app_tui.kernel.runtime import RealRuntime
 
 
 # --------------------------------------------------------------------------
@@ -605,8 +605,7 @@ def _surface_hints(messages: list[dict]) -> list[dict]:
     return [
         m
         for m in messages
-        if isinstance(m.get("metadata"), dict)
-        and m["metadata"].get("source") == "newtui-surface-hint"
+        if isinstance(m.get("metadata"), dict) and m["metadata"].get("source") == "tui-surface-hint"
     ]
 
 
@@ -675,7 +674,7 @@ async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> 
     the stored UIEvents come back typed for transcript replay — with
     foreign/unparseable event-log lines skipped and the per-answer
     evidence map rebuilt (DESIGN-SPEC §3/§10/§11)."""
-    from amplifier_app_newtui.kernel.persistence import SessionStore
+    from amplifier_app_tui.kernel.persistence import SessionStore
 
     first = await _started_runtime(offline_env["project"])
     try:
@@ -760,7 +759,7 @@ def _resume_bundle_project(
 
 
 def _store_session(project: Path, session_id: str, bundle: str) -> None:
-    from amplifier_app_newtui.kernel.persistence import SessionStore
+    from amplifier_app_tui.kernel.persistence import SessionStore
 
     SessionStore(project_dir=project).save(
         session_id,
@@ -874,8 +873,8 @@ def test_apply_hook_suppression_strips_and_notifies() -> None:
     raw ANSI under the full-screen TUI corrupts the screen (found live).
     Stripping is no longer silent - exactly one Notification lists what
     was removed so it's never a silent surprise."""
-    from amplifier_app_newtui.kernel.events import Notification
-    from amplifier_app_newtui.kernel.runtime import _apply_hook_suppression
+    from amplifier_app_tui.kernel.events import Notification
+    from amplifier_app_tui.kernel.runtime import _apply_hook_suppression
 
     plan = {
         "hooks": [
@@ -905,7 +904,7 @@ def test_apply_hook_suppression_strips_and_notifies() -> None:
 def test_apply_hook_suppression_with_user_suppress_setting() -> None:
     """A caller-supplied ``suppressed`` set (e.g. from ``hooks.suppress``)
     overrides the implicit default, so user-added hooks can be stripped too."""
-    from amplifier_app_newtui.kernel.runtime import (
+    from amplifier_app_tui.kernel.runtime import (
         _SUPPRESSED_HOOKS_DEFAULT,
         _apply_hook_suppression,
     )
@@ -930,7 +929,7 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
     """Copies the ``write_boundary_setting`` resolver pattern: the built-in
     default set is always present, and a user ``hooks.suppress`` list is
     unioned in (junk shapes fall back to defaults, blanks are stripped)."""
-    from amplifier_app_newtui.kernel.runtime import (
+    from amplifier_app_tui.kernel.runtime import (
         _SUPPRESSED_HOOKS_DEFAULT,
         suppressed_hooks_setting,
     )
@@ -966,7 +965,7 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
 def test_resume_bundle_plan_defaults_to_stored() -> None:
     """A session's module stack is part of its identity: with no explicit
     --bundle and no override setting, resume boots the STORED bundle."""
-    from amplifier_app_newtui.kernel.runtime import _plan_resume_bundle
+    from amplifier_app_tui.kernel.runtime import _plan_resume_bundle
 
     assert _plan_resume_bundle("offline", None, use_active=False) == ("offline", "stored")
     # Explicit --bundle: the caller asked for it by name — it wins.
@@ -979,7 +978,7 @@ def test_resume_bundle_plan_defaults_to_stored() -> None:
 
 def test_resume_use_active_bundle_setting_shapes() -> None:
     """Junk-shaped settings fall back to the default (honor stored)."""
-    from amplifier_app_newtui.kernel.runtime import resume_use_active_bundle
+    from amplifier_app_tui.kernel.runtime import resume_use_active_bundle
 
     assert resume_use_active_bundle({}) is False
     assert resume_use_active_bundle({"resume": "junk"}) is False
@@ -990,49 +989,49 @@ def test_resume_use_active_bundle_setting_shapes() -> None:
 def test_resume_bundle_notice_names_both_on_divergence() -> None:
     """Every non-default resume-bundle outcome is said out loud, naming
     both the stored and the attached bundle."""
-    from amplifier_app_newtui.kernel.events import Notification
-    from amplifier_app_newtui.kernel.runtime import _resume_bundle_notice
+    from amplifier_app_tui.kernel.events import Notification
+    from amplifier_app_tui.kernel.runtime import _resume_bundle_notice
 
     # Stored honored while a different bundle is active.
     emitted: list[Notification] = []
-    _resume_bundle_notice("offline", "stored", "offline", "newtui", emitted.append)
+    _resume_bundle_notice("offline", "stored", "offline", "tui", emitted.append)
     assert len(emitted) == 1
-    assert "offline" in emitted[0].message and "newtui" in emitted[0].message
+    assert "offline" in emitted[0].message and "tui" in emitted[0].message
 
     # Override attached the active bundle over the stored one.
     emitted.clear()
-    _resume_bundle_notice("offline", "active", "newtui", "newtui", emitted.append)
+    _resume_bundle_notice("offline", "active", "tui", "tui", emitted.append)
     assert len(emitted) == 1
-    assert "offline" in emitted[0].message and "newtui" in emitted[0].message
+    assert "offline" in emitted[0].message and "tui" in emitted[0].message
     assert "resume.use_active_bundle" in emitted[0].message
 
     # Explicit --bundle override.
     emitted.clear()
-    _resume_bundle_notice("offline", "explicit", "other", "newtui", emitted.append)
+    _resume_bundle_notice("offline", "explicit", "other", "tui", emitted.append)
     assert len(emitted) == 1
     assert "--bundle" in emitted[0].message
 
     # Stored bundle no longer discoverable — fallback said loudly.
     emitted.clear()
-    _resume_bundle_notice("ghost", "stored-missing", "newtui", "newtui", emitted.append)
+    _resume_bundle_notice("ghost", "stored-missing", "tui", "tui", emitted.append)
     assert len(emitted) == 1
     assert "ghost" in emitted[0].message and "not found" in emitted[0].message
 
 
 def test_resume_bundle_notice_silent_on_common_cases() -> None:
     """Quiet when stored and attached agree, and when nothing was stored."""
-    from amplifier_app_newtui.kernel.runtime import _resume_bundle_notice
+    from amplifier_app_tui.kernel.runtime import _resume_bundle_notice
 
     emitted: list[object] = []
-    _resume_bundle_notice("newtui", "stored", "newtui", "newtui", emitted.append)
-    _resume_bundle_notice("newtui", "explicit", "newtui", "newtui", emitted.append)
-    _resume_bundle_notice("newtui", "active", "newtui", "newtui", emitted.append)
-    _resume_bundle_notice(None, "active", "newtui", "newtui", emitted.append)
+    _resume_bundle_notice("tui", "stored", "tui", "tui", emitted.append)
+    _resume_bundle_notice("tui", "explicit", "tui", "tui", emitted.append)
+    _resume_bundle_notice("tui", "active", "tui", "tui", emitted.append)
+    _resume_bundle_notice(None, "active", "tui", "tui", emitted.append)
     assert emitted == []
 
 
 def test_restored_history_extracts_prose_and_skips_tool_traffic() -> None:
-    from amplifier_app_newtui.kernel.runtime import restored_history
+    from amplifier_app_tui.kernel.runtime import restored_history
 
     transcript = [
         {"role": "system", "content": "system prompt"},
@@ -1068,7 +1067,7 @@ def test_native_modes_go_through_the_mounted_mode_tool() -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     class FakeModeTool:
         def __init__(self) -> None:
@@ -1114,7 +1113,7 @@ def test_set_model_refreshes_the_footer_model_name() -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     async def run() -> None:
         runtime = RealRuntime()
@@ -1146,16 +1145,16 @@ def test_broker_approval_provider_adapts_native_requests() -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from amplifier_app_newtui.kernel.approval import ALLOW_ALWAYS, ApprovalBroker
-    from amplifier_app_newtui.kernel.runtime import _BrokerApprovalProvider
+    from amplifier_app_tui.kernel.approval import ALLOW_ALWAYS, ApprovalBroker
+    from amplifier_app_tui.kernel.runtime import _BrokerApprovalProvider
 
     async def run() -> None:
         broker = ApprovalBroker()
         provider = _BrokerApprovalProvider(broker)
         request = SimpleNamespace(
             tool_name="bash",
-            action="rm newtui-native-test.txt",
-            details={"command": "rm newtui-native-test.txt"},
+            action="rm tui-native-test.txt",
+            details={"command": "rm tui-native-test.txt"},
             risk_level="high",
             timeout=None,
         )
@@ -1166,7 +1165,7 @@ def test_broker_approval_provider_adapts_native_requests() -> None:
             await asyncio.sleep(0.01)
         head = broker.head
         assert head is not None
-        assert head.prompt == "Allow rm newtui-native-test.txt?"
+        assert head.prompt == "Allow rm tui-native-test.txt?"
         assert head.detail.tool_name == "bash"
         broker.answer(head.ticket_id, ALLOW_ALWAYS)
         response = await task
@@ -1223,7 +1222,7 @@ class _StubCoordinator:
 def _stub_runtime(mounts: dict):
     from types import SimpleNamespace
 
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     runtime = RealRuntime()
     runtime._initialized = SimpleNamespace(  # type: ignore[assignment]
@@ -1237,8 +1236,8 @@ def test_realruntime_session_op_wrappers_guard_a_missing_coordinator() -> None:
     return its neutral sentinel rather than raise into the UI thread."""
     import asyncio
 
-    from amplifier_app_newtui.kernel import session_ops
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel import session_ops
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     async def run() -> None:
         bare = RealRuntime()

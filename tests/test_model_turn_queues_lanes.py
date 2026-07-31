@@ -6,13 +6,13 @@ from decimal import Decimal
 
 import pytest
 
-from amplifier_app_newtui.model.lanes import LaneRegistry, LaneState
-from amplifier_app_newtui.model.queues import (
+from amplifier_app_tui.model.lanes import LaneRegistry, LaneState
+from amplifier_app_tui.model.queues import (
     MAX_QUEUE_ITEMS,
     NeedsYouQueue,
     SteeringQueue,
 )
-from amplifier_app_newtui.model.turn import (
+from amplifier_app_tui.model.turn import (
     OutcomeLedger,
     TurnOutcome,
     TurnTelemetry,

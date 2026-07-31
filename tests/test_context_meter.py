@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`amplifier_app_newtui.kernel.context_meter`.
+"""Unit tests for :mod:`amplifier_app_tui.kernel.context_meter`.
 
 Pure math over the honest sources (no serve, no runtime): the context-cost meter
 folds ``ProviderResponseUsage`` events into a ``context.state`` snapshot — context
@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from amplifier_app_newtui.kernel.context_meter import (
+from amplifier_app_tui.kernel.context_meter import (
     CONTEXT_STATE_TYPE,
     WINDOW_SOURCE_COMPACTION,
     ContextMeter,
 )
-from amplifier_app_newtui.kernel.cost import CostTracker, PricingTable
-from amplifier_app_newtui.kernel.events import ProviderResponseUsage
+from amplifier_app_tui.kernel.cost import CostTracker, PricingTable
+from amplifier_app_tui.kernel.events import ProviderResponseUsage
 
 WINDOW = 200_000
 

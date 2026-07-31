@@ -85,7 +85,7 @@ scope creep.
 3. The reducer talks to the app **only** through `ReducerHost` (`ui/reducer.py:297-314`). This phase needs **no new host method** — `append_block`/`replace_block` suffice.
 4. Do not restyle anything else. Do not "improve" glyphs, spacing, or colors of existing blocks. Goldens will catch you.
 5. Line numbers in this plan were verified against the repo at planning time but Phase 1 has landed since — treat them as anchors, `grep` to confirm before editing.
-6. Run commands from the repo root: `/Users/michaeljabbour/dev/amplifier-app-newtui`.
+6. Run commands from the repo root: `/Users/michaeljabbour/dev/amplifier-app-tui`.
 
 ---
 
@@ -104,8 +104,8 @@ Expected: all tests pass (0 failures). If not, STOP and report — do not build 
 **Step 1.2** — Verify the Phase 1 contract:
 
 ```bash
-grep -n "plan_changed" src/amplifier_app_newtui/ui/reducer.py src/amplifier_app_newtui/ui/app.py
-grep -n "todo_items\|todo_id\|TodoBlock" src/amplifier_app_newtui/ui/reducer.py
+grep -n "plan_changed" src/amplifier_app_tui/ui/reducer.py src/amplifier_app_tui/ui/app.py
+grep -n "todo_items\|todo_id\|TodoBlock" src/amplifier_app_tui/ui/reducer.py
 ```
 
 You must find:
@@ -143,7 +143,7 @@ test's block list and bump the count by 1:
 
 ```python
 # add to the imports at the top of tests/test_model_blocks.py
-from amplifier_app_newtui.model.blocks import DelegateEntry, DelegateSummaryBlock
+from amplifier_app_tui.model.blocks import DelegateEntry, DelegateSummaryBlock
 
 # add to the list of instantiated blocks inside the round-trip test:
         DelegateSummaryBlock(
@@ -168,7 +168,7 @@ Expected: **FAIL** — `ImportError: cannot import name 'DelegateEntry'`.
 
 ### Step 2.2 — Implement
 
-In `src/amplifier_app_newtui/model/blocks.py`:
+In `src/amplifier_app_tui/model/blocks.py`:
 
 **(a)** Add glyphs next to the existing glyph constants (after `GLYPH_REWIND_RIGHT`, ~line 51):
 
@@ -259,13 +259,13 @@ Create `tests/test_ui_render_delegate_summary.py`:
 
 from __future__ import annotations
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     DelegateEntry,
     DelegateSummaryBlock,
     TodoItem,
 )
-from amplifier_app_newtui.ui.segments import lines_plain
-from amplifier_app_newtui.ui.transcript import render_block
+from amplifier_app_tui.ui.segments import lines_plain
+from amplifier_app_tui.ui.transcript import render_block
 
 
 def _plain(block: DelegateSummaryBlock, width: int = 97) -> list[str]:
@@ -373,7 +373,7 @@ Expected: **FAIL** — `TypeError: unsupported transcript block kind: 'delegate_
 
 ### Step 3.2 — Implement
 
-In `src/amplifier_app_newtui/ui/transcript.py`:
+In `src/amplifier_app_tui/ui/transcript.py`:
 
 **(a)** Extend the blocks import (transcript.py:50-76) with `DelegateSummaryBlock`,
 `GLYPH_BLOCKED`, `GLYPH_CHEVRON_COLLAPSED`, `GLYPH_CHEVRON_EXPANDED`, `GLYPH_ERROR`,
@@ -595,8 +595,8 @@ Copy the `FakeHost` + `make_reducer` helpers from `tests/test_ui_reducer_outcome
 
 from __future__ import annotations
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import DelegateSummaryBlock
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import DelegateSummaryBlock
 
 # ... FakeHost / make_reducer copied per Step 5.1 ...
 
@@ -748,7 +748,7 @@ Expected: **FAIL** — the current code appends per-agent `Answer` tree lines, s
 
 ## Task 6 — Reducer rewrite: `_agent_spawned` / `_agent_completed`
 
-All edits in `src/amplifier_app_newtui/ui/reducer.py`.
+All edits in `src/amplifier_app_tui/ui/reducer.py`.
 
 ### Step 6.1 — Delete the tree-line machinery
 
@@ -995,11 +995,11 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     DelegateEntry,
     DelegateSummaryBlock,
 )
-from amplifier_app_newtui.ui.transcript import DelegateSummaryToggled
+from amplifier_app_tui.ui.transcript import DelegateSummaryToggled
 
 # Harness / _view / _mounted copied per test_ui_transcript_view.py …
 
@@ -1144,7 +1144,7 @@ door" into lane transcripts; the full per-lane drill from a row is out of scope 
 ### Step 9.1 — Failing test
 
 Add to `tests/test_ui_delegate_summary.py` an app-level test. Look at how
-`tests/test_flow_lanes.py` boots the real `NewTuiApp` with the demo adapter and query
+`tests/test_flow_lanes.py` boots the real `TuiApp` with the demo adapter and query
 widgets — follow that harness pattern (do not invent a new one):
 
 ```python
@@ -1344,7 +1344,7 @@ Expected: all green, zero lint/type errors. Then watch it live (this is the only
 step; everything above proved it offline):
 
 ```bash
-uv run amplifier-newtui --demo
+uv run amplifier-tui --demo
 ```
 
 Run the agents demo turn and confirm, in order:

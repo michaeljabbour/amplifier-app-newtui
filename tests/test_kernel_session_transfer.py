@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel import session_transfer as st
-from amplifier_app_newtui.kernel.persistence import SessionStore
-from amplifier_app_newtui.model.redaction import REDACTION_PLACEHOLDER
-from amplifier_app_newtui.model.sanitize import TOOL_IO_PLACEHOLDER, USER_PLACEHOLDER
+from amplifier_app_tui.kernel import session_transfer as st
+from amplifier_app_tui.kernel.persistence import SessionStore
+from amplifier_app_tui.model.redaction import REDACTION_PLACEHOLDER
+from amplifier_app_tui.model.sanitize import TOOL_IO_PLACEHOLDER, USER_PLACEHOLDER
 
 AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 
@@ -31,9 +31,7 @@ def _seed(store: SessionStore, session_id: str = "src000001") -> None:
         {"role": "assistant", "content": "hi back"},
         {"role": "tool", "tool_call_id": "t1", "content": "TOOLBODY output"},
     ]
-    store.save(
-        session_id, transcript, {"session_id": session_id, "bundle": "newtui", "name": "src"}
-    )
+    store.save(session_id, transcript, {"session_id": session_id, "bundle": "tui", "name": "src"})
 
 
 # -- export -----------------------------------------------------------------

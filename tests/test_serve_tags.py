@@ -1,6 +1,6 @@
 """Offline test of the additive ``serve`` tag protocol ops.
 
-Drives :func:`amplifier_app_newtui.kernel.serve.serve_loop` with a minimal fake
+Drives :func:`amplifier_app_tui.kernel.serve.serve_loop` with a minimal fake
 runtime whose only non-trivial surface is a real :class:`SessionStore` in a
 tmp dir (the exact seam the live CLI ``serve`` uses). Proves the tag ops the
 Rust client consumes: JSON round-trip, on-disk persistence, and tag filtering
@@ -17,8 +17,8 @@ from typing import IO, Any, cast
 
 import pytest
 
-from amplifier_app_newtui.kernel.persistence import METADATA_FILENAME, SessionStore
-from amplifier_app_newtui.kernel.serve import serve_loop
+from amplifier_app_tui.kernel.persistence import METADATA_FILENAME, SessionStore
+from amplifier_app_tui.kernel.serve import serve_loop
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,7 +77,7 @@ class _FakeRuntime:
     def __init__(self, store: SessionStore, session_id: str) -> None:
         self.store = store
         self.session_id = session_id
-        self.bundle_name = "newtui"
+        self.bundle_name = "tui"
         self.model_name = "test-model"
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
         self.broker = _NoBroker()
@@ -106,7 +106,7 @@ def store(tmp_path: Path) -> SessionStore:
 
 async def test_tag_add_list_roundtrip_and_persist(store: SessionStore) -> None:
     live = "a" * 32
-    store.save(live, [], {"session_id": live, "bundle": "newtui", "name": "live"})
+    store.save(live, [], {"session_id": live, "bundle": "tui", "name": "live"})
     runtime = _FakeRuntime(store, live)
 
     out = await _drive(
@@ -139,7 +139,7 @@ async def test_tag_add_list_roundtrip_and_persist(store: SessionStore) -> None:
 
 async def test_tag_add_singular_tag_field(store: SessionStore) -> None:
     live = "c" * 32
-    store.save(live, [], {"session_id": live, "bundle": "newtui"})
+    store.save(live, [], {"session_id": live, "bundle": "tui"})
     out = await _drive(_FakeRuntime(store, live), [{"op": "tag.add", "tag": "solo"}])
     added = out.find("tag.updated", "tag.add")
     assert added is not None and added["tags"] == ["solo"]
@@ -147,7 +147,7 @@ async def test_tag_add_singular_tag_field(store: SessionStore) -> None:
 
 async def test_tag_remove_roundtrip(store: SessionStore) -> None:
     live = "a" * 32
-    store.save(live, [], {"session_id": live, "bundle": "newtui", "tags": ["frontend", "urgent"]})
+    store.save(live, [], {"session_id": live, "bundle": "tui", "tags": ["frontend", "urgent"]})
     out = await _drive(_FakeRuntime(store, live), [{"op": "tag.remove", "tags": ["urgent"]}])
     removed = out.find("tag.updated", "tag.remove")
     assert removed is not None
@@ -161,7 +161,7 @@ async def test_tag_sessions_filter(store: SessionStore) -> None:
     other = "b" * 32
     third = "d" * 32
     for sid in (live, other, third):
-        store.save(sid, [], {"session_id": sid, "bundle": "newtui", "name": sid[:4]})
+        store.save(sid, [], {"session_id": sid, "bundle": "tui", "name": sid[:4]})
     runtime = _FakeRuntime(store, live)
 
     out = await _drive(
@@ -186,7 +186,7 @@ async def test_tag_sessions_filter(store: SessionStore) -> None:
 
 async def test_tag_list_unknown_session_errors(store: SessionStore) -> None:
     live = "a" * 32
-    store.save(live, [], {"session_id": live, "bundle": "newtui"})
+    store.save(live, [], {"session_id": live, "bundle": "tui"})
     out = await _drive(_FakeRuntime(store, live), [{"op": "tag.list", "session_id": "zzzz"}])
     listed = out.find("tag.list", "tag.list")
     assert listed is not None

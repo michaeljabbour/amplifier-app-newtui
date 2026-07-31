@@ -1,7 +1,7 @@
 {
-  "name": "@amplifier/newtui-sdk",
+  "name": "@amplifier/tui-sdk",
   "version": "0.1.0",
-  "description": "Thin TypeScript wrapper for amplifier-newtui's versioned JSONL CLI",
+  "description": "Thin TypeScript wrapper for amplifier-tui's versioned JSONL CLI",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

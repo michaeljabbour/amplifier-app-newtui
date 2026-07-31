@@ -13,12 +13,12 @@ from decimal import Decimal
 
 import pytest
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.model.blocks import Answer, SessionBanner
-from amplifier_app_newtui.model.lanes import LaneRecord, LaneState
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.lanes_panel import format_lane_lines
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import Answer, SessionBanner
+from amplifier_app_tui.model.lanes import LaneRecord, LaneState
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.lanes_panel import format_lane_lines
 
 from .test_flow_helpers import SIZE, seed_done, type_text, wait_for
 from .test_ui_reducer_delegates import SID, _env, make_reducer
@@ -85,13 +85,13 @@ def test_delivery_echo_lands_in_the_lanes_focus_transcript() -> None:
 # -- end-to-end send path (real app over the demo runtime) --------------
 
 
-def _register_running_lane(app: NewTuiApp, session_id: str, name: str) -> LaneRecord:
+def _register_running_lane(app: TuiApp, session_id: str, name: str) -> LaneRecord:
     return app.lanes.register(session_id, parent_id="root", name=name, state="running")
 
 
 @pytest.mark.asyncio
 async def test_focused_lane_steer_queues_badge_and_chat_line() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         _register_running_lane(app, "child-1", "researcher")
@@ -122,7 +122,7 @@ async def test_focused_lane_steer_queues_badge_and_chat_line() -> None:
 
 @pytest.mark.asyncio
 async def test_root_steer_unaffected_when_no_lane_focused() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.turn_active = True
@@ -138,7 +138,7 @@ async def test_root_steer_unaffected_when_no_lane_focused() -> None:
 
 @pytest.mark.asyncio
 async def test_done_lane_falls_back_to_root_steer() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.lanes.register("child-done", parent_id="root", name="tester", state="done")

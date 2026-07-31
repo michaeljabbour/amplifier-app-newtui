@@ -10,9 +10,9 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.model.blocks import Answer, Segment
-from amplifier_app_newtui.model.evidence import EvidenceLink
-from amplifier_app_newtui.ui.live_tail import (
+from amplifier_app_tui.model.blocks import Answer, Segment
+from amplifier_app_tui.model.evidence import EvidenceLink
+from amplifier_app_tui.ui.live_tail import (
     ASYNC_RENDER_THRESHOLD,
     MAX_ROOT_LINES,
     THROTTLE_SECONDS,
@@ -22,7 +22,7 @@ from amplifier_app_newtui.ui.live_tail import (
     streaming_spans,
     visible_length,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
 class TailHarness(App[None]):

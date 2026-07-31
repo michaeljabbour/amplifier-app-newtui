@@ -17,14 +17,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from amplifier_app_newtui.kernel.events import PromptComplete, ToolError, ToolPost, ToolPre
-from amplifier_app_newtui.kernel.git_yield import (
+from amplifier_app_tui.kernel.events import PromptComplete, ToolError, ToolPost, ToolPre
+from amplifier_app_tui.kernel.git_yield import (
     GitDiffSnapshot,
     GitFileStat,
     capture_git_diff,
 )
-from amplifier_app_newtui.kernel.runtime import RealRuntime
-from amplifier_app_newtui.kernel.turn_yield import TurnYieldTracker
+from amplifier_app_tui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel.turn_yield import TurnYieldTracker
 
 pytestmark = pytest.mark.asyncio
 

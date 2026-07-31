@@ -9,12 +9,12 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.display import DisplaySystem
-from amplifier_app_newtui.kernel.events import Notification, PromptSubmit, ToolPre
-from amplifier_app_newtui.kernel.queue_bridge import CONSUMED_EVENTS, QueueBridge
-from amplifier_app_newtui.kernel.trackers.runtime_status import RuntimeStatusTracker
-from amplifier_app_newtui.kernel.trackers.stream_status import StreamStatusTracker
-from amplifier_app_newtui.kernel.trackers.task_status import TaskStatusTracker
+from amplifier_app_tui.kernel.display import DisplaySystem
+from amplifier_app_tui.kernel.events import Notification, PromptSubmit, ToolPre
+from amplifier_app_tui.kernel.queue_bridge import CONSUMED_EVENTS, QueueBridge
+from amplifier_app_tui.kernel.trackers.runtime_status import RuntimeStatusTracker
+from amplifier_app_tui.kernel.trackers.stream_status import StreamStatusTracker
+from amplifier_app_tui.kernel.trackers.task_status import TaskStatusTracker
 
 ROOT = "sess-root"
 

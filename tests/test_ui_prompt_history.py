@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel.prompt_history import PromptHistoryStore
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.runtime_adapter import RealRuntimeAdapter, RuntimeAdapter
+from amplifier_app_tui.kernel.prompt_history import PromptHistoryStore
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.runtime_adapter import RealRuntimeAdapter, RuntimeAdapter
 
 
 async def _wait_for(pilot, predicate: Callable[[], bool], *, tries: int = 80) -> bool:
@@ -78,7 +78,7 @@ class _SeededAdapter(RuntimeAdapter):
 @pytest.mark.asyncio
 async def test_fresh_session_recalls_prior_session_prompts() -> None:
     adapter = _SeededAdapter(("older prompt", "command A"))
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(pilot, lambda: bool(app.composer._history))
         app.composer.focus_input()
@@ -91,7 +91,7 @@ async def test_fresh_session_recalls_prior_session_prompts() -> None:
 @pytest.mark.asyncio
 async def test_submitting_a_prompt_records_it() -> None:
     adapter = _SeededAdapter(())
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(pilot, lambda: app._splash is None)
         app.composer.focus_input()
@@ -114,7 +114,7 @@ async def test_end_to_end_kill_then_fresh_session_same_dir(tmp_path: Path, monke
     # Session 2 boots fresh in the same dir and seeds ↑ from the store.
     prior = tuple(PromptHistoryStore(project_dir=project).load())
     adapter = _SeededAdapter(prior)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         assert await _wait_for(pilot, lambda: bool(app.composer._history))
         app.composer.focus_input()

@@ -1,7 +1,7 @@
 """Thin stdlib client over ``amplifier-skill-forge``'s ``forge.py``.
 
 The forge capability tier (:mod:`tests.forge`) drives the shipped
-``amplifier-newtui`` binary through a real PTY via the forge terminal
+``amplifier-tui`` binary through a real PTY via the forge terminal
 daemon.  This module wraps the handful of ``forge.py`` subcommands the
 tier needs (``doctor``/``new``/``type``/``key``/``screen``/``wait``/
 ``close``/``close-tag``) behind a small subprocess client so the test
@@ -183,7 +183,7 @@ class ForgeClient:
         cols: int = 120,
         rows: int = 40,
         tag: str,
-        name: str = "newtui-cap",
+        name: str = "tui-cap",
     ) -> ForgeSession:
         cmd = [
             "new",

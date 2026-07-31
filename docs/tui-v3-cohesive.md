@@ -3,7 +3,7 @@
 Status: Approved design (historical). Superseded by `DESIGN-SPEC.md` wherever the two
 conflict — notably: no "Setup" palette group, no `y/a/d`/`ctrl-a`/`ctrl-g`/`alt+up`/`ctrl-o`
 bindings (see `ui/keymap.py` for the keys that exist), the app title is
-`amplifier-app-newtui`, and the ctrl-p permission-posture *cycle* (including the `bypass`
+`amplifier-app-tui`, and the ctrl-p permission-posture *cycle* (including the `bypass`
 posture) was not built — as shipped, ctrl+p shows the current trust posture and the five
 modes are the only postures. The user-facing key/command reference is `USER-GUIDE.md`.
 Source: claude.ai/design project "Amplifier TUI design refinement",

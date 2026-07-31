@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel import session_manager as sm
-from amplifier_app_newtui.kernel.persistence import SessionStore
+from amplifier_app_tui.kernel import session_manager as sm
+from amplifier_app_tui.kernel.persistence import SessionStore
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def store(tmp_path: Path) -> SessionStore:
 
 
 def _seed(store: SessionStore, session_id: str, **meta: object) -> None:
-    store.save(session_id, [], {"session_id": session_id, "bundle": "newtui", **meta})
+    store.save(session_id, [], {"session_id": session_id, "bundle": "tui", **meta})
 
 
 # -- normalize_tag ----------------------------------------------------------
@@ -188,7 +188,7 @@ def test_summary_for_exposes_tags(store: SessionStore) -> None:
 
 def test_ensure_session_dir_creates_missing(store: SessionStore) -> None:
     assert not store.exists("fresh01")
-    assert sm.ensure_session_dir(store, "fresh01", bundle="newtui")
+    assert sm.ensure_session_dir(store, "fresh01", bundle="tui")
     assert store.exists("fresh01")
     # now taggable
     out = sm.add_tags(store, "fresh01", ["x"])

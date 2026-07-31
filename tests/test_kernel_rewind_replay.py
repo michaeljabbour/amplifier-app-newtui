@@ -3,8 +3,8 @@
 The ui-events log is append-only, so a confirmed rewind leaves the turns
 it discarded in the file. Without honoring rewind boundaries a resume
 replays those turns as ghost turns. The app writes a
-:class:`~amplifier_app_newtui.kernel.events.RewindMarker` at fork time and
-:func:`~amplifier_app_newtui.kernel.events.drop_rewound_events` filters
+:class:`~amplifier_app_tui.kernel.events.RewindMarker` at fork time and
+:func:`~amplifier_app_tui.kernel.events.drop_rewound_events` filters
 them at read time (``restored_ui_events``) — the read-side half of the
 append-only contract.
 
@@ -23,18 +23,18 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel import events as ev
-from amplifier_app_newtui.kernel.cost import CostTracker, restore_session_cost
-from amplifier_app_newtui.kernel.persistence import SessionStore
-from amplifier_app_newtui.kernel.rewind import RewindError
-from amplifier_app_newtui.kernel.runtime import (
+from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.kernel.cost import CostTracker, restore_session_cost
+from amplifier_app_tui.kernel.persistence import SessionStore
+from amplifier_app_tui.kernel.rewind import RewindError
+from amplifier_app_tui.kernel.runtime import (
     _kept_turns_for,
     restored_ui_events,
 )
-from amplifier_app_newtui.model.blocks import BlockIdAllocator
-from amplifier_app_newtui.model.lanes import LaneRegistry
-from amplifier_app_newtui.model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
-from amplifier_app_newtui.ui.reducer import TranscriptReducer
+from amplifier_app_tui.model.blocks import BlockIdAllocator
+from amplifier_app_tui.model.lanes import LaneRegistry
+from amplifier_app_tui.model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
+from amplifier_app_tui.ui.reducer import TranscriptReducer
 
 from .test_ui_reducer_delegates import SID, FakeHost, _env
 
@@ -299,7 +299,7 @@ class _FakeInitialized:
 
 @pytest.mark.asyncio
 async def test_real_runtime_fork_writes_a_rewind_marker(tmp_path: Path) -> None:
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     runtime = RealRuntime()
     store = SessionStore(base_dir=tmp_path)
@@ -324,7 +324,7 @@ async def test_real_runtime_fork_writes_a_rewind_marker(tmp_path: Path) -> None:
 async def test_real_runtime_fork_marker_only_after_successful_trim(tmp_path: Path) -> None:
     """A refused fork (turn running) writes no marker — the log must not
     claim a rewind boundary that never happened."""
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     runtime = RealRuntime()
     store = SessionStore(base_dir=tmp_path)

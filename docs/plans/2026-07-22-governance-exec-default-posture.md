@@ -3,7 +3,7 @@
 Issue: #26 — *Governance: offline classifier allows unrecognized EXEC by default — decide the posture (audit, corrected)*
 Slug: `governance-exec-default-posture`
 Labels: `audit-2026-07`, `security`
-Grounding rev (READ-ONLY checkout `/Users/michaeljabbour/dev/newtui-wt/base`): `git rev-parse HEAD` = `ac854eff12f05a2df528eb590b547068da799a60` — matches the issue's "verified against main @ ac854ef".
+Grounding rev (READ-ONLY checkout `/Users/michaeljabbour/dev/tui-wt/base`): `git rev-parse HEAD` = `ac854eff12f05a2df528eb590b547068da799a60` — matches the issue's "verified against main @ ac854ef".
 Donor parity repo (READ-ONLY): `/Users/michaeljabbour/dev/amplifier-app-cli`.
 
 ---
@@ -14,7 +14,7 @@ The 2026-07-22 five-agent security audit flagged a *fail-open* in EXEC governanc
 
 The catch-all is only reachable in **auto** mode (the other four postures settle EXEC statically — see Evidence), so the decision is scoped to auto mode's offline fallback. Two things make it worth an explicit decision rather than a silent status quo:
 
-1. **Divergence from the donor.** amplifier-app-cli's equivalent offline evaluator (`ReasoningBlindStageEvaluator`) does the *opposite*: an unmatched deliberative action **denies** ("outside-user-authorization"). newtui's `OfflineAutoClassifier` **allows**. This divergence is undocumented.
+1. **Divergence from the donor.** amplifier-app-cli's equivalent offline evaluator (`ReasoningBlindStageEvaluator`) does the *opposite*: an unmatched deliberative action **denies** ("outside-user-authorization"). tui's `OfflineAutoClassifier` **allows**. This divergence is undocumented.
 2. **The EXEC bucket is also the *unknown-tool* fail-safe.** `classify_tool` routes anything it cannot recognize to `CapabilityClass.EXEC` (trust.py:139). In auto mode EXEC is classifier-gated, so a genuinely *unrecognized capability* inherits the same catch-all allow as a recognized-but-benign `ls`. That is the sharpest edge of the fail-open: "unknown ⇒ EXEC ⇒ allowed."
 
 The contract (issue Acceptance): **"Explicit, documented posture + tests either way."** The issue's "What to do" derives two concrete sub-criteria: (a) *decide* allow vs. ask for no-positive-signal EXEC under the gated postures; (b) if allow stays, document it in ADR-0005/ARCHITECTURE; if not, route unmatched EXEC to ask/defer in the gated postures **with tests**.
@@ -24,25 +24,25 @@ The contract (issue Acceptance): **"Explicit, documented posture + tests either 
 ## Evidence (verified file:line, rev `ac854ef`)
 
 **The catch-all allow (the thing to decide):**
-- `src/amplifier_app_newtui/kernel/governance_hook.py:127-143` — `OfflineAutoClassifier.classify`: denies destructive shapes (135-136), allows explicit-request matches (137-138), denies OUTSIDE_PROJECT (139-140), denies unrequested `git push` (141-142), then **`return (True, "within amplifier's wide trust scope")`** at **line 143** — allow-by-default for everything else.
-- `src/amplifier_app_newtui/kernel/governance_hook.py:383-405` — `_action_text`: when none of `command/cmd/instruction/query` are present it falls back to `path/file_path/directory` (395-403), else returns the bare `tool_name` (404). Always a non-empty action — so "no action text" is never the trigger; the permissiveness is purely the classifier catch-all, exactly as the corrected issue states.
+- `src/amplifier_app_tui/kernel/governance_hook.py:127-143` — `OfflineAutoClassifier.classify`: denies destructive shapes (135-136), allows explicit-request matches (137-138), denies OUTSIDE_PROJECT (139-140), denies unrequested `git push` (141-142), then **`return (True, "within amplifier's wide trust scope")`** at **line 143** — allow-by-default for everything else.
+- `src/amplifier_app_tui/kernel/governance_hook.py:383-405` — `_action_text`: when none of `command/cmd/instruction/query` are present it falls back to `path/file_path/directory` (395-403), else returns the bare `tool_name` (404). Always a non-empty action — so "no action text" is never the trigger; the permissiveness is purely the classifier catch-all, exactly as the corrected issue states.
 
 **The fail-safe that funnels the unknown into EXEC:**
-- `src/amplifier_app_newtui/model/trust.py:117-147` — `classify_tool`: explicit table → test-command sniff → name-substring heuristic → **`capability = CapabilityClass.EXEC`** (line 139) as the terminal default for unknown tools.
-- `src/amplifier_app_newtui/model/trust.py:198-210` — `resolve_capability("auto", …)`: READ/WRITE/TEST static-allow (199-204); everything else returns `ask` + **`classifier_gated=True`** (205-210). So EXEC/NET/SPEND in auto are handed to the classifier.
+- `src/amplifier_app_tui/model/trust.py:117-147` — `classify_tool`: explicit table → test-command sniff → name-substring heuristic → **`capability = CapabilityClass.EXEC`** (line 139) as the terminal default for unknown tools.
+- `src/amplifier_app_tui/model/trust.py:198-210` — `resolve_capability("auto", …)`: READ/WRITE/TEST static-allow (199-204); everything else returns `ask` + **`classifier_gated=True`** (205-210). So EXEC/NET/SPEND in auto are handed to the classifier.
 
 **The gate is fail-closed on crash (so only the *allow* deserves a decision):**
-- `src/amplifier_app_newtui/kernel/governance_hook.py:303-330` — `_classify`: classifier exception → `allowed=False` ("classifier failed closed", 311-312); a deny becomes **deny-and-continue plus a deferred needs-you decision** (316-330). The crash path is safe; the catch-all allow is the gap.
+- `src/amplifier_app_tui/kernel/governance_hook.py:303-330` — `_classify`: classifier exception → `allowed=False` ("classifier failed closed", 311-312); a deny becomes **deny-and-continue plus a deferred needs-you decision** (316-330). The crash path is safe; the catch-all allow is the gap.
 
 **Other postures already settle EXEC statically (why this is auto-only):**
-- `src/amplifier_app_newtui/model/trust.py:154-166` — `_MODE_POLICY`: `plan`/`brainstorm` deny EXEC (`_ALL_DENY`); `build` sets `EXEC: "ask"`; `chat` (default `.get(...,"ask")`) asks EXEC.
+- `src/amplifier_app_tui/model/trust.py:154-166` — `_MODE_POLICY`: `plan`/`brainstorm` deny EXEC (`_ALL_DENY`); `build` sets `EXEC: "ask"`; `chat` (default `.get(...,"ask")`) asks EXEC.
 
 **Donor divergence (app-cli parity, READ-ONLY):**
 - `/Users/michaeljabbour/dev/amplifier-app-cli/amplifier_app_cli/ui/authorization_stage.py:255-256` — `ReasoningBlindStageEvaluator` is the "deterministic fail-closed evaluator for sync callers and offline tests."
-- `…/authorization_stage.py:325-335` — on the deliberative stage: explicit-authorization ⇒ ALLOW (326-330); **otherwise ⇒ DENY, `outside-user-authorization`, "action is not clearly within user authorization"** (331-335). This is the exact inverse of newtui's line 143.
+- `…/authorization_stage.py:325-335` — on the deliberative stage: explicit-authorization ⇒ ALLOW (326-330); **otherwise ⇒ DENY, `outside-user-authorization`, "action is not clearly within user authorization"** (331-335). This is the exact inverse of tui's line 143.
 
 **The standing product directive that chose the current behavior:**
-- `docs/decisions/ADR-0007-newtui-ground-up-architecture.md:37-41` — Resolution 0 (amended 2026-07-16, user directive): auto boots wide; "net/spend/exec run through the classifier, whose offline fallback is **wide (allow)** except destructive shapes and unrequested `git push`, which deny-and-continue into the needs-you queue."
+- `docs/decisions/ADR-0007-tui-ground-up-architecture.md:37-41` — Resolution 0 (amended 2026-07-16, user directive): auto boots wide; "net/spend/exec run through the classifier, whose offline fallback is **wide (allow)** except destructive shapes and unrequested `git push`, which deny-and-continue into the needs-you queue."
 - `docs/DESIGN-SPEC.md:90-95` — auto trust string `auto read,write · asks if risky`; "deny reserved for destructive shapes and unrequested outbound pushes."
 - `docs/decisions/ADR-0005-interaction-modes-and-trust-postures.md:4-9,29-36` — trust is a typed posture; default boot posture amended to `auto`; the ADR does **not** currently document auto's offline-classifier catch-all.
 
@@ -53,12 +53,12 @@ The contract (issue Acceptance): **"Explicit, documented posture + tests either 
 - `tests/test_kernel_approval_governance.py:254-302` — `test_offline_classifier_wide_scope_verdict_table` asserts `ls -la` (unmatched, non-destructive) ⇒ allow, reason `within amplifier's wide trust scope` (262-270).
 
 **Config-seam precedent to mirror (an already-shipped two-value posture knob):**
-- `src/amplifier_app_newtui/kernel/directory_permissions.py:203-205,275-282` — `write_boundary: "open" | "guarded"`, default `open` (app-cli parity), `open` branch returns allow with "filesystem tool enforces writes," `guarded` blocks pre-flight.
+- `src/amplifier_app_tui/kernel/directory_permissions.py:203-205,275-282` — `write_boundary: "open" | "guarded"`, default `open` (app-cli parity), `open` branch returns allow with "filesystem tool enforces writes," `guarded` blocks pre-flight.
 - `docs/SETTINGS.md:56` — user-facing doc row for `permissions.write_boundary` (open default, parity rationale). This is the template for documenting a new posture knob.
-- `src/amplifier_app_newtui/kernel/runtime.py:634-645` — `GovernanceHook` is constructed with **no `classifier=`** argument, so the production gate is the `OfflineAutoClassifier` default (governance_hook.py:216). newtui ships **no** provider-backed classifier — the offline catch-all *is* the shipped behavior, not a test-only fallback.
+- `src/amplifier_app_tui/kernel/runtime.py:634-645` — `GovernanceHook` is constructed with **no `classifier=`** argument, so the production gate is the `OfflineAutoClassifier` default (governance_hook.py:216). tui ships **no** provider-backed classifier — the offline catch-all *is* the shipped behavior, not a test-only fallback.
 
 **Classifier signature does not currently see the posture:**
-- `src/amplifier_app_newtui/kernel/governance_hook.py:65-72` and `127-134` — `classify(action, capability, target, user_messages)`; no `mode`/posture argument. Any posture-sensitive behavior must be threaded in.
+- `src/amplifier_app_tui/kernel/governance_hook.py:65-72` and `127-134` — `classify(action, capability, target, user_messages)`; no `mode`/posture argument. Any posture-sensitive behavior must be threaded in.
 
 ---
 
@@ -99,16 +99,16 @@ This is the honest middle: it does not overturn a standing user directive, it el
 - `docs/decisions/ADR-0005-interaction-modes-and-trust-postures.md`: add an "Amendment: auto-mode offline EXEC posture" section stating the default-allow posture, the deliberate divergence from app-cli `ReasoningBlindStageEvaluator`, and the new `exec_posture` knob.
 - `docs/ARCHITECTURE.md` §7.1 (around lines 440-449): add one paragraph: "In auto, the offline classifier is allow-by-default for non-destructive, in-project, non-outbound actions (`within amplifier's wide trust scope`, governance_hook.py:143). Unknown-tool EXEC and, under `permissions.exec_posture: gated`, all unmatched EXEC/NET/SPEND, deny-and-continue into needs-you."
 - `docs/SETTINGS.md`: add a `permissions.exec_posture` row modeled on the `write_boundary` row (line 56).
-- Keep `bundle.md` ↔ `data/bundles/newtui.md` byte-identical only if touched (this phase does not touch them).
+- Keep `bundle.md` ↔ `data/bundles/tui.md` byte-identical only if touched (this phase does not touch them).
 
 **Phase 1 — Posture plumbing (`open` default = no behavior change).**
-- `src/amplifier_app_newtui/kernel/directory_permissions.py`: add `exec_posture_setting(settings)` beside `write_boundary_setting` (39-47) resolving `permissions.exec_posture` → `"open" | "gated"`, default `"open"`.
-- `src/amplifier_app_newtui/kernel/governance_hook.py`:
+- `src/amplifier_app_tui/kernel/directory_permissions.py`: add `exec_posture_setting(settings)` beside `write_boundary_setting` (39-47) resolving `permissions.exec_posture` → `"open" | "gated"`, default `"open"`.
+- `src/amplifier_app_tui/kernel/governance_hook.py`:
   - Add an `exec_posture: Callable[[], str] | str = "open"` param to `GovernanceHook.__init__` (196-221).
   - In `_classify` (303-330), pass the resolved posture into the classifier call.
   - Extend `AutoClassifier.classify` / `OfflineAutoClassifier.classify` signature (65-72, 127-134) with `posture: str` and an `unknown_capability: bool` flag (or a distinct capability marker) so the catch-all at line 143 becomes: if `posture == "gated"` **or** `unknown_capability` → `return (False, "no positive signal · deferring under exec posture")`; else keep `(True, "within amplifier's wide trust scope")`.
   - Thread `unknown_capability` from `classify_tool`: add an out-of-band signal (e.g. `classify_tool` returns whether it hit the terminal EXEC fallback at trust.py:139) surfaced through `resolve`/`TrustDecision` (a new optional `fallback: bool` field on `TrustDecision`, trust.py:47-65) and read in `_govern_tool` (262-296).
-- `src/amplifier_app_newtui/kernel/runtime.py:634-645`: pass `exec_posture=exec_posture_setting(resolved.settings)` into `GovernanceHook(...)`, mirroring the `write_boundary` wiring at runtime.py:588.
+- `src/amplifier_app_tui/kernel/runtime.py:634-645`: pass `exec_posture=exec_posture_setting(resolved.settings)` into `GovernanceHook(...)`, mirroring the `write_boundary` wiring at runtime.py:588.
 
 **Phase 2 — `gated` behavior + narrowed `open`.**
 - Implement the branch logic above so: `open` + recognized-benign ⇒ allow (unchanged); `open` + unknown-tool EXEC ⇒ defer; `gated` + any unmatched EXEC/NET/SPEND ⇒ defer. Destructive / outside-project / unrequested-push denials remain first (governance_hook.py:135-142), unchanged.

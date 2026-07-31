@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.approval_bar import ApprovalOption
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.approval_bar import ApprovalOption
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
 LONG_OPTIONS = (
     "Refactor the module first, then add tests",
@@ -18,7 +18,7 @@ LONG_OPTIONS = (
 
 @pytest.mark.asyncio
 async def test_wrapped_options_stack_fullwidth_and_stay_on_screen() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=(80, 24)) as pilot:
         app.present_approval("t1", "Which approach should I take?", LONG_OPTIONS)
         await pilot.pause()
@@ -43,7 +43,7 @@ async def test_wrapped_options_stack_fullwidth_and_stay_on_screen() -> None:
 
 @pytest.mark.asyncio
 async def test_few_short_options_stay_on_one_row() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=(140, 24)) as pilot:
         app.present_approval("t1", "ok?", ("Allow once", "Allow always", "Deny"))
         await pilot.pause()

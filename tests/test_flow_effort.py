@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.ui import app_support
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.footer import footer_left_text
+from amplifier_app_tui.ui import app_support
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.footer import footer_left_text
 
 from .test_flow_helpers import SIZE, seed_done
 
@@ -38,7 +38,7 @@ async def test_ctrl_e_is_bound_as_a_global_chord() -> None:
 
 @pytest.mark.asyncio
 async def test_ctrl_e_cycles_effort_and_shows_footer_indicator() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
 
@@ -59,7 +59,7 @@ async def test_ctrl_e_cycles_effort_and_shows_footer_indicator() -> None:
 
 @pytest.mark.asyncio
 async def test_ctrl_e_suppressed_while_an_approval_owns_the_keyboard() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         # Mount an approval (the bar owns the keyboard, spec §7).

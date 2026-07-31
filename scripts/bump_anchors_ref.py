@@ -2,7 +2,7 @@
 
 The anchors include appears in THREE live files that must never drift
 (``kernel.updater.pin_files``): repo-root ``bundle.md``, the byte-identical
-packaged ``newtui.md``, and the packaged ``anchors.md`` pointer. This rewrites
+packaged ``tui.md``, and the packaged ``anchors.md`` pointer. This rewrites
 the ref across all three atomically, then re-asserts byte-identity and lockstep
 before writing anything — so a partial rewrite can't ship.
 
@@ -32,7 +32,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from amplifier_app_newtui.kernel.updater import (  # noqa: E402
+from amplifier_app_tui.kernel.updater import (  # noqa: E402
     _ANCHORS_REF_RE,
     _is_sha,
     pin_files,
@@ -86,10 +86,10 @@ def main(argv: list[str] | None = None) -> int:
 
     rewritten = {path: _rewrite_ref(path.read_text(encoding="utf-8"), args.ref) for path in files}
 
-    # Re-verify BEFORE writing: byte-identity (bundle.md ↔ newtui.md) + lockstep.
-    root_bundle, packaged_newtui, packaged_anchors = files
-    if rewritten[root_bundle] != rewritten[packaged_newtui]:
-        print("ERROR: bundle.md and newtui.md would not be byte-identical", file=sys.stderr)
+    # Re-verify BEFORE writing: byte-identity (bundle.md ↔ tui.md) + lockstep.
+    root_bundle, packaged_tui, packaged_anchors = files
+    if rewritten[root_bundle] != rewritten[packaged_tui]:
+        print("ERROR: bundle.md and tui.md would not be byte-identical", file=sys.stderr)
         return 1
     new_refs = {read_anchors_ref(text) for text in rewritten.values()}
     if new_refs != {args.ref}:

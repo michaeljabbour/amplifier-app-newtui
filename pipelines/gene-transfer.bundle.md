@@ -36,7 +36,7 @@ session:
       logs_root: ./runs
       params:
         donor_path: /Users/michaeljabbour/dev/amplifier-app-cli
-        newtui_path: /Users/michaeljabbour/dev/amplifier-app-newtui
+        tui_path: /Users/michaeljabbour/dev/amplifier-app-tui
         forge_tool: /Users/michaeljabbour/.claude/skills/amplifier-skill-forge/tools/forge.py
 ---
 
@@ -46,7 +46,7 @@ This bundle exists only to launch [`gene-transfer.dot`](gene-transfer.dot). See
 [README.md](README.md) for the full runbook, monitoring, and guardrails.
 
 ```sh
-cd /Users/michaeljabbour/dev/amplifier-app-newtui
+cd /Users/michaeljabbour/dev/amplifier-app-tui
 amplifier run --bundle pipelines/gene-transfer.bundle.md "run the gene-transfer pipeline"
 ```
 

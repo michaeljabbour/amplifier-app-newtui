@@ -31,7 +31,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.content import Content
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     Answer,
     Narration,
     Segment,
@@ -40,10 +40,10 @@ from amplifier_app_newtui.model.blocks import (
     TurnRule,
     UserLine,
 )
-from amplifier_app_newtui.ui.live_tail import LiveTail
-from amplifier_app_newtui.ui.segments import lines_plain
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
-from amplifier_app_newtui.ui.transcript import (
+from amplifier_app_tui.ui.live_tail import LiveTail
+from amplifier_app_tui.ui.segments import lines_plain
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.transcript import (
     HISTORY_WIDGET_LIMIT,
     HistoryArchive,
     TranscriptView,

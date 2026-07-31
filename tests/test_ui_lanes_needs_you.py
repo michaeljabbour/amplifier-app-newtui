@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     NeedsYouBlock,
     NeedsYouChoice,
     NeedsYouEntry,
 )
-from amplifier_app_newtui.ui.needs_you import (
+from amplifier_app_tui.ui.needs_you import (
     NeedsYouList,
     applying_decision_line,
     chip_text,
@@ -20,7 +20,7 @@ from amplifier_app_newtui.ui.needs_you import (
     needs_you_header,
     needs_you_header_line,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 # The mockup's deferred decision, verbatim.
 BLOCK = NeedsYouBlock(
@@ -96,7 +96,7 @@ async def test_block_renders_header_and_numbered_rows() -> None:
         widget = app.query_one(NeedsYouList)
         await pilot.pause()
         assert widget.header_text == "· Needs you  1 deferred decision"
-        from amplifier_app_newtui.ui.needs_you import (  # test-only
+        from amplifier_app_tui.ui.needs_you import (  # test-only
             _ChoiceChip,
             _DecisionRow,
             _NeedsYouHeader,
@@ -126,7 +126,7 @@ async def test_row_wraps_at_narrow_width_so_chip_stays_visible() -> None:
     """Spec §7/§12: chips are inline actionable click targets — the row
     wraps (mockup: normal HTML flow) instead of clipping the chip off
     the right edge at narrow terminal widths."""
-    from amplifier_app_newtui.ui.needs_you import _DecisionRow  # test-only
+    from amplifier_app_tui.ui.needs_you import _DecisionRow  # test-only
 
     app = NeedsYouHost()
     async with app.run_test(size=(80, 24)) as pilot:
@@ -143,7 +143,7 @@ async def test_row_wraps_at_narrow_width_so_chip_stays_visible() -> None:
 
 @pytest.mark.asyncio
 async def test_row_stays_single_line_when_it_fits() -> None:
-    from amplifier_app_newtui.ui.needs_you import _DecisionRow  # test-only
+    from amplifier_app_tui.ui.needs_you import _DecisionRow  # test-only
 
     app = NeedsYouHost()
     async with app.run_test(size=(160, 24)) as pilot:
@@ -182,6 +182,6 @@ async def test_update_block_rerenders() -> None:
         widget.update_block(two)
         await pilot.pause()
         assert widget.header_text == "· Needs you  2 deferred decision"
-        from amplifier_app_newtui.ui.needs_you import _DecisionRow  # test-only
+        from amplifier_app_tui.ui.needs_you import _DecisionRow  # test-only
 
         assert [row.number for row in widget.query(_DecisionRow)] == [1, 2]

@@ -21,8 +21,8 @@ import inspect
 
 import pytest
 
-from amplifier_app_newtui.kernel.runtime import RealRuntime
-from amplifier_app_newtui.ui.runtime_adapter import (
+from amplifier_app_tui.kernel.runtime import RealRuntime
+from amplifier_app_tui.ui.runtime_adapter import (
     SESSION_OPS,
     RealRuntimeAdapter,
     RuntimeAdapter,

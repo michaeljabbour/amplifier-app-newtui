@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from amplifier_app_newtui.commands.builtin import BUILTIN_COMMANDS, build_registry
-from amplifier_app_newtui.commands.doctor import McpServerStats
-from amplifier_app_newtui.commands.improve import ApprovalTally, OverriddenDenial
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.commands.builtin import BUILTIN_COMMANDS, build_registry
+from amplifier_app_tui.commands.doctor import McpServerStats
+from amplifier_app_tui.commands.improve import ApprovalTally, OverriddenDenial
+from amplifier_app_tui.model.blocks import (
     ContextBlock,
     DoctorBlock,
     ImproveBlock,
     LedgerBlock,
     SessionBanner,
 )
-from amplifier_app_newtui.model.turn import TurnOutcome, TurnTelemetry
+from amplifier_app_tui.model.turn import TurnOutcome, TurnTelemetry
 
 # The mockup COMMANDS table, verbatim: (group, name, desc, tag).
 MOCKUP_TABLE = [
@@ -382,7 +382,7 @@ def test_improve_posts_proposals_and_never_mutates(fake_command_context) -> None
 
 def test_key_actions_exist_in_keymap() -> None:
     """Registry key_action ids must be real keymap actions (single source)."""
-    from amplifier_app_newtui.ui.keymap import KEYMAP
+    from amplifier_app_tui.ui.keymap import KEYMAP
 
     keymap_actions = {binding.action for binding in KEYMAP}
     registry = build_registry()

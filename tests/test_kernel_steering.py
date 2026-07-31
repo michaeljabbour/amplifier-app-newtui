@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 from amplifier_core import HookResult
 
-from amplifier_app_newtui.kernel.steering import StepBoundaryBridge
-from amplifier_app_newtui.model.queues import (
+from amplifier_app_tui.kernel.steering import StepBoundaryBridge
+from amplifier_app_tui.model.queues import (
     NeedsYouItem,
     NeedsYouQueue,
     QueuedMessage,
@@ -164,9 +164,9 @@ def test_register_hooks_priority_950() -> None:
     hooks = FakeHooks()
     bridge = StepBoundaryBridge(ROOT, SteeringQueue())
     unregister = bridge.register_hooks(hooks)
-    assert hooks.registered == [("provider:request", 950, "newtui-step-boundary-steering")]
+    assert hooks.registered == [("provider:request", 950, "tui-step-boundary-steering")]
     unregister()
-    assert hooks.unregistered == ["newtui-step-boundary-steering"]
+    assert hooks.unregistered == ["tui-step-boundary-steering"]
 
 
 @pytest.mark.asyncio
@@ -180,7 +180,7 @@ def test_real_runtime_steer_applied_emits_narration() -> None:
     # DESIGN-SPEC §5 / mockup runTurn L327: consuming a steer at a step
     # boundary logs the "Applying steer: <text>" narration — the real
     # runtime wires the bridge's on_applied to this transcript emission.
-    from amplifier_app_newtui.kernel.runtime import RealRuntime
+    from amplifier_app_tui.kernel.runtime import RealRuntime
 
     runtime = RealRuntime()
     runtime._steer_applied(QueuedMessage(message_id="m1", text="focus on the tests"))

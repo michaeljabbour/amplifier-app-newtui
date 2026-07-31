@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from amplifier_app_newtui.kernel import session_ops
+from amplifier_app_tui.kernel import session_ops
 
 
 class FakeProvider:

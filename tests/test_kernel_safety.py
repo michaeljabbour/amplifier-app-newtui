@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from amplifier_app_newtui.kernel.directory_permissions import DirectoryPolicy
-from amplifier_app_newtui.kernel.safety import resolve_safety
-from amplifier_app_newtui.model.trust import CapabilityClass, resolve, resolve_capability
+from amplifier_app_tui.kernel.directory_permissions import DirectoryPolicy
+from amplifier_app_tui.kernel.safety import resolve_safety
+from amplifier_app_tui.model.trust import CapabilityClass, resolve, resolve_capability
 
 
 def _capability(capability: CapabilityClass):

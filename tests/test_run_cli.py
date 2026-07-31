@@ -7,8 +7,8 @@ import json
 
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel.events import PromptComplete, PromptSubmit
-from amplifier_app_newtui.main import main
+from amplifier_app_tui.kernel.events import PromptComplete, PromptSubmit
+from amplifier_app_tui.main import main
 
 
 class FakeRuntime:
@@ -53,7 +53,7 @@ class StreamingRuntime(FakeRuntime):
 
 
 def test_run_reads_stdin_and_prints_text(monkeypatch) -> None:
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FakeRuntime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", FakeRuntime)
     result = CliRunner().invoke(main, ["run"], input="piped prompt\n")
     assert result.exit_code == 0
     assert result.stdout.endswith("fake response\n")
@@ -61,7 +61,7 @@ def test_run_reads_stdin_and_prints_text(monkeypatch) -> None:
 
 
 def test_json_stdout_is_one_parseable_document(monkeypatch) -> None:
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FakeRuntime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", FakeRuntime)
     result = CliRunner().invoke(main, ["run", "--output-format", "json"], input="piped prompt\n")
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
@@ -78,7 +78,7 @@ def test_json_stdout_is_one_parseable_document(monkeypatch) -> None:
 
 
 def test_json_trace_contains_normalized_events(monkeypatch) -> None:
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FakeRuntime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", FakeRuntime)
     result = CliRunner().invoke(
         main,
         ["run", "prompt arg", "--output-format", "json-trace"],
@@ -90,7 +90,7 @@ def test_json_trace_contains_normalized_events(monkeypatch) -> None:
 
 
 def test_jsonl_is_versioned_sequenced_and_streamed_live(monkeypatch) -> None:
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", StreamingRuntime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", StreamingRuntime)
     StreamingRuntime.event_was_written = asyncio.Event()
 
     class LiveCapture:
@@ -110,7 +110,7 @@ def test_jsonl_is_versioned_sequenced_and_streamed_live(monkeypatch) -> None:
             return None
 
     output = LiveCapture()
-    from amplifier_app_newtui.main import _run_once
+    from amplifier_app_tui.main import _run_once
 
     exit_code = asyncio.run(
         _run_once("stream me", None, "jsonl", jsonl_output=output)  # type: ignore[arg-type]
@@ -130,7 +130,7 @@ def test_jsonl_is_versioned_sequenced_and_streamed_live(monkeypatch) -> None:
 
 
 def test_jsonl_cli_reserves_stdout_for_json_lines(monkeypatch) -> None:
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FakeRuntime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", FakeRuntime)
     result = CliRunner().invoke(main, ["run", "prompt arg", "--output-format", "jsonl"])
     assert result.exit_code == 0
     records = [json.loads(line) for line in result.stdout.splitlines()]
@@ -141,7 +141,7 @@ def test_jsonl_cli_reserves_stdout_for_json_lines(monkeypatch) -> None:
 
 
 def test_json_failure_is_still_one_parseable_document(monkeypatch) -> None:
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FailingRuntime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", FailingRuntime)
     result = CliRunner().invoke(main, ["run", "prompt arg", "--output-format", "json"])
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
@@ -153,7 +153,7 @@ def test_json_failure_is_still_one_parseable_document(monkeypatch) -> None:
 
 
 def test_jsonl_failure_is_one_terminal_error_record(monkeypatch) -> None:
-    monkeypatch.setattr("amplifier_app_newtui.kernel.runtime.RealRuntime", FailingRuntime)
+    monkeypatch.setattr("amplifier_app_tui.kernel.runtime.RealRuntime", FailingRuntime)
     result = CliRunner().invoke(main, ["run", "prompt arg", "--output-format", "jsonl"])
     assert result.exit_code == 1
     records = [json.loads(line) for line in result.stdout.splitlines()]

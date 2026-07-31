@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from amplifier_app_newtui.ui.runtime_adapter import RealRuntimeAdapter
+from amplifier_app_tui.ui.runtime_adapter import RealRuntimeAdapter
 
 
 def test_shutdown_is_noop_when_runtime_loop_already_closed() -> None:

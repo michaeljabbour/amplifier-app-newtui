@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.footer import footer_right_text
-from amplifier_app_newtui.ui.palette import _CommandRow, _GroupHeader
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.footer import footer_right_text
+from amplifier_app_tui.ui.palette import _CommandRow, _GroupHeader
 
 from .test_flow_helpers import (
     SIZE,
@@ -70,7 +70,7 @@ ALL_COMMANDS = (
 
 @pytest.mark.asyncio
 async def test_slash_opens_palette_with_group_headers_and_filters() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
 
@@ -105,7 +105,7 @@ async def test_slash_opens_palette_with_group_headers_and_filters() -> None:
 
 @pytest.mark.asyncio
 async def test_enter_runs_top_match_with_user_line_echo() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "/led")
@@ -124,7 +124,7 @@ async def test_enter_runs_top_match_with_user_line_echo() -> None:
 
 @pytest.mark.asyncio
 async def test_arrow_selection_and_click_runs_any_row() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await pilot.press("/")
@@ -148,7 +148,7 @@ async def test_arrow_selection_and_click_runs_any_row() -> None:
 @pytest.mark.asyncio
 async def test_esc_closes_palette_before_interrupting_running_turn() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "hi")
@@ -180,7 +180,7 @@ async def test_esc_with_zero_match_filter_clears_filter_not_the_turn() -> None:
     even when the filter matches zero commands (strip hidden) — it never
     falls through to interrupt-running (§5 esc priority)."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "hi")
@@ -210,7 +210,7 @@ async def test_esc_with_zero_match_filter_clears_filter_not_the_turn() -> None:
 async def test_enter_mid_turn_runs_palette_match_instead_of_steering() -> None:
     """Mockup onKeyDown: the palette branch precedes the running/steer branch."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "hi")
@@ -235,7 +235,7 @@ async def test_enter_mid_turn_runs_palette_match_instead_of_steering() -> None:
 async def test_shift_enter_mid_turn_runs_palette_match_instead_of_queueing() -> None:
     """Mockup onKeyDown: the palette branch precedes the shiftKey/queue branch."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "hi")
@@ -259,7 +259,7 @@ async def test_shift_enter_mid_turn_runs_palette_match_instead_of_queueing() -> 
 @pytest.mark.asyncio
 async def test_shift_enter_idle_runs_palette_match_instead_of_sending() -> None:
     """Mockup onKeyDown: idle shift+enter with a live palette match runs it."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         turns_before = len(blocks_of(app, "user_line"))
@@ -281,7 +281,7 @@ async def test_shift_enter_idle_runs_palette_match_instead_of_sending() -> None:
 @pytest.mark.asyncio
 async def test_trailing_space_keeps_palette_open_with_trimmed_filter() -> None:
     """Mockup onInput trims: '/mode ' still matches /mode; '/ ' keeps '/'."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "/mode ")

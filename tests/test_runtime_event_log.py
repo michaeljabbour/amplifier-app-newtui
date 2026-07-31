@@ -17,8 +17,8 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
-from amplifier_app_newtui.kernel.cost import CostTracker, restore_session_cost
-from amplifier_app_newtui.kernel.events import (
+from amplifier_app_tui.kernel.cost import CostTracker, restore_session_cost
+from amplifier_app_tui.kernel.events import (
     ContentBlockEnd,
     ProviderResponseUsage,
     StreamAborted,
@@ -27,8 +27,8 @@ from amplifier_app_newtui.kernel.events import (
     StreamBlockStart,
     ToolPost,
 )
-from amplifier_app_newtui.kernel.persistence import SessionStore
-from amplifier_app_newtui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel.persistence import SessionStore
+from amplifier_app_tui.kernel.runtime import RealRuntime
 
 
 def _runtime_with_store(tmp_path: Path, session_id: str = "s1") -> RealRuntime:

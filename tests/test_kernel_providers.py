@@ -1,6 +1,6 @@
 """Configured-provider logic (``kernel/setup.py``): the merged view, the
 first-run gate condition, and ``provider use/remove`` — the app-cli
-``config.providers`` contract re-expressed over newtui scope files.
+``config.providers`` contract re-expressed over tui scope files.
 
 Pure dict/file work against ``tmp_path`` scopes; never the real ~/.amplifier.
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel import bundle_admin, setup
+from amplifier_app_tui.kernel import bundle_admin, setup
 
 _CRED_VARS = (
     "ANTHROPIC_API_KEY",
@@ -157,7 +157,7 @@ def test_remove_provider_unknown_returns_none(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_onboarding_choices_falls_back_to_known_table(monkeypatch) -> None:
-    # newtui mounts providers from the bundle, so discovery can be empty; the
+    # tui mounts providers from the bundle, so discovery can be empty; the
     # setup flow must still offer the known providers with correct key vars.
     async def _empty(*a, **k):
         return ()

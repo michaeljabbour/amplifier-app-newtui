@@ -11,9 +11,9 @@ differences are structural and worth reading before you seed a single row.
    every row is a pure *capability re-expression*. "Never copy" is free here; the
    discipline that actually matters is **triage** (below).
 2. **Two targets that are not peers.**
-   - `~/dev/amplifier-app-newtui` — Python/Textual. Owns the **backend**
+   - `~/dev/amplifier-app-tui` — Python/Textual. Owns the **backend**
      (kernel/model/commands + the `serve` stdio protocol) and one client UI.
-   - `~/dev/amplifier-app-newtui-rust` — Rust/ratatui. A **pure protocol client**
+   - `~/dev/amplifier-app-tui-rust` — Rust/ratatui. A **pure protocol client**
      of the Python `serve` backend (codex-tui / codex-core split). It renders what
      the protocol exposes; it owns no session/agent logic.
    - So each capability is classified by **where it lives** (ledger column 2):
@@ -38,7 +38,7 @@ acceptance is derived from the donor by the pipeline itself.
 
 ## Triage FIRST (the load-bearing step)
 
-opencode has ~45 user-facing capabilities. **Most should not be ported.** newtui is
+opencode has ~45 user-facing capabilities. **Most should not be ported.** tui is
 already broad (post-app-cli campaign + the serve/rust work), several opencode
 features are out of scope for a local terminal app, and a few conflict with
 amplifier's philosophy. Seeding blindly would teach the harness to do busywork.
@@ -47,8 +47,8 @@ Before launch, run a **gap-check** against *both* current repos and drop
 already-have / out-of-scope rows. Cheapest form — one delegation:
 
 > Delegate a read-only pass: "For each candidate slug in pipelines/OPENCODE.md,
-> check whether the capability already exists in ~/dev/amplifier-app-newtui
-> (grep commands/, kernel/, model/, ui/) and ~/dev/amplifier-app-newtui-rust
+> check whether the capability already exists in ~/dev/amplifier-app-tui
+> (grep commands/, kernel/, model/, ui/) and ~/dev/amplifier-app-tui-rust
 > (src/). Return keep / already-have(cite) / partial for each."
 
 ### SKIP — out of scope or philosophy-mismatch (do not seed)
@@ -59,10 +59,10 @@ hosted session-share links (`opncd.ai/share`) · the ~30-hook plugin system
 (amplifier has its own module/hook system) · the 20+ bundled AI-SDK provider
 adapters (amplifier providers are separate modules) · embedded in-process SDK.
 Also **`session.background`/detach**: genuinely useful but blocked by the same
-full-screen-TUI host-seam gap newtui already hit (#45/#108) — needs that seam
+full-screen-TUI host-seam gap tui already hit (#45/#108) — needs that seam
 first, not a port.
 
-### ALREADY IN NEWTUI — verify, don't re-port
+### ALREADY IN TUI — verify, don't re-port
 
 sessions list/rename/delete/**fork**/resume · subagent/`task` delegation + fan-out ·
 plan mode + plan→build handoff · permissions/approvals/needs-you · providers
@@ -83,7 +83,7 @@ before you exclude them.)
 | `model-variant-cycle` | Cycle a mid-session dimension orthogonal to model (e.g. thinking-effort tier) | `packages/tui/src/component/dialog-variant.tsx` (`variant.cycle`) | `split` |
 | `session-tags` | Tag/label sessions for organization | `packages/tui/src/component/dialog-tag.tsx` | `split` |
 | `stats-dashboard` | `stats --days --models --project` cost/usage dashboard | `packages/opencode/src/cli/cmd/stats.ts` | `python` |
-| `sanitized-export-import` | Export a session with path/text/tool-IO redaction; import it back (verify vs newtui `/export`) | `packages/opencode/src/cli/cmd/{export,import}.ts` | `python` |
+| `sanitized-export-import` | Export a session with path/text/tool-IO redaction; import it back (verify vs tui `/export`) | `packages/opencode/src/cli/cmd/{export,import}.ts` | `python` |
 
 `split` rows expand to two: e.g. `codemode-execute-backend` (`python`) →
 `codemode-execute-client` (`both`).
@@ -91,7 +91,7 @@ before you exclude them.)
 ### Ready-to-paste seed block (after triage prunes it)
 
 ```sh
-cd ~/dev/amplifier-app-newtui
+cd ~/dev/amplifier-app-tui
 L() { LEDGER_FILE=pipelines/opencode-ledger.tsv python3 pipelines/ledger.py "$@"; }
 # split → two ordered rows (backend before client)
 L add codemode-execute-backend python
@@ -121,16 +121,16 @@ paste a driver prompt into an `amplifier` session — your session already has
 re-verified independently before each PR). Alternative: register a launcher bundle
 and run `opencode-transfer.dot` through the real `loop-pipeline` engine.
 
-Prereqs beyond gene-transfer's: `~/dev/opencode`, `~/dev/amplifier-app-newtui-rust`
+Prereqs beyond gene-transfer's: `~/dev/opencode`, `~/dev/amplifier-app-tui-rust`
 present; a Rust toolchain (`cargo`, `clippy`); `gh` authed for **both** GitHub
-repos; forge daemon up (it can boot the Rust binary `amplifier-newtui-rs` too).
+repos; forge daemon up (it can boot the Rust binary `amplifier-tui-rs` too).
 
 ## Decisions needed before a run
 
 - **D1 — scope.** Which candidates survive the gap-check? (I did not seed any;
   the ledger is intentionally empty.)
 - **D2 — Rust gate authority.** Confirm the Rust acceptance bar: `cargo test` +
-  `cargo clippy -D warnings` + a forge boot of `amplifier-newtui-rs`, and that the
+  `cargo clippy -D warnings` + a forge boot of `amplifier-tui-rs`, and that the
   Python suite must stay green (MIGRATION.md discipline). Adjust the `UnitValidate`
   node if the real bar differs (e.g. a coverage floor like the Python side).
 - **D3 — split ordering across repos.** A `both`/`split` client row can't merge

@@ -27,15 +27,15 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.approval import (
+from amplifier_app_tui.kernel.approval import (
     ALLOW_ONCE,
     DENY,
     STANDARD_OPTIONS,
     ApprovalBroker,
 )
-from amplifier_app_newtui.kernel.events import normalize, recipe_approval_prompt
-from amplifier_app_newtui.kernel.recipes import RecipeApprovalBridge
-from amplifier_app_newtui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel.events import normalize, recipe_approval_prompt
+from amplifier_app_tui.kernel.recipes import RecipeApprovalBridge
+from amplifier_app_tui.kernel.runtime import RealRuntime
 
 GATE_PAYLOAD: dict[str, Any] = {
     "name": "demo-flow",

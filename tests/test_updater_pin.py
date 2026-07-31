@@ -13,7 +13,7 @@ from types import ModuleType
 
 import pytest
 
-from amplifier_app_newtui.kernel import updater
+from amplifier_app_tui.kernel import updater
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -62,7 +62,7 @@ def test_anchors_ref_reads_real_packaged_bundle() -> None:
 def test_pin_files_lists_all_three_live_copies() -> None:
     files = updater.pin_files(REPO_ROOT)
     names = {p.name for p in files}
-    assert names == {"bundle.md", "newtui.md", "anchors.md"}
+    assert names == {"bundle.md", "tui.md", "anchors.md"}
     for path in files:
         assert path.exists(), f"pin file missing: {path}"
 
@@ -85,7 +85,7 @@ def test_describe_behind_names_the_action() -> None:
     )
     text = status.describe()
     assert status.is_stale
-    assert "behind upstream" in text and "amplifier-newtui update" in text
+    assert "behind upstream" in text and "amplifier-tui update" in text
 
 
 def test_describe_current() -> None:
@@ -163,9 +163,9 @@ def _write_pin_copies(root: Path, ref: str) -> None:
     )
     body = "---\n" + include + "---\nbody\n"
     (root / "bundle.md").write_text(body, encoding="utf-8")
-    packaged = root / "src" / "amplifier_app_newtui" / "data" / "bundles"
+    packaged = root / "src" / "amplifier_app_tui" / "data" / "bundles"
     packaged.mkdir(parents=True, exist_ok=True)
-    (packaged / "newtui.md").write_text(body, encoding="utf-8")
+    (packaged / "tui.md").write_text(body, encoding="utf-8")
     (packaged / "anchors.md").write_text("---\n" + include + "---\npointer\n", encoding="utf-8")
 
 
@@ -178,9 +178,9 @@ def test_bump_rewrites_all_copies(tmp_path: Path, monkeypatch) -> None:
         updater.read_anchors_ref(p.read_text(encoding="utf-8")) for p in updater.pin_files(tmp_path)
     }
     assert refs == {"v2.3.0"}
-    # byte-identity (bundle.md ↔ newtui.md) preserved by the bump.
-    root, newtui, _ = updater.pin_files(tmp_path)
-    assert root.read_bytes() == newtui.read_bytes()
+    # byte-identity (bundle.md ↔ tui.md) preserved by the bump.
+    root, tui, _ = updater.pin_files(tmp_path)
+    assert root.read_bytes() == tui.read_bytes()
 
 
 def test_bump_is_idempotent(tmp_path: Path, monkeypatch) -> None:

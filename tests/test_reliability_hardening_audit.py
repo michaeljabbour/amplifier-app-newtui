@@ -19,22 +19,22 @@ from pathlib import Path
 
 import pytest
 
-from amplifier_app_newtui.kernel.approval import ApprovalBroker, ApprovalTicket
-from amplifier_app_newtui.kernel.config import (
+from amplifier_app_tui.kernel.approval import ApprovalBroker, ApprovalTicket
+from amplifier_app_tui.kernel.config import (
     SettingsPaths,
     load_merged_settings,
     load_merged_settings_reporting,
     malformed_settings_notice,
 )
-from amplifier_app_newtui.kernel.events import ProviderResponseUsage
-from amplifier_app_newtui.kernel.persistence import (
+from amplifier_app_tui.kernel.events import ProviderResponseUsage
+from amplifier_app_tui.kernel.persistence import (
     METADATA_FILENAME,
     TRANSCRIPT_FILENAME,
     SessionStore,
 )
-from amplifier_app_newtui.kernel.runtime import RealRuntime
-from amplifier_app_newtui.model.queues import NeedsYouQueue, SteeringQueue
-from amplifier_app_newtui.ui.runtime_adapter import RealRuntimeAdapter
+from amplifier_app_tui.kernel.runtime import RealRuntime
+from amplifier_app_tui.model.queues import NeedsYouQueue, SteeringQueue
+from amplifier_app_tui.ui.runtime_adapter import RealRuntimeAdapter
 
 
 # -- Item 1: compaction task GC risk ----------------------------------------
@@ -85,7 +85,7 @@ async def test_cleanup_failure_is_logged_not_silent(
         async def cleanup(self) -> None:
             raise RuntimeError("teardown boom")
 
-    with caplog.at_level(logging.DEBUG, logger="amplifier_app_newtui.ui.runtime_adapter"):
+    with caplog.at_level(logging.DEBUG, logger="amplifier_app_tui.ui.runtime_adapter"):
         await adapter._safe_cleanup(_BoomRuntime())
 
     assert any("cleanup failed" in record.getMessage() for record in caplog.records), (

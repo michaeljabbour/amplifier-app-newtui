@@ -1,7 +1,7 @@
 """``kernel/config_ops`` -- seed from mount plan + persist to a settings scope.
 
 The side-effecting half of ``/config`` (the pure logic lives in
-``model/config``). Save reuses newtui's own scope machinery
+``model/config``). Save reuses tui's own scope machinery
 (``kernel/bundle_admin``), never amplifier-app-cli's ``AppSettings``.
 """
 
@@ -11,8 +11,8 @@ from pathlib import Path
 
 import yaml
 
-from amplifier_app_newtui.kernel import config_ops
-from amplifier_app_newtui.model.config import SessionConfigState
+from amplifier_app_tui.kernel import config_ops
+from amplifier_app_tui.model.config import SessionConfigState
 
 
 def test_state_from_plan_seeds_categories() -> None:
@@ -37,7 +37,7 @@ def test_amplifier_home_honours_env(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_save_writes_global_scope_under_configurator_key(tmp_path: Path) -> None:
-    from amplifier_app_newtui.model.config import ConfigItem
+    from amplifier_app_tui.model.config import ConfigItem
 
     state = SessionConfigState([ConfigItem("tools", "bash", True)], bundle="anchors")
     state.toggle("tools", "bash", enable=False)
@@ -55,7 +55,7 @@ def test_save_writes_global_scope_under_configurator_key(tmp_path: Path) -> None
 
 
 def test_save_project_scope_targets_project_amplifier_dir(tmp_path: Path) -> None:
-    from amplifier_app_newtui.model.config import ConfigItem
+    from amplifier_app_tui.model.config import ConfigItem
 
     state = SessionConfigState([ConfigItem("tools", "bash", True)], bundle="b")
     state.toggle("tools", "bash", enable=False)
@@ -65,7 +65,7 @@ def test_save_project_scope_targets_project_amplifier_dir(tmp_path: Path) -> Non
 
 
 def test_save_preserves_unrelated_existing_settings(tmp_path: Path) -> None:
-    from amplifier_app_newtui.model.config import ConfigItem
+    from amplifier_app_tui.model.config import ConfigItem
 
     target = tmp_path / "settings.yaml"
     target.write_text(yaml.safe_dump({"bundle": {"active": "anchors"}}))

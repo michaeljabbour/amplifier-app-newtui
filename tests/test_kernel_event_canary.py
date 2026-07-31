@@ -17,8 +17,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from amplifier_app_newtui.kernel.events import Notification, UIEvent
-from amplifier_app_newtui.kernel.queue_bridge import (
+from amplifier_app_tui.kernel.events import Notification, UIEvent
+from amplifier_app_tui.kernel.queue_bridge import (
     CONSUMED_EVENTS,
     IGNORED_EVENTS,
     QueueBridge,

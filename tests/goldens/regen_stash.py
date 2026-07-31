@@ -1,6 +1,6 @@
 """Regenerate the prompt-stash list golden (tests/goldens/stash_list.txt).
 
-    cd /Users/michaeljabbour/dev/amplifier-app-newtui
+    cd /Users/michaeljabbour/dev/amplifier-app-tui
     uv run python tests/goldens/regen_stash.py
 
 A golden change IS a renderer change — review the diff.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from amplifier_app_newtui.model.prompt_stash import StashEntry, render_stash_list
+from amplifier_app_tui.model.prompt_stash import StashEntry, render_stash_list
 
 GOLDEN = Path(__file__).resolve().parent / "stash_list.txt"
 

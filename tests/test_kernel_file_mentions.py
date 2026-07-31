@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from amplifier_app_newtui.kernel.file_mentions import (
+from amplifier_app_tui.kernel.file_mentions import (
     discover_workspace_files,
     filter_file_mentions,
 )

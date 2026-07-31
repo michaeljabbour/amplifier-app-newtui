@@ -1,4 +1,4 @@
-"""``amplifier-newtui notify`` group wiring (click CliRunner).
+"""``amplifier-tui notify`` group wiring (click CliRunner).
 
 Admin logic is unit-tested in ``test_kernel_notify_admin`` and the bridges in
 ``test_kernel_notify_config``; this covers the CLI plumbing: help/subcommands,
@@ -12,8 +12,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel import bundle_admin, notify_admin
-from amplifier_app_newtui.main import main
+from amplifier_app_tui.kernel import bundle_admin, notify_admin
+from amplifier_app_tui.main import main
 
 
 def _redirect(monkeypatch, tmp_path: Path):

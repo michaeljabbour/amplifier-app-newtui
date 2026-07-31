@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.kernel.config import ResolvedConfig
-from amplifier_app_newtui.kernel.session_factory import (
+from amplifier_app_tui.kernel.config import ResolvedConfig
+from amplifier_app_tui.kernel.session_factory import (
     APPLICATION_HOST,
     RESUME_CAPABILITY,
     SPAWN_CAPABILITY,
@@ -338,7 +338,7 @@ async def test_missing_provider_hard_fails_and_cleans_up(tmp_path: Path) -> None
 async def test_partial_provider_failure_degrades_not_fatal(tmp_path: Path) -> None:
     # One provider up (Anthropic), one down (a vLLM 'openmj' whose endpoint
     # is offline): the session runs on the working provider and notes the
-    # other — it must NOT hard-fail (regression: newtui killed the whole
+    # other — it must NOT hard-fail (regression: tui killed the whole
     # app when any single provider failed to mount).
     mount_plan = {
         "providers": [

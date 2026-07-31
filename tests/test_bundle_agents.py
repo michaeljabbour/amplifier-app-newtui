@@ -1,4 +1,4 @@
-"""Guard: the packaged newtui bundle is a THIN WRAPPER over anchors.
+"""Guard: the packaged tui bundle is a THIN WRAPPER over anchors.
 
 The bundle composes foundation's `anchors` bundle (ref-pinned include: tracks
 foundation @main, the only ref that ships bundles/anchors) and
@@ -17,7 +17,7 @@ import re
 
 import yaml
 
-from amplifier_app_newtui.kernel.config import packaged_bundles_dir
+from amplifier_app_tui.kernel.config import packaged_bundles_dir
 
 ANCHORS_INCLUDE_RE = re.compile(
     r"^git\+https://github\.com/microsoft/amplifier-foundation"
@@ -26,7 +26,7 @@ ANCHORS_INCLUDE_RE = re.compile(
 
 
 def _frontmatter() -> dict:
-    text = (packaged_bundles_dir() / "newtui.md").read_text(encoding="utf-8")
+    text = (packaged_bundles_dir() / "tui.md").read_text(encoding="utf-8")
     assert text.startswith("---"), "bundle must open with a YAML frontmatter fence"
     data = yaml.safe_load(text.split("---", 2)[1])
     assert isinstance(data, dict)
@@ -34,8 +34,8 @@ def _frontmatter() -> dict:
 
 
 def test_wrapper_keeps_bundle_name() -> None:
-    """Discovery/override mechanics depend on the name staying `newtui`."""
-    assert _frontmatter().get("bundle", {}).get("name") == "newtui"
+    """Discovery/override mechanics depend on the name staying `tui`."""
+    assert _frontmatter().get("bundle", {}).get("name") == "tui"
 
 
 def test_wrapper_includes_ref_pinned_anchors() -> None:

@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from amplifier_app_newtui.kernel.approval import (
+from amplifier_app_tui.kernel.approval import (
     ALLOW_ALWAYS,
     ALLOW_ONCE,
     DENY,
@@ -19,8 +19,8 @@ from amplifier_app_newtui.kernel.approval import (
     is_allow,
     presented_options,
 )
-from amplifier_app_newtui.model.queues import NeedsYouQueue
-from amplifier_app_newtui.model.trust import DenialLog
+from amplifier_app_tui.model.queues import NeedsYouQueue
+from amplifier_app_tui.model.trust import DenialLog
 
 
 def make_broker() -> tuple[ApprovalBroker, NeedsYouQueue, DenialLog]:

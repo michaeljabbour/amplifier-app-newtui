@@ -1,4 +1,4 @@
-"""context-intelligence-logging wiring: the newtui glue for issue #51.
+"""context-intelligence-logging wiring: the tui glue for issue #51.
 
 The telemetry sink itself is the upstream ``hook-context-intelligence``
 module, composed in via a ``bundle.app`` overlay — this app never vendors
@@ -14,16 +14,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from amplifier_app_newtui.kernel.config import (
+from amplifier_app_tui.kernel.config import (
     expand_env_placeholders,
     inject_telemetry_config,
 )
-from amplifier_app_newtui.kernel.runtime import (
+from amplifier_app_tui.kernel.runtime import (
     _SUPPRESSED_HOOKS_DEFAULT,
     _apply_hook_suppression,
     suppressed_hooks_setting,
 )
-from amplifier_app_newtui.kernel.session_factory import (
+from amplifier_app_tui.kernel.session_factory import (
     InitializedSession,
     MountReport,
 )

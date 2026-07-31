@@ -12,7 +12,7 @@ canonical block at that width, in union order, separated by
 
 Regenerate after an intentional renderer change:
 
-    cd /Users/michaeljabbour/dev/amplifier-app-newtui
+    cd /Users/michaeljabbour/dev/amplifier-app-tui
     uv run python tests/goldens/regen.py
 
 then review the diff — a golden change IS a rendering change.
@@ -23,7 +23,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from amplifier_app_newtui.kernel.demo import (
+from amplifier_app_tui.kernel.demo import (
     AUTO_BLOCK_CONTINUATION,
     AUTO_BLOCK_REASON,
     BRAINSTORM_IDEAS,
@@ -42,7 +42,7 @@ from amplifier_app_newtui.kernel.demo import (
     STORE_PLAN_TITLE,
     STORE_STEPS,
 )
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     Answer,
     Blocked,
     BrainstormIdea,
@@ -73,11 +73,11 @@ from amplifier_app_newtui.model.blocks import (
     UserLine,
     WorkingStatus,
 )
-from amplifier_app_newtui.model.evidence import EvidenceLink
-from amplifier_app_newtui.model.turn import TurnTelemetry
-from amplifier_app_newtui.ui.live_tail import answer_spans
-from amplifier_app_newtui.ui.reducer import codemode_execute_block
-from amplifier_app_newtui.ui.transcript import render_block_markup
+from amplifier_app_tui.model.evidence import EvidenceLink
+from amplifier_app_tui.model.turn import TurnTelemetry
+from amplifier_app_tui.ui.live_tail import answer_spans
+from amplifier_app_tui.ui.reducer import codemode_execute_block
+from amplifier_app_tui.ui.transcript import render_block_markup
 
 GOLDEN_DIR = Path(__file__).resolve().parent
 

@@ -1,4 +1,4 @@
-"""CLI: `amplifier-newtui session <verb>` + the `resume` picker.
+"""CLI: `amplifier-tui session <verb>` + the `resume` picker.
 
 Every test runs against a scratch ``$HOME`` (monkeypatched) so the stored
 sessions live in a tmp dir, never the developer's real ``~/.amplifier``.
@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-import amplifier_app_newtui.main as main_mod
-from amplifier_app_newtui.kernel.persistence import SessionStore
-from amplifier_app_newtui.main import main
+import amplifier_app_tui.main as main_mod
+from amplifier_app_tui.kernel.persistence import SessionStore
+from amplifier_app_tui.main import main
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def _seed(
     turns: int | None = None,
 ) -> None:
     transcript = [{"role": "user", "content": f"m{i}"} for i in range(messages)]
-    metadata: dict[str, object] = {"session_id": session_id, "bundle": "newtui"}
+    metadata: dict[str, object] = {"session_id": session_id, "bundle": "tui"}
     if name:
         metadata["name"] = name
     if turns is not None:
@@ -252,7 +252,7 @@ def test_resume_hints_at_cross_project_session(scratch: SessionStore, tmp_path: 
     other.save(
         "beefcafe",
         [],
-        {"session_id": "beefcafe", "bundle": "newtui", "working_dir": str(other_dir)},
+        {"session_id": "beefcafe", "bundle": "tui", "working_dir": str(other_dir)},
     )
     # cwd (scratch) has a different, unrelated session — the id is not here.
     _seed(scratch, "cafef00d")
@@ -309,8 +309,8 @@ def test_session_resume_is_the_same_command_object() -> None:
 def test_exit_hint_prints_resume_command(capsys: pytest.CaptureFixture[str]) -> None:
     main_mod._print_resume_hint("cafef00d1234")
     printed = capsys.readouterr().out
-    assert "amplifier-newtui resume cafef00d1234" in printed
-    assert "amplifier-newtui sessions" in printed
+    assert "amplifier-tui resume cafef00d1234" in printed
+    assert "amplifier-tui sessions" in printed
 
 
 def test_exit_hint_skipped_without_session_id(capsys: pytest.CaptureFixture[str]) -> None:
@@ -320,9 +320,9 @@ def test_exit_hint_skipped_without_session_id(capsys: pytest.CaptureFixture[str]
 
 def test_launch_tui_prints_hint_on_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     """The interactive TUI exit path surfaces the resume hint (S4)."""
-    import amplifier_app_newtui.ui.app as app_mod
-    import amplifier_app_newtui.ui.runtime_adapter as adapter_mod
-    import amplifier_app_newtui.ui.term_probe as probe_mod
+    import amplifier_app_tui.ui.app as app_mod
+    import amplifier_app_tui.ui.runtime_adapter as adapter_mod
+    import amplifier_app_tui.ui.term_probe as probe_mod
 
     class FakeAdapter:
         def __init__(
@@ -345,7 +345,7 @@ def test_launch_tui_prints_hint_on_exit(monkeypatch: pytest.MonkeyPatch) -> None
             return None
 
     monkeypatch.setattr(adapter_mod, "RealRuntimeAdapter", FakeAdapter)
-    monkeypatch.setattr(app_mod, "NewTuiApp", FakeApp)
+    monkeypatch.setattr(app_mod, "TuiApp", FakeApp)
     monkeypatch.setattr(probe_mod, "patch_legacy_alt_named_keys", lambda: None)
     monkeypatch.setattr(probe_mod, "probe_kitty_protocol", lambda: False)
 

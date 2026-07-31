@@ -42,7 +42,7 @@ This is the complete set of keys the app consumes:
 
 | Key | Effect | Default | Typical scope |
 |---|---|---|---|
-| `bundle.active` | Which bundle to load when `--bundle` isn't passed (written by `bundle use`) | `newtui` (packaged) | global or project |
+| `bundle.active` | Which bundle to load when `--bundle` isn't passed (written by `bundle use`) | `tui` (packaged) | global or project |
 | `bundle.app` | List of overlay bundle URIs composed onto **every** session (behavior add-ons) | none | global |
 | `bundle.added` | Registry of `name → URI` for discoverable bundles (written by `bundle add`) | none | global |
 | `routing.matrix` | Active model-routing matrix name for delegated sub-agents. Naming a matrix opts in: the app auto-composes the `routing-matrix` overlay (which mounts `hooks-routing`) and feeds this value as its `default_matrix`. Not mounted in the base bundle (anchors parity) | none (off) | global |
@@ -131,7 +131,7 @@ Semantics:
   own JSONL and fans out to servers; it shares no file or schema with either.
 
 **Compaction accounting.** The runtime binds these settings directly to the mounted
-context module. When that module accepts provider-observed input tokens, NewTUI forwards
+context module. When that module accepts provider-observed input tokens, TUI forwards
 exact `provider:response` usage and `/status` reports `provider-observed accounting`;
 otherwise it reports `estimated accounting`. Native `context:compaction` events are
 normalized into the same event stream as every other runtime event.
@@ -217,22 +217,22 @@ The `notify` command group is the admin surface (same scope-file writers as `sou
 `--global` default, `--project`, `--local`):
 
 ```
-amplifier-newtui notify show                 # effective config (settings + env resolved)
-amplifier-newtui notify set <key> <value>    # persist a key (unknown key -> error, exit 1)
-amplifier-newtui notify enable|disable [desktop|push]   # toggle a channel (default: desktop)
-amplifier-newtui notify set topic <topic>    # secret -> keys.env
-amplifier-newtui notify test                 # fire a test through the REAL ladder
+amplifier-tui notify show                 # effective config (settings + env resolved)
+amplifier-tui notify set <key> <value>    # persist a key (unknown key -> error, exit 1)
+amplifier-tui notify enable|disable [desktop|push]   # toggle a channel (default: desktop)
+amplifier-tui notify set topic <topic>    # secret -> keys.env
+amplifier-tui notify test                 # fire a test through the REAL ladder
 ```
 
 **Documented-unsupported.** amplifier-app-cli's desktop notifications go through its
-OS-integration `hooks-notify` (terminal-notifier), which newtui suppresses at boot because it
-writes raw OSC/BEL to stdout and corrupts the full-screen TUI. newtui's desktop rung is the
+OS-integration `hooks-notify` (terminal-notifier), which tui suppresses at boot because it
+writes raw OSC/BEL to stdout and corrupts the full-screen TUI. tui's desktop rung is the
 driver-safe OSC 777 path instead, which carries only a title + a bounded (240-char) body. So the
 app-cli desktop sub-keys that have no OSC 777 channel are **accepted in a shared settings file but
-not honored** by newtui: `desktop.sound` (OSC 777 has no sound channel), `desktop.show_device` /
+not honored** by tui: `desktop.sound` (OSC 777 has no sound channel), `desktop.show_device` /
 `desktop.show_project` / `desktop.subtitle` / `desktop.show_preview` / `desktop.preview_length` /
 `desktop.min_iterations` / `desktop.show_iteration_count`. `notify set` only accepts the keys
-newtui actually honors, so it never lets you set a field that would silently do nothing.
+tui actually honors, so it never lets you set a field that would silently do nothing.
 
 ## Quirks worth knowing
 
@@ -249,4 +249,4 @@ newtui actually honors, so it never lets you set a field that would silently do 
   and turn-rule `$` figures with a `~` prefix (the total is a floor, never a lie).
 - **Silent resilience.** Malformed settings files, an unreadable `keys.env`, and
   unpriceable models are all skipped without errors — run `/doctor` (or
-  `amplifier-newtui doctor`) when something seems ignored.
+  `amplifier-tui doctor`) when something seems ignored.

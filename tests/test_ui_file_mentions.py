@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.ui.file_mentions import FileMentionStrip
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.file_mentions import FileMentionStrip
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
 class MentionApp(App[None]):
@@ -38,8 +38,8 @@ async def test_strip_filters_and_clamps_selection() -> None:
 
 @pytest.mark.asyncio
 async def test_real_app_routes_composer_keys_through_the_strip() -> None:
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
     from .test_flow_helpers import seed_done, type_text
 
@@ -47,7 +47,7 @@ async def test_real_app_routes_composer_keys_through_the_strip() -> None:
         async def workspace_files(self) -> tuple[str, ...]:
             return ("README.md", "docs/USER-GUIDE.md")
 
-    app = NewTuiApp(MentionDemo(instant=True))
+    app = TuiApp(MentionDemo(instant=True))
     async with app.run_test(size=(120, 40)) as pilot:
         await seed_done(pilot, app)
         await type_text(pilot, "review @read")

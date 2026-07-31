@@ -5,14 +5,14 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     DelegateEntry,
     DelegateSummaryBlock,
     Narration,
     TranscriptBlock,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
-from amplifier_app_newtui.ui.transcript import (
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.transcript import (
     HISTORY_COMPACT_TRIGGER,
     BlockWidget,
     DelegateSummaryToggled,
@@ -127,12 +127,12 @@ async def test_expanding_summary_opens_lanes_panel() -> None:
     """Drill-down v1 (ambient-progress D5): expansion opens the LanesPanel;
     collapsing does NOT close it (the panel's own esc/ctrl-t does)."""
 
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
     from .test_flow_helpers import SIZE, seed_done
 
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         assert app.lanes_panel.display is False

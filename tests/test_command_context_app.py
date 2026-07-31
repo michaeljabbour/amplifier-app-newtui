@@ -4,7 +4,7 @@ The 2026-07 test audit found the real adapter is never *driven*: no test
 instantiates ``AppCommandContext`` (``grep "AppCommandContext(" tests/`` →
 nothing) and ``test_command_context_contract.py`` is an inspect-only
 surface check. These tests build the real adapter over a running
-:class:`~amplifier_app_newtui.ui.app.NewTuiApp` (headless ``App.run_test``)
+:class:`~amplifier_app_tui.ui.app.TuiApp` (headless ``App.run_test``)
 and drive it, so the delegation onto the composition root's public surface
 is exercised end-to-end — data surfaces return the app's live objects and
 actions land visible effects, with no widget object crossing the boundary.
@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.commands.context import ContextUsage
-from amplifier_app_newtui.model.blocks import Answer, Segment
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.command_context import AppCommandContext
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.runtime_adapter import RuntimeAdapter
-from amplifier_app_newtui.ui.themes import theme_id
+from amplifier_app_tui.commands.context import ContextUsage
+from amplifier_app_tui.model.blocks import Answer, Segment
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.command_context import AppCommandContext
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.runtime_adapter import RuntimeAdapter
+from amplifier_app_tui.ui.themes import theme_id
 
 
 async def _wait_for(pilot, predicate, *, tries: int = 80) -> bool:
@@ -31,7 +31,7 @@ async def _wait_for(pilot, predicate, *, tries: int = 80) -> bool:
     return predicate()
 
 
-async def _booted(pilot, app: NewTuiApp) -> None:
+async def _booted(pilot, app: TuiApp) -> None:
     """Pause until the demo seed turn has settled (stable base state)."""
     await _wait_for(
         pilot,
@@ -44,7 +44,7 @@ async def test_data_surfaces_delegate_to_the_composition_root() -> None:
     """Every data surface returns the app's own live object/value — the
     adapter is a thin delegating view, not a copy."""
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         await _booted(pilot, app)
         ctx = AppCommandContext(app)
@@ -77,7 +77,7 @@ async def test_data_surfaces_delegate_to_the_composition_root() -> None:
 async def test_echo_and_post_block_reach_the_transcript() -> None:
     """``echo_user_line`` and ``post_block`` land real blocks; the id is
     the one the app minted, proving no pre-built widget crossed over."""
-    app = NewTuiApp(RuntimeAdapter())
+    app = TuiApp(RuntimeAdapter())
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause(0.2)
         ctx = AppCommandContext(app)
@@ -98,7 +98,7 @@ async def test_echo_and_post_block_reach_the_transcript() -> None:
 
 @pytest.mark.asyncio
 async def test_show_notice_lands_on_the_notice_slot() -> None:
-    app = NewTuiApp(RuntimeAdapter())
+    app = TuiApp(RuntimeAdapter())
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause(0.2)
         ctx = AppCommandContext(app)
@@ -109,7 +109,7 @@ async def test_show_notice_lands_on_the_notice_slot() -> None:
 
 @pytest.mark.asyncio
 async def test_set_theme_switches_the_running_app_theme() -> None:
-    app = NewTuiApp(RuntimeAdapter())
+    app = TuiApp(RuntimeAdapter())
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause(0.2)
         ctx = AppCommandContext(app)
@@ -129,7 +129,7 @@ async def test_set_theme_switches_the_running_app_theme() -> None:
 async def test_copy_answer_copies_the_last_real_answer() -> None:
     """``copy_answer`` extracts the newest clickable answer and hands it to
     the app clipboard, returning the char count; no answer → 0, no copy."""
-    app = NewTuiApp(RuntimeAdapter())
+    app = TuiApp(RuntimeAdapter())
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause(0.2)
         ctx = AppCommandContext(app)
@@ -151,7 +151,7 @@ async def test_copy_answer_copies_the_last_real_answer() -> None:
 @pytest.mark.asyncio
 async def test_about_info_reports_live_session_identity() -> None:
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         await _booted(pilot, app)
         ctx = AppCommandContext(app)
@@ -166,7 +166,7 @@ async def test_about_info_reports_live_session_identity() -> None:
 async def test_show_status_drives_a_status_block_through_the_worker() -> None:
     """A full round-trip: the adapter's ``show_status`` triggers the app
     worker, which asks the runtime and appends a status answer block."""
-    app = NewTuiApp(RuntimeAdapter())
+    app = TuiApp(RuntimeAdapter())
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause(0.2)
         ctx = AppCommandContext(app)
@@ -209,7 +209,7 @@ _FORWARDING: tuple[tuple[str, tuple[object, ...], str], ...] = (
 async def test_action_forwards_to_the_app(
     ctx_method: str, args: tuple[object, ...], app_method: str
 ) -> None:
-    app = NewTuiApp(RuntimeAdapter())
+    app = TuiApp(RuntimeAdapter())
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause(0.2)
         ctx = AppCommandContext(app)
@@ -229,7 +229,7 @@ async def test_export_transcript_writes_under_the_cwd(tmp_path, monkeypatch) -> 
     """``export_transcript`` returns the path it wrote (real file I/O)."""
     monkeypatch.chdir(tmp_path)
     adapter = DemoRuntimeAdapter(instant=True)
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
         await _booted(pilot, app)
         ctx = AppCommandContext(app)

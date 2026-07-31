@@ -15,7 +15,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from amplifier_app_newtui.kernel import setup
+from amplifier_app_tui.kernel import setup
 
 
 def test_provider_env_prefix() -> None:
@@ -220,7 +220,7 @@ def test_provider_config_entry_uses_placeholders() -> None:
 
 
 def test_write_provider_config_prepends_and_demotes(tmp_path: Path) -> None:
-    from amplifier_app_newtui.kernel import bundle_admin
+    from amplifier_app_tui.kernel import bundle_admin
 
     paths = bundle_admin.settings_paths(tmp_path / "proj", tmp_path / "home")
     # Seed an existing active provider at priority 1.

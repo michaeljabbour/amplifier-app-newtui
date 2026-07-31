@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.bundle_compose import (
+from amplifier_app_tui.kernel.bundle_compose import (
     COMPOSABLE_SECTIONS,
     mount_overlay_modules,
 )

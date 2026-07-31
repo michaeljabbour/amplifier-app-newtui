@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.commands.context import (
+from amplifier_app_tui.commands.context import (
     ContextUsage,
     build_context_block,
     format_tokens,

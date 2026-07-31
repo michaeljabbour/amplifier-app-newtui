@@ -11,20 +11,20 @@ from __future__ import annotations
 
 import asyncio
 
-from amplifier_app_newtui.kernel.events import (
+from amplifier_app_tui.kernel.events import (
     ContentBlockEnd,
     PromptComplete,
     PromptSubmit,
     ToolPost,
 )
-from amplifier_app_newtui.kernel.evidence import (
+from amplifier_app_tui.kernel.evidence import (
     MAX_CLAIMS,
     QUOTE_MAX_CHARS,
     EvidenceCollector,
     derive_links,
     tool_ref,
 )
-from amplifier_app_newtui.kernel.queue_bridge import QueueBridge
+from amplifier_app_tui.kernel.queue_bridge import QueueBridge
 
 SID = "sess-1"
 

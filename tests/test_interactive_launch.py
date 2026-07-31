@@ -1,12 +1,12 @@
-"""Interactive-launch overrides: ``amplifier-newtui [-p/-m/--mode]`` (S2, #148).
+"""Interactive-launch overrides: ``amplifier-tui [-p/-m/--mode]`` (S2, #148).
 
-The bare ``amplifier-newtui`` launcher (and ``run`` with no prompt on a TTY)
+The bare ``amplifier-tui`` launcher (and ``run`` with no prompt on a TTY)
 must boot the full-screen TUI with the same ephemeral per-invocation overrides
 the headless ``run`` command documents:
 
 - ``--provider``/``--model`` mutate only the resolved in-memory plan (threaded
   into ``RealRuntimeAdapter`` → ``RealRuntime``, never persisted); and
-- ``--mode`` seeds the opening interaction posture on ``NewTuiApp``.
+- ``--mode`` seeds the opening interaction posture on ``TuiApp``.
 
 Three layers are exercised: the CLI wiring (flags reach ``_launch_tui``), the
 shared validation rules (``--model`` requires ``--provider``; unknown ``--mode``
@@ -18,11 +18,11 @@ from __future__ import annotations
 import pytest
 from click.testing import CliRunner
 
-import amplifier_app_newtui.main as main_mod
-from amplifier_app_newtui.main import main
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.runtime_adapter import RealRuntimeAdapter
+import amplifier_app_tui.main as main_mod
+from amplifier_app_tui.main import main
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.runtime_adapter import RealRuntimeAdapter
 
 
 @pytest.fixture
@@ -178,10 +178,10 @@ def test_real_adapter_stores_provider_and_model_overrides() -> None:
 
 
 def test_app_seeds_initial_mode() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(), initial_mode="chat")
+    app = TuiApp(DemoRuntimeAdapter(), initial_mode="chat")
     assert app.mode_id == "chat"
 
 
 def test_app_defaults_to_auto_without_initial_mode() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter())
+    app = TuiApp(DemoRuntimeAdapter())
     assert app.mode_id == "auto"

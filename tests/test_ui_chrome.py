@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from amplifier_app_newtui.ui.chrome import (
+from amplifier_app_tui.ui.chrome import (
     APP_TITLE_NAME,
     SPINNER_INTERVAL,
     TERMINAL_TITLE_MAX_CHARS,
@@ -14,8 +14,8 @@ from amplifier_app_newtui.ui.chrome import (
     terminal_title_sequence,
     write_terminal_title,
 )
-from amplifier_app_newtui.ui.notices import NoticeSlot
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.notices import NoticeSlot
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
 class ChromeApp(App[None]):
@@ -39,13 +39,13 @@ def test_idle_title_exact_format() -> None:
     bar.set_reactive(TitleBar.state_text, "ready")
     bar.set_reactive(TitleBar.bundle, "dev-bundle")
     bar.set_reactive(TitleBar.session_short, "a1b2c3")
-    assert bar.title_text() == ("amplifier-app-newtui — Amplifier — ready — dev-bundle — a1b2c3")
+    assert bar.title_text() == ("amplifier-app-tui — Amplifier — ready — dev-bundle — a1b2c3")
 
 
 def test_empty_identity_fragments_are_skipped() -> None:
     bar = TitleBar()
     bar.set_reactive(TitleBar.state_text, "planning")
-    assert bar.title_text() == "amplifier-app-newtui — Amplifier — planning"
+    assert bar.title_text() == "amplifier-app-tui — Amplifier — planning"
 
 
 def test_running_title_prefixes_spinner_and_cycles_frames() -> None:
@@ -75,7 +75,7 @@ def test_spinner_interval_is_260ms() -> None:
 
 
 def test_app_name_constant() -> None:
-    assert APP_TITLE_NAME == "amplifier-app-newtui"
+    assert APP_TITLE_NAME == "amplifier-app-tui"
 
 
 def test_terminal_title_sequence_sanitizes_controls_and_bounds_length() -> None:
@@ -105,8 +105,8 @@ def test_terminal_title_write_uses_osc_and_flushes() -> None:
             self.flushes += 1
 
     driver = RecordingDriver()
-    assert write_terminal_title(driver, "✦ amplifier-app-newtui")  # type: ignore[arg-type]
-    assert driver.writes == ["\x1b]0;✦ amplifier-app-newtui\x07"]
+    assert write_terminal_title(driver, "✦ amplifier-app-tui")  # type: ignore[arg-type]
+    assert driver.writes == ["\x1b]0;✦ amplifier-app-tui\x07"]
     assert driver.flushes == 1
 
 
@@ -123,7 +123,7 @@ async def test_title_bar_spinner_runs_only_while_running() -> None:
         bar.session_short = "a1b2c3"
         await pilot.pause()
         assert bar._spinner_timer is None
-        assert bar.title_text() == "amplifier-app-newtui — Amplifier — ready — dev — a1b2c3"
+        assert bar.title_text() == "amplifier-app-tui — Amplifier — ready — dev — a1b2c3"
 
         bar.running = True
         await pilot.pause()

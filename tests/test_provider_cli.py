@@ -1,4 +1,4 @@
-"""``amplifier-newtui provider …`` + the first-run launch gate (click).
+"""``amplifier-tui provider …`` + the first-run launch gate (click).
 
 Provider discovery falls back to the known-credential table offline, so these
 run without network. Settings/keys go to an isolated ``$HOME`` under
@@ -13,9 +13,9 @@ from pathlib import Path
 from click.testing import CliRunner
 import pytest
 
-from amplifier_app_newtui import main as main_mod
-from amplifier_app_newtui.kernel import setup
-from amplifier_app_newtui.main import main
+from amplifier_app_tui import main as main_mod
+from amplifier_app_tui.kernel import setup
+from amplifier_app_tui.main import main
 
 _CRED_VARS = (
     "ANTHROPIC_API_KEY",

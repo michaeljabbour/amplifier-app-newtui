@@ -1,4 +1,4 @@
-"""``amplifier-newtui bundle`` group wiring (click CliRunner).
+"""``amplifier-tui bundle`` group wiring (click CliRunner).
 
 The admin logic is unit-tested in ``test_kernel_bundle_admin``; this
 covers the CLI plumbing: help/subcommands, the offline foundation-backed
@@ -12,8 +12,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from amplifier_app_newtui.kernel import bundle_admin
-from amplifier_app_newtui.main import main
+from amplifier_app_tui.kernel import bundle_admin
+from amplifier_app_tui.main import main
 
 
 def test_bundle_group_lists_subcommands() -> None:
@@ -57,12 +57,12 @@ def test_bundle_list_all_is_superset_of_default() -> None:
     assert "Use --all" not in every.output
 
 
-def test_bundle_show_packaged_newtui_offline() -> None:
-    # The packaged ``newtui`` bundle resolves via newtui discovery → a local
+def test_bundle_show_packaged_tui_offline() -> None:
+    # The packaged ``tui`` bundle resolves via tui discovery → a local
     # file, so foundation loads it without any network.
-    result = CliRunner().invoke(main, ["bundle", "show", "newtui"])
+    result = CliRunner().invoke(main, ["bundle", "show", "tui"])
     assert result.exit_code == 0
-    assert "newtui" in result.output
+    assert "tui" in result.output
     assert "mounts:" in result.output
 
 

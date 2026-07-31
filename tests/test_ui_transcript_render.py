@@ -15,7 +15,7 @@ from rich.cells import cell_len
 from rich.style import Style
 from textual.content import Content
 
-from amplifier_app_newtui.model.blocks import (
+from amplifier_app_tui.model.blocks import (
     Answer,
     Blocked,
     BrainstormIdea,
@@ -43,17 +43,17 @@ from amplifier_app_newtui.model.blocks import (
     UserLine,
     WorkingStatus,
 )
-from amplifier_app_newtui.model.evidence import EvidenceLink
-from amplifier_app_newtui.model.turn import TurnTelemetry
-from amplifier_app_newtui.ui.segments import (
+from amplifier_app_tui.model.evidence import EvidenceLink
+from amplifier_app_tui.model.turn import TurnTelemetry
+from amplifier_app_tui.ui.segments import (
     line_plain,
     lines_markup,
     lines_plain,
     segment_style,
     to_rich_text,
 )
-from amplifier_app_newtui.ui.live_tail import answer_spans
-from amplifier_app_newtui.ui.transcript_render import (
+from amplifier_app_tui.ui.live_tail import answer_spans
+from amplifier_app_tui.ui.transcript_render import (
     READING_MEASURE,
     TOOL_EXPAND_HINT,
     fence_text_at_row,
@@ -546,7 +546,7 @@ def test_answer_blockquote_wraps_under_the_gutter() -> None:
     """A long callout blockquote wraps like body text: gutter on the first
     line, continuations hang under the quoted text (2 cells), everything
     within width — never a verbatim overflow line."""
-    from amplifier_app_newtui.ui.live_tail import answer_spans
+    from amplifier_app_tui.ui.live_tail import answer_spans
 
     source = "> ★ **Insight:** " + " ".join(["insight"] * 12)
     block = Answer(id="a-quote", spans=answer_spans(source))
@@ -624,19 +624,19 @@ class TestAnswerMarkdown:
     """Real-model block markdown must not leak raw (user report)."""
 
     def _lines(self, source: str) -> list[str]:
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         text = "".join(s.text for s in answer_spans(source))
         return text.split("\n")
 
     def test_plain_text_round_trips(self) -> None:
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         source = "Session store refactor is in: history durable, tests pass.\nSecond line."
         assert "".join(s.text for s in answer_spans(source)) == source
 
     def test_heading_strips_hashes_and_renders_bright_bold(self) -> None:
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         spans = answer_spans("## Third-party libraries")
         assert spans[0].text == "Third-party libraries"
@@ -656,7 +656,7 @@ class TestAnswerMarkdown:
         assert lines[3] == "foundation │ Bundle layer"
 
     def test_code_fence_drops_fences_and_indents(self) -> None:
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         spans = answer_spans("```py\nx = 1\n```\nafter")
         code = [s for s in spans if s.style_token == "teal"]
@@ -665,7 +665,7 @@ class TestAnswerMarkdown:
         assert "```" not in "".join(s.text for s in spans)
 
     def test_bullets_and_links(self) -> None:
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         spans = answer_spans("- see [docs](https://example.com/d)")
         assert spans[0].text == "• " and spans[0].style_token == "dim"
@@ -683,8 +683,8 @@ class TestAnswerMarkdown:
         ``[link=https://…]`` raised MarkupError ("Expected markup value") and
         crashed transcript rendering when resuming a session whose answer held a
         PR link. The URL must be quoted, and the markup must parse cleanly."""
-        from amplifier_app_newtui.model.blocks import Segment
-        from amplifier_app_newtui.ui.segments import segment_markup
+        from amplifier_app_tui.model.blocks import Segment
+        from amplifier_app_tui.ui.segments import segment_markup
 
         url = "https://github.com/microsoft/amplifier-app-team-pulse/pull/304"
         markup = segment_markup(Segment(text="team-pulse#304", style_token="teal", link=url))
@@ -697,7 +697,7 @@ class TestAnswerMarkdown:
         """Padded grids shred when cells exceed the terminal width (user
         screenshot: the /about run's Piece/Location table) — wide tables
         render as header-prefixed definition lists instead."""
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         long_a = "about_info() -> tuple[str, str, str, str] protocol action " + "x" * 60
         long_b = "commands/registry.py (after copy_answer) " + "y" * 60
@@ -714,7 +714,7 @@ class TestAnswerMarkdown:
     def test_numbered_list_marker_and_hanging_indent(self) -> None:
         """Numbered items render a dim ``N. `` marker; wrapped continuation
         lines hang-indent under the body (3 cells for ``1. ``)."""
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         spans = answer_spans("1. First item body")
         assert spans[0].text == "1. " and spans[0].style_token == "dim"
@@ -731,7 +731,7 @@ class TestAnswerMarkdown:
         assert plains[1][3] != " "  # continuation body, no fabricated padding
 
     def test_bullet_hanging_indent_when_wrapped(self) -> None:
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         source = (
             "- Configure the provider, load the bundle, "
@@ -745,7 +745,7 @@ class TestAnswerMarkdown:
         assert plains[1][2] != " "
 
     def test_heading_is_preceded_by_a_blank_line(self) -> None:
-        from amplifier_app_newtui.ui.live_tail import answer_spans
+        from amplifier_app_tui.ui.live_tail import answer_spans
 
         text = "".join(s.text for s in answer_spans("Intro paragraph.\n## Section\nBody text."))
         lines = text.split("\n")
@@ -758,11 +758,11 @@ def test_todo_tool_reroutes_to_plan_changed_never_the_transcript() -> None:
     host.plan_changed(); no TodoBlock, no tool_line, no digest entry."""
     import sys
 
-    from amplifier_app_newtui.kernel import events as ev
-    from amplifier_app_newtui.model.blocks import BlockIdAllocator
-    from amplifier_app_newtui.model.lanes import LaneRegistry
-    from amplifier_app_newtui.model.turn import OutcomeLedger
-    from amplifier_app_newtui.ui.reducer import TranscriptReducer
+    from amplifier_app_tui.kernel import events as ev
+    from amplifier_app_tui.model.blocks import BlockIdAllocator
+    from amplifier_app_tui.model.lanes import LaneRegistry
+    from amplifier_app_tui.model.turn import OutcomeLedger
+    from amplifier_app_tui.ui.reducer import TranscriptReducer
 
     sys.path.insert(0, "tests")
     from test_ui_reducer_outcomes import FakeHost

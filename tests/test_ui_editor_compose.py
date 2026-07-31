@@ -13,9 +13,9 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.message import Message
 
-from amplifier_app_newtui.ui.composer import Composer
-from amplifier_app_newtui.ui.keymap import KEYMAP, NO_APPROVAL, validate
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.composer import Composer
+from amplifier_app_tui.ui.keymap import KEYMAP, NO_APPROVAL, validate
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 
 class _ComposerApp(App[None]):
@@ -97,9 +97,9 @@ async def test_apply_editor_result_replaces_text_and_puts_cursor_at_end() -> Non
 
 @pytest.mark.asyncio
 async def test_app_ctrl_e_applies_ok_outcome_to_composer(monkeypatch) -> None:
-    from amplifier_app_newtui.kernel import external_editor
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.kernel import external_editor
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
     captured: dict[str, object] = {}
 
@@ -110,7 +110,7 @@ async def test_app_ctrl_e_applies_ok_outcome_to_composer(monkeypatch) -> None:
 
     monkeypatch.setattr(external_editor, "compose_in_editor", fake_compose)
 
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause(0.2)
         app.composer.focus_input()
@@ -124,9 +124,9 @@ async def test_app_ctrl_e_applies_ok_outcome_to_composer(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_app_ctrl_e_no_editor_keeps_draft_and_notices(monkeypatch) -> None:
-    from amplifier_app_newtui.kernel import external_editor
-    from amplifier_app_newtui.ui.app import NewTuiApp
-    from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
+    from amplifier_app_tui.kernel import external_editor
+    from amplifier_app_tui.ui.app import TuiApp
+    from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
     def fake_compose(draft, *, runner, environ=None, cwd=None):
         return external_editor.EditorOutcome(
@@ -135,7 +135,7 @@ async def test_app_ctrl_e_no_editor_keeps_draft_and_notices(monkeypatch) -> None
 
     monkeypatch.setattr(external_editor, "compose_in_editor", fake_compose)
 
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=(120, 36)) as pilot:
         await pilot.pause(0.2)
         app.composer.focus_input()

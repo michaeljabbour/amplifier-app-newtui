@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from amplifier_app_newtui.kernel.external_editor import (
+from amplifier_app_tui.kernel.external_editor import (
     EditorOutcome,
     compose_in_editor,
     normalize_prompt_content,

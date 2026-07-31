@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.kernel.demo import BRAINSTORM_PROMPT
-from amplifier_app_newtui.ui.app import NewTuiApp
-from amplifier_app_newtui.ui.demo_wiring import DemoRuntimeAdapter
-from amplifier_app_newtui.ui.footer import footer_right_text
-from amplifier_app_newtui.ui.rewind_strip import rewind_line
+from amplifier_app_tui.kernel.demo import BRAINSTORM_PROMPT
+from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.footer import footer_right_text
+from amplifier_app_tui.ui.rewind_strip import rewind_line
 
 from .test_flow_helpers import (
     SIZE,
@@ -29,7 +29,7 @@ from .test_flow_helpers import (
 )
 
 
-async def _two_turns(pilot, app: NewTuiApp) -> None:
+async def _two_turns(pilot, app: TuiApp) -> None:
     """Seed (t1) + the build turn (t2, chat-mode pytest approval allowed).
 
     The app boots in auto (§4 amendment) — chat is set explicitly so the
@@ -45,7 +45,7 @@ async def _two_turns(pilot, app: NewTuiApp) -> None:
 
 @pytest.mark.asyncio
 async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _two_turns(pilot, app)
         checkpoints = app.ledger.checkpoints
@@ -84,7 +84,7 @@ async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
 @pytest.mark.asyncio
 async def test_double_esc_interrupts_then_opens_existing_rewind_picker() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(BRAINSTORM_PROMPT)
@@ -106,7 +106,7 @@ async def test_double_esc_interrupts_then_opens_existing_rewind_picker() -> None
 @pytest.mark.asyncio
 async def test_second_esc_after_fast_close_out_still_opens_rewind() -> None:
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(BRAINSTORM_PROMPT)
@@ -122,7 +122,7 @@ async def test_second_esc_after_fast_close_out_still_opens_rewind() -> None:
 
 @pytest.mark.asyncio
 async def test_clicking_turn_rule_opens_picker_at_that_checkpoint() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _two_turns(pilot, app)
         first_rule = blocks_of(app, "turn_rule")[0]
@@ -142,7 +142,7 @@ async def test_typing_passes_through_focused_rewind_strip_to_composer() -> None:
     """Mockup keydown (the composer input keeps focus while rewindOpen):
     printable keys typed while the strip holds focus are never swallowed —
     '/' opens the palette live-filtered and text lands in the composer (§5)."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _two_turns(pilot, app)
         await pilot.press("ctrl+r")
@@ -182,7 +182,7 @@ async def test_checkpoint_cut_while_picker_open_is_navigable() -> None:
     a checkpoint cut while the picker is open is immediately navigable
     with › — no reopen needed (§9)."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)  # t1 cut
         app.submit_prompt(BRAINSTORM_PROMPT)  # no approvals: strip keeps focus
@@ -216,7 +216,7 @@ async def test_fork_during_running_turn_interrupts_then_forks() -> None:
     transcript is exactly the checkpoint state (no orphaned blocks from the
     dead turn) and the ledger has no dead-turn checkpoint."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)  # t1 cut
         t1_block_ids = [b.id for b in app.transcript.blocks]
@@ -263,7 +263,7 @@ async def test_fork_mid_turn_defers_queued_message_until_after_fork() -> None:
     queue drain is deferred until the fork settles — the queued prompt then
     picks up against the post-fork state and its turn output survives."""
     adapter = GatedDemoAdapter()
-    app = NewTuiApp(adapter)
+    app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)  # t1 cut
         seen: list[str] = []
@@ -311,7 +311,7 @@ async def test_fork_chip_click_during_pending_approval_keeps_keyboard() -> None:
     behind the approver, and the approval bar keeps keyboard ownership
     (spec §7) — so Esc still means Deny, which lets the parked fork settle
     cleanly (trim to t1, composer back)."""
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)  # t1 cut
         t1_block_ids = [b.id for b in app.transcript.blocks]
@@ -352,7 +352,7 @@ async def test_fork_chip_click_during_pending_approval_keeps_keyboard() -> None:
 
 @pytest.mark.asyncio
 async def test_fork_trims_transcript_and_ledger_to_checkpoint() -> None:
-    app = NewTuiApp(DemoRuntimeAdapter(instant=True))
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await _two_turns(pilot, app)
         assert blocks_of(app, "plan")  # the build turn left its plan block

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from amplifier_app_newtui.model.prompt_stash import (
+from amplifier_app_tui.model.prompt_stash import (
     MAX_STASH_ENTRIES,
     PromptStash,
     StashEntry,

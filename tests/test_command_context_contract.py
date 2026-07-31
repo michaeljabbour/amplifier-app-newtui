@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-from amplifier_app_newtui.commands.registry import CommandContext
-from amplifier_app_newtui.ui.command_context import AppCommandContext
+from amplifier_app_tui.commands.registry import CommandContext
+from amplifier_app_tui.ui.command_context import AppCommandContext
 
 from .conftest import FakeCommandContext
 

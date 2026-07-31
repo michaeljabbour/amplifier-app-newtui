@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from amplifier_app_newtui.kernel.demo import (
+from amplifier_app_tui.kernel.demo import (
     DEMO_BANNER,
     DEMO_DEFERRED_DECISION,
     DEMO_EVIDENCE,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from amplifier_app_newtui.model.injection import (
+from amplifier_app_tui.model.injection import (
     InjectionReport,
     InjectionShape,
     scan_for_injection,

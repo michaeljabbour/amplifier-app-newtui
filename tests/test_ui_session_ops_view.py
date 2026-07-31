@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from amplifier_app_newtui.kernel.compaction import CompactionConfig
-from amplifier_app_newtui.kernel.session_manager import SessionSummary
-from amplifier_app_newtui.kernel.session_ops import ModelListing, SkillInfo, StatusInfo
-from amplifier_app_newtui.ui.session_ops_view import (
+from amplifier_app_tui.kernel.compaction import CompactionConfig
+from amplifier_app_tui.kernel.session_manager import SessionSummary
+from amplifier_app_tui.kernel.session_ops import ModelListing, SkillInfo, StatusInfo
+from amplifier_app_tui.ui.session_ops_view import (
     diff_spans,
     mcp_spans,
     model_listing_spans,
@@ -52,7 +52,7 @@ def test_status_spans_include_mode_and_cost() -> None:
         status_spans(
             info,
             mode="build",
-            bundle="newtui",
+            bundle="tui",
             session_short="abcdef",
             cost=Decimal("1.23"),
             compaction=CompactionConfig(
@@ -63,7 +63,7 @@ def test_status_spans_include_mode_and_cost() -> None:
         )
     )
     assert "build" in text
-    assert "newtui" in text
+    assert "tui" in text
     assert "$1.23" in text
     assert "high" in text
     assert "2" in text  # agent count
@@ -156,9 +156,7 @@ def test_sessions_spans_empty() -> None:
 
 def test_sessions_spans_lists_rows_and_marks_current() -> None:
     rows = (
-        SessionSummary(
-            session_id="abc12345ff", name="auth", bundle="newtui", messages=6, mtime=0.0
-        ),
+        SessionSummary(session_id="abc12345ff", name="auth", bundle="tui", messages=6, mtime=0.0),
         SessionSummary(session_id="def67890aa", name="", bundle="dev", messages=2, mtime=0.0),
     )
     spans = sessions_spans(rows, current="abc12345")
@@ -179,7 +177,7 @@ def test_sessions_spans_renders_tag_chips() -> None:
         SessionSummary(
             session_id="abc12345ff",
             name="auth",
-            bundle="newtui",
+            bundle="tui",
             messages=6,
             mtime=0.0,
             tags=("frontend", "urgent"),
@@ -200,6 +198,6 @@ def test_sessions_spans_renders_tag_chips() -> None:
 
 def test_sessions_spans_untagged_row_has_no_chip() -> None:
     """No tags → the row is byte-for-byte the pre-tags render (no ``#``)."""
-    rows = (SessionSummary(session_id="abc12345ff", name="auth", bundle="newtui", messages=6),)
+    rows = (SessionSummary(session_id="abc12345ff", name="auth", bundle="tui", messages=6),)
     text = _text(sessions_spans(rows))
     assert "#" not in text

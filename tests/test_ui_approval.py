@@ -6,13 +6,13 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from amplifier_app_newtui.ui.approval_bar import (
+from amplifier_app_tui.ui.approval_bar import (
     APPROVAL_LABEL,
     DEFAULT_OPTIONS,
     ApprovalBar,
     ApprovalOption,
 )
-from amplifier_app_newtui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 
 TICKET = "ticket-42"
 PROMPT = "Run `pytest -q` in /repo?"

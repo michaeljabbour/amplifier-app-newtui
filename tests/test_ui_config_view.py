@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from amplifier_app_newtui.model.config import (
+from amplifier_app_tui.model.config import (
     ConfigChange,
     ConfigItem,
     ConfigSnapshotView,
     default_config_state,
 )
-from amplifier_app_newtui.ui.config_view import (
+from amplifier_app_tui.ui.config_view import (
     config_diff_spans,
     config_help_spans,
     config_item_spans,
