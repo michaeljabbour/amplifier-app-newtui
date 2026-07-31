@@ -14,6 +14,7 @@ from amplifier_app_tui.kernel.directory_permissions import (
     filesystem_write_enforcer_present,
     resolve_write_boundary,
     update_configured_path,
+    governance_setting,
     write_boundary_setting,
 )
 
@@ -70,6 +71,14 @@ def test_write_boundary_setting_resolution() -> None:
     assert write_boundary_setting({"permissions": {"write_boundary": "guarded"}}) == "guarded"
     assert write_boundary_setting({"permissions": {"write_boundary": "bogus"}}) == "open"
     assert write_boundary_setting({"permissions": "not-a-dict"}) == "open"
+
+
+def test_governance_setting_resolution() -> None:
+    assert governance_setting({}) == "open"
+    assert governance_setting({"permissions": {}}) == "open"
+    assert governance_setting({"permissions": {"governance": "gated"}}) == "gated"
+    assert governance_setting({"permissions": {"governance": "bogus"}}) == "open"
+    assert governance_setting({"permissions": "not-a-dict"}) == "open"
 
 
 def _plan(*modules: str) -> dict[str, object]:

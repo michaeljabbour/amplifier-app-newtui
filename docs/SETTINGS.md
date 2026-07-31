@@ -55,6 +55,7 @@ This is the complete set of keys the app consumes:
 | `context.auto_compact` | Enable `context-simple` automatic compaction; the runtime binding also disables legacy threshold-only context modules truthfully | `true` (inherited from the composed anchors bundle) | global or project |
 | `modules.tools` | Tool entries merged by identity; filesystem permission lists union across scopes | project root is implicitly writable | global / project / local / session |
 | `permissions.write_boundary` | App-level write gate. `open` (default, amplifier-app-cli parity): no governance pre-flight for writes outside the project and no write-shaped shell gating — the mounted filesystem tool stays the sole write enforcement (graceful tool error, never an approval). `guarded`: outside writes are blocked pre-flight and write-shaped shell escapes are classified outside-project. Denied and protected paths are enforced in both. **Audit H2 safeguard:** `open` is only kept when a `tool-filesystem` is actually mounted to enforce it — if no filesystem write-enforcer is in the mount plan, the boundary auto-degrades to `guarded` at startup with a boot notice, so enforcement is never silently delegated to a non-existent tool. An explicit `guarded` is always honored silently | `open` (backed by a filesystem tool; else `guarded`) | global or project |
+| `permissions.governance` | App governance in the **default (`auto`) posture**. `open` (default, platform parity): `auto` is a pure pass-through — no classifier, no needs-you parking, no dependency cascade; the composed bundle's `hooks-approval` (idle until a native mode declares `confirm:` tools, e.g. `/mode careful`) is the only asker. The hook's `tool:post`/`tool:error` output-injection probe stays live in both settings. `gated` restores the classifier gate in `auto` (risky actions denied-and-parked until answered). Explicitly chosen postures (`plan`, `brainstorm`, `chat`, `build`) always enforce — switching into one is itself the opt-in | `open` | global or project |
 | `pricing.live` | Live Helicone pricing: fresh `~/.amplifier/pricing_cache.json` (24 h TTL) applies at startup, else a background fetch swaps rates in for **new turns only**; `false` keeps the built-in offline table | `true` | global |
 | `resume.use_active_bundle` | `resume` normally reattaches a session under the **bundle it was stored with** (its module stack is part of its identity); `true` attaches under the currently active bundle instead. An explicit `--bundle` on the resume command always wins. Every divergent outcome is announced in a boot notice | `false` (honor stored) | global or project |
 | `sources.modules` | Map of `module_id → source URI`: redirect where a module is fetched from | none | local (dev checkouts) |
@@ -77,9 +78,12 @@ as `mcp_<server>_<tool>`. `/mcp add|remove` edits this file (takes effect next l
 **Native modes** are discovered from `<project>/.amplifier/modes/` → `~/.amplifier/modes/`
 → the app's packaged `data/modes/` (plan/brainstorm/careful) → composed bundles' `modes/`.
 `hooks-mode` + `hooks-approval` + `tool-mode` arrive via the composed anchors bundle (same
-modules, same configs). Those native hooks are idle without an active native mode; the app's
-own posture/outside-project governance hook remains active and shares their approval
-provider.
+modules, same configs). Those native hooks are idle without an active native mode, and by
+default (`permissions.governance: open`) the app's own governance hook is a pass-through in
+the `auto` posture too — so a fresh session has **zero** approval gates, matching the
+platform. The app hook still enforces explicitly chosen postures (plan/brainstorm/chat/build),
+runs its output-injection probe, and shares the native hooks' approval provider;
+`permissions.governance: gated` restores its classifier gate in `auto`.
 
 **Context-intelligence telemetry (`context-intelligence-logging`).** The app can fan session
 events out to one or more telemetry destinations by composing the upstream

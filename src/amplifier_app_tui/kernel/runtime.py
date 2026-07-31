@@ -78,6 +78,7 @@ from .directory_permissions import (
     DirectoryPolicy,
     apply_policy_to_mount_plan,
     configured_entries,
+    governance_setting,
     policy_from_mount_plan,
     resolve_write_boundary,
     settings_path_values,
@@ -793,6 +794,7 @@ class RealRuntime:
             capability_resolver=self._capability_resolver,
             on_blocked=self._governance_blocked,
             native_tools=self._native_safe_tools,
+            gate_auto=governance_setting(resolved.settings) == "gated",
         )
         initialized.unregister_handles.append(governance.register_hooks(hooks))
         # Child lanes inherit the SAME governance instance so a gated posture

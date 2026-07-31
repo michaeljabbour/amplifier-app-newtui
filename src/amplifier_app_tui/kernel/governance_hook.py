@@ -341,9 +341,14 @@ class GovernanceHook:
         | None = None,
         capability_resolver: Callable[[CapabilityClass], TrustDecision] | None = None,
         native_tools: Callable[[], frozenset[str]] | None = None,
+        gate_auto: bool = True,
     ) -> None:
         self._root_session_id = root_session_id
         self._mode = mode
+        # ``permissions.governance: open`` (the default) — the auto posture is
+        # a pure pass-through, matching platform behavior; only an explicitly
+        # chosen posture gates. ``gated`` keeps auto's classifier gate.
+        self._gate_auto = gate_auto
         self._denial_log = denial_log
         self._broker = broker
         self._needs_you = needs_you
@@ -436,6 +441,12 @@ class GovernanceHook:
         )
 
     async def _govern_tool(self, data: Mapping[str, Any]) -> HookResult:
+        if not self._gate_auto and self._mode() == "auto":
+            # permissions.governance: open (default) — auto is pure platform
+            # behavior: no classifier, no parking, no dependency cascade. The
+            # tool:post/tool:error injection probe stays live regardless.
+            self._denial_log.record_non_denial()
+            return HookResult(action="continue")
         tool_name = _line(data.get("tool_name") or data.get("tool") or "tool")
         tool_input = _mapping(data.get("tool_input") or data.get("input"))
         action = _action_text(tool_name, tool_input)
