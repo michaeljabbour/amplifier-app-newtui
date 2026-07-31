@@ -51,6 +51,27 @@ def write_boundary_setting(settings: dict[str, Any]) -> WriteBoundary:
     return "guarded" if raw == "guarded" else "open"
 
 
+GovernancePosture = Literal["open", "gated"]
+"""App governance in the DEFAULT (``auto``) posture.
+
+``open`` (default) matches the Amplifier platform: no app-level approval
+gate — the composed bundle's ``hooks-approval`` (idle until a native mode
+declares ``confirm:`` tools, e.g. ``/mode careful``) is the only asker, and
+the governance hook's non-blocking output-injection probe stays mounted.
+``gated`` restores the app's classifier gate in ``auto``: risky actions are
+denied-and-parked in needs-you until answered. Explicitly chosen postures
+(``plan``, ``brainstorm``, ``chat``, ``build``) always enforce — switching
+into one is itself the opt-in.
+"""
+
+
+def governance_setting(settings: dict[str, Any]) -> GovernancePosture:
+    """Resolve ``permissions.governance`` from merged settings."""
+    permissions = settings.get("permissions")
+    raw = permissions.get("governance") if isinstance(permissions, dict) else None
+    return "gated" if raw == "gated" else "open"
+
+
 def filesystem_write_enforcer_present(mount_plan: dict[str, Any]) -> bool:
     """True when the mount plan includes a ``tool-filesystem`` module.
 
