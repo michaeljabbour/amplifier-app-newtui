@@ -605,8 +605,7 @@ def _surface_hints(messages: list[dict]) -> list[dict]:
     return [
         m
         for m in messages
-        if isinstance(m.get("metadata"), dict)
-        and m["metadata"].get("source") == "tui-surface-hint"
+        if isinstance(m.get("metadata"), dict) and m["metadata"].get("source") == "tui-surface-hint"
     ]
 
 

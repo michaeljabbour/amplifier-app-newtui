@@ -31,9 +31,7 @@ def _seed(store: SessionStore, session_id: str = "src000001") -> None:
         {"role": "assistant", "content": "hi back"},
         {"role": "tool", "tool_call_id": "t1", "content": "TOOLBODY output"},
     ]
-    store.save(
-        session_id, transcript, {"session_id": session_id, "bundle": "tui", "name": "src"}
-    )
+    store.save(session_id, transcript, {"session_id": session_id, "bundle": "tui", "name": "src"})
 
 
 # -- export -----------------------------------------------------------------

@@ -2592,9 +2592,7 @@ def routing_list() -> None:
     console = Console()
     if not entries:
         console.print("no routing matrices found")
-        console.print(
-            "Run `amplifier-tui update` to fetch the routing-matrix bundle.", style="dim"
-        )
+        console.print("Run `amplifier-tui update` to fetch the routing-matrix bundle.", style="dim")
         return
     table = Table(title="Routing Matrices", title_justify="center", header_style="bold cyan")
     table.add_column("", width=1, no_wrap=True)  # active marker
@@ -2752,9 +2750,7 @@ def routing_show(matrix_name: str | None, detailed: bool) -> None:
     console = Console()
     if not matrices:
         console.print("no routing matrices found")
-        console.print(
-            "Run `amplifier-tui update` to fetch the routing-matrix bundle.", style="dim"
-        )
+        console.print("Run `amplifier-tui update` to fetch the routing-matrix bundle.", style="dim")
         return
     settings = load_merged_settings(paths)
     if matrix_name is None:

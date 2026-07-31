@@ -156,9 +156,7 @@ def test_sessions_spans_empty() -> None:
 
 def test_sessions_spans_lists_rows_and_marks_current() -> None:
     rows = (
-        SessionSummary(
-            session_id="abc12345ff", name="auth", bundle="tui", messages=6, mtime=0.0
-        ),
+        SessionSummary(session_id="abc12345ff", name="auth", bundle="tui", messages=6, mtime=0.0),
         SessionSummary(session_id="def67890aa", name="", bundle="dev", messages=2, mtime=0.0),
     )
     spans = sessions_spans(rows, current="abc12345")
