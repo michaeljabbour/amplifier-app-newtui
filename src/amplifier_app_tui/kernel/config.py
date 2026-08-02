@@ -598,8 +598,6 @@ def apply_module_overrides(mount_plan: dict[str, Any], settings: dict[str, Any])
     if isinstance(provider_overrides, list) and provider_overrides:
         _merge_module_entries(mount_plan, "providers", provider_overrides)
 
-    _order_providers_by_priority(mount_plan)
-
     # modules.tools — tool config overrides merged by module id.
     tool_overrides = (settings.get("modules") or {}).get("tools")
     if isinstance(tool_overrides, list) and tool_overrides:
@@ -778,37 +776,6 @@ def expand_env_placeholders(config: dict[str, Any]) -> dict[str, Any]:
 
 def _entry_key(entry: dict[str, Any]) -> str:
     return str(entry.get("id") or entry.get("instance_id") or entry.get("module") or "")
-
-
-def _order_providers_by_priority(mount_plan: dict[str, Any]) -> None:
-    """Sort ``mount_plan['providers']`` by :func:`provider_priority`, lowest first.
-
-    Priority decides which provider serves the turn, but list ORDER still
-    decides too: mount order settles ties, and a bundle-declared provider is
-    pinned to index 0 because :func:`_merge_module_entries` merges settings
-    entries by identity *in place*. The tui bundle declares
-    ``provider-anthropic`` (so fresh installs boot) at ``priority: 1``, so it
-    both led the list and tied for best priority — every session ran Anthropic
-    no matter what settings said. ``provider list`` printed ``★ runpod`` while
-    the session ran Anthropic, and ``amplifier-tui provider use`` (which only
-    writes ``config.priority`` — see ``kernel/setup.use_provider``) could never
-    take effect.
-
-    Sorting the plan here makes list order agree with priority before anything
-    mounts, so the two signals can no longer disagree. The sort is stable, so
-    entries sharing a priority keep bundle-then-settings order — unchanged
-    behavior for anyone who never set a priority. Runs on every boot path
-    because it lives in :func:`apply_module_overrides`, and mutates in place to
-    preserve the single-plan-object invariant (RESEARCH-BRIEF risk #9).
-
-    ``--provider`` still wins: :func:`apply_run_overrides` runs afterwards and
-    stamps its match with ``priority: 0``.
-    """
-    providers = mount_plan.get("providers")
-    if isinstance(providers, list) and len(providers) > 1:
-        # Junk a hand-edited settings.yaml can carry (a bare string, a missing
-        # config) must not crash boot — non-dict entries take the default.
-        providers.sort(key=lambda e: provider_priority(e) if isinstance(e, dict) else 100)
 
 
 def _merge_module_entries(mount_plan: dict[str, Any], section: str, overlay: list[Any]) -> None:
