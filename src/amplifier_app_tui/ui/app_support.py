@@ -36,7 +36,7 @@ from ..model.formatting import command_digest
 from ..model.queues import NeedsYouItem
 from . import keymap, notifications
 from .footer import FooterState
-from .plan_panel import plan_counts, plan_panel_width
+from .plan_panel import plan_counts, plan_panel_max_height, plan_panel_width
 from .transcript import TranscriptView
 
 if TYPE_CHECKING:
@@ -743,6 +743,11 @@ def sync_plan_surfaces(app: TuiApp) -> None:
         # Content-fitted width (37 floor, one-third cap) — real plans carry
         # longer items than the mockup and wrapped at the fixed width.
         app.plan_panel.styles.width = plan_panel_width(app.plan_items, app.size.width)
+        # S7 AC5: bound the (possibly expanded) panel's height to the
+        # terminal's actual rows so a long expanded plan can never grow the
+        # bottom strip enough to push the composer/footer off-screen —
+        # recomputed here so a resize re-fits it like the width does.
+        app.plan_panel.styles.max_height = plan_panel_max_height(app.size.height)
         app.plan_panel.show_panel()
     else:
         app.plan_panel.hide_panel()
