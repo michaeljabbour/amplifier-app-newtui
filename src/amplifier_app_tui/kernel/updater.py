@@ -28,8 +28,8 @@ from .config import (
     DEFAULT_BUNDLE,
     SettingsPaths,
     active_bundle_name,
+    composed_overlay_uris,
     load_merged_settings,
-    overlay_uris,
 )
 
 # Foundation's stock "no remote to compare" summary for local/cache/non-git
@@ -215,6 +215,14 @@ class AnchorsStatus:
         return f"anchors ref check unavailable · tracking @{self.ref}"
 
 
+def _anchors_uri(ref: str) -> str:
+    """The anchors include's full source URI at *ref* (status + refresh share it)."""
+    return (
+        "git+https://github.com/microsoft/amplifier-foundation@"
+        f"{ref}#subdirectory=bundles/anchors/bundle.md"
+    )
+
+
 async def anchors_status(amplifier_home: Path | None = None) -> AnchorsStatus:
     """Check the tracked anchors include against upstream (side-effect-light).
 
@@ -231,13 +239,9 @@ async def anchors_status(amplifier_home: Path | None = None) -> AnchorsStatus:
         from amplifier_foundation.sources.git import GitSourceHandler
     except Exception as error:  # noqa: BLE001 — foundation unavailable
         return AnchorsStatus(ref=ref, error=f"foundation unavailable: {error}")
-    uri = (
-        "git+https://github.com/microsoft/amplifier-foundation@"
-        f"{ref}#subdirectory=bundles/anchors/bundle.md"
-    )
     cache_dir = _amplifier_home(amplifier_home) / "cache"
     try:
-        source = await GitSourceHandler().get_status(parse_uri(uri), cache_dir)
+        source = await GitSourceHandler().get_status(parse_uri(_anchors_uri(ref)), cache_dir)
     except Exception as error:  # noqa: BLE001 — never crash the check (offline-safe)
         return AnchorsStatus(ref=ref, error=str(error))
     return AnchorsStatus(
@@ -248,6 +252,29 @@ async def anchors_status(amplifier_home: Path | None = None) -> AnchorsStatus:
         detail=str(getattr(source, "summary", "") or ""),
         error=getattr(source, "error", None),
     )
+
+
+async def refresh_anchors(amplifier_home: Path | None = None) -> bool:
+    """Re-fetch the anchors include's cached foundation clone.
+
+    The symmetric *write* to :func:`anchors_status`'s read: foundation's
+    ``update_bundle`` skips included-bundle sources, so a stale anchors cache
+    is otherwise un-healable by ``update`` (the circular "run update" hint).
+    ``GitSourceHandler.update`` removes and re-clones the cache entry at the
+    tracked ref. Returns ``False`` on any failure (offline-safe, never raises).
+    """
+    ref = anchors_ref()
+    if ref is None:
+        return False
+    try:
+        from amplifier_foundation.paths.resolution import parse_uri
+        from amplifier_foundation.sources.git import GitSourceHandler
+
+        cache_dir = _amplifier_home(amplifier_home) / "cache"
+        await GitSourceHandler().update(parse_uri(_anchors_uri(ref)), cache_dir)
+        return True
+    except Exception:  # noqa: BLE001 — best-effort; caller reports failure
+        return False
 
 
 def _amplifier_home(amplifier_home: Path | None) -> Path:
@@ -264,10 +291,15 @@ def display_name(target: str) -> str:
 
 
 def target_bundles(settings: dict) -> list[str]:
-    """The bundles tui composes: active bundle + ``bundle.app`` overlays."""
+    """The bundles tui composes: active bundle + composed overlays.
+
+    Uses :func:`~.config.composed_overlay_uris` — the same set the boot
+    composer loads — so the routing-matrix bundle (appended when routing is
+    opted in) is checked/updated too, not just literal ``bundle.app`` entries.
+    """
     active = active_bundle_name(settings) or DEFAULT_BUNDLE
     out: list[str] = []
-    for target in (active, *overlay_uris(settings)):
+    for target in (active, *composed_overlay_uris(settings)):
         if target and target not in out:
             out.append(target)
     return out
@@ -276,7 +308,18 @@ def target_bundles(settings: dict) -> list[str]:
 async def _load_single(target: str):  # noqa: ANN202 — foundation Bundle
     from amplifier_foundation import load_bundle
 
-    bundle = await load_bundle(target)
+    from .bundle_admin import settings_paths
+    from .config import bundle_search_paths, discover_bundle
+
+    # Bare names ("tui") only resolve through foundation's persisted registry,
+    # which is empty on a fresh machine — resolve against the app's bundle
+    # search paths first (project → home → packaged), the same seam
+    # ``bundle_admin.load_bundle_info`` uses. URIs pass through untouched.
+    paths = settings_paths(None, None)
+    search = bundle_search_paths(paths.project_settings.parent.parent, paths.global_settings.parent)
+    resolved = discover_bundle(target, search) or target
+
+    bundle = await load_bundle(resolved)
     if isinstance(bundle, dict):
         return next(iter(bundle.values())) if bundle else None
     return bundle
@@ -404,6 +447,7 @@ __all__ = [
     "display_name",
     "pin_files",
     "read_anchors_ref",
+    "refresh_anchors",
     "self_update_hint",
     "target_bundles",
     "uncheckable_sources",

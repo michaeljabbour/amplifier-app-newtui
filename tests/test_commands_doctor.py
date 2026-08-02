@@ -265,3 +265,12 @@ def test_run_checks_surfaces_a_degraded_mount_as_a_finding() -> None:
     report = run_checks(mount_report=MountReport(missing_tools=("tool-team-pulse",)))
     assert report.finding_count == 1
     assert "tool-team-pulse" in report.findings[0].text
+
+
+def test_check_unused_mcp_empty_is_honest() -> None:
+    """Zero configured servers must not claim "MCP servers in use"."""
+    from amplifier_app_tui.commands import doctor
+
+    result = doctor.check_unused_mcp(())
+    assert result.ok
+    assert result.message == "no MCP servers configured"

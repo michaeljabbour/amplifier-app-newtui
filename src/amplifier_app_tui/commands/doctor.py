@@ -156,6 +156,11 @@ def check_unused_mcp(
     threshold_days: float = UNUSED_MCP_THRESHOLD_DAYS,
 ) -> CheckResult:
     """Configured MCP servers nobody has used lately still cost tokens."""
+    stats = tuple(stats)
+    if not stats:
+        # Zero configured servers is healthy — but say so honestly instead of
+        # the misleading "MCP servers in use" (the CLI doctor passes no stats).
+        return CheckResult(name="mcp", ok=True, message="no MCP servers configured")
     unused = [server for server in stats if server.unused_for(threshold_days)]
     if not unused:
         return CheckResult(name="mcp", ok=True, message="MCP servers in use")

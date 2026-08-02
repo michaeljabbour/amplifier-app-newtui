@@ -112,7 +112,7 @@ def test_uncheckable_sources_falls_back_to_legacy_unknown() -> None:
 # -- CLI wiring (stubbed foundation) ----------------------------------------
 
 
-def _stub(monkeypatch, statuses, *, cleaned=None, applied=None, anchors=None):
+def _stub(monkeypatch, statuses, *, cleaned=None, applied=None, anchors=None, refreshed=None):
     async def _check(*a, **k):
         return statuses
 
@@ -125,9 +125,15 @@ def _stub(monkeypatch, statuses, *, cleaned=None, applied=None, anchors=None):
         # Default: offline/neutral so CLI tests never touch the network.
         return anchors or updater.AnchorsStatus(ref="main", error="offline (test stub)")
 
+    async def _refresh(*a, **k):
+        if refreshed is not None:
+            refreshed.append(True)
+        return True
+
     monkeypatch.setattr(updater, "check_bundles", _check)
     monkeypatch.setattr(updater, "update_bundles", _apply)
     monkeypatch.setattr(updater, "anchors_status", _anchors)
+    monkeypatch.setattr(updater, "refresh_anchors", _refresh)
     monkeypatch.setattr(
         updater, "uv_cache_clean", lambda: cleaned.append(True) if cleaned is not None else True
     )
@@ -329,3 +335,117 @@ def test_update_reports_anchors_current(monkeypatch) -> None:
     result = CliRunner().invoke(main, ["update", "--check-only"])
     assert result.exit_code == 0
     assert "anchors up to date" in result.output
+
+
+def test_update_applies_anchors_refresh_when_stale(monkeypatch) -> None:
+    """A stale anchors cache is applicable work: update refreshes it and
+    reports it — the "run `amplifier-tui update`" hint is no longer circular."""
+    refreshed: list = []
+    applied: list = []
+    behind = updater.AnchorsStatus(
+        ref="main", has_update=True, cached_commit="aaaaaaaa1111", remote_commit="bbbbbbbb2222"
+    )
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "up to date", False)],
+        anchors=behind,
+        applied=applied,
+        refreshed=refreshed,
+    )
+    result = CliRunner().invoke(main, ["update", "-y"])
+    assert result.exit_code == 0, result.output
+    assert refreshed == [True]
+    assert applied == []  # no stale bundles — only anchors needed work
+    assert "updated: anchors" in result.output
+
+
+def test_update_check_only_never_refreshes_anchors(monkeypatch) -> None:
+    refreshed: list = []
+    behind = updater.AnchorsStatus(
+        ref="main", has_update=True, cached_commit="aaaaaaaa1111", remote_commit="bbbbbbbb2222"
+    )
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "up to date", False)],
+        anchors=behind,
+        refreshed=refreshed,
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert refreshed == []
+
+
+def test_update_reports_anchors_refresh_failure(monkeypatch) -> None:
+    behind = updater.AnchorsStatus(
+        ref="main", has_update=True, cached_commit="aaaaaaaa1111", remote_commit="bbbbbbbb2222"
+    )
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "up to date", False)],
+        anchors=behind,
+    )
+
+    async def _refresh_fail(*a, **k):
+        return False
+
+    monkeypatch.setattr(updater, "refresh_anchors", _refresh_fail)
+    result = CliRunner().invoke(main, ["update", "-y"])
+    assert result.exit_code == 1
+    assert "failed: anchors" in result.output
+
+
+# -- check errors are rendered, never silently swallowed ---------------------
+
+
+def test_update_renders_bundle_error(monkeypatch) -> None:
+    """A bundle whose check errored (e.g. unresolvable bare name on a fresh
+    machine) must be visible — the old behavior printed "all bundles up to
+    date" while the check had totally failed."""
+    _stub(
+        monkeypatch,
+        [
+            updater.BundleUpdate(
+                "tui",
+                "tui",
+                "check failed: Could not resolve URI: tui",
+                False,
+                error="Could not resolve URI: tui",
+            )
+        ],
+    )
+    result = CliRunner().invoke(main, ["update"])
+    assert result.exit_code == 1
+    assert "Could not resolve URI: tui" in result.output
+    assert "could not be checked" in result.output
+    assert "all bundles up to date" not in result.output
+
+
+# -- fresh-machine name resolution ------------------------------------------
+
+
+def test_load_single_resolves_bare_name_to_packaged_bundle(monkeypatch, tmp_path) -> None:
+    """Bare names ("tui") resolve via the app's bundle search paths — not
+    foundation's persisted registry, which is empty on a fresh machine."""
+    import asyncio
+
+    import amplifier_foundation
+
+    monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path))
+    captured: list = []
+
+    async def _fake_load(target, *a, **k):
+        captured.append(target)
+        return None
+
+    monkeypatch.setattr(amplifier_foundation, "load_bundle", _fake_load)
+    asyncio.run(updater._load_single("tui"))
+    assert len(captured) == 1
+    assert str(captured[0]).endswith("data/bundles/tui.md")
+
+
+def test_target_bundles_includes_routing_when_enabled() -> None:
+    from amplifier_app_tui.kernel.config import ROUTING_MATRIX_BUNDLE_URI
+
+    targets = updater.target_bundles({"routing": {"enabled": True}})
+    assert targets[0] == "tui"
+    assert ROUTING_MATRIX_BUNDLE_URI in targets
