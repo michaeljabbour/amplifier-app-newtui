@@ -598,6 +598,7 @@ async def list_provider_models(
     lister = getattr(inst, "list_models", None)
     if not callable(lister):
         return ModelCatalog(error="provider does not advertise models")
+
     async def _invoke() -> Any:
         # A sync lister must be CALLED inside the thread, not before it: calling
         # it eagerly and then wrapping the finished value in to_thread would put
