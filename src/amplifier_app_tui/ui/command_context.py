@@ -71,6 +71,9 @@ class AppCommandContext:
     def mcp_server_stats(self) -> tuple[object, ...]:
         return ()
 
+    def mount_report(self) -> object | None:
+        return self._app.adapter.mount_report
+
     # -- actions ------------------------------------------------------------------
 
     def echo_user_line(self, text: str) -> None:

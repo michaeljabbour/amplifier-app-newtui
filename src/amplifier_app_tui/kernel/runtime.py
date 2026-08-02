@@ -51,6 +51,7 @@ from .config import (
     load_merged_settings,
     packaged_modes_dir,
     prepare_overlay_bundle,
+    provider_priority,
     resolve_config,
     resolve_deferred_bundle,
 )
@@ -121,11 +122,22 @@ def _core_version() -> str:
 
 
 def _provider_and_model(mount_plan: dict[str, Any]) -> tuple[str, str]:
-    providers = mount_plan.get("providers") or []
-    if not providers:
+    """The provider (and its model) that will actually serve the turn.
+
+    Selected by LOWEST ``config.priority`` — the same rule the orchestrator
+    applies at call time (``loop-streaming::_select_provider`` sorts mounted
+    providers by priority, lower wins, defaulting to 100). List position is
+    NOT the rule: ``_merge_module_entries`` merges a settings entry onto the
+    bundle-declared provider *in place* and appends new ones, so index 0 is
+    pinned to whatever the bundle declared. Reading index 0 made the banner,
+    the footer and the cost estimator name ``anthropic`` while every request
+    went to a higher-priority vLLM instance — and priced the tokens wrong.
+    """
+    entries = [entry for entry in (mount_plan.get("providers") or []) if isinstance(entry, dict)]
+    if not entries:
         return ("", "")
-    entry = providers[0] if isinstance(providers[0], dict) else {}
-    module_id = str(entry.get("module", entry.get("id", "")))
+    entry = min(entries, key=provider_priority)
+    module_id = str(entry.get("id") or entry.get("module") or "")
     provider = module_id.replace("provider-", "").replace("amplifier-module-", "")
     config = entry.get("config") if isinstance(entry.get("config"), dict) else {}
     model = str((config or {}).get("default_model", ""))
@@ -576,6 +588,10 @@ class RealRuntime:
         (DESIGN-SPEC §3/§11); empty for fresh sessions and for stored
         sessions with no usable event log (prose fallback)."""
         self.degraded_notice: str | None = None
+        self.mount_report: Any = None
+        """The boot :class:`~.session_factory.MountReport`, kept past startup so
+        ``/doctor`` can report WHICH module failed — the degraded notice sends
+        the user to doctor, so doctor has to be able to answer."""
         self.pending_directive = ""
         """A resumed fork child's primed starting directive (``/fork`` /
         ``session fork``): set from stored metadata in :meth:`start` and
@@ -901,6 +917,7 @@ class RealRuntime:
         self.bundle_name = resolved.bundle_name
         self.session_short = initialized.session_id[:6]
         self.degraded_notice = initialized.degraded_notice
+        self.mount_report = initialized.mount_report
         provider, model = _provider_and_model(resolved.mount_plan)
         self.model_name = "/".join(part for part in (provider, model) if part)
         from .. import __version__

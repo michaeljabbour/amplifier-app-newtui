@@ -7,6 +7,7 @@ smoke test with a stubbed discovery, not here.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 import sys
@@ -16,6 +17,23 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from amplifier_app_tui.kernel import setup
+
+# Captured at import, BEFORE the autouse `_offline_provider_setup` fixture
+# stubs it out — these tests exercise the real implementation, and everything
+# it would reach outside the process is supplied by a fake provider class.
+_REAL_LIST_PROVIDER_MODELS = setup.list_provider_models
+
+
+def _paths(tmp_path: Path):
+    from amplifier_app_tui.kernel import bundle_admin
+
+    return bundle_admin.settings_paths(tmp_path / "proj", tmp_path / "home")
+
+
+def _read_providers(paths) -> list[dict]:
+    from amplifier_app_tui.kernel import bundle_admin
+
+    return bundle_admin.read_scope(bundle_admin.scope_file(paths, "global"))["config"]["providers"]
 
 
 def test_provider_env_prefix() -> None:
@@ -263,3 +281,256 @@ def test_setup_status_reads_keys_and_bundle(tmp_path: Path) -> None:
     assert status.stored_keys == ("ANTHROPIC_API_KEY",)
     assert status.active_bundle is None  # nothing set in tmp scopes
     assert status.keys_path == home / "keys.env"
+
+
+# ---------------------------------------------------------------------------
+# Dynamic provider setup: catalog, schema, model probe, instance credentials
+# ---------------------------------------------------------------------------
+
+
+def test_provider_sources_catalog_covers_vllm() -> None:
+    # The absence of a vllm entry (in either source) is why `amplifier-tui init`
+    # could not offer it on a machine where the module was not yet installed.
+    assert "provider-vllm" in setup.PROVIDER_SOURCES
+    assert setup.PROVIDER_SOURCES["provider-vllm"].startswith("git+https://")
+    assert "provider-chat-completions" in setup.PROVIDER_SOURCES
+
+
+def test_should_show_field_supports_every_pattern() -> None:
+    def field(**show_when):
+        return setup.ProviderConfigField(
+            id="x", display_name="X", prompt="", field_type="text", show_when=show_when or None
+        )
+
+    assert setup.should_show_field(field(), {})  # no condition ⇒ always
+    assert setup.should_show_field(field(model="opus"), {"model": "OPUS"})  # case-insensitive
+    assert not setup.should_show_field(field(model="opus"), {"model": "sonnet"})
+    assert setup.should_show_field(field(model="contains:son"), {"model": "sonnet"})
+    assert not setup.should_show_field(field(model="contains:son"), {"model": "opus"})
+    assert setup.should_show_field(field(model="not_contains:son"), {"model": "opus"})
+    assert not setup.should_show_field(field(model="not_contains:son"), {"model": "sonnet"})
+    assert setup.should_show_field(field(model="startswith:claude"), {"model": "claude-x"})
+    assert not setup.should_show_field(field(model="startswith:claude"), {"model": "gpt"})
+    assert setup.should_show_field(field(model="not_startswith:gpt"), {"model": "claude"})
+    assert not setup.should_show_field(field(model="not_startswith:gpt"), {"model": "gpt-5"})
+
+
+def test_resolve_placeholder(monkeypatch) -> None:
+    monkeypatch.setenv("SOME_URL", "https://real/v1")
+    assert setup.resolve_placeholder("${SOME_URL}") == "https://real/v1"
+    assert setup.resolve_placeholder("${UNSET_XYZ}") is None
+    assert setup.resolve_placeholder("literal") == "literal"
+    assert setup.resolve_placeholder(None) is None
+
+
+def test_sanitize_env_token_and_instance_suggestion() -> None:
+    assert setup.sanitize_env_token("run-pod 2") == "RUN_POD_2"
+    assert setup.sanitize_env_token("--x--") == "X"
+    assert setup.suggest_instance_env_var("provider-vllm", "runpod", set()) == "VLLM_RUNPOD_API_KEY"
+    # A "<type>-<name>" id does not duplicate the type prefix.
+    assert (
+        setup.suggest_instance_env_var("provider-vllm", "vllm-runpod", set())
+        == "VLLM_RUNPOD_API_KEY"
+    )
+
+
+def test_suggest_instance_env_var_refuses_useless_or_colliding_ids() -> None:
+    # An id that IS just the type name carries no distinguishing information.
+    with pytest.raises(ValueError, match="empty suffix"):
+        setup.suggest_instance_env_var("provider-vllm", "vllm", set())
+    # Two ids differing only in separator style sanitize identically — emitting
+    # the name anyway would recreate the very collision this prevents.
+    with pytest.raises(ValueError, match="already in use"):
+        setup.suggest_instance_env_var("provider-vllm", "run_pod", {"VLLM_RUN_POD_API_KEY"})
+
+
+def test_instantiate_provider_threads_real_values_and_respects_rung_order() -> None:
+    """VLLMProvider raises ValueError when constructed without base_url, so a
+    ladder that stops at the first exception, or omits base_url, cannot build
+    it at all."""
+
+    class VllmLike:
+        def __init__(self, base_url=None, api_key=None, config=None):
+            if base_url is None:
+                raise ValueError("base_url or client must be provided")
+            self.base_url = base_url
+            self.api_key = api_key
+
+    inst = setup._instantiate_provider(VllmLike, {"base_url": "https://pod/v1", "api_key": "sk-1"})
+    assert inst is not None
+    assert inst.base_url == "https://pod/v1"
+    assert inst.api_key == "sk-1"
+
+
+def test_instantiate_provider_handles_host_style_constructors() -> None:
+    class OllamaLike:
+        def __init__(self, host=None, config=None):
+            if host is None:
+                raise TypeError("host required")
+            self.host = host
+
+    inst = setup._instantiate_provider(OllamaLike, {"host": "http://localhost:11434"})
+    assert inst is not None and inst.host == "http://localhost:11434"
+
+
+class _FakeModel:
+    def __init__(self, ident: str) -> None:
+        self.id = ident
+        self.display_name = ident
+        self.capabilities = ["tools", "fast"]
+
+
+def _fake_provider_module(monkeypatch, cls) -> None:
+    monkeypatch.setattr(setup, "_load_provider_class", lambda module_id: cls)
+    setup.reset_provider_info_cache()
+
+
+@pytest.mark.asyncio
+async def test_list_provider_models_success_and_close(monkeypatch) -> None:
+    closed: list[bool] = []
+
+    class P:
+        def __init__(self, **kw):
+            pass
+
+        async def list_models(self):
+            return [_FakeModel("glm"), _FakeModel("qwen")]
+
+        async def close(self):
+            closed.append(True)
+
+    _fake_provider_module(monkeypatch, P)
+    catalog = await _REAL_LIST_PROVIDER_MODELS("provider-vllm", {})
+    assert [m.id for m in catalog.models] == ["glm", "qwen"]
+    assert catalog.models[0].capabilities == ("tools", "fast")
+    assert catalog.error is None
+    assert closed == [True]  # the throwaway probe is always closed
+
+
+@pytest.mark.asyncio
+async def test_list_provider_models_accepts_sync_listers(monkeypatch) -> None:
+    class P:
+        def __init__(self, **kw):
+            pass
+
+        def list_models(self):
+            return [_FakeModel("m1")]
+
+    _fake_provider_module(monkeypatch, P)
+    catalog = await _REAL_LIST_PROVIDER_MODELS("provider-x", {})
+    assert [m.id for m in catalog.models] == ["m1"]
+
+
+@pytest.mark.asyncio
+async def test_list_provider_models_reports_errors_instead_of_raising(monkeypatch) -> None:
+    class P:
+        def __init__(self, **kw):
+            pass
+
+        async def list_models(self):
+            raise ConnectionError("endpoint unreachable")
+
+    _fake_provider_module(monkeypatch, P)
+    catalog = await _REAL_LIST_PROVIDER_MODELS("provider-vllm", {})
+    assert catalog.models == ()
+    assert "ConnectionError" in (catalog.error or "")
+
+
+@pytest.mark.asyncio
+async def test_list_provider_models_times_out(monkeypatch) -> None:
+    class P:
+        def __init__(self, **kw):
+            pass
+
+        async def list_models(self):
+            await asyncio.sleep(5)
+
+    _fake_provider_module(monkeypatch, P)
+    catalog = await _REAL_LIST_PROVIDER_MODELS("provider-vllm", {}, timeout=0.01)
+    assert catalog.models == ()
+    assert "timed out" in (catalog.error or "")
+
+
+def test_load_provider_info_describes_a_keyless_provider(monkeypatch) -> None:
+    """Returning None for a provider with no secret is what made ollama
+    unrepresentable — and therefore unofferable."""
+
+    class Info:
+        display_name = "Ollama"
+        config_fields = [
+            SimpleNamespace(
+                id="host",
+                display_name="Host",
+                prompt="Ollama host",
+                field_type="text",
+                env_var="OLLAMA_HOST",
+                default="http://localhost:11434",
+                required=True,
+            )
+        ]
+
+    class P:
+        def __init__(self, **kw):
+            pass
+
+        def get_info(self):
+            return Info()
+
+        def list_models(self):
+            return []
+
+    _fake_provider_module(monkeypatch, P)
+    info = setup.load_provider_info("provider-ollama")
+    assert info is not None
+    assert info.key_var is None
+    assert info.display_name == "Ollama"
+    assert [f.id for f in info.config_fields] == ["host"]
+    assert info.config_fields[0].required is True
+
+
+def test_provider_config_entry_supports_id_source_and_collected_config() -> None:
+    entry = setup.provider_config_entry(
+        "provider-vllm",
+        config={"base_url": "${VLLM_BASE_URL}", "default_model": "glm"},
+        instance_id="runpod",
+        source="git+https://example/vllm@main",
+    )
+    assert entry == {
+        "module": "provider-vllm",
+        "id": "runpod",
+        "source": "git+https://example/vllm@main",
+        "config": {
+            "base_url": "${VLLM_BASE_URL}",
+            "default_model": "glm",
+            "priority": 1,
+        },
+    }
+
+
+def test_write_provider_config_keeps_a_distinct_instance(tmp_path: Path) -> None:
+    """`id: runpod` and a plain `provider-vllm` entry are different providers;
+    matching on the module alone made adding one delete the other."""
+    paths = _paths(tmp_path)
+    setup.write_provider_config(
+        paths, "global", setup.provider_config_entry("provider-vllm", key_var="VLLM_API_KEY")
+    )
+    setup.write_provider_config(
+        paths,
+        "global",
+        setup.provider_config_entry(
+            "provider-vllm", key_var="VLLM_RUNPOD_API_KEY", instance_id="runpod"
+        ),
+    )
+    entries = _read_providers(paths)
+    assert [e.get("id") or e["module"] for e in entries] == ["runpod", "provider-vllm"]
+    # Same identity replaces rather than duplicating.
+    setup.write_provider_config(
+        paths,
+        "global",
+        setup.provider_config_entry(
+            "provider-vllm", key_var="VLLM_RUNPOD_API_KEY", instance_id="runpod", model="glm"
+        ),
+    )
+    entries = _read_providers(paths)
+    assert len(entries) == 2
+    assert entries[0]["config"]["default_model"] == "glm"

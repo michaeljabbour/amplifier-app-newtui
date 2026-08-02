@@ -239,6 +239,25 @@ def _module_expected_names(
     return [_normalize_tool_name(module_id.removeprefix("tool-"))], False
 
 
+CONDITIONAL_TOOL_MODULES = frozenset({"tool-mcp"})
+"""Tool modules that mount successfully but register ZERO tools when unconfigured.
+
+``tool-mcp`` reads ``~/.amplifier/mcp.json`` and mounts one tool per remote
+server tool; with no config file it returns early having registered nothing
+(the bundle comment at ``data/bundles/tui.md`` says so outright: "No mcp.json
+⇒ no-op"). A zero-tool outcome is therefore its NORMAL state, indistinguishable
+from a failed mount by the name-diff below — which is how a clean install with
+no MCP servers reported ``degraded start · tool module(s) failed to mount:
+tool-mcp`` on every boot.
+
+Membership means "absence is not evidence of failure", nothing more: a
+conditional module that DOES register tools is still matched and reported
+normally. ``tool-team-pulse`` escapes the same trap only by accident — it
+always mounts ``team_pulse_configure`` even when unconfigured — so any future
+no-op-when-unconfigured module belongs in this set.
+"""
+
+
 def missing_tool_modules(
     configured_tool_modules: Iterable[str],
     mounted_tool_names: Iterable[str],
@@ -269,6 +288,9 @@ def missing_tool_modules(
       the fallback is deemed unreliable for this session and non-
       authoritative modules are given the benefit of the doubt. Authoritative
       (``module_exports``-backed) verdicts always stand.
+    * **Conditional modules are never convicted on absence.** A module in
+      :data:`CONDITIONAL_TOOL_MODULES` registers zero tools when unconfigured
+      *by design*, so "no tools mounted" carries no signal for it either way.
     """
     mounted_norm = {_normalize_tool_name(str(n)) for n in mounted_tool_names}
     expected_by_module = [
@@ -294,6 +316,8 @@ def missing_tool_modules(
     missing: list[str] = []
     for module_id, names, authoritative in expected_by_module:
         if any(_tool_present(name, mounted_norm) for name in names):
+            continue
+        if module_id in CONDITIONAL_TOOL_MODULES:
             continue
         if authoritative or fallback_reliable:
             missing.append(module_id)

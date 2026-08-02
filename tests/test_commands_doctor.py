@@ -11,6 +11,7 @@ from amplifier_app_tui.commands.doctor import (
     build_doctor_block,
     check_anchors_pin,
     check_install,
+    check_mounts,
     check_path,
     check_repeated_approvals,
     check_settings,
@@ -20,6 +21,7 @@ from amplifier_app_tui.commands.doctor import (
     run_standalone,
 )
 from amplifier_app_tui.commands.improve import ApprovalTally
+from amplifier_app_tui.kernel.session_factory import MountReport
 from amplifier_app_tui.kernel.updater import AnchorsStatus
 
 
@@ -228,3 +230,38 @@ def test_run_standalone_exit_codes(tmp_path: Path) -> None:
     )
     assert code == 0
     assert "0 findings · nothing changed yet" in printed[0]
+
+
+# --------------------------------------------------------------------------
+# check_mounts — the target of the degraded notice's "run doctor for details"
+# --------------------------------------------------------------------------
+
+
+def test_check_mounts_skipped_without_a_session() -> None:
+    # Standalone `amplifier-tui doctor` runs outside a session: say the check
+    # was skipped rather than imply the mounts were verified healthy.
+    result = check_mounts(None)
+    assert result.ok
+    assert result.message == "mount check skipped (no session)"
+
+
+def test_check_mounts_green_when_everything_mounted() -> None:
+    assert check_mounts(MountReport()).ok
+
+
+def test_check_mounts_names_the_failed_modules() -> None:
+    result = check_mounts(
+        MountReport(missing_providers=("vllm",), missing_tools=("tool-team-pulse",))
+    )
+    assert not result.ok
+    assert "provider(s) unavailable: vllm" in result.message
+    assert "tool module(s) failed to mount: tool-team-pulse" in result.message
+    assert "amplifier-tui update --force" in result.message
+
+
+def test_run_checks_surfaces_a_degraded_mount_as_a_finding() -> None:
+    # The gap this closes: before, a degraded boot still reported "0 findings",
+    # so the notice's `run doctor for details` pointer led nowhere.
+    report = run_checks(mount_report=MountReport(missing_tools=("tool-team-pulse",)))
+    assert report.finding_count == 1
+    assert "tool-team-pulse" in report.findings[0].text

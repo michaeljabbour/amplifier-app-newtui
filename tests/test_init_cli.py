@@ -22,14 +22,30 @@ _CHOICES = (
 )
 
 
-def _stub(monkeypatch, tmp_path: Path):
+def _stub(monkeypatch, tmp_path: Path, *, schema=None, choices=None):
+    """Offline init wiring: a fixed provider list, a tmp keys file, no settings write.
+
+    ``onboarding_choices`` is stubbed whole (not just ``discover_providers``)
+    so the numbered menu stays exactly ``_CHOICES`` — the real one now also
+    unions the module catalog, which is covered in test_kernel_providers.
+
+    ``_resolve_provider_schema`` returns *schema*; ``None`` (the default)
+    selects the degraded basic flow, which is what the pre-existing
+    key-prompt expectations describe.
+    """
     path = tmp_path / "keys.env"
     written: list = []
 
-    async def _discover(*a, **k):
-        return _CHOICES
+    offered = _CHOICES if choices is None else tuple(choices)
 
-    monkeypatch.setattr(setup, "discover_providers", _discover)
+    async def _choices(*a, **k):
+        return offered
+
+    async def _schema(choice):
+        return schema
+
+    monkeypatch.setattr(setup, "onboarding_choices", _choices)
+    monkeypatch.setattr(main_mod, "_resolve_provider_schema", _schema)
     monkeypatch.setattr(setup, "keys_file", lambda *a, **k: path)
     monkeypatch.setattr(
         setup,
@@ -204,3 +220,168 @@ def test_init_any_flag_bypasses_wizard(tmp_path: Path, monkeypatch) -> None:
     result = CliRunner().invoke(main, ["init", "-p", "anthropic", "--api-key", "sk-flag", "-y"])
     assert result.exit_code == 0
     assert setup.read_keys(path)["ANTHROPIC_API_KEY"] == "sk-flag"
+
+
+# ---------------------------------------------------------------------------
+# Field-driven setup: the provider's own schema drives the prompts, and the
+# Default Model menu lists what the endpoint actually serves.
+# ---------------------------------------------------------------------------
+
+
+def _field(field_id: str, **kw) -> setup.ProviderConfigField:
+    return setup.ProviderConfigField(
+        id=field_id,
+        display_name=kw.pop("display_name", field_id),
+        prompt=kw.pop("prompt", ""),
+        field_type=kw.pop("field_type", "text"),
+        **kw,
+    )
+
+
+_VLLM_CHOICE = setup.ProviderChoice(
+    "provider-vllm",
+    "vllm",
+    "VLLM_API_KEY",
+    "VLLM_BASE_URL",
+    display="vLLM",
+    source_uri=setup.PROVIDER_SOURCES["provider-vllm"],
+)
+
+_VLLM_SCHEMA = setup.ProviderFields(
+    module_id="provider-vllm",
+    key_var="VLLM_API_KEY",
+    key_field_id="api_key",
+    base_url_var="VLLM_BASE_URL",
+    base_url_default="http://localhost:8000/v1",
+    has_models=True,
+    display_name="vLLM",
+    config_fields=(
+        _field(
+            "base_url",
+            display_name="Server URL",
+            env_var="VLLM_BASE_URL",
+            default="http://localhost:8000/v1",
+            required=True,
+        ),
+        _field("api_key", display_name="API Key", field_type="secret", env_var="VLLM_API_KEY"),
+        _field("context_window", display_name="Context Window", env_var="VLLM_CONTEXT_WINDOW"),
+    ),
+)
+
+
+def _models(monkeypatch, *ids: str, error: str | None = None):
+    async def _listing(*a, **k):
+        return setup.ModelCatalog(
+            models=tuple(setup.ProviderModel(id=i, display_name=i) for i in ids), error=error
+        )
+
+    monkeypatch.setattr(setup, "list_provider_models", _listing)
+
+
+def test_provider_add_drives_the_declared_schema_and_model_menu(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The whole point of the port: vLLM is asked for its server URL (a field
+    the old one-key flow never prompted for), every env-var-bearing field lands
+    in keys.env as a ${VAR}, and the default model is chosen from the models the
+    endpoint really serves rather than typed blind."""
+    path, written = _stub(monkeypatch, tmp_path, schema=_VLLM_SCHEMA, choices=(_VLLM_CHOICE,))
+    _models(monkeypatch, "deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.2-FP8")
+    monkeypatch.setattr(setup, "instance_id_in_use", lambda *a, **k: False)
+
+    result = CliRunner().invoke(
+        main,
+        ["provider", "add", "vllm"],
+        # server URL · api key · context window · model choice [2]
+        input="https://pod-4000.proxy.runpod.net/v1\nsk-abc\n131072\n2\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Configuring vLLM" in result.output
+    assert "[1] deepseek-ai/DeepSeek-V4-Flash-0731" in result.output
+    assert "[2] zai-org/GLM-5.2-FP8" in result.output
+
+    # Secrets AND endpoints go to keys.env; settings only ever see ${VAR}.
+    assert setup.read_keys(path) == {
+        "VLLM_BASE_URL": "https://pod-4000.proxy.runpod.net/v1",
+        "VLLM_API_KEY": "sk-abc",
+        "VLLM_CONTEXT_WINDOW": "131072",
+    }
+    (entry,) = written
+    assert entry["config"] == {
+        "base_url": "${VLLM_BASE_URL}",
+        "api_key": "${VLLM_API_KEY}",
+        "context_window": "${VLLM_CONTEXT_WINDOW}",
+        "default_model": "zai-org/GLM-5.2-FP8",
+        "priority": 1,
+    }
+    # Not installed in this run ⇒ the source is persisted so the next boot
+    # installs the module properly.
+    assert entry["source"] == setup.PROVIDER_SOURCES["provider-vllm"]
+
+
+def test_provider_add_model_listing_failure_falls_back_to_free_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _path, written = _stub(monkeypatch, tmp_path, schema=_VLLM_SCHEMA, choices=(_VLLM_CHOICE,))
+    _models(monkeypatch, error="ConnectionError: endpoint unreachable")
+    monkeypatch.setattr(setup, "instance_id_in_use", lambda *a, **k: False)
+
+    result = CliRunner().invoke(
+        main,
+        ["provider", "add", "vllm"],
+        input="http://localhost:8000/v1\n\n\nsome-local-model\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "could not list models · ConnectionError: endpoint unreachable" in result.output
+    (entry,) = written
+    assert entry["config"]["default_model"] == "some-local-model"
+
+
+def test_provider_add_second_instance_gets_its_own_credential_var(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Reusing VLLM_API_KEY for a second instance would overwrite the first
+    instance's key in keys.env and silently break it."""
+    path, written = _stub(monkeypatch, tmp_path, schema=_VLLM_SCHEMA, choices=(_VLLM_CHOICE,))
+    _models(monkeypatch, "glm")
+    monkeypatch.setattr(setup, "claimed_env_vars", lambda *a, **k: {"VLLM_API_KEY"})
+
+    result = CliRunner().invoke(
+        main,
+        ["provider", "add", "vllm", "--instance-id", "runpod"],
+        input="https://pod.example/v1\nsk-second\n\n1\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "VLLM_RUNPOD_API_KEY" in result.output
+    assert setup.read_keys(path)["VLLM_RUNPOD_API_KEY"] == "sk-second"
+    assert "VLLM_API_KEY" not in setup.read_keys(path)
+    (entry,) = written
+    assert entry["id"] == "runpod"
+    assert entry["config"]["api_key"] == "${VLLM_RUNPOD_API_KEY}"
+
+
+def test_yes_needs_no_key_when_the_secret_is_optional(tmp_path: Path, monkeypatch) -> None:
+    """vLLM's api_key is required=False (a local endpoint needs none), so -y
+    must not demand --api-key the way it does for anthropic."""
+    _path, written = _stub(monkeypatch, tmp_path, choices=(_VLLM_CHOICE,))
+    monkeypatch.setattr(setup, "load_provider_info", lambda module_id: _VLLM_SCHEMA)
+    result = CliRunner().invoke(main, ["provider", "add", "vllm", "-y"])
+    assert result.exit_code == 0, result.output
+    (entry,) = written
+    assert entry["module"] == "provider-vllm"
+    assert "api_key" not in entry["config"]
+
+
+def test_yes_performs_no_network(tmp_path: Path, monkeypatch) -> None:
+    _stub(monkeypatch, tmp_path)
+    calls: list[str] = []
+
+    async def _boom(*a, **k):
+        calls.append("fetched")
+        raise AssertionError("--yes must never touch the network")
+
+    monkeypatch.setattr(setup, "ensure_provider_available", _boom)
+    monkeypatch.setattr(setup, "list_provider_models", _boom)
+    result = CliRunner().invoke(main, ["init", "-p", "anthropic", "--api-key", "sk-x", "-y"])
+    assert result.exit_code == 0, result.output
+    assert calls == []

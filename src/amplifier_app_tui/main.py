@@ -23,6 +23,7 @@ import asyncio
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
 import sys
 from time import monotonic
@@ -1818,18 +1819,241 @@ def denied_dirs_remove(path: str, is_global: bool, is_project: bool, is_local: b
 
 
 def _match_provider(choices, token: str):  # noqa: ANN001, ANN202
-    """Find the provider choice matching a user token (name/id/prefix)."""
+    """Find the provider choice matching a user token (name/id/prefix/display)."""
     from .kernel.setup import provider_env_prefix
 
     needle = token.strip().lower()
     for choice in choices:
-        if needle in {
+        candidates = {
             choice.module_id.lower(),
             provider_env_prefix(choice.module_id).lower(),
             choice.module_id.replace("provider-", "").lower(),
-        }:
+        }
+        if choice.display:
+            candidates.add(choice.display.lower())
+        if needle in candidates:
             return choice
     return None
+
+
+async def _resolve_provider_schema(choice):  # noqa: ANN001, ANN202
+    """The provider's own config schema, fetching the module if need be.
+
+    A module-level seam on purpose: it is the one place setup reaches the
+    network, so tests patch this rather than stubbing git.
+    """
+    from .kernel import setup
+
+    if not choice.installed and choice.source_uri:
+        click.echo(f"\n  fetching {choice.module_id} (not installed) …", nl=False)
+        availability = await setup.ensure_provider_available(choice.module_id, choice.source_uri)
+        click.echo(" ok" if availability.available else f" {availability.reason}")
+    return setup.load_provider_info(choice.module_id)
+
+
+def _prompt_config_field(field, *, collected, existing, env_var, keys_path, written):  # noqa: ANN001, ANN202
+    """Prompt for one ``config_fields`` entry; return ``(field_id, value)``.
+
+    Any field carrying an ``env_var`` — text as much as secret — is stored in
+    keys.env and referenced from settings as ``${VAR}``, which is how the
+    endpoint and tuning values end up as ``${VLLM_BASE_URL}`` /
+    ``${VLLM_CONTEXT_WINDOW}`` rather than literals. Writing the key also
+    exports it, so the model probe two steps later can actually connect.
+
+    Returns ``None`` when the user aborts, and omits a field they left blank.
+    """
+    from .kernel import setup
+
+    label = field.display_name or field.id
+    prompt_text = f"{label}" if not field.prompt else f"{label}\n  {field.prompt}"
+    current = setup.resolve_placeholder(existing.get(field.id)) if existing else None
+    fallback = current or (os.environ.get(env_var) if env_var else None) or field.default or ""
+
+    try:
+        if field.field_type == "boolean":
+            value: str | None = (
+                "true" if click.confirm(label, default=_truthy(fallback)) else "false"
+            )
+        elif field.field_type == "choice" and field.choices:
+            click.echo(f"\n{label}")
+            for index, option in enumerate(field.choices, start=1):
+                click.echo(f"  [{index}] {option}")
+            raw = click.prompt("  choice", default="", show_default=False).strip()
+            if not raw:
+                value = fallback or None
+            else:
+                try:
+                    value = field.choices[int(raw) - 1]
+                except (ValueError, IndexError):
+                    click.echo(f"  invalid selection: {raw}", err=True)
+                    return None
+        elif field.field_type == "secret":
+            suffix = " (press Enter to keep the stored value)" if fallback else ""
+            entered = click.prompt(
+                f"\n{prompt_text}{suffix}", hide_input=True, default="", show_default=False
+            ).strip()
+            value = entered or (fallback or None)
+        else:
+            value = click.prompt(f"\n{prompt_text}", default=fallback, show_default=bool(fallback))
+            value = (value or "").strip() or None
+    except (click.Abort, EOFError):
+        return None
+
+    if value is None or value == "":
+        if field.required:
+            click.echo(f"  {label} is required", err=True)
+            return None
+        return (field.id, None)
+    if env_var:
+        setup.write_key(keys_path, env_var, str(value))
+        if env_var not in written:
+            written.append(env_var)
+        return (field.id, f"${{{env_var}}}")
+    return (field.id, value)
+
+
+def _truthy(value) -> bool:  # noqa: ANN001
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _prompt_model_selection(catalog, default_model: str | None) -> str | None:
+    """The ``Default Model`` picker — numbered live models, then custom.
+
+    An empty or failed catalog is not fatal: print the reason and fall back to
+    free text, because a provider can serve a model it does not advertise.
+    """
+    click.echo("\nDefault Model")
+    if catalog.error:
+        click.echo(f"  could not list models · {catalog.error}")
+    if not catalog.models:
+        if not catalog.error:
+            click.echo("  no models advertised by the server")
+        entered = click.prompt("  model name", default=default_model or "", show_default=True)
+        return (entered or "").strip() or None
+
+    options: list[str] = []
+    for model in catalog.models:
+        options.append(model.id)
+        caps = [c for c in model.capabilities if c in ("fast", "thinking", "vision", "reasoning")]
+        suffix = f"  ({', '.join(caps)})" if caps else ""
+        click.echo(f"  [{len(options)}] {model.display_name or model.id}{suffix}")
+    if default_model and default_model not in {m.id for m in catalog.models}:
+        options.append(default_model)
+        click.echo(f"  [{len(options)}] {default_model}  (current)")
+    options.append("")  # custom sentinel
+    click.echo(f"  [{len(options)}] custom")
+
+    default_choice = ""
+    if default_model and default_model in options:
+        default_choice = str(options.index(default_model) + 1)
+    raw = click.prompt(
+        "  choice", default=default_choice, show_default=bool(default_choice)
+    ).strip()
+    if not raw:
+        return default_model
+    try:
+        picked = options[int(raw) - 1]
+    except (ValueError, IndexError):
+        click.echo(f"  invalid selection: {raw}", err=True)
+        return None
+    if picked:
+        return picked
+    entered = click.prompt("  model name", default=default_model or "", show_default=True)
+    return (entered or "").strip() or None
+
+
+async def _configure_provider_interactive(
+    choice,  # noqa: ANN001
+    schema,  # noqa: ANN001
+    *,
+    cli_api_key: str | None,
+    cli_base_url: str | None,
+    cli_model: str | None,
+    instance_id: str | None,
+    keys_path,  # noqa: ANN001
+):
+    """Field-driven provider setup. Returns ``(config, written_vars)`` or None.
+
+    Three phases, mirroring app-cli's ``configure_provider``: pre-model fields,
+    then the live model picker, then any ``requires_model`` fields (which can
+    ``show_when`` on the chosen model).
+    """
+    from .kernel import setup
+
+    collected: dict[str, object] = {}
+    written: list[str] = []
+    overrides: dict[str, str] = {}
+    if cli_api_key:
+        overrides[schema.key_field_id] = cli_api_key
+    if cli_base_url:
+        overrides["base_url"] = cli_base_url
+
+    # A second instance of the same provider type needs its own credential
+    # variable, or saving it would overwrite the first instance's key.
+    key_env_override: str | None = None
+    if instance_id and schema.key_var:
+        try:
+            key_env_override = setup.suggest_instance_env_var(
+                choice.module_id, instance_id, setup.claimed_env_vars()
+            )
+        except ValueError as exc:
+            click.echo(f"{exc}", err=True)
+            return None
+        click.echo(f"  credential variable for this instance: {key_env_override}")
+
+    display = schema.display_name or choice.module_id
+    click.echo(f"\nConfiguring {display}")
+
+    def _env_for(field) -> str | None:  # noqa: ANN001
+        if key_env_override and field.env_var and field.env_var == schema.key_var:
+            return key_env_override
+        return field.env_var
+
+    def _run_fields(fields) -> bool:  # noqa: ANN001
+        for field in fields:
+            if not setup.should_show_field(field, collected):
+                continue
+            if field.id in overrides:
+                collected[field.id] = overrides[field.id]
+                env_var = _env_for(field)
+                if env_var:
+                    setup.write_key(keys_path, env_var, str(overrides[field.id]))
+                    written.append(env_var)
+                    collected[field.id] = f"${{{env_var}}}"
+                continue
+            outcome = _prompt_config_field(
+                field,
+                collected=collected,
+                existing=None,
+                env_var=_env_for(field),
+                keys_path=keys_path,
+                written=written,
+            )
+            if outcome is None:
+                return False
+            field_id, value = outcome
+            if value is not None:
+                collected[field_id] = value
+        return True
+
+    pre_model = [f for f in schema.config_fields if not f.requires_model]
+    post_model = [f for f in schema.config_fields if f.requires_model]
+    if not _run_fields(pre_model):
+        return None
+
+    if cli_model:
+        collected["default_model"] = cli_model
+        click.echo(f"\nDefault Model: {cli_model}")
+    else:
+        click.echo("\n  fetching available models …")
+        catalog = await setup.list_provider_models(choice.module_id, collected)
+        model = _prompt_model_selection(catalog, None)
+        if model:
+            collected["default_model"] = model
+
+    if not _run_fields(post_model):
+        return None
+    return collected, written
 
 
 async def _init(
@@ -1839,6 +2063,8 @@ async def _init(
     model: str | None,
     yes: bool,
     from_env: bool,
+    instance_id: str | None = None,
+    scope: str = "global",
 ) -> int:
     from .kernel import setup
 
@@ -1866,7 +2092,9 @@ async def _init(
     click.echo("\nproviders:")
     for index, choice in enumerate(choices, start=1):
         mark = "✓" if choice.has_key else " "
-        click.echo(f"  {index}. [{mark}] {choice.module_id}  → {choice.key_var}")
+        label = f"{choice.display} · {choice.module_id}" if choice.display else choice.module_id
+        suffix = "" if choice.installed else "  · not installed"
+        click.echo(f"  {index}. [{mark}] {label}  → {choice.key_var}{suffix}")
 
     # Resolve the target provider.
     target = _match_provider(choices, provider) if provider else None
@@ -1888,37 +2116,195 @@ async def _init(
             click.echo(f"invalid selection: {raw}", err=True)
             return 1
 
-    # Resolve the API key.
-    if api_key is None:
-        if yes:
-            click.echo(f"--api-key required with --yes for {target.module_id}", err=True)
+    from .kernel import bundle_admin
+
+    path = setup.keys_file()
+    paths = bundle_admin.settings_paths(None, None)
+    write_scope: Literal["global", "project", "local"] = (
+        scope if scope in ("global", "project", "local") else "global"  # type: ignore[assignment]
+    )
+
+    if yes:
+        return _init_non_interactive(
+            target,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            instance_id=instance_id,
+            keys_path=path,
+            paths=paths,
+            scope=write_scope,
+        )
+
+    # Interactive: drive the provider's OWN declared schema when we can read
+    # it, so vLLM is asked for a server URL and ollama is not asked for a key.
+    schema = await _resolve_provider_schema(target)
+    if schema is None or not schema.config_fields:
+        if schema is None:
+            click.echo(f"  (schema unavailable for {target.module_id} — basic setup)")
+        return _init_basic_interactive(
+            target,
+            base_url=base_url,
+            model=model,
+            instance_id=instance_id,
+            keys_path=path,
+            paths=paths,
+            scope=write_scope,
+        )
+
+    if instance_id is None and setup.instance_id_in_use(_default_instance_id(target)):
+        suggestion = f"{_default_instance_id(target)}-2"
+        click.echo(f"\na {_default_instance_id(target)} provider is already configured.")
+        instance_id = (
+            click.prompt("  instance id", default=suggestion, show_default=True) or suggestion
+        ).strip()
+
+    outcome = await _configure_provider_interactive(
+        target,
+        schema,
+        cli_api_key=api_key,
+        cli_base_url=base_url,
+        cli_model=model,
+        instance_id=instance_id,
+        keys_path=path,
+    )
+    if outcome is None:
+        click.echo("cancelled · nothing written to settings")
+        return 0
+    collected, written = outcome
+    entry = setup.provider_config_entry(
+        target.module_id,
+        config=collected,
+        instance_id=instance_id,
+        source=None if target.installed else target.source_uri,
+    )
+    cfg_path = setup.write_provider_config(paths, write_scope, entry)
+    if written:
+        click.echo(f"\nwrote {', '.join(written)} → {path}")
+    click.echo(f"configured provider {instance_id or target.module_id} → {cfg_path}")
+    click.echo("run `amplifier-tui` to start a session.")
+    return 0
+
+
+def _default_instance_id(choice) -> str:  # noqa: ANN001
+    return choice.module_id.replace("provider-", "")
+
+
+def _requires_secret(choice, schema) -> bool:  # noqa: ANN001
+    """Whether this provider genuinely cannot be configured without a key.
+
+    Unknown schema ⇒ assume yes (the historical behavior, and the safe guess).
+    A declared-but-optional secret (vLLM against an unauthenticated endpoint,
+    ollama) ⇒ no, so ``--yes`` works for them without ``--api-key``.
+    """
+    del choice
+    if schema is None:
+        return True
+    for field in schema.config_fields:
+        if field.field_type == "secret":
+            return field.required
+    return False
+
+
+def _init_non_interactive(
+    target,  # noqa: ANN001
+    *,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+    instance_id: str | None,
+    keys_path,  # noqa: ANN001
+    paths,  # noqa: ANN001
+    scope: Literal["global", "project", "local"],
+) -> int:
+    """``--yes``: no prompts, and deliberately no network.
+
+    Never fetches a source and never calls ``list_models()`` — a scripted or
+    CI invocation must not depend on reachability. The schema is consulted only
+    when the module is already importable, which is what lets a keyless or
+    optional-key provider succeed here without ``--api-key``.
+    """
+    from .kernel import setup
+
+    schema = setup.load_provider_info(target.module_id)
+    key = (api_key or "").strip()
+    if not key and _requires_secret(target, schema):
+        click.echo(f"--api-key required with --yes for {target.module_id}", err=True)
+        return 1
+
+    written: list[str] = []
+    key_var = target.key_var
+    if key and instance_id:
+        try:
+            key_var = setup.suggest_instance_env_var(
+                target.module_id, instance_id, setup.claimed_env_vars()
+            )
+        except ValueError as exc:
+            click.echo(f"{exc}", err=True)
             return 1
-        api_key = click.prompt(f"{target.key_var}", hide_input=True, default="", show_default=False)
+    if key:
+        setup.write_key(keys_path, key_var, key)
+        written.append(key_var)
+    if base_url:
+        setup.write_key(keys_path, target.base_url_var, base_url.strip())
+        written.append(target.base_url_var)
+
+    entry = setup.provider_config_entry(
+        target.module_id,
+        key_var=key_var if key else None,
+        model=(model or "").strip() or None,
+        base_url=base_url.strip() if base_url else None,
+        base_url_var=target.base_url_var,
+        instance_id=instance_id,
+        source=None if target.installed else target.source_uri,
+    )
+    cfg_path = setup.write_provider_config(paths, scope, entry)
+    if written:
+        click.echo(f"\nwrote {', '.join(written)} → {keys_path}")
+    click.echo(f"configured provider {instance_id or target.module_id} → {cfg_path}")
+    return 0
+
+
+def _init_basic_interactive(
+    target,  # noqa: ANN001
+    *,
+    base_url: str | None,
+    model: str | None,
+    instance_id: str | None,
+    keys_path,  # noqa: ANN001
+    paths,  # noqa: ANN001
+    scope: Literal["global", "project", "local"],
+) -> int:
+    """The pre-schema flow, kept as the degraded path.
+
+    Reached when the provider module cannot be fetched or introspected
+    (offline, missing dependency). Still writes ``source:`` so the next boot
+    installs the module and a later ``provider add`` gets the full wizard.
+    """
+    from .kernel import setup
+
+    api_key = click.prompt(f"{target.key_var}", hide_input=True, default="", show_default=False)
     key = (api_key or "").strip()
     if not key:
         click.echo("no key entered · nothing written")
         return 0
-
-    from .kernel import bundle_admin
-
-    path = setup.keys_file()
-    setup.write_key(path, target.key_var, key)
+    setup.write_key(keys_path, target.key_var, key)
     written = [target.key_var]
     if base_url:
-        setup.write_key(path, target.base_url_var, base_url.strip())
+        setup.write_key(keys_path, target.base_url_var, base_url.strip())
         written.append(target.base_url_var)
-    # Persist the provider into config.providers so it actually mounts — not
-    # just a key in keys.env. ${VAR} placeholders reference the keys above.
     entry = setup.provider_config_entry(
         target.module_id,
         key_var=target.key_var,
         model=(model or "").strip() or None,
         base_url=base_url.strip() if base_url else None,
         base_url_var=target.base_url_var,
+        instance_id=instance_id,
+        source=None if target.installed else target.source_uri,
     )
-    cfg_path = setup.write_provider_config(bundle_admin.settings_paths(None, None), "global", entry)
-    click.echo(f"\nwrote {', '.join(written)} → {path}")
-    click.echo(f"configured provider {target.module_id} → {cfg_path}")
+    cfg_path = setup.write_provider_config(paths, scope, entry)
+    click.echo(f"\nwrote {', '.join(written)} → {keys_path}")
+    click.echo(f"configured provider {instance_id or target.module_id} → {cfg_path}")
     click.echo("run `amplifier-tui` to start a session.")
     return 0
 
@@ -2054,20 +2440,53 @@ def provider_list() -> None:
 @click.option("--api-key", default=None, help="API key (non-interactive; else prompted).")
 @click.option("--base-url", default=None, help="Optional provider base-URL override.")
 @click.option("--model", default=None, help="Default model for the provider.")
+@click.option(
+    "--instance-id",
+    default=None,
+    help="Name a second instance of the same provider type (e.g. runpod). "
+    "Routing matrices target this id.",
+)
+@click.option(
+    "--scope",
+    type=click.Choice(["global", "project", "local"]),
+    default="global",
+    help="Settings scope to write the provider entry into.",
+)
 @click.option("--yes", "-y", is_flag=True, help="Non-interactive: never prompt (needs --api-key).")
 def provider_add(
     provider_type: str | None,
     api_key: str | None,
     base_url: str | None,
     model: str | None,
+    instance_id: str | None,
+    scope: str,
     yes: bool,
 ) -> None:
     """Add and configure a provider (interactive picker when TYPE is omitted).
 
+    Interactively this reads the provider's own config schema — server URL,
+    credential, tuning fields — and then lists the models the endpoint
+    actually serves, so you pick a default rather than typing one blind.
+
     Adding a second provider keeps the first: the newest becomes primary and
-    the others stay switchable via `amplifier-tui provider use`.
+    the others stay switchable via `amplifier-tui provider use`. Use
+    `--instance-id` for a second instance of the SAME provider type; it gets
+    its own credential variable instead of overwriting the first's.
     """
-    raise SystemExit(asyncio.run(_init(provider_type, api_key, base_url, model, yes, False)))
+    raise SystemExit(
+        asyncio.run(
+            _init(
+                provider_type,
+                api_key,
+                base_url,
+                model,
+                yes,
+                False,
+                instance_id=instance_id,
+                scope=scope,
+            )
+        )
+    )
 
 
 @provider.command("use")

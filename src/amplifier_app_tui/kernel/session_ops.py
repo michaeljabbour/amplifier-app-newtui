@@ -76,11 +76,38 @@ def _providers(coordinator: Any) -> dict[str, Any]:
     return providers if isinstance(providers, dict) else {}
 
 
+def _provider_priority(provider: Any) -> int:
+    """A mounted provider's selection priority — lower wins, absent means 100.
+
+    Reads the same two places the orchestrator reads
+    (``loop-streaming::_select_provider``): the ``priority`` attribute the
+    provider stashes at construction, else its ``config`` dict.
+    """
+    priority = getattr(provider, "priority", None)
+    if isinstance(priority, int) and not isinstance(priority, bool):
+        return priority
+    config = getattr(provider, "config", None)
+    if isinstance(config, dict):
+        priority = config.get("priority", 100)
+        if isinstance(priority, int) and not isinstance(priority, bool):
+            return priority
+    return 100
+
+
 def _primary_provider(coordinator: Any) -> tuple[str, Any]:
-    """The first mounted provider (name, object), or ``("", None)``."""
-    for name, provider in _providers(coordinator).items():
-        return (str(name), provider)
-    return ("", None)
+    """The mounted provider that will serve the turn, or ``("", None)``.
+
+    Lowest priority wins — matching ``loop-streaming::_select_provider``
+    exactly. Mount ORDER is not the rule: it follows the mount plan, whose
+    index 0 is pinned to the bundle-declared provider, so "first mounted"
+    made ``/model`` and ``/status`` report (and mutate) a provider that was
+    not the one answering. Ties fall back to mount order, which is stable.
+    """
+    providers = _providers(coordinator)
+    if not providers:
+        return ("", None)
+    name = min(providers, key=lambda key: _provider_priority(providers[key]))
+    return (str(name), providers[name])
 
 
 def _model_ids(models: Any) -> tuple[str, ...]:

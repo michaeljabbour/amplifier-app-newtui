@@ -82,6 +82,9 @@ class FakeCommandContext:
     def mcp_server_stats(self) -> tuple:
         return self.mcp_stats
 
+    def mount_report(self):
+        return getattr(self, "mounts", None)
+
     # actions
     def echo_user_line(self, text: str) -> None:
         self.user_lines.append(text)
@@ -221,3 +224,46 @@ def _offline_pricing(tmp_path, monkeypatch):
     cost.set_active_pricing_table(None)
     yield
     cost.set_active_pricing_table(None)
+
+
+@pytest.fixture(autouse=True)
+def _offline_provider_setup(monkeypatch):
+    """Keep provider setup offline and independent of the developer's env.
+
+    ``init``/``provider add`` gained two seams that reach outside the process —
+    fetching an uninstalled provider module from git, and calling a provider's
+    ``list_models()`` against a real endpoint. Both are stubbed inert here so
+    no test can accidentally clone a repo or hit a network, and the
+    ``load_provider_info`` memo is cleared around every test because fakes are
+    swapped in per-test.
+
+    The provider credential vars are also cleared: with schema-aware ``--yes``,
+    a developer's real ``ANTHROPIC_API_KEY`` would otherwise change outcomes.
+    """
+    from amplifier_app_tui.kernel import setup
+
+    async def _unavailable(module_id, source_uri, **kwargs):
+        return setup.ProviderAvailability(module_id, False, reason="offline in tests")
+
+    async def _no_models(*args, **kwargs):
+        return setup.ModelCatalog()
+
+    monkeypatch.setattr(setup, "ensure_provider_available", _unavailable)
+    monkeypatch.setattr(setup, "list_provider_models", _no_models)
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+        "GITHUB_TOKEN",
+        "VLLM_API_KEY",
+        "VLLM_BASE_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    setup.reset_provider_info_cache()
+    yield
+    setup.reset_provider_info_cache()

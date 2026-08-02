@@ -15,7 +15,7 @@ from ..model.blocks import LedgerBlock, SessionBanner
 from ..model.modes import MODE_PROFILES
 from .codemode import cmd_codemode
 from .context import ContextUsage, build_context_block
-from .doctor import McpServerStats, build_doctor_block, run_checks
+from .doctor import McpServerStats, MountHealth, build_doctor_block, run_checks
 from .improve import (
     ApprovalTally,
     OverriddenDenial,
@@ -238,7 +238,12 @@ def _cmd_doctor(ctx: CommandContext, args: str) -> None:
     del args
     mcp_stats = tuple(stat for stat in ctx.mcp_server_stats() if isinstance(stat, McpServerStats))
     tallies = tuple(tally for tally in ctx.approval_tallies() if isinstance(tally, ApprovalTally))
-    report = run_checks(mcp_stats=mcp_stats, approval_tallies=tallies)
+    mounts = ctx.mount_report()
+    report = run_checks(
+        mcp_stats=mcp_stats,
+        approval_tallies=tallies,
+        mount_report=mounts if isinstance(mounts, MountHealth) else None,
+    )
     ctx.post_block(build_doctor_block(ctx.next_block_id(), report))
 
 
