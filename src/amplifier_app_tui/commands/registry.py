@@ -132,6 +132,10 @@ class CommandContext(Protocol):
         """:class:`~amplifier_app_tui.commands.doctor.McpServerStats` rows for /doctor."""
         ...
 
+    def mount_report(self) -> object | None:
+        """The boot mount report for /doctor's mount check, or ``None``."""
+        ...
+
     # --- actions (message posts on the real app) -----------------------
     def echo_user_line(self, text: str) -> None:
         """Echo a command invocation as a ``❯ [mode]`` user line."""

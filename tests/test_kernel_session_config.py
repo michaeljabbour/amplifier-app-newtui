@@ -247,6 +247,77 @@ def test_apply_module_overrides_merges_in_place() -> None:
     assert mount_plan["tools"][0]["config"]["allowed_write_paths"] == ["/a", "/b"]
 
 
+def test_settings_priority_demotes_bundle_declared_provider() -> None:
+    """A bundle provider must not keep the primary slot against a better priority.
+
+    Regression: the tui bundle declares ``provider-anthropic`` so fresh installs
+    boot. Merging is by identity in place, so Anthropic kept index 0 — the entry
+    amplifier-core mounts as the session default — even with runpod at
+    ``priority: 1``. ``provider list`` showed ``★ runpod`` while sessions ran
+    Anthropic, and ``provider use`` (which only writes priority) did nothing.
+    """
+    mount_plan = {"providers": [{"module": "provider-anthropic", "config": {"priority": 1}}]}
+    settings = {
+        "config": {
+            "providers": [
+                {"module": "provider-anthropic", "config": {"priority": 2}},
+                {"id": "runpod", "module": "provider-vllm", "config": {"priority": 1}},
+            ]
+        }
+    }
+    apply_module_overrides(mount_plan, settings)
+    assert [entry.get("id") or entry["module"] for entry in mount_plan["providers"]] == [
+        "runpod",
+        "provider-anthropic",
+    ]
+
+
+def test_provider_priority_sort_is_stable_across_ties() -> None:
+    """Entries sharing a priority keep their original relative order."""
+    mount_plan = {
+        "providers": [
+            {"id": "default-100", "module": "provider-vllm"},  # unset == 100
+            {"id": "tie-a", "module": "provider-vllm", "config": {"priority": 5}},
+            {"id": "tie-b", "module": "provider-openai", "config": {"priority": 5}},
+            {"id": "lead", "module": "provider-anthropic", "config": {"priority": 1}},
+        ]
+    }
+    apply_module_overrides(mount_plan, {})
+    assert [entry["id"] for entry in mount_plan["providers"]] == [
+        "lead",
+        "tie-a",
+        "tie-b",
+        "default-100",
+    ]
+
+
+def test_provider_priority_sort_tolerates_junk_entries() -> None:
+    """A hand-edited settings.yaml must not crash boot.
+
+    Anything without a usable integer priority takes ``provider_priority``'s
+    default of 100 — matching the orchestrator — and the stable sort leaves
+    those entries in their original relative order.
+    """
+    mount_plan = {
+        "providers": [
+            "not-a-dict",
+            {"id": "str-priority", "module": "provider-vllm", "config": {"priority": "2"}},
+            {"id": "null-priority", "module": "provider-vllm", "config": {"priority": None}},
+            {"id": "no-config", "module": "provider-openai"},
+            {"id": "lead", "module": "provider-anthropic", "config": {"priority": 1}},
+        ]
+    }
+    apply_module_overrides(mount_plan, {})
+    ordered = [e["id"] if isinstance(e, dict) else e for e in mount_plan["providers"]]
+    assert ordered == [
+        "lead",
+        "not-a-dict",
+        "str-priority",
+        "null-priority",
+        "no-config",
+    ]
+
+
 def test_context_compaction_settings_apply_to_effective_mount_plan() -> None:
     mount_plan = {
         "session": {
@@ -957,3 +1028,52 @@ def test_added_bundle_no_match_still_falls_back_to_default(tmp_path: Path) -> No
     assert name == DEFAULT_BUNDLE
     assert uri.endswith("tui.md")
     assert notice is not None and "ghost" in notice and DEFAULT_BUNDLE in notice
+
+
+# ---------------------------------------------------------------------------
+# provider_priority + the banner's provider selection
+# ---------------------------------------------------------------------------
+
+
+def test_provider_priority_defaults_and_reads_config() -> None:
+    from amplifier_app_tui.kernel.config import provider_priority
+
+    assert provider_priority({"module": "provider-anthropic"}) == 100
+    assert provider_priority({"config": {}}) == 100
+    assert provider_priority({"config": {"priority": 1}}) == 1
+    # A bool is not a usable priority (True == 1 would silently win).
+    assert provider_priority({"config": {"priority": True}}) == 100
+    assert provider_priority({"config": {"priority": "1"}}) == 100
+
+
+def test_banner_names_the_lowest_priority_provider_not_index_zero() -> None:
+    """The bug this guards: `_merge_module_entries` merges the settings entry
+    onto the bundle-declared provider IN PLACE at index 0 and appends new ones,
+    so index 0 is pinned to the bundle's provider. Reading index 0 made the
+    banner, footer and cost estimator say `anthropic / claude-sonnet-4-5` while
+    every request went to the higher-priority vLLM instance."""
+    from amplifier_app_tui.kernel.runtime import _provider_and_model
+
+    plan = {
+        "providers": [
+            {
+                "module": "provider-anthropic",
+                "config": {"priority": 2, "default_model": "claude-sonnet-4-5-20250929"},
+            },
+            {
+                "module": "provider-vllm",
+                "id": "runpod",
+                "config": {"priority": 1, "default_model": "zai-org/GLM-5.2-FP8"},
+            },
+        ]
+    }
+    assert _provider_and_model(plan) == ("runpod", "zai-org/GLM-5.2-FP8")
+
+
+def test_banner_provider_empty_plan_and_single_entry() -> None:
+    from amplifier_app_tui.kernel.runtime import _provider_and_model
+
+    assert _provider_and_model({"providers": []}) == ("", "")
+    assert _provider_and_model({}) == ("", "")
+    single = {"providers": [{"module": "provider-anthropic", "config": {"default_model": "m"}}]}
+    assert _provider_and_model(single) == ("anthropic", "m")

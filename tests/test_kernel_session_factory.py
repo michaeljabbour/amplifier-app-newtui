@@ -198,6 +198,29 @@ def test_missing_tool_modules_authoritative_verdict_holds_despite_unattributed()
     )
 
 
+def test_missing_tool_modules_conditional_module_not_convicted_when_silent() -> None:
+    # tool-mcp mounts fine but registers ZERO tools without ~/.amplifier/mcp.json
+    # — its documented no-op state. Every other module here is attributable, so
+    # the short-name fallback IS reliable and would otherwise convict it: this is
+    # the exact shape of the spurious "degraded start · tool-mcp" on a clean install.
+    assert missing_tool_modules(["tool-bash", "tool-mcp"], ["bash"]) == ()
+
+
+def test_missing_tool_modules_conditional_module_still_matched_when_active() -> None:
+    # With servers configured tool-mcp registers mcp_<server>_<tool>; the prefix
+    # match still attributes those, so the allowlist changes nothing here.
+    assert missing_tool_modules(["tool-mcp"], ["mcp_github_search"]) == ()
+
+
+def test_missing_tool_modules_conditional_allowlist_does_not_shield_others() -> None:
+    # Only tool-mcp is excused. tool-bash is configured so 'bash' is attributed
+    # and the short-name fallback stays reliable — tool-team-pulse is then
+    # genuinely convicted, exactly as it would be without tool-mcp present.
+    assert missing_tool_modules(["tool-bash", "tool-mcp", "tool-team-pulse"], ["bash"]) == (
+        "tool-team-pulse",
+    )
+
+
 # --------------------------------------------------------------------------
 # verify_mounts
 # --------------------------------------------------------------------------

@@ -299,3 +299,45 @@ def test_list_mcp_tools_filters_prefix() -> None:
         "mcp_postgres_query",
     )
     assert asyncio.run(session_ops.list_mcp_tools(_coord())) == ()
+
+
+# ---------------------------------------------------------------------------
+# _primary_provider — the provider that will actually serve the turn
+# ---------------------------------------------------------------------------
+
+
+def test_primary_provider_picks_lowest_priority_not_mount_order() -> None:
+    """Mount order follows the mount plan, whose index 0 is pinned to the
+    bundle-declared provider. "First mounted" therefore made ``/model`` and
+    ``/status`` report — and ``/model <name>`` MUTATE — a provider that was not
+    the one answering. The orchestrator picks lowest priority; so do we."""
+    anthropic = FakeProvider(default_model="claude-sonnet-4-5-20250929")
+    anthropic.config["priority"] = 2
+    runpod = FakeProvider(default_model="zai-org/GLM-5.2-FP8")
+    runpod.config["priority"] = 1
+    coord = FakeCoordinator({"providers": {"anthropic": anthropic, "runpod": runpod}})
+
+    name, provider = session_ops._primary_provider(coord)
+    assert name == "runpod"
+    assert provider is runpod
+
+
+def test_primary_provider_reads_the_priority_attribute_too() -> None:
+    # loop-streaming checks `provider.priority` before `provider.config`;
+    # the vllm and anthropic modules both stash it as an attribute.
+    low = FakeProvider(default_model="a")
+    low.priority = 1  # type: ignore[attr-defined]
+    high = FakeProvider(default_model="b")
+    high.priority = 50  # type: ignore[attr-defined]
+    coord = FakeCoordinator({"providers": {"high": high, "low": low}})
+    assert session_ops._primary_provider(coord)[0] == "low"
+
+
+def test_primary_provider_ties_fall_back_to_mount_order() -> None:
+    first, second = FakeProvider(default_model="a"), FakeProvider(default_model="b")
+    coord = FakeCoordinator({"providers": {"first": first, "second": second}})
+    assert session_ops._primary_provider(coord)[0] == "first"
+
+
+def test_primary_provider_empty_is_blank() -> None:
+    assert session_ops._primary_provider(FakeCoordinator({"providers": {}})) == ("", None)

@@ -169,8 +169,27 @@ async def test_onboarding_choices_falls_back_to_known_table(monkeypatch) -> None
     assert by_id["provider-anthropic"].key_var == "ANTHROPIC_API_KEY"
     # github-copilot's authoritative var is GITHUB_TOKEN, not the naive prefix.
     assert by_id["provider-github-copilot"].key_var == "GITHUB_TOKEN"
-    # keyless providers (ollama) are omitted from the key-setup flow.
-    assert "provider-ollama" not in by_id
+    # Keyless providers (ollama) ARE offered now: the wizard is driven by the
+    # provider's config_fields, not by whether it has a secret, so hiding them
+    # only made them unconfigurable.
+    assert "provider-ollama" in by_id
+
+
+@pytest.mark.asyncio
+async def test_onboarding_choices_offers_uninstalled_catalog_providers(monkeypatch) -> None:
+    # The gap that hid vLLM from `amplifier-tui init` on a fresh machine:
+    # entry-point discovery only sees INSTALLED modules, and the old
+    # known-credential table had no vllm entry. The module catalog is the
+    # second source, and it carries the source URI needed to fetch it.
+    async def _empty(*a, **k):
+        return ()
+
+    monkeypatch.setattr(setup, "discover_providers", _empty)
+    choices = await setup.onboarding_choices()
+    by_id = {c.module_id: c for c in choices}
+    assert "provider-vllm" in by_id
+    assert by_id["provider-vllm"].source_uri == setup.PROVIDER_SOURCES["provider-vllm"]
+    assert "provider-chat-completions" in by_id  # catalogued, never in the table
 
 
 @pytest.mark.asyncio
@@ -189,10 +208,14 @@ async def test_onboarding_choices_merges_partial_discovery(monkeypatch) -> None:
     monkeypatch.setattr(setup, "discover_providers", _partial)
     choices = await setup.onboarding_choices()
     by_id = {c.module_id: c for c in choices}
-    assert by_id["provider-anthropic"] is discovered  # discovery wins for its module
-    assert "provider-openai" in by_id  # known table fills the gaps
+    # Discovery still wins for its own module — its get_info() env var is
+    # authoritative. Compared by field, not identity: onboarding_choices now
+    # attaches the catalog source_uri via dataclasses.replace.
+    assert by_id["provider-anthropic"].name == "Anthropic (discovered)"
+    assert by_id["provider-anthropic"].key_var == "ANTHROPIC_API_KEY"
+    assert "provider-openai" in by_id  # catalog/table fills the gaps
     assert "provider-gemini" in by_id
-    assert "provider-ollama" not in by_id  # keyless still omitted
+    assert "provider-ollama" in by_id  # keyless providers are offerable now
 
 
 @pytest.mark.asyncio
@@ -206,5 +229,8 @@ async def test_onboarding_choices_keeps_unknown_discovered_modules(monkeypatch) 
     monkeypatch.setattr(setup, "discover_providers", _found)
     choices = await setup.onboarding_choices()
     by_id = {c.module_id: c for c in choices}
-    assert by_id["provider-x"] is extra
-    assert "provider-anthropic" in by_id  # table entries still present
+    # Field comparison, not identity — see the partial-discovery test above.
+    assert by_id["provider-x"].name == "X"
+    assert by_id["provider-x"].key_var == "X_API_KEY"
+    assert by_id["provider-x"].source_uri is None  # not in the catalog
+    assert "provider-anthropic" in by_id  # catalog entries still present

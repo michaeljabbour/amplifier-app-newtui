@@ -198,6 +198,9 @@ class RuntimeAdapter:
         summaries, turn rules — DESIGN-SPEC §3/§11); empty means the
         prose ``restored_history`` fallback renders instead."""
         self.startup_notices: tuple[str, ...] = ()
+        self.mount_report: object | None = None
+        """The boot mount report, surfaced for ``/doctor``'s mount check.
+        ``None`` for the demo adapter and before ``start()``."""
         self.pending_directive: str = ""
         """A resumed fork child's primed starting directive (``/fork`` /
         ``session fork``), surfaced from ``RealRuntime.pending_directive`` at
@@ -555,6 +558,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.restored_events = runtime.restored_events
         self.compaction = runtime.compaction
         self.pending_directive = runtime.pending_directive
+        self.mount_report = runtime.mount_report
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
         self._config_state = runtime.config_state()

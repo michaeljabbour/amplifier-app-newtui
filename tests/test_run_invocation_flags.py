@@ -55,6 +55,36 @@ def test_model_only_targets_priority_provider() -> None:
     assert plan["providers"][0]["config"]["default_model"] == "claude-x"
 
 
+def test_provider_override_stamps_priority_not_just_position() -> None:
+    # The orchestrator picks by the priority VALUE, not list position, so a
+    # front-of-list promotion alone left --provider routing to whatever carried
+    # the lowest number. Here vllm holds priority 1: promoting anthropic must
+    # actually outrank it.
+    plan = _plan(
+        {"module": "provider-vllm", "id": "runpod", "config": {"priority": 1}},
+        {"module": "provider-anthropic", "config": {"priority": 2}},
+    )
+    apply_run_overrides(plan, provider="anthropic")
+    promoted = plan["providers"][0]
+    assert promoted["module"] == "provider-anthropic"
+    assert promoted["config"]["priority"] == 0
+    # The demoted provider keeps its own configured priority untouched.
+    assert plan["providers"][1]["config"]["priority"] == 1
+
+
+def test_model_only_targets_lowest_priority_not_index_zero() -> None:
+    # No --provider: the bare --model must retarget the provider that will
+    # actually serve the turn, which need not be at index 0 (the bundle-declared
+    # entry is merged in place there, and settings entries are appended after).
+    plan = _plan(
+        {"module": "provider-anthropic", "config": {"priority": 2}},
+        {"module": "provider-vllm", "id": "runpod", "config": {"priority": 1}},
+    )
+    apply_run_overrides(plan, model="glm-x")
+    assert plan["providers"][1]["config"]["default_model"] == "glm-x"
+    assert "default_model" not in plan["providers"][0]["config"]
+
+
 def test_provider_matched_by_instance_id() -> None:
     plan = _plan(
         {"module": "provider-anthropic", "id": "primary", "config": {}},

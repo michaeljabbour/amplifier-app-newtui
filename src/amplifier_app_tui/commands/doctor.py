@@ -222,6 +222,44 @@ def check_anchors_pin(status: AnchorsPinStatus | None) -> CheckResult:
     return CheckResult(name="anchors", ok=True, message=status.describe())
 
 
+@runtime_checkable
+class MountHealth(Protocol):
+    """The subset of ``session_factory.MountReport`` this check reads."""
+
+    @property
+    def missing_providers(self) -> tuple[str, ...]: ...
+
+    @property
+    def missing_tools(self) -> tuple[str, ...]: ...
+
+
+def check_mounts(report: MountHealth | None) -> CheckResult:
+    """Every configured provider and tool module registered something.
+
+    This is what ``run doctor for details`` was always pointing at. The
+    degraded-start notice (``session_factory.MountReport.degraded_notice``)
+    names the failed modules and then sends the user here — but doctor had no
+    mount check at all, so a degraded boot still reported "0 findings". Green
+    when nothing failed, and green when no report was supplied (the standalone
+    ``amplifier-tui doctor`` runs outside a session and has nothing to inspect
+    — say so rather than imply health).
+    """
+    if report is None:
+        return CheckResult(name="mounts", ok=True, message="mount check skipped (no session)")
+    parts: list[str] = []
+    if report.missing_providers:
+        parts.append(f"provider(s) unavailable: {', '.join(report.missing_providers)}")
+    if report.missing_tools:
+        parts.append(f"tool module(s) failed to mount: {', '.join(report.missing_tools)}")
+    if not parts:
+        return CheckResult(name="mounts", ok=True, message="all modules mounted")
+    return CheckResult(
+        name="mounts",
+        ok=False,
+        message=f"{' · '.join(parts)} · reinstall with `amplifier-tui update --force`",
+    )
+
+
 def run_checks(
     *,
     mcp_stats: Iterable[McpServerStats] = (),
@@ -230,6 +268,7 @@ def run_checks(
     package: str = PACKAGE_NAME,
     executable: str = EXECUTABLE_NAME,
     anchors_status: AnchorsPinStatus | None = None,
+    mount_report: MountHealth | None = None,
 ) -> DoctorReport:
     """Run the full named-check suite and return the report."""
     return DoctorReport(
@@ -237,6 +276,7 @@ def run_checks(
             check_install(package),
             check_path(executable),
             check_settings(settings_paths),
+            check_mounts(mount_report),
             check_unused_mcp(mcp_stats),
             check_repeated_approvals(approval_tallies),
             check_anchors_pin(anchors_status),
@@ -277,6 +317,7 @@ def run_standalone(
     package: str = PACKAGE_NAME,
     executable: str = EXECUTABLE_NAME,
     anchors_status: AnchorsPinStatus | None = None,
+    mount_report: MountHealth | None = None,
     echo=print,
 ) -> int:
     """Run checks, print the plain report, return the CI exit code.
@@ -290,6 +331,7 @@ def run_standalone(
         package=package,
         executable=executable,
         anchors_status=anchors_status,
+        mount_report=mount_report,
     )
     echo(render_text(report))
     return 0 if report.finding_count == 0 else 1
@@ -301,12 +343,14 @@ __all__ = [
     "DoctorReport",
     "EXECUTABLE_NAME",
     "McpServerStats",
+    "MountHealth",
     "PACKAGE_NAME",
     "REPEATED_APPROVAL_THRESHOLD",
     "UNUSED_MCP_THRESHOLD_DAYS",
     "build_doctor_block",
     "check_anchors_pin",
     "check_install",
+    "check_mounts",
     "check_path",
     "check_repeated_approvals",
     "check_settings",
