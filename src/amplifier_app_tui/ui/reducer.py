@@ -603,6 +603,77 @@ class _ReplayHost:
         pass
 
 
+class _StaleTurnHost:
+    """ReducerHost proxy for a turn stamped with a pre-clear generation (D3).
+
+    Swapped in by :meth:`TranscriptReducer._dispatch_stale` for the
+    duration of one event when the active turn's generation is behind the
+    live counter (a ``/clear`` landed mid-turn, D3). Silences every
+    transcript-visible effect — appends, replaces, removals, notices,
+    stream deltas, turn start/finish, plan/approval/decision surfaces,
+    lane tail — so a delayed tool result or streaming tail from BEFORE
+    the clear can never resurrect a row in the freshly emptied view.
+    ``lanes_changed`` still forwards: the lanes panel tracks real
+    background-agent state independently of the transcript and stays
+    accurate either way.
+    """
+
+    def __init__(self, host: ReducerHost) -> None:
+        self._host = host
+
+    @property
+    def mode_id(self) -> str:
+        return self._host.mode_id
+
+    def append_block(self, block: TranscriptBlock) -> None:
+        pass
+
+    def replace_block(self, block: TranscriptBlock) -> None:
+        pass
+
+    def remove_block(self, block_id: str) -> None:
+        pass
+
+    def show_notice(self, text: str) -> None:
+        pass
+
+    def set_mode_by_id(self, mode_id: str, *, notify: bool = True) -> None:
+        pass
+
+    def turn_started(self) -> None:
+        pass
+
+    def turn_finished(self) -> None:
+        pass
+
+    def lanes_changed(self) -> None:
+        self._host.lanes_changed()
+
+    def plan_changed(self, items: tuple[TodoItem, ...]) -> None:
+        pass
+
+    def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
+        pass
+
+    def decision_deferred(self, message: str, decision_id: str = "") -> None:
+        pass
+
+    def stream_opened(self, block_type: str) -> None:
+        pass
+
+    def stream_delta(self, text: str) -> None:
+        pass
+
+    def stream_closed(self) -> None:
+        pass
+
+    def lane_tail_updated(self, text: str) -> None:
+        pass
+
+    def lane_tail_cleared(self) -> None:
+        pass
+
+
 @dataclass
 class _Turn:
     turn_id: int
@@ -671,6 +742,14 @@ class _Turn:
     todo_items: tuple[TodoItem, ...] = ()
     """Latest root-todo list this turn (ambient-progress D3) — folded into
     the delegate summary's ``plan_final`` at fan-out close (D5)."""
+    generation: int = 0
+    """The reducer's clear-generation counter at this turn's start (D3).
+
+    Stamped once in :meth:`TranscriptReducer._start_turn`; :meth:`handle`
+    compares it against the LIVE counter on every event so a ``/clear``
+    mid-turn fences the rest of this turn's tail (see
+    :meth:`TranscriptReducer.bump_generation`).
+    """
 
 
 _PHASE_NOTES = {
@@ -751,12 +830,39 @@ class TranscriptReducer:
         # transcripts, pending delegate briefs) lives in its own unit; the
         # turn reducer routes diverted child events onto lanes and drives it.
         self._lane = LaneReducer(host, allocator=allocator, lanes=lanes, tail_clock=tail_clock)
+        self._generation = 0
+        """Clear-generation counter (D3): bumped by :meth:`bump_generation`
+        when ``/clear`` runs; each ``_Turn`` stamps the value live at its
+        own start so :meth:`handle` can fence a pre-clear turn's tail."""
 
     # -- public state -------------------------------------------------------
 
     @property
     def running(self) -> bool:
         return self._turn is not None
+
+    @property
+    def generation(self) -> int:
+        """The current clear-generation counter (bumped by ``/clear``, D3).
+
+        Every ``_Turn`` is stamped with the generation live at its start;
+        :meth:`handle` compares that stamp against this counter to fence a
+        pre-clear turn's remaining tail (see :meth:`bump_generation`).
+        """
+        return self._generation
+
+    def bump_generation(self) -> int:
+        """Start a new clear-generation (``/clear``, D3).
+
+        Any turn already in flight keeps its OLD stamp, so :meth:`handle`
+        dispatches its remaining events against a silenced host instead of
+        the real one: the turn's own bookkeeping (cost, ledger, lanes)
+        still completes normally, but a delayed delta/tool-result/notice
+        can never append, replace or remove a row in the just-emptied
+        view. Returns the new generation (mainly for tests).
+        """
+        self._generation += 1
+        return self._generation
 
     @property
     def live_session_cost(self) -> Decimal:
@@ -869,8 +975,16 @@ class TranscriptReducer:
 
     # -- dispatch -------------------------------------------------------------
 
-    def handle(self, event: ev.UIEvent) -> None:  # noqa: C901 - one dispatch table
-        """Apply one normalized event; unknown kinds are ignored."""
+    def handle(self, event: ev.UIEvent) -> None:
+        """Apply one normalized event; unknown kinds are ignored.
+
+        A turn stamped with an OLDER clear-generation than the live
+        counter (``/clear`` landed mid-turn, D3) dispatches through a
+        silenced host instead of the real one: internal bookkeeping
+        (cost, ledger, lanes) still completes normally, but the turn's
+        remaining tail can never append/replace/notify into the
+        already-cleared view (see :meth:`bump_generation`).
+        """
         # Any event stamped with a booting child's session id is that
         # child's first sign of life — bundle composition finished; flip
         # the lane to its normal running state (validated dead window:
@@ -883,6 +997,33 @@ class TranscriptReducer:
             # The envelope always stamps ts — no falsy-zero guard (the demo's
             # virtual clock legitimately starts at 0.0).
             self._turn.last_ts = event.ts
+            # A PromptSubmit always starts a FRESH _Turn stamped with the
+            # CURRENT generation (see _start_turn) -- it must never be
+            # fenced by whatever turn preceded it, or a /clear immediately
+            # followed by a new prompt would silently swallow that new
+            # turn's own UserLine + working line. Every OTHER event acts on
+            # the EXISTING self._turn, so it inherits that turn's stamp.
+            if not isinstance(event, ev.PromptSubmit) and self._turn.generation != self._generation:
+                self._dispatch_stale(event)
+                return
+        self._dispatch(event)
+
+    def _dispatch_stale(self, event: ev.UIEvent) -> None:
+        """Run :meth:`_dispatch` against a silenced host (D3 fencing).
+
+        Swapped in only for the duration of this one event: the pre-clear
+        turn's internal state transitions (cost, ledger, lane completion)
+        still happen exactly as before, but nothing it does can reach the
+        real, already-cleared transcript.
+        """
+        live_host = self._host
+        self._host = cast("ReducerHost", _StaleTurnHost(live_host))
+        try:
+            self._dispatch(event)
+        finally:
+            self._host = live_host
+
+    def _dispatch(self, event: ev.UIEvent) -> None:  # noqa: C901 - one dispatch table
         match event:
             case ev.SessionStart() if event.parent_id:
                 if self.lanes.bind_session(event.session_id, parent_id=event.parent_id):
@@ -1151,6 +1292,7 @@ class TranscriptReducer:
             # the live posture — the pre-stamp behavior.
             mode=event.mode or self._host.mode_id,
             spec=self._spec_lookup(event.prompt),
+            generation=self._generation,
         )
         self._turn = turn
         self._cost.start_turn()

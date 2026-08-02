@@ -908,6 +908,37 @@ class TranscriptView(VerticalScroll):
                     self._archive.remove()
                     self._archive = None
 
+    def clear_view(self) -> None:
+        """Unmount every rendered row and reset to an empty view (``/clear``).
+
+        View-only: the caller clears model-level conversation context
+        separately (:class:`~amplifier_app_tui.ui.session_ops_controller.
+        SessionOpsController`), and the reducer fences any already-queued
+        event from before the clear (:meth:`~amplifier_app_tui.ui.reducer.
+        TranscriptReducer.bump_generation`) so a delayed delta or tool
+        result cannot re-append a row here after this runs.
+
+        Operates on whatever is currently displayed -- the main history,
+        or a focused lane's snapshot -- so it is safe regardless of lane
+        focus. Idempotent: calling it again on an already-empty view (a
+        repeated ``/clear``) is a no-op past the anchor re-assert.
+        """
+        for widget in self._widgets.values():
+            widget.remove()
+        if self._archive is not None:
+            self._archive.remove()
+            self._archive = None
+        self._blocks.clear()
+        self._widgets.clear()
+        self._order.clear()
+        self._archive_ids.clear()
+        self._compaction_pending = False
+        # Re-assert the tail-follow anchor so whatever appends next (the
+        # brief confirmation notice, then new turns) lands at the bottom
+        # exactly like a freshly mounted transcript -- never stranded
+        # mid-scroll from before the clear (mirrors _swap's landing state).
+        self.anchor()
+
     def _schedule_compaction(self) -> None:
         if (
             len(self._widgets) <= HISTORY_COMPACT_TRIGGER

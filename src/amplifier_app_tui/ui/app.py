@@ -479,6 +479,20 @@ class TuiApp(App[None]):
         except KeyError:
             pass
 
+    def clear_transcript_view(self) -> None:
+        """View-only reset for ``/clear`` (D3): SessionOpsHost surface.
+
+        Unmounts every rendered row and starts a new clear-generation so
+        the reducer fences any already-queued event from the pre-clear
+        generation (a delayed delta/tool-result/notice can no longer
+        append, replace or remove a row here). The composer keeps focus
+        either way, but a removed widget can steal it first, so re-assert
+        explicitly rather than rely on nothing else having grabbed it.
+        """
+        self.transcript.clear_view()
+        self.reducer.bump_generation()
+        self.composer.focus_input()
+
     def show_notice(self, text: str, duration: float | None = None) -> None:
         # The approval bar owns both input and its explanatory notice. A late
         # notification from the preceding turn (notably an agents-done event)

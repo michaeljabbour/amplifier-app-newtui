@@ -506,3 +506,105 @@ async def test_archived_history_retains_answer_rewind_evidence_and_decisions() -
         assert app.closed_evidence[-1].block_id == "old-evidence"
         assert app.decisions[-1].item_id == "decision-1"
         assert app.decisions[-1].choice == "apply it"
+
+
+# ---------------------------------------------------------------------------
+# clear_view() -- D3: /clear must visibly empty the transcript, not just
+# clear the conversation context (Compliance 2026-08-02).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clear_view_removes_every_mounted_block() -> None:
+    """AC1: clear_view() removes ALL rendered rows, mounted or not."""
+
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(UserLine(id="u1", text="hello", mode="chat"))
+        view.append(Answer(id="a1", spans=(Segment(text="hi there"),)))
+        view.append(ToolLine(id="t1", summary="ran a command", status="completed"))
+        await pilot.pause()
+        assert view.blocks  # sanity: something is actually there first
+
+        view.clear_view()
+        await pilot.pause()
+
+        assert view.blocks == ()
+        assert view.block_ids == ()
+        assert view.get_block("u1") is None
+        assert len(view.query(BlockWidget)) == 0
+
+
+@pytest.mark.asyncio
+async def test_clear_view_also_drops_the_history_archive() -> None:
+    """AC1: consolidated (archived) older history is removed too, not just
+    the recent widget-backed tail."""
+
+    app = Harness()
+    async with app.run_test(size=(100, 30)) as pilot:
+        view = _view(app)
+        for index in range(HISTORY_COMPACT_TRIGGER + 20):
+            view.append(Narration(id=f"clear-archive-{index}", text=f"line {index}"))
+        await pilot.pause(0.2)
+        assert view.query(HistoryArchive)  # sanity: compaction actually ran
+
+        view.clear_view()
+        await pilot.pause()
+
+        assert len(view.query(HistoryArchive)) == 0
+        assert view.blocks == ()
+
+
+@pytest.mark.asyncio
+async def test_clear_view_resets_the_tail_follow_anchor() -> None:
+    """AC2: a cleared view re-anchors to the bottom so it reads as an
+    unmistakably empty, freshly-following page -- never stranded mid-scroll
+    from wherever the user had scrolled before the clear."""
+
+    app = Harness()
+    async with app.run_test(size=(60, 10)) as pilot:
+        view = _view(app)
+        for index in range(40):
+            view.append(Narration(id=f"n{index}", text=f"line {index}"))
+        await pilot.pause()
+        view.release_anchor()  # user scrolled up before clearing
+        assert not view.follow
+
+        view.clear_view()
+        await pilot.pause()
+
+        assert view.follow
+
+
+@pytest.mark.asyncio
+async def test_clear_view_is_idempotent_on_an_already_empty_view() -> None:
+    """AC5 repeated clear: clearing an already-empty view is a safe no-op."""
+
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.clear_view()
+        await pilot.pause()
+        view.clear_view()  # a second /clear back-to-back
+        await pilot.pause()
+        assert view.blocks == ()
+
+
+@pytest.mark.asyncio
+async def test_clear_view_then_append_renders_fresh_content() -> None:
+    """AC3: new output appears normally in the cleared view -- clearing
+    never leaves the widget unable to mount anything afterward."""
+
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(Narration(id="pre-clear", text="before"))
+        view.clear_view()
+        await pilot.pause()
+
+        widget = _mounted(view, Narration(id="post-clear", text="after the clear"))
+        await pilot.pause()
+
+        assert view.blocks == (Narration(id="post-clear", text="after the clear"),)
+        assert widget.is_mounted
