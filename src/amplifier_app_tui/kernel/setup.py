@@ -88,10 +88,23 @@ class ProviderChoice:
     has_key: bool = False
     installed: bool = False
     """The module is importable in THIS process (entry-point discovered)."""
+    cached: bool = False
+    """A clone exists under ``~/.amplifier/cache`` — usable offline, no fetch.
+
+    Distinct from :attr:`installed` because a ``uv tool install --reinstall``
+    empties the venv of provider packages while leaving every clone on disk.
+    """
     source_uri: str | None = None
-    """Where to fetch it from when it is not installed (:data:`PROVIDER_SOURCES`)."""
+    """Where to fetch it from when it is neither installed nor cached."""
     display: str = ""
     """``get_info().display_name`` (e.g. ``vLLM``) when known, else empty."""
+
+    @property
+    def availability(self) -> str:
+        """``""`` / ``"cached"`` / ``"not installed"`` — for the picker's suffix."""
+        if self.installed:
+            return ""
+        return "cached" if self.cached else "not installed"
 
 
 @dataclass(frozen=True)
@@ -384,6 +397,7 @@ def _choice(module_id: str, name: str, stored: set[str]) -> ProviderChoice:
         base_url_var=base_url_var,
         has_key=key_var in stored,
         installed=info is not None,
+        cached=cached_module_path(module_id) is not None,
         display=display,
     )
 
@@ -711,15 +725,62 @@ def effective_provider_sources(
     return sources
 
 
+def _graft_sys_path(path: Path) -> bool:
+    """Put *path* on ``sys.path`` so its module becomes importable. Never raises."""
+    import importlib
+    import sys
+
+    try:
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+        importlib.invalidate_caches()
+        reset_provider_info_cache()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("sys.path graft failed for %s", path, exc_info=True)
+        return False
+
+
+def cached_module_path(module_id: str, amplifier_home: Path | None = None) -> Path | None:
+    """The module's already-cloned directory under ``~/.amplifier/cache``, if any.
+
+    Foundation clones every module it installs into
+    ``cache/amplifier-module-<name>-<hash>/``. That clone SURVIVES a
+    ``uv tool install --reinstall``, which builds a fresh venv and therefore
+    drops the provider packages foundation had installed into the old one.
+
+    Without this probe, every provider reads as "not installed" immediately
+    after a reinstall even though all of them are sitting right there on
+    disk — a label that is technically true of the venv and useless to the
+    user. Pure filesystem glob: no network, no import, cheap enough to run
+    for every row of the picker.
+    """
+    home = _amplifier_home_dir(amplifier_home)
+    name = module_id
+    for lead in ("amplifier-module-", "amplifier-provider-"):
+        if name.startswith(lead):
+            name = name[len(lead) :]
+    try:
+        matches = sorted((home / "cache").glob(f"amplifier-module-{name}-*"))
+    except OSError:
+        return None
+    for path in matches:
+        if path.is_dir():
+            return path
+    return None
+
+
 async def ensure_provider_available(
     module_id: str, source_uri: str | None, *, amplifier_home: Path | None = None
 ) -> ProviderAvailability:
     """Make *module_id* importable in THIS process, best effort. Never raises.
 
-    Already importable ⇒ done. Otherwise resolve *source_uri* into
-    ``~/.amplifier/cache`` (the same cache foundation populates, so an
-    already-cloned module is a no-op) and put it on ``sys.path`` so
-    ``get_info()`` and ``list_models()`` can be read during setup.
+    Three tiers, cheapest first: already importable ⇒ done; else the local
+    :func:`cached_module_path` clone is grafted onto ``sys.path`` (offline,
+    instant); else *source_uri* is resolved into ``~/.amplifier/cache`` and
+    grafted. The cache tier matters because a ``uv tool install --reinstall``
+    empties the venv of provider packages while leaving every clone on disk —
+    re-fetching them over the network would be pure waste.
 
     Deliberately does NOT install. app-cli shells out to ``uv pip install -e``;
     persisting ``source:`` into the provider entry is enough, because the next
@@ -732,12 +793,21 @@ async def ensure_provider_available(
     """
     if _load_provider_class(module_id) is not None:
         return ProviderAvailability(module_id, True)
-    if not source_uri:
-        return ProviderAvailability(module_id, False, reason="no known source")
-    try:
-        import importlib
-        import sys
 
+    cached = cached_module_path(module_id, amplifier_home)
+    if cached is not None and _graft_sys_path(cached) and _load_provider_class(module_id):
+        return ProviderAvailability(module_id, True, path=cached)
+
+    if not source_uri:
+        return ProviderAvailability(
+            module_id,
+            False,
+            path=cached,
+            reason="cached copy could not be imported"
+            if cached
+            else "not installed and no known source",
+        )
+    try:
         from amplifier_foundation.paths.resolution import parse_uri
         from amplifier_foundation.sources.git import GitSourceHandler
 
@@ -746,10 +816,7 @@ async def ensure_provider_available(
         path = Path(getattr(resolved, "active_path", None) or getattr(resolved, "path", ""))
         if not path.is_dir():
             return ProviderAvailability(module_id, False, reason="source resolved to no directory")
-        if str(path) not in sys.path:
-            sys.path.insert(0, str(path))
-        importlib.invalidate_caches()
-        reset_provider_info_cache()
+        _graft_sys_path(path)
         if _load_provider_class(module_id) is not None:
             return ProviderAvailability(module_id, True, path=path)
         return ProviderAvailability(
@@ -1023,6 +1090,7 @@ def _catalog_choice(module_id: str, stored: set[str]) -> ProviderChoice:
         base_url_var=base_url_var,
         has_key=key_var in stored,
         installed=info is not None,
+        cached=cached_module_path(module_id) is not None,
         display=info.display_name if info else "",
     )
 

@@ -1851,8 +1851,9 @@ async def _resolve_provider_schema(choice):  # noqa: ANN001, ANN202
     """
     from .kernel import setup
 
-    if not choice.installed and choice.source_uri:
-        click.echo(f"\n  fetching {choice.module_id} (not installed) …", nl=False)
+    if not choice.installed:
+        verb = "loading" if choice.cached else "fetching"
+        click.echo(f"\n  {verb} {choice.module_id} …", nl=False)
         availability = await setup.ensure_provider_available(choice.module_id, choice.source_uri)
         click.echo(" ok" if availability.available else f" {availability.reason}")
     schema = setup.load_provider_info(choice.module_id)
@@ -2159,7 +2160,7 @@ async def _init(
     for index, choice in enumerate(choices, start=1):
         mark = "✓" if choice.has_key else " "
         label = f"{choice.display} · {choice.module_id}" if choice.display else choice.module_id
-        suffix = "" if choice.installed else "  · not installed"
+        suffix = f"  · {choice.availability}" if choice.availability else ""
         click.echo(f"  {index}. [{mark}] {label}  → {choice.key_var}{suffix}")
 
     # Resolve the target provider.

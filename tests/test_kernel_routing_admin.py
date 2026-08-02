@@ -194,7 +194,15 @@ def test_provider_selectors_empty_when_none_configured() -> None:
 # -- effective resolution (show) -------------------------------------------
 
 
-def test_resolve_effective_applies_default_model() -> None:
+def test_resolve_effective_shows_the_candidate_not_the_provider_pin() -> None:
+    """A routed delegation uses the CANDIDATE's model.
+
+    ``hooks-routing.resolve_model_role`` returns ``{"provider", "model"}``
+    straight from the matched candidate and never reads ``default_model`` —
+    the pin only serves a request that names no model. Substituting it here
+    collapsed every role onto the root session's model, rendering an 11-role
+    matrix as eleven identical rows.
+    """
     settings = {
         "config": {
             "providers": [
@@ -203,10 +211,36 @@ def test_resolve_effective_applies_default_model() -> None:
         }
     }
     rows = {r.role: r for r in routing_admin.resolve_effective(_balanced(), settings)}
-    # general -> anthropic candidate; display model overridden by default_model.
-    assert (rows["general"].provider, rows["general"].model) == ("anthropic", "claude-opus")
+    assert (rows["general"].provider, rows["general"].model) == ("anthropic", "claude-sonnet-*")
     # fast has no anthropic candidate -> unservable.
     assert rows["fast"].provider is None and rows["fast"].model is None
+
+
+def test_resolve_effective_keeps_roles_distinct_across_one_provider() -> None:
+    """The RunPod shape: one provider instance serving three different models.
+
+    Every role pointing at the same instance must still show its own model.
+    """
+    matrix = {
+        "roles": {
+            "general": {"candidates": [{"provider": "runpod", "model": "deepseek"}]},
+            "fast": {"candidates": [{"provider": "runpod", "model": "qwen"}]},
+            "critique": {"candidates": [{"provider": "runpod", "model": "glm"}]},
+        }
+    }
+    settings = {
+        "config": {
+            "providers": [
+                {
+                    "module": "provider-vllm",
+                    "id": "runpod",
+                    "config": {"default_model": "deepseek"},
+                }
+            ]
+        }
+    }
+    rows = {r.role: r.model for r in routing_admin.resolve_effective(matrix, settings)}
+    assert rows == {"general": "deepseek", "fast": "qwen", "critique": "glm"}
 
 
 def test_matrix_waterfall_flags_active_and_missing() -> None:
@@ -356,3 +390,22 @@ def test_ensure_routing_bundle_swallows_fetch_errors(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr(_FakeRegistry, "load", _boom)
     routing_admin._ensure_routing_bundle_cached(tmp_path)  # must not raise
+
+
+def test_primary_provider_type_uses_priority_and_the_instance_id() -> None:
+    """The ★ must name what `provider list` names, chosen the way the
+    orchestrator chooses — not "the bare type of entry zero"."""
+    settings = {
+        "config": {
+            "providers": [
+                {"module": "provider-anthropic", "config": {"priority": 2}},
+                {"module": "provider-vllm", "id": "runpod", "config": {"priority": 1}},
+            ]
+        }
+    }
+    assert routing_admin.primary_provider_type(settings) == "runpod"
+
+
+def test_primary_provider_type_falls_back_to_the_bare_type() -> None:
+    settings = {"config": {"providers": [{"module": "provider-anthropic", "config": {}}]}}
+    assert routing_admin.primary_provider_type(settings) == "anthropic"
