@@ -23,6 +23,7 @@ from amplifier_app_tui.kernel import setup
 # it would reach outside the process is supplied by a fake provider class.
 _REAL_LIST_PROVIDER_MODELS = setup.list_provider_models
 _REAL_INSTALL_PROVIDER_MODULE = setup.install_provider_module
+_REAL_ENSURE_PROVIDER_AVAILABLE = setup.ensure_provider_available
 
 
 def _paths(tmp_path: Path):
@@ -714,3 +715,58 @@ def test_configured_providers_carries_raw_config_and_source(tmp_path: Path) -> N
     (entry,) = setup.configured_providers(tmp_path / "proj", tmp_path / "home")
     assert entry.config == {"base_url": "${VLLM_BASE_URL}", "priority": 1}
     assert entry.source == "git+https://example/vllm@main"
+
+
+# ---------------------------------------------------------------------------
+# The cache tier — clones under <amplifier home>/cache survive a reinstall
+# ---------------------------------------------------------------------------
+
+
+def test_cached_module_path_finds_a_foundation_clone(tmp_path: Path) -> None:
+    """A `uv tool install --reinstall` empties the venv of provider packages but
+    leaves every clone on disk. Without this probe the picker labels all of them
+    "not installed" — true of the venv, useless to the user."""
+    cache = tmp_path / "cache"
+    (cache / "amplifier-module-provider-vllm-ac98bf87").mkdir(parents=True)
+    assert setup.cached_module_path("provider-vllm", tmp_path) == (
+        cache / "amplifier-module-provider-vllm-ac98bf87"
+    )
+    assert setup.cached_module_path("provider-openai", tmp_path) is None
+    assert setup.cached_module_path("provider-vllm", tmp_path / "nope") is None
+
+
+def test_provider_choice_availability_label() -> None:
+    def choice(**kw):
+        return setup.ProviderChoice("provider-vllm", "vllm", "K", "U", **kw)
+
+    assert choice(installed=True).availability == ""
+    assert choice(installed=True, cached=True).availability == ""  # installed wins
+    assert choice(cached=True).availability == "cached"
+    assert choice().availability == "not installed"
+
+
+@pytest.mark.asyncio
+async def test_ensure_provider_available_prefers_the_local_cache(tmp_path, monkeypatch) -> None:
+    """The cache tier must work offline: re-fetching a module that is already
+    cloned on disk would be pure waste."""
+    cache = tmp_path / "cache" / "amplifier-module-provider-fake-abc"
+    cache.mkdir(parents=True)
+
+    async def _never(*a, **k):
+        raise AssertionError("must not reach the network when a clone exists")
+
+    monkeypatch.setattr(
+        "amplifier_foundation.sources.git.GitSourceHandler.resolve", _never, raising=False
+    )
+    calls: list[int] = []
+
+    def _loader(module_id):
+        calls.append(1)
+        return object if len(calls) > 1 else None  # importable only after the graft
+
+    monkeypatch.setattr(setup, "_load_provider_class", _loader)
+    result = await _REAL_ENSURE_PROVIDER_AVAILABLE(
+        "provider-fake", "git+https://example/fake@main", amplifier_home=tmp_path
+    )
+    assert result.available is True
+    assert result.path == cache
