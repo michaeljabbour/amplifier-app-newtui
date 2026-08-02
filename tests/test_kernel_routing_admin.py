@@ -273,3 +273,86 @@ def test_build_and_save_custom_matrix_roundtrip(tmp_path: Path) -> None:
         for r in routing_admin.resolve_matrix(matrices["mine"], {"anthropic", "openai"})
     }
     assert rows == {"general": "anthropic", "fast": "openai"}
+
+
+# -- lazy routing-bundle fetch (fresh machine) --------------------------------
+
+
+class _FakeRegistry:
+    """Records find/load calls; simulates foundation's BundleRegistry."""
+
+    instances: list = []
+
+    def __init__(self, home=None):
+        self.home = home
+        self.found: str | None = None
+        self.loads: list[str] = []
+        _FakeRegistry.instances.append(self)
+
+    def find(self, name: str):
+        return self.found
+
+    async def load(self, target: str):
+        self.loads.append(target)
+
+
+def _install_fake_foundation(monkeypatch):
+    import sys
+    import types
+
+    _FakeRegistry.instances = []
+    fake = types.SimpleNamespace(BundleRegistry=_FakeRegistry)
+    monkeypatch.setitem(sys.modules, "amplifier_foundation", fake)
+
+
+def test_ensure_routing_bundle_fetches_well_known_uri_on_fresh_machine(
+    tmp_path, monkeypatch
+) -> None:
+    """Empty registry (fresh install) → fetch the curated bundle by URI.
+
+    The old registry-gated early return meant `fetch=True` could NEVER fetch
+    on a clean machine — init's "run update" hint was a dead end (BUG 1)."""
+    from amplifier_app_tui.kernel.config import ROUTING_MATRIX_BUNDLE_URI
+
+    _install_fake_foundation(monkeypatch)
+    routing_admin._ensure_routing_bundle_cached(tmp_path)
+    (registry,) = _FakeRegistry.instances
+    assert registry.loads == [ROUTING_MATRIX_BUNDLE_URI]
+
+
+def test_ensure_routing_bundle_prefers_registered_uri(tmp_path, monkeypatch) -> None:
+    _install_fake_foundation(monkeypatch)
+
+    def _find(self, name):
+        return "git+https://example.test/custom-routing@main"
+
+    monkeypatch.setattr(_FakeRegistry, "find", _find)
+    routing_admin._ensure_routing_bundle_cached(tmp_path)
+    (registry,) = _FakeRegistry.instances
+    assert registry.loads == ["git+https://example.test/custom-routing@main"]
+
+
+def test_ensure_routing_bundle_is_loop_safe(tmp_path, monkeypatch) -> None:
+    """The init wizard calls this from inside a running event loop — the
+    fetch must not die on `asyncio.run() cannot be called from a running
+    event loop` (and then get swallowed as a warning)."""
+    import asyncio
+
+    _install_fake_foundation(monkeypatch)
+
+    async def _inside_loop() -> None:
+        routing_admin._ensure_routing_bundle_cached(tmp_path)
+
+    asyncio.run(_inside_loop())
+    (registry,) = _FakeRegistry.instances
+    assert len(registry.loads) == 1
+
+
+def test_ensure_routing_bundle_swallows_fetch_errors(tmp_path, monkeypatch) -> None:
+    _install_fake_foundation(monkeypatch)
+
+    async def _boom(self, target):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(_FakeRegistry, "load", _boom)
+    routing_admin._ensure_routing_bundle_cached(tmp_path)  # must not raise

@@ -31,8 +31,9 @@ from typing import Any
 
 import yaml
 
-from .bundle_admin import Scope, read_scope, scope_file, settings_paths, write_scope
-from .config import SettingsPaths, load_merged_settings
+from . import bundle_admin
+from .bundle_admin import Scope, read_scope, scope_file, write_scope
+from .config import ROUTING_MATRIX_BUNDLE_URI, SettingsPaths, load_merged_settings
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,12 @@ _ROUTING_BUNDLE_GLOB = "amplifier-bundle-routing-matrix-*"
 
 def _amplifier_home(amplifier_home: Path | None) -> Path:
     # Mirror bundle_admin's resolution (AMPLIFIER_HOME-aware) so every admin
-    # surface agrees on where config/cache live.
-    return settings_paths(None, amplifier_home).global_settings.parent
+    # surface agrees on where config/cache live. Late-bound module attribute
+    # (not a from-import): this module is often imported lazily mid-session,
+    # and a from-import would permanently snapshot whatever settings_paths
+    # was at that moment — including a test's monkeypatch (real order-
+    # dependent failures in test_routing_cli).
+    return bundle_admin.settings_paths(None, amplifier_home).global_settings.parent
 
 
 def custom_routing_dir(amplifier_home: Path | None = None) -> Path:
@@ -58,12 +63,36 @@ def custom_routing_dir(amplifier_home: Path | None = None) -> Path:
 # --------------------------------------------------------------------------
 
 
+def _run_coro(coro):  # noqa: ANN001, ANN202 — any coroutine/result
+    """Run a coroutine from sync code, loop-safe.
+
+    ``routing list``/``use`` are plain sync click commands (no loop —
+    ``asyncio.run`` is fine), but the init wizard calls this from inside
+    ``asyncio.run(_init_wizard())``, where a bare ``asyncio.run`` raises
+    ``RuntimeError``. In that case run it on a worker thread's own loop.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def _ensure_routing_bundle_cached(amplifier_home: Path) -> None:
     """Best-effort fetch of the ``routing-matrix`` bundle into the cache.
 
     Called only when no bundle-cache matrices exist yet, so ``routing list``
-    can work on a clean install. Offline-safe: any failure is logged and
-    swallowed (the caller then simply reports no matrices).
+    can work on a clean install. A pre-existing ``routing-matrix``
+    registration wins; otherwise the well-known curated bundle
+    (:data:`~amplifier_app_tui.kernel.config.ROUTING_MATRIX_BUNDLE_URI`) is
+    fetched — loading by URI auto-registers it for next time. Offline-safe:
+    any failure is logged and swallowed (the caller then simply reports no
+    matrices).
     """
     try:
         from amplifier_foundation import BundleRegistry
@@ -71,11 +100,8 @@ def _ensure_routing_bundle_cached(amplifier_home: Path) -> None:
         return
     try:
         registry = BundleRegistry(home=amplifier_home)
-        if "routing-matrix" not in registry.list_registered():
-            return
-        import asyncio
-
-        asyncio.run(registry.load("routing-matrix"))
+        target = registry.find("routing-matrix") or ROUTING_MATRIX_BUNDLE_URI
+        _run_coro(registry.load(target))
     except Exception as exc:  # noqa: BLE001 — network/registry best-effort
         logger.warning("Could not fetch routing-matrix bundle: %s", exc)
 
@@ -256,7 +282,7 @@ def list_matrices(
     fetch: bool = False,
 ) -> tuple[MatrixEntry, ...]:
     """Discovered matrices with active/compatibility flags, name-sorted."""
-    settings = load_merged_settings(settings_paths(project_dir, amplifier_home))
+    settings = load_merged_settings(bundle_admin.settings_paths(project_dir, amplifier_home))
     matrices = load_all_matrices(discover_matrix_files(amplifier_home, fetch=fetch))
     active = active_matrix(settings)
     provider_types = configured_provider_types(settings)

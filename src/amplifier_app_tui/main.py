@@ -2329,8 +2329,8 @@ def _select_routing_interactive() -> None:
     )
     if not entries:
         click.echo(
-            "\nno routing matrices found · "
-            "run `amplifier-tui update` to fetch the routing-matrix bundle"
+            "\nno routing matrices found · could not fetch the routing-matrix "
+            "bundle (offline?) — retry with `amplifier-tui routing list` once online"
         )
         return
 
@@ -2775,6 +2775,13 @@ async def _update(check_only: bool, yes: bool, force: bool) -> int:
 
     _print_update_table(console, statuses)
 
+    # A bundle whose check errored (unresolvable name, offline clone, …) must
+    # be visible — silently omitting it made a totally broken check print
+    # "all bundles up to date" on fresh machines.
+    errored = [s for s in statuses if s.error]
+    for status in errored:
+        console.print(f"[red]✗[/red] {status.name} — {status.error}")
+
     # Deduplicated "couldn't be checked": one line per source (a shared module
     # used by many bundles collapses to a single entry) under a plain label,
     # instead of foundation's opaque per-bundle "not supported" repeats.
@@ -2797,21 +2804,28 @@ async def _update(check_only: bool, yes: bool, force: bool) -> int:
         console.print(f"[green]✓[/green] {anchors.describe()}")
 
     stale = [s for s in statuses if s.has_updates]
-    if not stale and not force:
-        if anchors.is_stale:
-            console.print("bundles up to date; anchors is behind (see above)", style="yellow")
+    # A stale anchors cache is applicable work: `update` re-fetches the
+    # tracked include (refresh_anchors) since foundation's per-bundle update
+    # skips it — otherwise the "run `amplifier-tui update`" hint is circular.
+    anchors_work = anchors.is_stale or (force and anchors.ref is not None and not anchors.is_pinned)
+    if not stale and not anchors_work and not force:
+        if errored:
+            console.print(f"{len(errored)} bundle(s) could not be checked (see above)", style="red")
         else:
             console.print("✓ all bundles up to date", style="green")
         console.print(updater.self_update_hint(), style="dim")
-        return 0
+        return 1 if errored else 0
     if check_only:
         console.print(updater.self_update_hint(), style="dim")
         return 0
 
     targets = statuses if force else stale
-    if not yes and not click.confirm(f"update {len(targets)} bundle(s)?", default=True):
+    total = len(targets) + (1 if anchors_work else 0)
+    if not yes and not click.confirm(f"update {total} item(s)?", default=True):
         return 0
     updated, failed = await updater.update_bundles([s.target for s in targets])
+    if anchors_work:
+        (updated if await updater.refresh_anchors() else failed).append("anchors")
     if updated:
         console.print(f"✓ updated: {', '.join(updated)}", style="green")
     if failed:

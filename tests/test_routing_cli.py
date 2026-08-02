@@ -58,6 +58,17 @@ def test_routing_group_lists_subcommands() -> None:
         assert sub in result.output
 
 
+def _offline_fetch(monkeypatch) -> None:
+    """Simulate offline: the lazy routing-bundle fetch does nothing.
+
+    With the fresh-install fix, ``fetch=True`` genuinely downloads the
+    routing-matrix bundle, so the "no matrices" branches only occur offline —
+    these tests pin that offline rendering without touching the network."""
+    from amplifier_app_tui.kernel import routing_admin
+
+    monkeypatch.setattr(routing_admin, "_ensure_routing_bundle_cached", lambda home: None)
+
+
 def test_routing_list_renders_and_marks_active(tmp_path: Path, monkeypatch) -> None:
     paths = _redirect(monkeypatch, tmp_path)
     _seed_matrix(tmp_path / "home", "balanced", _roles())
@@ -79,6 +90,7 @@ def test_routing_list_renders_and_marks_active(tmp_path: Path, monkeypatch) -> N
 
 def test_routing_list_empty(tmp_path: Path, monkeypatch) -> None:
     _redirect(monkeypatch, tmp_path)
+    _offline_fetch(monkeypatch)
     result = CliRunner().invoke(main, ["routing", "list"])
     assert result.exit_code == 0
     assert "no routing matrices found" in result.output
@@ -159,6 +171,7 @@ def test_routing_show_unknown(tmp_path: Path, monkeypatch) -> None:
 
 def test_routing_show_empty(tmp_path: Path, monkeypatch) -> None:
     _redirect(monkeypatch, tmp_path)
+    _offline_fetch(monkeypatch)
     result = CliRunner().invoke(main, ["routing", "show"])
     assert result.exit_code == 0
     assert "no routing matrices found" in result.output
@@ -243,6 +256,7 @@ def test_routing_manage_view_details(tmp_path: Path, monkeypatch) -> None:
 
 def test_routing_manage_empty(tmp_path: Path, monkeypatch) -> None:
     _redirect(monkeypatch, tmp_path)
+    _offline_fetch(monkeypatch)
     result = CliRunner().invoke(main, ["routing", "manage"])
     assert result.exit_code == 0
     assert "no routing matrices found" in result.output
