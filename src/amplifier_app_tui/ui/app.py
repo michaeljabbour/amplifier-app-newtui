@@ -789,10 +789,26 @@ class TuiApp(App[None]):
         """Discovered skills (+ ``shortcut:`` aliases) become
         ``skill``-sourced registry contributions, so ``/cosam`` resolves
         in dispatch before the unknown-command notice (story #1); the
-        palette follows via the registry subscription."""
-        from ..commands.skills import register_skill_commands
+        palette follows via the registry subscription.
 
-        register_skill_commands(self._commands, skills)
+        Alias collisions — a skill name or shortcut a built-in or an
+        earlier skill already holds — are surfaced here rather than
+        skipped silently (compliance B2 AC4: collision detection is
+        deterministic; "configuration load" IS this boot-time discovery
+        pass). A rich listing goes to the transcript, a short dim notice
+        points at it (the same split ``/ledger`` and ``/doctor`` use:
+        block for the listing, notice for the pointer).
+        """
+        from ..commands.skills import alias_collision_spans, register_skill_commands_reporting
+
+        plan = register_skill_commands_reporting(self._commands, skills)
+        if plan.collisions:
+            self.append_block(
+                Answer(id=self.allocator.next_id(), spans=alias_collision_spans(plan.collisions))
+            )
+            count = len(plan.collisions)
+            noun = "collision" if count == 1 else "collisions"
+            self.show_notice(f"{count} skill alias {noun} · printed to scrollback")
 
     def manage_directories(self, kind: str, args: str) -> None:
         from .directory_admin import manage
@@ -1066,7 +1082,11 @@ class TuiApp(App[None]):
             # notice, never a silent provider turn. Skills + shortcuts
             # registered at boot resolve above via parse_and_run.
             name = text.split(maxsplit=1)[0]
-            self.show_notice(f"unknown command: {name} · / lists commands")
+            # AC3: a typo'd command/alias gets nearby suggestions instead
+            # of a bare rejection — never a silent fall-through to chat.
+            suggestions = self._commands.suggest(name, limit=1)
+            hint = f" · did you mean {' or '.join(suggestions)}?" if suggestions else ""
+            self.show_notice(f"unknown command: {name}{hint} · / lists commands")
             self._refresh_footer()
             return
         self.submit_prompt(text, message.attachments)
