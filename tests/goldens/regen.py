@@ -70,6 +70,7 @@ from amplifier_app_tui.model.blocks import (
     TodoItem,
     TranscriptBlock,
     TurnRule,
+    UnsupportedBlock,
     UserLine,
     WorkingStatus,
 )
@@ -225,6 +226,9 @@ def canonical_blocks() -> tuple[TranscriptBlock, ...]:
                 TodoItem(content=STORE_STEPS[2], status="completed"),
             ),
             duration_s=102.0,
+        ),
+        UnsupportedBlock(
+            id="g25", type_name="loop_started", summary="fields: kind, session_id, ts"
         ),
     )
 

@@ -45,6 +45,7 @@ from ..model.blocks import (
     ToolLine,
     TranscriptBlock,
     TurnRule,
+    UnsupportedBlock,
     UserLine,
     WorkingStatus,
 )
@@ -796,7 +797,7 @@ class TranscriptReducer:
 
     def replay(
         self,
-        events: Sequence[ev.UIEvent],
+        events: Sequence[ev.UIEvent | UnsupportedBlock],
         *,
         turn_base: int = 0,
         session_cost: Decimal = Decimal("0"),
@@ -809,6 +810,14 @@ class TranscriptReducer:
         focus transcripts, plan state, turn rules with real telemetry —
         instead of the prose-only fallback. Side effects are suppressed
         via :class:`_ReplayHost` + :data:`REPLAY_SKIPPED_KINDS`.
+
+        ``events`` may interleave :class:`UnsupportedBlock` placeholders
+        (S5) for persisted records ``kernel.events.parse_event`` could not
+        type — a foreign writer's line, an unknown/removed ``kind``, or
+        schema drift. Each one is appended directly, in its original log
+        position, with a freshly minted id; it never reaches :meth:`handle`
+        (it carries no turn semantics to dispatch), so one unrecognized
+        record can never drop the rest of a rich, mixed transcript.
 
         ``turn_base``/``session_cost`` are the transcript-derived turn
         count and the kernel-restored cost baseline; both stay the
@@ -829,6 +838,9 @@ class TranscriptReducer:
         self.session_cost = Decimal("0")
         try:
             for event in events:
+                if isinstance(event, UnsupportedBlock):
+                    self._host.append_block(event.model_copy(update={"id": self._ids.next_id()}))
+                    continue
                 if event.kind in REPLAY_SKIPPED_KINDS:
                     continue
                 self.handle(event)
