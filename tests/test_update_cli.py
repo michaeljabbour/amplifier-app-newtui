@@ -1,11 +1,13 @@
 """`amplifier-tui update` — pure helpers + CLI wiring.
 
-The foundation-backed check/apply (check_bundles/update_bundles) hit the
-network/cache, so the CLI tests stub them; the pure helpers are tested
-directly.
+The foundation-backed check/apply (check_bundles/update_bundles) and the
+package checks (check_packages) hit the network/cache, so the CLI tests stub
+them; the pure helpers are tested directly.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -109,10 +111,107 @@ def test_uncheckable_sources_falls_back_to_legacy_unknown() -> None:
     assert updater.uncheckable_sources(statuses) == [("tool-local", "ls-remote failed")]
 
 
-# -- CLI wiring (stubbed foundation) ----------------------------------------
+# -- count_stale_sources: table-consistent count (pure) ----------------------
 
 
-def _stub(monkeypatch, statuses, *, cleaned=None, applied=None, anchors=None, refreshed=None):
+def test_count_stale_sources_dedupes_shared_stale_source() -> None:
+    """A stale source shared by many bundles counts ONCE — the number the
+    prompt shows must match the single ● row in the table (regression for the
+    "update 11 item(s)?" per-bundle-flag miscount)."""
+    shared = updater.SourceRow("amplifier-foundation", "aaa1111", "bbb2222", has_update=True)
+    statuses = [
+        updater.BundleUpdate("memory", "git+u/memory", "", True, sources=(shared,)),
+        updater.BundleUpdate("attractor", "git+u/attractor", "", True, sources=(shared,)),
+    ]
+    assert updater.count_stale_sources(statuses) == 1
+
+
+def test_count_stale_sources_ignores_fresh_and_uncheckable() -> None:
+    statuses = [
+        updater.BundleUpdate(
+            "tui",
+            "tui",
+            "",
+            True,
+            sources=(
+                updater.SourceRow("fresh", "aaa", "aaa", has_update=False),
+                updater.SourceRow("local", has_update=None, reason="local"),
+                updater.SourceRow("stale", "bbb", "ccc", has_update=True),
+            ),
+        ),
+    ]
+    assert updater.count_stale_sources(statuses) == 1
+
+
+# -- shorten_cache_path (pure) ------------------------------------------------
+
+
+def test_shorten_cache_path_strips_prefix_and_hash(tmp_path) -> None:
+    path = tmp_path / "cache" / "amplifier-bundle-recipes-7077e89eaed6b85d" / "modules" / "tool-x"
+    assert (
+        updater.shorten_cache_path(str(path), amplifier_home=tmp_path)
+        == "amplifier-bundle-recipes/modules/tool-x"
+    )
+
+
+def test_shorten_cache_path_keeps_short_versionish_suffix(tmp_path) -> None:
+    """Only content-hash suffixes are stripped, not short hex-looking names."""
+    path = tmp_path / "cache" / "bundle-beta1" / "modules" / "m"
+    assert (
+        updater.shorten_cache_path(str(path), amplifier_home=tmp_path) == "bundle-beta1/modules/m"
+    )
+
+
+def test_shorten_cache_path_passes_through_non_cache_paths(tmp_path) -> None:
+    assert (
+        updater.shorten_cache_path("/opt/overrides/tool-x", amplifier_home=tmp_path)
+        == "/opt/overrides/tool-x"
+    )
+
+
+# -- shape_package_status (pure) ----------------------------------------------
+
+
+def test_shape_package_status_compares_short_shas() -> None:
+    row = updater.shape_package_status("app", "a" * 40, "a" * 40, commits=True)
+    assert (row.local, row.remote, row.has_update) == ("a" * 7, "a" * 7, False)
+    stale = updater.shape_package_status("app", "a" * 40, "b" * 40, commits=True)
+    assert stale.has_update is True
+
+
+def test_shape_package_status_degrades_when_remote_missing() -> None:
+    row = updater.shape_package_status("app", "0.1.0", None)
+    assert row.has_update is None
+    assert row.note == "could not check"
+
+
+def test_shape_package_status_versions_compare_by_equality() -> None:
+    assert updater.shape_package_status("core", "1.6.0", "1.6.0").has_update is False
+    assert updater.shape_package_status("core", "1.6.0", "1.7.0").has_update is True
+
+
+# -- CLI wiring (stubbed foundation + package checks) -------------------------
+
+
+def _offline_packages() -> list:
+    """The stub default: every package row degrades to "could not check"."""
+    return [
+        updater.PackageStatus("amplifier-app-tui", "0.1.0", None, None, "could not check"),
+        updater.PackageStatus("amplifier-core", "1.6.0", None, None, "could not check"),
+        updater.PackageStatus("amplifier-foundation", "32d4052", None, None, "could not check"),
+    ]
+
+
+def _stub(
+    monkeypatch,
+    statuses,
+    *,
+    cleaned=None,
+    applied=None,
+    anchors=None,
+    refreshed=None,
+    packages=None,
+):
     async def _check(*a, **k):
         return statuses
 
@@ -130,10 +229,14 @@ def _stub(monkeypatch, statuses, *, cleaned=None, applied=None, anchors=None, re
             refreshed.append(True)
         return True
 
+    async def _packages(*a, **k):
+        return packages if packages is not None else _offline_packages()
+
     monkeypatch.setattr(updater, "check_bundles", _check)
     monkeypatch.setattr(updater, "update_bundles", _apply)
     monkeypatch.setattr(updater, "anchors_status", _anchors)
     monkeypatch.setattr(updater, "refresh_anchors", _refresh)
+    monkeypatch.setattr(updater, "check_packages", _packages)
     monkeypatch.setattr(
         updater, "uv_cache_clean", lambda: cleaned.append(True) if cleaned is not None else True
     )
@@ -156,6 +259,8 @@ def test_update_check_only_does_not_apply(monkeypatch) -> None:
     result = CliRunner().invoke(main, ["update", "--check-only"])
     assert result.exit_code == 0
     assert applied == []  # nothing applied in check-only
+    # check-only still shows the action summary (everything but prompt/apply).
+    assert "Run amplifier-tui update to install" in result.output
 
 
 def test_update_applies_stale_with_yes(monkeypatch) -> None:
@@ -171,7 +276,9 @@ def test_update_applies_stale_with_yes(monkeypatch) -> None:
     result = CliRunner().invoke(main, ["update", "-y"])
     assert result.exit_code == 0
     assert applied == ["tui"]  # only the stale one
-    assert "updated: tui" in result.output
+    assert "✓ tui" in result.output
+    assert "✓ Update complete" in result.output
+    assert "Updated 1 bundle(s)" in result.output
 
 
 def test_update_force_cleans_cache_and_updates_all(monkeypatch) -> None:
@@ -189,7 +296,64 @@ def test_update_force_cleans_cache_and_updates_all(monkeypatch) -> None:
     assert applied == ["tui"]  # --force updates all, not just stale
 
 
-# -- SHA-diff table + deduplicated uncheckable section -----------------------
+# -- header + sub-steps -------------------------------------------------------
+
+
+def test_update_prints_checking_header_and_substeps(monkeypatch) -> None:
+    _stub(monkeypatch, [updater.BundleUpdate("tui", "tui", "up to date", False)])
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert "Checking for updates..." in result.output
+    assert "Checking modules..." in result.output
+    assert "Checking bundles..." in result.output
+
+
+# -- packages section (Amplifier table) ---------------------------------------
+
+
+def test_update_renders_packages_table(monkeypatch) -> None:
+    pkgs = [
+        updater.PackageStatus("amplifier-app-tui", "aaaaaaa", "bbbbbbb", True),
+        updater.PackageStatus("amplifier-core", "1.6.0", "1.6.0", False),
+        updater.PackageStatus("amplifier-foundation", "32d4052", None, None, "could not check"),
+    ]
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "up to date", False)],
+        packages=pkgs,
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert "Amplifier" in result.output and "Package" in result.output
+    assert "amplifier-app-tui" in result.output
+    assert "amplifier-core" in result.output
+    # Offline row degrades to a dim note, never a crash.
+    assert "could not check" in result.output
+
+
+def test_update_packages_stale_is_advisory_only(monkeypatch) -> None:
+    """A stale package row surfaces a manual-update bullet but is never
+    applied by this command (self-update stays out of scope)."""
+    applied: list = []
+    pkgs = [
+        updater.PackageStatus("amplifier-app-tui", "aaaaaaa", "bbbbbbb", True),
+        updater.PackageStatus("amplifier-core", "1.6.0", "1.7.0", True),
+        updater.PackageStatus("amplifier-foundation", "32d4052", "32d4052", False),
+    ]
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "1 update available", True)],
+        packages=pkgs,
+        applied=applied,
+    )
+    result = CliRunner().invoke(main, ["update", "-y"])
+    assert result.exit_code == 0
+    assert "Update Amplifier packages manually" in result.output
+    assert "uv tool upgrade amplifier" in result.output
+    assert applied == ["tui"]  # bundles only — packages never applied
+
+
+# -- SHA-diff tables: order, headers, dedup ------------------------------------
 
 
 def test_update_renders_sha_table(monkeypatch) -> None:
@@ -210,12 +374,36 @@ def test_update_renders_sha_table(monkeypatch) -> None:
     )
     result = CliRunner().invoke(main, ["update", "--check-only"])
     assert result.exit_code == 0
-    # Table header + legend + per-source SHAs.
-    assert "Local" in result.output and "Remote" in result.output
+    # app-cli headers: packages table uses Local, module/bundle tables Cached.
+    assert "Cached" in result.output and "Remote" in result.output
+    assert "Local" in result.output  # Amplifier packages table
     assert "Legend" in result.output and "update available" in result.output
     assert "tool-bash" in result.output and "tool-todo" in result.output
     # Truncated SHAs appear (7 chars).
     assert "ccccccc" in result.output
+
+
+def test_update_section_order_amplifier_modules_bundles(monkeypatch) -> None:
+    """app-cli section order: Amplifier packages, then Modules, then Bundles."""
+    _stub(
+        monkeypatch,
+        [
+            updater.BundleUpdate(
+                "tui",
+                "tui",
+                "",
+                False,
+                sources=(
+                    updater.SourceRow("amplifier-foundation", "aaa1111", "aaa1111", False),
+                    updater.SourceRow("amplifier-module-tool-bash", "bbb2222", "bbb2222", False),
+                ),
+            )
+        ],
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    out = result.output
+    assert out.index("Amplifier") < out.index("Modules") < out.index("Bundles")
 
 
 def test_update_table_dedupes_shared_sources_across_bundles(monkeypatch) -> None:
@@ -249,6 +437,7 @@ def test_update_table_dedupes_shared_sources_across_bundles(monkeypatch) -> None
                 ),
             ),
         ],
+        packages=[],  # keep "amplifier-foundation" out of the packages section
     )
     result = CliRunner().invoke(main, ["update", "--check-only"])
     assert result.exit_code == 0
@@ -273,7 +462,10 @@ def test_unique_sources_collapses_and_splits() -> None:
     assert "tool-apply-patch" not in names  # local/non-git excluded
 
 
-def test_update_dedupes_uncheckable_sources_with_plain_label(monkeypatch) -> None:
+# -- uncheckable sources: one summary line; listing only under --verbose -------
+
+
+def test_update_uncheckable_collapses_to_one_summary_line(monkeypatch) -> None:
     generic = "Update checking not supported for this source type"
     _stub(
         monkeypatch,
@@ -290,20 +482,99 @@ def test_update_dedupes_uncheckable_sources_with_plain_label(monkeypatch) -> Non
                 "git+u/skills",
                 "up to date",
                 False,
-                sources=(updater.SourceRow("tool-apply-patch", has_update=None, reason=generic),),
+                sources=(updater.SourceRow("tool-patch-two", has_update=None, reason=generic),),
             ),
         ],
     )
     result = CliRunner().invoke(main, ["update", "--check-only"])
     assert result.exit_code == 0
-    # Plainer label, not foundation's opaque per-source message.
-    assert "local or non-git sources (no remote to compare)" in result.output
+    # ONE dim summary line, pointing at --verbose — no wall of paths.
+    assert "2 local/non-git sources skipped (no remote to compare)" in result.output
+    assert "--verbose" in result.output
+    assert "tool-apply-patch" not in result.output
     assert "not supported for this source type" not in result.output
-    # Deduplicated: the shared module appears exactly once.
-    assert result.output.count("tool-apply-patch") == 1
 
 
-# -- anchors freshness line -------------------------------------------------
+def test_update_verbose_lists_uncheckable_with_short_paths(monkeypatch) -> None:
+    generic = "Update checking not supported for this source type"
+    cache_path = str(
+        Path.home()
+        / ".amplifier"
+        / "cache"
+        / "amplifier-bundle-skills-7077e89eaed6b85d"
+        / "modules"
+        / "tool-apply-patch"
+    )
+    _stub(
+        monkeypatch,
+        [
+            updater.BundleUpdate(
+                "tui",
+                "tui",
+                "up to date",
+                False,
+                sources=(updater.SourceRow(cache_path, has_update=None, reason=generic),),
+            ),
+        ],
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only", "--verbose"])
+    assert result.exit_code == 0
+    # Shortened to <repo>/modules/<module> — no home prefix, no hash suffix.
+    assert "amplifier-bundle-skills/modules/tool-apply-patch" in result.output
+    assert "7077e89eaed6b85d" not in result.output
+    assert str(Path.home()) not in result.output
+
+
+# -- action summary + prompt: counts mirror the table --------------------------
+
+
+def test_update_summary_counts_unique_stale_sources_not_bundle_flags(monkeypatch) -> None:
+    """Two stale bundles sharing ONE stale source → the summary and prompt
+    advertise 1 update, matching the single ● row the table shows."""
+    shared = updater.SourceRow("amplifier-foundation", "aaa1111", "bbb2222", has_update=True)
+    _stub(
+        monkeypatch,
+        [
+            updater.BundleUpdate("memory", "git+u/memory", "", True, sources=(shared,)),
+            updater.BundleUpdate("attractor", "git+u/attractor", "", True, sources=(shared,)),
+        ],
+    )
+    result = CliRunner().invoke(main, ["update"], input="n\n")
+    assert result.exit_code == 0
+    assert "Update 1 module/bundle source(s)" in result.output
+    assert "Proceed with update? [Y/n]" in result.output
+    assert "Update cancelled" in result.output
+
+
+def test_update_prompt_defaults_to_yes(monkeypatch) -> None:
+    applied: list = []
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "1 update available", True)],
+        applied=applied,
+    )
+    result = CliRunner().invoke(main, ["update"], input="\n")  # bare Enter → Y
+    assert result.exit_code == 0
+    assert applied == ["tui"]
+
+
+# -- apply phase: per-item lines + completion ----------------------------------
+
+
+def test_update_apply_reports_per_item_failure(monkeypatch) -> None:
+    _stub(monkeypatch, [updater.BundleUpdate("tui", "tui", "1 update available", True)])
+
+    async def _apply_fail(targets):
+        return ([], [(updater.display_name(t), "clone failed") for t in targets])
+
+    monkeypatch.setattr(updater, "update_bundles", _apply_fail)
+    result = CliRunner().invoke(main, ["update", "-y"])
+    assert result.exit_code == 1
+    assert "✗ tui — clone failed" in result.output
+    assert "Update completed with errors" in result.output
+
+
+# -- anchors freshness line -----------------------------------------------------
 
 
 def test_update_reports_anchors_behind(monkeypatch) -> None:
@@ -321,6 +592,8 @@ def test_update_reports_anchors_behind(monkeypatch) -> None:
     result = CliRunner().invoke(main, ["update", "--check-only"])
     assert result.exit_code == 0
     assert "anchors" in result.output and "behind upstream" in result.output
+    # Anchors joins the action summary as a bullet when stale.
+    assert "Refresh anchors include" in result.output
     # Must not falsely claim everything is up to date when anchors is behind.
     assert "all bundles up to date" not in result.output
 
@@ -356,7 +629,8 @@ def test_update_applies_anchors_refresh_when_stale(monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     assert refreshed == [True]
     assert applied == []  # no stale bundles — only anchors needed work
-    assert "updated: anchors" in result.output
+    assert "✓ anchors" in result.output
+    assert "✓ Update complete" in result.output
 
 
 def test_update_check_only_never_refreshes_anchors(monkeypatch) -> None:
@@ -391,7 +665,7 @@ def test_update_reports_anchors_refresh_failure(monkeypatch) -> None:
     monkeypatch.setattr(updater, "refresh_anchors", _refresh_fail)
     result = CliRunner().invoke(main, ["update", "-y"])
     assert result.exit_code == 1
-    assert "failed: anchors" in result.output
+    assert "✗ anchors — refresh failed" in result.output
 
 
 # -- check errors are rendered, never silently swallowed ---------------------

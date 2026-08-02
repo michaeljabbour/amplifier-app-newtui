@@ -3157,13 +3157,39 @@ def _status_glyph(has_update: bool | None):  # noqa: ANN202 — rich Text
     return Text("◦", style="cyan")
 
 
-def _print_update_table(console, statuses) -> None:  # noqa: ANN001 — rich Console
-    """Render Local-vs-Remote SHAs as two globally-deduplicated tables.
+def _print_packages_table(console, packages) -> None:  # noqa: ANN001 — rich Console
+    """The app-cli-style "Amplifier" section: app + core + foundation rows.
+
+    ``local``/``remote`` are versions or short SHAs as the checker shaped them;
+    an unavailable remote degrades to the row's dim ``note`` ("could not
+    check") — never an error."""
+    from rich.table import Table
+    from rich.text import Text
+
+    if not packages:
+        return
+    table = Table(title="Amplifier", title_justify="center", header_style="bold cyan")
+    table.add_column("Package", style="green", no_wrap=True)
+    table.add_column("Local", style="dim", justify="right")
+    table.add_column("Remote", style="dim", justify="right")
+    table.add_column("", width=1, justify="center")
+    for pkg in packages:
+        table.add_row(
+            pkg.name,
+            Text(pkg.local or "unknown", style="dim"),
+            Text(pkg.remote or pkg.note or "could not check", style="dim"),
+            _status_glyph(pkg.has_update),
+        )
+    console.print(table)
+
+
+def _print_update_table(console, statuses, packages=()) -> None:  # noqa: ANN001 — rich Console
+    """Render the three app-cli-parity sections: Amplifier → Modules → Bundles.
 
     app-cli's model: shared transitive sources (``amplifier-foundation``,
     ``skills``, ``modes``…) are referenced by nearly every composed bundle, so a
     per-bundle listing repeats each one ~15×. Instead we flatten to the *unique*
-    set (:func:`updater.unique_sources`) and split it into Bundles and Modules —
+    set (:func:`updater.unique_sources`) and split it into Modules and Bundles —
     each source appears exactly once. Local/non-git sources are summarized
     separately by the uncheckable section the caller prints."""
     from rich.table import Table
@@ -3179,7 +3205,7 @@ def _print_update_table(console, statuses) -> None:  # noqa: ANN001 — rich Con
             return
         table = Table(title=title, title_justify="center", header_style="bold cyan")
         table.add_column("Name", style="green", no_wrap=True)
-        table.add_column("Local", style="dim", justify="right")
+        table.add_column("Cached", style="dim", justify="right")
         table.add_column("Remote", style="dim", justify="right")
         table.add_column("", width=1, justify="center")
         for row in items:
@@ -3191,26 +3217,32 @@ def _print_update_table(console, statuses) -> None:  # noqa: ANN001 — rich Con
             )
         console.print(table)
 
+    _print_packages_table(console, packages)
     if not modules and not bundles:
         console.print("[dim]No git-tracked sources to compare.[/dim]")
     else:
-        _render("Bundles", bundles)
         _render("Modules", modules)
+        _render("Bundles", bundles)
     console.print(
         "[dim]Legend: [green]✓[/green] up to date  "
         "[yellow]●[/yellow] update available  [cyan]◦[/cyan] local changes[/dim]"
     )
 
 
-async def _update(check_only: bool, yes: bool, force: bool) -> int:
+async def _update(check_only: bool, yes: bool, force: bool, verbose: bool) -> int:
     from rich.console import Console
 
     from .kernel import updater
 
     console = Console()
     if force:
-        console.print("clearing uv cache…", style="dim")
+        console.print("Force update mode...")
+        console.print("  Clearing uv cache...", style="dim")
         updater.uv_cache_clean()
+    else:
+        console.print("Checking for updates...")
+        console.print("  Checking modules...", style="dim")
+        console.print("  Checking bundles...", style="dim")
 
     statuses = await updater.check_bundles()
     if not statuses:
@@ -3218,7 +3250,12 @@ async def _update(check_only: bool, yes: bool, force: bool) -> int:
         console.print(updater.self_update_hint(), style="dim")
         return 0
 
-    _print_update_table(console, statuses)
+    # Amplifier packages (app + core + foundation) — advisory rows; offline
+    # degrades each to a dim "could not check", never a crash.
+    packages = await updater.check_packages()
+
+    console.print()
+    _print_update_table(console, statuses, packages)
 
     # A bundle whose check errored (unresolvable name, offline clone, …) must
     # be visible — silently omitting it made a totally broken check print
@@ -3227,16 +3264,19 @@ async def _update(check_only: bool, yes: bool, force: bool) -> int:
     for status in errored:
         console.print(f"[red]✗[/red] {status.name} — {status.error}")
 
-    # Deduplicated "couldn't be checked": one line per source (a shared module
-    # used by many bundles collapses to a single entry) under a plain label,
-    # instead of foundation's opaque per-bundle "not supported" repeats.
+    # "Couldn't be checked" collapses to ONE dim summary line (app-cli shows
+    # nothing at all here); the per-source listing — with cache paths shortened
+    # to <repo>/modules/<module> — is opt-in via --verbose.
     uncheckable = updater.uncheckable_sources(statuses)
     if uncheckable:
         console.print()
-        console.print(f"{updater.UNCHECKABLE_LABEL} ({len(uncheckable)}):", style="dim")
-        for name, reason in uncheckable:
-            line = f"  · {name} — {reason}" if reason else f"  · {name}"
-            console.print(line, style="dim")
+        suffix = ":" if verbose else " — see --verbose"
+        console.print(f"{len(uncheckable)} {updater.UNCHECKABLE_LABEL}{suffix}", style="dim")
+        if verbose:
+            for name, reason in uncheckable:
+                short = updater.shorten_cache_path(name)
+                line = f"  · {short} — {reason}" if reason else f"  · {short}"
+                console.print(line, style="dim")
 
     # Anchors is composed via an include, which foundation's check skips — so
     # surface its freshness explicitly (offline degrades to a neutral note).
@@ -3249,6 +3289,11 @@ async def _update(check_only: bool, yes: bool, force: bool) -> int:
         console.print(f"[green]✓[/green] {anchors.describe()}")
 
     stale = [s for s in statuses if s.has_updates]
+    # What the action summary/prompt advertises must match the ● rows the table
+    # shows: unique stale sources, NOT per-bundle stale flags (a shared stale
+    # source referenced by 11 bundles is one update, not "11 item(s)").
+    stale_sources = updater.count_stale_sources(statuses)
+    package_updates = [p for p in packages if p.has_update]
     # A stale anchors cache is applicable work: `update` re-fetches the
     # tracked include (refresh_anchors) since foundation's per-bundle update
     # skips it — otherwise the "run `amplifier-tui update`" hint is circular.
@@ -3258,34 +3303,73 @@ async def _update(check_only: bool, yes: bool, force: bool) -> int:
             console.print(f"{len(errored)} bundle(s) could not be checked (see above)", style="red")
         else:
             console.print("✓ all bundles up to date", style="green")
+        if package_updates:
+            # Advisory only — this command never self-updates the app/platform.
+            names = ", ".join(p.name for p in package_updates)
+            console.print(f"  • Update Amplifier packages manually ({names} have updates):")
         console.print(updater.self_update_hint(), style="dim")
         return 1 if errored else 0
+
+    # Action summary (app-cli style bullets), shown before the prompt and in
+    # --check-only mode.
+    console.print()
     if check_only:
-        console.print(updater.self_update_hint(), style="dim")
+        console.print("Run [cyan]amplifier-tui update[/cyan] to install")
+    if force:
+        console.print(f"  • Re-fetch {len(statuses)} bundle(s) (--force)")
+    elif stale_sources:
+        console.print(f"  • Update {stale_sources} module/bundle source(s)")
+    elif stale:
+        console.print(f"  • Refresh {len(stale)} bundle(s)")
+    if anchors_work:
+        console.print("  • Refresh anchors include (behind upstream)")
+    if package_updates:
+        # Advisory only — updating the app/platform stays out of scope here.
+        names = ", ".join(p.name for p in package_updates)
+        console.print(f"  • Update Amplifier packages manually ({names} have updates):")
+        for line in updater.self_update_hint().splitlines():
+            console.print(f"    {line}", style="dim")
+
+    if check_only:
+        return 0
+
+    console.print()
+    if not yes and not click.confirm("Proceed with update?", default=True):
+        console.print("Update cancelled", style="dim")
         return 0
 
     targets = statuses if force else stale
-    total = len(targets) + (1 if anchors_work else 0)
-    if not yes and not click.confirm(f"update {total} item(s)?", default=True):
-        return 0
     updated, failed = await updater.update_bundles([s.target for s in targets])
     if anchors_work:
-        (updated if await updater.refresh_anchors() else failed).append("anchors")
-    if updated:
-        console.print(f"✓ updated: {', '.join(updated)}", style="green")
+        if await updater.refresh_anchors():
+            updated.append("anchors")
+        else:
+            failed.append(("anchors", "refresh failed"))
+
+    # Per-item apply results, then the app-cli completion lines.
+    console.print()
+    for name in updated:
+        console.print(f"  [green]✓[/green] {name}")
+    for name, error in failed:
+        console.print(f"  [red]✗[/red] {name} — {error}")
     if failed:
-        console.print(f"✗ failed: {', '.join(failed)}", style="red")
+        console.print("[yellow]⚠ Update completed with errors[/yellow]")
+    else:
+        console.print("[green]✓ Update complete[/green]")
+    bundles_updated = [name for name in updated if name != "anchors"]
+    console.print(f"Updated {len(bundles_updated)} bundle(s)")
     console.print(updater.self_update_hint(), style="dim")
-    return 1 if failed else 0
+    return 1 if failed or errored else 0
 
 
 @main.command()
 @click.option("--check-only", is_flag=True, help="Report available updates; change nothing.")
 @click.option("--yes", "-y", is_flag=True, help="Apply without the confirmation prompt.")
 @click.option("--force", is_flag=True, help="uv cache clean first, then re-fetch every source.")
-def update(check_only: bool, yes: bool, force: bool) -> None:
+@click.option("--verbose", "-v", is_flag=True, help="List every skipped local/non-git source.")
+def update(check_only: bool, yes: bool, force: bool, verbose: bool) -> None:
     """Update the bundles/modules this app mounts (not the app or platform)."""
-    raise SystemExit(asyncio.run(_update(check_only, yes, force)))
+    raise SystemExit(asyncio.run(_update(check_only, yes, force, verbose)))
 
 
 # --------------------------------------------------------------------------

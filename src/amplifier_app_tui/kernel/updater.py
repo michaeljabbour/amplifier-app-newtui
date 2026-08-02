@@ -38,7 +38,13 @@ from .config import (
 _GENERIC_UNCHECKABLE = "Update checking not supported for this source type"
 
 # The clearer header for the deduplicated "couldn't be checked" section.
-UNCHECKABLE_LABEL = "local or non-git sources (no remote to compare)"
+UNCHECKABLE_LABEL = "local/non-git sources skipped (no remote to compare)"
+
+# The three Amplifier packages the "Amplifier" table reports on, and where
+# their upstream lives. The app itself is git-hosted; core is the PyPI one.
+APP_PACKAGE = "amplifier-app-tui"
+APP_REPO_URL = "https://github.com/michaeljabbour/amplifier-app-tui"
+FOUNDATION_REPO_URL = "https://github.com/microsoft/amplifier-foundation"
 
 
 @dataclass(frozen=True)
@@ -116,6 +122,187 @@ def uncheckable_sources(statuses: Iterable[BundleUpdate]) -> list[tuple[str, str
                 name, _, detail = entry.partition(":")
                 seen.setdefault(name.strip(), _clean(detail))
     return sorted(seen.items())
+
+
+def count_stale_sources(statuses: Iterable[BundleUpdate]) -> int:
+    """How many unique sources actually have updates — what the prompt advertises.
+
+    Counts :func:`unique_sources` rows with ``has_update`` True, NOT per-bundle
+    stale flags: a shared stale source referenced by 11 composed bundles is *one*
+    update, not 11 — the number must match the ``●`` rows the table shows.
+    Pure/offline."""
+    return sum(1 for row in unique_sources(statuses) if row.has_update)
+
+
+# Foundation cache entries are ``<repo>-<content hash>`` (16 hex chars today;
+# tolerate longer/shorter future shapes but never a short version-ish suffix).
+_CACHE_HASH_RE = re.compile(r"-[0-9a-f]{12,}$")
+
+
+def shorten_cache_path(path: str, amplifier_home: Path | None = None) -> str:
+    """Compact a cache-absolute source path for the ``--verbose`` skipped listing.
+
+    ``~/.amplifier/cache/<repo>-<hash>/modules/<m>`` → ``<repo>/modules/<m>``
+    (prefix stripped, content-hash suffix dropped). Paths outside the cache pass
+    through unchanged. Pure/offline."""
+    try:
+        rel = Path(path).relative_to(_amplifier_home(amplifier_home) / "cache")
+    except ValueError:
+        return path
+    parts = list(rel.parts)
+    if parts:
+        parts[0] = _CACHE_HASH_RE.sub("", parts[0])
+    return "/".join(parts)
+
+
+# --- Amplifier packages (app + core + foundation) ---------------------------
+
+
+@dataclass(frozen=True)
+class PackageStatus:
+    """One row of the "Amplifier" packages table (app-cli parity).
+
+    ``local``/``remote`` are display strings — a version or a short SHA.
+    ``has_update`` keeps the SourceRow tri-state; ``None`` means no comparison
+    was possible and ``note`` then carries the honest, dim degrade text
+    ("could not check" offline — this table never crashes or blocks)."""
+
+    name: str
+    local: str | None = None
+    remote: str | None = None
+    has_update: bool | None = None
+    note: str | None = None
+
+
+def shape_package_status(
+    name: str, local: str | None, remote: str | None, *, commits: bool = False
+) -> PackageStatus:
+    """Fold raw local/remote values into a :class:`PackageStatus` row.
+
+    ``commits=True`` truncates both sides to 7-char short SHAs before comparing.
+    Either side missing → tri-state ``None`` with note ``"could not check"``;
+    equal → up to date; differing → update available. Pure/offline."""
+    if commits:
+        local = _short_sha(local)
+        remote = _short_sha(remote)
+    if not local or not remote:
+        return PackageStatus(name, local, remote, None, "could not check")
+    return PackageStatus(name, local, remote, local != remote)
+
+
+def installed_commit(dist_name: str) -> str | None:
+    """The VCS commit a distribution was installed from, or ``None``.
+
+    Reads the dist's ``direct_url.json`` (present for git-sourced installs —
+    ``uv sync`` git deps, ``uv tool install`` from a repo). PyPI and editable
+    installs have no ``vcs_info`` → ``None``. Offline; never raises."""
+    import json
+    from importlib import metadata
+
+    try:
+        raw = metadata.distribution(dist_name).read_text("direct_url.json")
+        if not raw:
+            return None
+        commit = json.loads(raw).get("vcs_info", {}).get("commit_id")
+        return str(commit) if commit else None
+    except Exception:  # noqa: BLE001 — metadata shape varies by installer; degrade to None
+        return None
+
+
+def _dist_version(dist_name: str) -> str | None:
+    """Installed distribution version, or ``None`` when absent (offline)."""
+    from importlib import metadata
+
+    try:
+        return metadata.version(dist_name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _ls_remote_sha(url: str, ref: str = "main", timeout: float = 5.0) -> str | None:
+    """Tip SHA of *ref* at *url* via ``git ls-remote``; ``None`` offline (never raises)."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", url, ref],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        return result.stdout.split()[0]
+    except Exception:  # noqa: BLE001 — offline-safe: table degrades to "could not check"
+        return None
+
+
+def _pypi_latest(dist_name: str, timeout: float = 5.0) -> str | None:
+    """Latest release on PyPI (JSON API, short timeout); ``None`` offline (never raises)."""
+    try:
+        import httpx
+
+        resp = httpx.get(f"https://pypi.org/pypi/{dist_name}/json", timeout=timeout)
+        resp.raise_for_status()
+        return str(resp.json()["info"]["version"])
+    except Exception:  # noqa: BLE001 — offline-safe: table degrades to "could not check"
+        return None
+
+
+def _version_behind(local: str, remote: str) -> bool:
+    """Is *local* older than *remote*? PEP 440 compare when available, else ``!=``."""
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        return local != remote
+    try:
+        return Version(local) < Version(remote)
+    except InvalidVersion:
+        return local != remote
+
+
+def _git_package_status(dist_name: str, repo_url: str, ref: str = "main") -> PackageStatus:
+    """Status of a git-hosted package: installed commit vs remote *ref* tip.
+
+    Local comes from the dist's ``direct_url.json``; installs without VCS
+    metadata (editable dev clones) fall back to showing the version, which is
+    not comparable to a SHA → tri-state ``None``."""
+    remote = _ls_remote_sha(repo_url, ref)
+    local_commit = installed_commit(dist_name)
+    if local_commit:
+        return shape_package_status(dist_name, local_commit, remote, commits=True)
+    version = _dist_version(dist_name)
+    note = "could not check" if remote is None else "no VCS metadata to compare"
+    return PackageStatus(dist_name, version, _short_sha(remote), None, note)
+
+
+def _pypi_package_status(dist_name: str) -> PackageStatus:
+    """Status of a PyPI package: installed version vs latest release."""
+    local = _dist_version(dist_name)
+    remote = _pypi_latest(dist_name)
+    if not local or not remote:
+        return PackageStatus(dist_name, local, remote, None, "could not check")
+    return PackageStatus(dist_name, local, remote, _version_behind(local, remote))
+
+
+async def check_packages() -> list[PackageStatus]:
+    """The "Amplifier" table rows: app (git) + core (PyPI) + foundation (git).
+
+    The three checks run concurrently in threads (each is subprocess/httpx with
+    a short timeout). Network failures degrade per-row to "could not check" —
+    this never crashes and never blocks past the timeouts. Advisory only:
+    applying app/platform updates stays out of scope (see
+    :func:`self_update_hint`)."""
+    import asyncio
+
+    return list(
+        await asyncio.gather(
+            asyncio.to_thread(_git_package_status, APP_PACKAGE, APP_REPO_URL),
+            asyncio.to_thread(_pypi_package_status, "amplifier-core"),
+            asyncio.to_thread(_git_package_status, "amplifier-foundation", FOUNDATION_REPO_URL),
+        )
+    )
 
 
 # --- anchors include ref (tracked, not statically pinned) -------------------
@@ -394,25 +581,28 @@ async def check_bundles(
     return results
 
 
-async def update_bundles(targets: list[str]) -> tuple[list[str], list[str]]:
-    """Apply ``update_bundle`` to each target; returns (updated, failed) names."""
+async def update_bundles(targets: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Apply ``update_bundle`` to each target.
+
+    Returns ``(updated names, failed (name, reason) pairs)`` — the reason feeds
+    the per-item ``✗ <name> — <error>`` apply line (app-cli parity)."""
     updated: list[str] = []
-    failed: list[str] = []
+    failed: list[tuple[str, str]] = []
     try:
         from amplifier_foundation import update_bundle
-    except Exception:  # noqa: BLE001
-        return updated, failed
+    except Exception as error:  # noqa: BLE001
+        return updated, [(display_name(t), f"foundation unavailable: {error}") for t in targets]
     for target in targets:
         name = display_name(target)
         try:
             bundle = await _load_single(target)
             if bundle is None:
-                failed.append(name)
+                failed.append((name, "not found"))
                 continue
             await update_bundle(bundle)
             updated.append(name)
-        except Exception:  # noqa: BLE001 — report per-bundle, keep going
-            failed.append(name)
+        except Exception as error:  # noqa: BLE001 — report per-bundle, keep going
+            failed.append((name, str(error)))
     return updated, failed
 
 
@@ -437,18 +627,27 @@ def self_update_hint() -> str:
 
 
 __all__ = [
+    "APP_PACKAGE",
+    "APP_REPO_URL",
+    "FOUNDATION_REPO_URL",
     "UNCHECKABLE_LABEL",
     "AnchorsStatus",
     "BundleUpdate",
+    "PackageStatus",
     "SourceRow",
     "anchors_ref",
     "anchors_status",
     "check_bundles",
+    "check_packages",
+    "count_stale_sources",
     "display_name",
+    "installed_commit",
     "pin_files",
     "read_anchors_ref",
     "refresh_anchors",
     "self_update_hint",
+    "shape_package_status",
+    "shorten_cache_path",
     "target_bundles",
     "uncheckable_sources",
     "unique_sources",
