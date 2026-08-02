@@ -83,6 +83,7 @@ from .session_ops_view import sessions_spans
 from .splash import BootSplash
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
+    BackToParent,
     BlockWidget,
     CloseEvidence,
     CopyCodeFence,
@@ -219,6 +220,9 @@ class TuiApp(App[None]):
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
         self._lanes_fanout_open = False  # active-lane edge for the auto-open
+        self._lane_focus_intro_shown = (
+            False  # first-ever focus shows the exit-path notice once (S6)
+        )
         self.plan_items: tuple[TodoItem, ...] = ()  # latest root todo list
         self.title_bar = TitleBar(id="title-bar")
         self.transcript = TranscriptView(id="transcript")
@@ -1330,6 +1334,12 @@ class TuiApp(App[None]):
         # Esc must resolve via ESC_CHAIN (lane_focus first, lanes later),
         # so the keyboard returns to the composer, not the panel.
         self.composer.focus_input()
+        if not self._lane_focus_intro_shown:
+            # First-ever focus transition (S6 AC4): a transient notice
+            # announcing the exit path, not a permanent tutorial overlay —
+            # never repeats once the user has seen it.
+            self._lane_focus_intro_shown = True
+            self.show_notice(app_support.LANE_FOCUS_INTRO_NOTICE)
         self.run_worker(
             self.transcript.focus_lane(message.session_id or message.name, blocks),
             exclusive=False,
@@ -1351,6 +1361,13 @@ class TuiApp(App[None]):
 
     def on_lane_focus_changed(self, message: LaneFocusChanged) -> None:
         app_support.handle_lane_focus_change(self, message.lane_id)
+
+    def on_back_to_parent(self, message: BackToParent) -> None:
+        """Focus-header Back control (click or enter/space): the exact
+        same navigation seam as Escape's ``lane_unfocus`` action — never
+        a turn interrupt/cancel (S6 AC2/AC5)."""
+        message.stop()
+        app_support.go_back_to_parent(self)
 
     def on_delegate_summary_toggled(self, message: DelegateSummaryToggled) -> None:
         """Drill-down v1 (ambient-progress D5): an expanded summary opens the
