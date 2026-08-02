@@ -59,6 +59,16 @@ class ModeProfile(BaseModel):
         return f"mode {self.id} · {self.trust_str}"
 
 
+AUTO_OPEN_TRUST_STR = "auto everything · platform governs"
+"""Auto's footer posture under ``permissions.governance: open`` (the default):
+the governance hook bypasses classification entirely — parity with app-cli,
+which never gates (user directive 2026-08-02, supersedes 2026-07-16)."""
+
+AUTO_GATED_TRUST_STR = "auto read,write · asks if risky"
+"""Auto's posture only when the user opts in via ``permissions.governance:
+gated`` — read/write/test auto-allowed, the rest classifier-gated."""
+
+
 MODE_PROFILES: dict[ModeId, ModeProfile] = {
     "chat": ModeProfile(
         id="chat", color_token="dim", trust_str="ask all · auto read", accent="rule"
@@ -76,7 +86,7 @@ MODE_PROFILES: dict[ModeId, ModeProfile] = {
     "auto": ModeProfile(
         id="auto",
         color_token="orange",
-        trust_str="auto read,write · asks if risky",
+        trust_str=AUTO_OPEN_TRUST_STR,
         accent="orange",
     ),
 }
@@ -87,8 +97,20 @@ MODE_CYCLE: tuple[ModeId, ...] = ("chat", "plan", "brainstorm", "build", "auto")
 
 DEFAULT_MODE: ModeId = "auto"
 """Boot posture. The mockup demo *starts* its scripted history in chat, but the
-app defaults to auto — amplifier's natural wide scope (user directive
-2026-07-16): auto read/write/test, the rest asks if risky (classifier-gated)."""
+app defaults to auto — amplifier's natural wide scope. Under the default
+``permissions.governance: open`` nothing is gated (app-cli parity, user
+directive 2026-08-02); ``gated`` restores the classifier posture."""
+
+
+def effective_trust_str(mode: ModeProfile, *, gated_auto: bool = False) -> str:
+    """The posture string the UI may show — truthful about auto's governance.
+
+    Auto's gate is a settings toggle (``permissions.governance``), not a mode
+    property, so the profile's static string can lie about the live posture.
+    Every render site goes through here with the boot-resolved flag."""
+    if mode.id == "auto":
+        return AUTO_GATED_TRUST_STR if gated_auto else AUTO_OPEN_TRUST_STR
+    return mode.trust_str
 
 
 def get_mode(mode_id: str | None) -> ModeProfile:

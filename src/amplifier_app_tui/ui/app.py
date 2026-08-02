@@ -1520,7 +1520,7 @@ class TuiApp(App[None]):
         self.set_mode_by_id(cycle_mode(self._mode.id).id)
 
     def action_cycle_permission(self) -> None:
-        self.show_notice(f"trust · {self._mode.trust_str} · edit via /permissions")
+        self.show_notice(f"trust · {self._effective_trust_str()} · edit via /permissions")
 
     def action_cycle_effort(self) -> None:
         """ctrl+e: advance the reasoning-effort tier one step in the ring."""
@@ -1687,10 +1687,19 @@ class TuiApp(App[None]):
 
     def open_permissions(self) -> None:
         self.append_block(
-            app_support.permissions_block(self.permissions, self._mode.trust_str, self.allocator)
+            app_support.permissions_block(
+                self.permissions, self._effective_trust_str(), self.allocator
+            )
         )
 
     # -- painting ---------------------------------------------------------------------------------
+
+    def _effective_trust_str(self) -> str:
+        """Auto's posture string, truthful about live governance (not the
+        profile's static string — the gate is a settings toggle)."""
+        from ..model.modes import effective_trust_str
+
+        return effective_trust_str(self._mode, gated_auto=self.adapter.gated_auto)
 
     def footer_context(self) -> keymap.Context:
         if self.approval_bar is not None:

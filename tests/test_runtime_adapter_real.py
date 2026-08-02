@@ -148,6 +148,7 @@ class FakeRealRuntime:
             "capability_resolver": capability_resolver,
             "on_progress": on_progress,
         }
+        self.gated_auto = False
         self.bundle_name = "fake-bundle"
         self.model_name = "fake/model-1"
         self.session_short = "abc12345"

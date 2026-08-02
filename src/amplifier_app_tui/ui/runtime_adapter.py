@@ -198,6 +198,7 @@ class RuntimeAdapter:
         summaries, turn rules — DESIGN-SPEC §3/§11); empty means the
         prose ``restored_history`` fallback renders instead."""
         self.startup_notices: tuple[str, ...] = ()
+        self.gated_auto: bool = False
         self.mount_report: object | None = None
         """The boot mount report, surfaced for ``/doctor``'s mount check.
         ``None`` for the demo adapter and before ``start()``."""
@@ -548,6 +549,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         await started  # runtime.start() finished (or raised) on its thread
         runtime = self._runtime
         self.bundle_name = runtime.bundle_name
+        self.gated_auto = runtime.gated_auto
         self.model_name = runtime.model_name
         self.session_short = runtime.session_short
         self.session_id = runtime.session_id

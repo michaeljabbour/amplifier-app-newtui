@@ -588,6 +588,9 @@ class RealRuntime:
         (DESIGN-SPEC §3/§11); empty for fresh sessions and for stored
         sessions with no usable event log (prose fallback)."""
         self.degraded_notice: str | None = None
+        self.gated_auto = False
+        """Whether ``permissions.governance: gated`` armed auto-mode gating
+        this boot — the UI shows auto's posture string truthfully from this."""
         self.mount_report: Any = None
         """The boot :class:`~.session_factory.MountReport`, kept past startup so
         ``/doctor`` can report WHICH module failed — the degraded notice sends
@@ -799,6 +802,7 @@ class RealRuntime:
         # hook over the same tool:pre contract as native hooks-mode. Mounted
         # hooks still own bundle-defined modes; this hook owns only the TUI's
         # five trust postures and directory boundary.
+        self.gated_auto = governance_setting(resolved.settings) == "gated"
         governance = GovernanceHook(
             initialized.session_id,
             mode=self._mode,
@@ -810,7 +814,7 @@ class RealRuntime:
             capability_resolver=self._capability_resolver,
             on_blocked=self._governance_blocked,
             native_tools=self._native_safe_tools,
-            gate_auto=governance_setting(resolved.settings) == "gated",
+            gate_auto=self.gated_auto,
         )
         initialized.unregister_handles.append(governance.register_hooks(hooks))
         # Child lanes inherit the SAME governance instance so a gated posture
