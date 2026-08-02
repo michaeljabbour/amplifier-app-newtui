@@ -769,6 +769,7 @@ def footer_state(app: TuiApp) -> FooterState:
     context_pct = usage.used_pct if usage.used > 0 else None
     return FooterState(
         mode_id=app.mode_id,  # type: ignore[arg-type]
+        gated_auto=app.adapter.gated_auto,
         native_modes=app.native_modes,
         bundle=app.adapter.bundle_name,
         # The adapter may carry a provider-qualified id ("anthropic/x");

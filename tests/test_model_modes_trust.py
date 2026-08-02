@@ -28,7 +28,7 @@ def test_mode_table_matches_spec_exactly() -> None:
         "plan": ("blue", "read-only"),
         "brainstorm": ("teal", "no tools"),
         "build": ("green", "auto read,test · ask write,net,spend"),
-        "auto": ("orange", "auto read,write · asks if risky"),
+        "auto": ("orange", "auto everything · platform governs"),
     }
     assert set(MODE_PROFILES) == set(expected)
     for mode_id, (color, trust) in expected.items():
@@ -179,3 +179,21 @@ def test_denial_log_requires_reason() -> None:
     log = DenialLog()
     with pytest.raises(ValueError):
         log.record_denial(capability=CapabilityClass.EXEC, action="x", reason="   ")
+
+
+def test_effective_trust_str_reflects_governance() -> None:
+    """Auto's displayed posture must not lie: open (default) shows the
+    platform-parity string; only ``permissions.governance: gated`` shows the
+    classifier posture. Non-auto modes are untouched by the flag."""
+    from amplifier_app_tui.model.modes import (
+        AUTO_GATED_TRUST_STR,
+        AUTO_OPEN_TRUST_STR,
+        MODE_PROFILES,
+        effective_trust_str,
+    )
+
+    auto = MODE_PROFILES["auto"]
+    assert effective_trust_str(auto) == AUTO_OPEN_TRUST_STR
+    assert effective_trust_str(auto, gated_auto=True) == AUTO_GATED_TRUST_STR
+    build = MODE_PROFILES["build"]
+    assert effective_trust_str(build, gated_auto=True) == build.trust_str

@@ -37,7 +37,7 @@ from textual.widgets import Static
 
 from ..model.blocks import GLYPH_YIELD
 from ..model.formatting import format_tokens_compact
-from ..model.modes import ModeId, get_mode
+from ..model.modes import ModeId, effective_trust_str, get_mode
 from ..model.native_modes import native_badge_text
 from .keymap import FOOTER_HINTS, Context, hint_label
 
@@ -53,6 +53,9 @@ class FooterState(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mode_id: ModeId = "chat"
+    gated_auto: bool = False
+    """Whether auto-mode gating is armed (``permissions.governance: gated``) —
+    auto's posture string renders truthfully from this."""
     native_modes: tuple[str, ...] = ()
     """Active bundle-composed modes (``/mode <name>``), in activation order —
     the LAST is the primary (the one enforced upstream). Shown as a
@@ -135,7 +138,7 @@ def _left_parts(
     if badge:
         parts.append(badge)
     if trust:
-        parts.append(mode.trust_str)
+        parts.append(effective_trust_str(mode, gated_auto=state.gated_auto))
     if bundle and state.bundle:
         parts.append(f"bundle {state.bundle}")
     if model and state.model:
@@ -340,7 +343,7 @@ class FooterBar(Horizontal):
         drops = _fit_drops(state, self.container_size.width)
         rest_parts: list[str] = []
         if drops.get("trust", True):
-            rest_parts.append(mode.trust_str)
+            rest_parts.append(effective_trust_str(mode, gated_auto=state.gated_auto))
         if drops.get("bundle", True) and state.bundle:
             rest_parts.append(f"bundle {state.bundle}")
         if drops.get("model", True) and state.model:
