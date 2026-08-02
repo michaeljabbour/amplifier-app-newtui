@@ -7,7 +7,7 @@ import re
 
 from amplifier_app_tui.kernel.demo import BRAINSTORM_PROMPT, BUILD_PROMPT
 from amplifier_app_tui.ui.app import TuiApp
-from amplifier_app_tui.ui.live_tail import LiveTail
+from amplifier_app_tui.ui.lanes_panel import _LaneTail
 from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 from textual._doc import take_svg_screenshot
 from textual.app import App, ComposeResult
@@ -92,7 +92,10 @@ _TAIL_SNAPSHOT = (
 
 
 class _LaneTailShot(App[None]):
-    """Minimal deterministic harness: LiveTail in lane mode, no timers."""
+    """Minimal deterministic harness: the lanes panel's tail widget, no
+    timers. The ┆ tail paints ONLY under its lane's row in the lanes panel
+    now — the LiveTail lane-mode mirror that duplicated child streams into
+    the main chat is gone."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -102,7 +105,7 @@ class _LaneTailShot(App[None]):
         self.theme = theme_id(DEFAULT_THEME)
 
     def compose(self) -> ComposeResult:
-        yield LiveTail(id="live-tail")
+        yield _LaneTail(id="lane-tail")
 
 
 def test_lane_tail_snapshot(monkeypatch) -> None:
@@ -113,8 +116,8 @@ def test_lane_tail_snapshot(monkeypatch) -> None:
     app = _LaneTailShot()
 
     async def paint_tail(pilot) -> None:
-        tail = app.query_one("#live-tail", LiveTail)
-        tail.show_lane_tail(
+        tail = app.query_one("#lane-tail", _LaneTail)
+        tail.set_text(
             "…the queue bridge normalizes delegate lifecycle events at a single\n"
             "boundary, so the lanes are fed from the same UIEvent union as the\n"
             "transcript — checking trackers/task_status.py next"
