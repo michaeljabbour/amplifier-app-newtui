@@ -143,8 +143,12 @@ def test_routing_show_active_resolution(tmp_path: Path, monkeypatch) -> None:
     result = CliRunner().invoke(main, ["routing", "show"])
     assert result.exit_code == 0
     assert "Routing: balanced" in result.output
-    # default_model override is reflected for the anthropic-served role.
-    assert "claude-opus" in result.output
+    # The CANDIDATE's model is shown, not the provider's default_model pin:
+    # hooks-routing writes the candidate into the agent's provider_preferences
+    # and never reads default_model. Substituting the pin made every role show
+    # the root session's model, hiding the matrix entirely.
+    assert "claude-sonnet-*" in result.output
+    assert "claude-opus" not in result.output
     # fast has no configured provider -> flagged.
     assert "no provider" in result.output
     assert "anthropic" in result.output

@@ -373,11 +373,25 @@ def provider_default_model(settings: dict[str, Any], selector: str) -> str | Non
 
 
 def primary_provider_type(settings: dict[str, Any]) -> str | None:
-    """The bare type of the first configured provider (the routing default)."""
+    """The selector of the PRIMARY provider — the ★ in the routing summary.
+
+    Two corrections over "the first entry's bare type":
+
+    * Chosen by lowest ``config.priority``, matching how the orchestrator
+      actually picks (``loop-streaming::_select_provider``) and how
+      ``provider list`` marks its ★. List position is not the rule.
+    * Returns the instance ``id`` when there is one, because that is the
+      selector a routing matrix targets. A vLLM instance called ``runpod``
+      showed as ``vllm (★)`` — a name that appears in no matrix and is not
+      what ``provider list`` calls it.
+    """
+    from .config import provider_priority
+
     providers = _provider_entries(settings)
     if not providers:
         return None
-    return _provider_type_name(providers[0]) or None
+    primary = min(providers, key=provider_priority)
+    return str(primary.get("id") or "") or _provider_type_name(primary) or None
 
 
 @dataclass(frozen=True)
@@ -390,22 +404,30 @@ class ResolvedRole:
 def resolve_effective(
     matrix_data: dict[str, Any], settings: dict[str, Any]
 ) -> tuple[ResolvedRole, ...]:
-    """Role -> effective (model, provider), with configured default_model applied.
+    """Role -> the (model, provider) a delegation in that role will actually use.
 
     Each role resolves to its first candidate served by a configured provider
-    (see ``resolve_matrix``); when that provider pins a ``default_model`` the
-    displayed model reflects it, matching what the runtime would actually use.
+    — the candidate's OWN model, which is what ``hooks-routing`` writes into
+    the agent's ``provider_preferences``.
+
+    This deliberately does NOT substitute the provider's configured
+    ``default_model``. It used to, on the theory that the pin was "what the
+    runtime would actually use" — but the routing hook never reads
+    ``default_model`` (``resolver.resolve_model_role`` returns
+    ``{"provider", "model"}`` straight from the matched candidate); the pin is
+    only the fallback for a request that names no model at all, which a routed
+    delegation never is. Applying it collapsed every role onto the root
+    session's model, so an 11-role matrix rendered as eleven identical rows and
+    the routing table hid the very thing it exists to show.
+
+    ``provider_default_model`` remains available for callers that genuinely
+    want the pin (the root-session model, which is a different question).
     """
     provider_types = configured_provider_types(settings)
-    rows: list[ResolvedRole] = []
-    for row in resolve_matrix(matrix_data, provider_types):
-        model = row.model
-        if row.provider:
-            pinned = provider_default_model(settings, row.provider)
-            if pinned:
-                model = pinned
-        rows.append(ResolvedRole(role=row.role, model=model, provider=row.provider))
-    return tuple(rows)
+    return tuple(
+        ResolvedRole(role=row.role, model=row.model, provider=row.provider)
+        for row in resolve_matrix(matrix_data, provider_types)
+    )
 
 
 @dataclass(frozen=True)
