@@ -22,6 +22,7 @@ from amplifier_app_tui.kernel import setup
 # stubs it out — these tests exercise the real implementation, and everything
 # it would reach outside the process is supplied by a fake provider class.
 _REAL_LIST_PROVIDER_MODELS = setup.list_provider_models
+_REAL_INSTALL_PROVIDER_MODULE = setup.install_provider_module
 
 
 def _paths(tmp_path: Path):
@@ -534,3 +535,182 @@ def test_write_provider_config_keeps_a_distinct_instance(tmp_path: Path) -> None
     entries = _read_providers(paths)
     assert len(entries) == 2
     assert entries[0]["config"]["default_model"] == "glm"
+
+
+# ---------------------------------------------------------------------------
+# Issue #183 — keys_file / source cache must honor AMPLIFIER_HOME
+# ---------------------------------------------------------------------------
+
+
+def test_keys_file_honors_amplifier_home(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path / "scoped"))
+    assert setup.keys_file() == tmp_path / "scoped" / "keys.env"
+    # An explicit argument still wins over the env var.
+    assert setup.keys_file(tmp_path / "explicit") == tmp_path / "explicit" / "keys.env"
+    monkeypatch.delenv("AMPLIFIER_HOME")
+    assert setup.keys_file() == Path.home() / ".amplifier" / "keys.env"
+
+
+def test_amplifier_home_dir_resolution(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path / "scoped"))
+    assert setup._amplifier_home_dir(None) == tmp_path / "scoped"
+    assert setup._amplifier_home_dir(tmp_path) == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# Issue #182 — install-into-environment + the static required-field catalog
+# ---------------------------------------------------------------------------
+
+
+def test_install_provider_module_runs_uv_pip(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+
+    seen: dict = {}
+
+    def _run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setattr(setup, "_load_provider_class", lambda module_id: object)
+    ok, detail = asyncio.run(_REAL_INSTALL_PROVIDER_MODULE("provider-vllm", str(tmp_path)))
+    assert ok, detail
+    assert seen["cmd"][:4] == ["uv", "pip", "install", "-e"]
+    assert seen["cmd"][4] == str(tmp_path)  # local dir source is used directly
+    assert "--python" in seen["cmd"]
+
+
+def test_install_provider_module_reports_failure(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+
+    def _run(cmd, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="boom: no such build backend")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    ok, detail = asyncio.run(_REAL_INSTALL_PROVIDER_MODULE("provider-vllm", str(tmp_path)))
+    assert not ok
+    assert "boom" in detail
+
+
+def test_install_provider_module_verifies_import(tmp_path: Path, monkeypatch) -> None:
+    """rc == 0 alone is not success — the module must actually import after."""
+    import subprocess
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **k: SimpleNamespace(returncode=0, stdout="", stderr="")
+    )
+    monkeypatch.setattr(setup, "_load_provider_class", lambda module_id: None)
+    ok, detail = asyncio.run(_REAL_INSTALL_PROVIDER_MODULE("provider-vllm", str(tmp_path)))
+    assert not ok
+    assert "fails to import" in detail
+
+
+def test_fallback_fields_cover_endpoint_bearing_providers() -> None:
+    """The catalog must at least declare the endpoint field these providers
+    cannot mount without (the issue-#182 non-mountable-entry shape)."""
+    for module_id, endpoint_field in (
+        ("provider-vllm", "base_url"),
+        ("provider-chat-completions", "base_url"),
+        ("provider-ollama", "host"),
+        ("provider-azure-openai", "azure_endpoint"),
+    ):
+        fields = setup.fallback_provider_fields(module_id)
+        assert fields is not None, module_id
+        required = [f.id for f in fields.config_fields if f.required]
+        assert endpoint_field in required, module_id
+    # Providers a bare key genuinely configures have no fallback entry.
+    assert setup.fallback_provider_fields("provider-anthropic") is None
+
+
+def test_friendly_provider_name_table_and_titlecase() -> None:
+    assert setup.friendly_provider_name("provider-vllm") == "vLLM"
+    assert setup.friendly_provider_name("provider-chat-completions") == "OpenAI-Compatible"
+    assert setup.friendly_provider_name("provider-something-new") == "Something New"
+
+
+# ---------------------------------------------------------------------------
+# Console writers — edit (priority-preserving replace) and reorder
+# ---------------------------------------------------------------------------
+
+
+def test_replace_provider_config_preserves_position_and_priorities(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    setup.write_provider_config(
+        paths, "global", setup.provider_config_entry("provider-anthropic", key_var="A", priority=1)
+    )
+    setup.write_provider_config(
+        paths, "global", setup.provider_config_entry("provider-vllm", key_var="V")
+    )
+    # vllm is now priority 1, anthropic demoted to 10. Editing anthropic must
+    # neither promote it nor demote vllm.
+    edited = setup.provider_config_entry(
+        "provider-anthropic", config={"api_key": "${A}", "default_model": "claude-x"}, priority=10
+    )
+    setup.replace_provider_config(paths, "global", edited)
+    entries = _read_providers(paths)
+    by_module = {e["module"]: e["config"] for e in entries}
+    assert by_module["provider-anthropic"]["default_model"] == "claude-x"
+    assert by_module["provider-anthropic"]["priority"] == 10
+    assert by_module["provider-vllm"]["priority"] == 1
+
+
+def test_replace_provider_config_appends_when_absent(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    entry = setup.provider_config_entry("provider-vllm", key_var="V", priority=4)
+    setup.replace_provider_config(paths, "project", entry)
+    from amplifier_app_tui.kernel import bundle_admin
+
+    data = bundle_admin.read_scope(bundle_admin.scope_file(paths, "project"))
+    assert data["config"]["providers"] == [entry]
+
+
+def test_set_provider_priorities_rewrites_matching_scopes(tmp_path: Path) -> None:
+    from amplifier_app_tui.kernel import bundle_admin
+
+    paths = _paths(tmp_path)
+    bundle_admin.write_scope(
+        bundle_admin.scope_file(paths, "global"),
+        {
+            "config": {
+                "providers": [
+                    {"module": "provider-anthropic", "config": {"priority": 1}},
+                    {"module": "provider-vllm", "id": "runpod", "config": {"priority": 2}},
+                ]
+            }
+        },
+    )
+    bundle_admin.write_scope(
+        bundle_admin.scope_file(paths, "local"),
+        {"config": {"providers": [{"module": "provider-anthropic", "config": {"priority": 7}}]}},
+    )
+    setup.set_provider_priorities(paths, {"provider-anthropic": 2, "runpod": 1})
+    global_entries = _read_providers(paths)
+    assert {e.get("id") or e["module"]: e["config"]["priority"] for e in global_entries} == {
+        "provider-anthropic": 2,
+        "runpod": 1,
+    }
+    local = bundle_admin.read_scope(bundle_admin.scope_file(paths, "local"))
+    assert local["config"]["providers"][0]["config"]["priority"] == 2
+
+
+def test_configured_providers_carries_raw_config_and_source(tmp_path: Path) -> None:
+    from amplifier_app_tui.kernel import bundle_admin
+
+    paths = _paths(tmp_path)
+    bundle_admin.write_scope(
+        bundle_admin.scope_file(paths, "global"),
+        {
+            "config": {
+                "providers": [
+                    {
+                        "module": "provider-vllm",
+                        "source": "git+https://example/vllm@main",
+                        "config": {"base_url": "${VLLM_BASE_URL}", "priority": 1},
+                    }
+                ]
+            }
+        },
+    )
+    (entry,) = setup.configured_providers(tmp_path / "proj", tmp_path / "home")
+    assert entry.config == {"base_url": "${VLLM_BASE_URL}", "priority": 1}
+    assert entry.source == "git+https://example/vllm@main"

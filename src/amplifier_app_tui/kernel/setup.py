@@ -42,7 +42,7 @@ import logging
 import os
 import re
 import unicodedata
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field as dataclass_field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -51,8 +51,23 @@ from filelock import FileLock
 logger = logging.getLogger(__name__)
 
 
+def _amplifier_home_dir(amplifier_home: Path | None) -> Path:
+    """Resolve the amplifier home dir (mirrors ``bundle_admin._amplifier_home``).
+
+    An explicit argument always wins (tests); otherwise honor ``AMPLIFIER_HOME``
+    so a scoped/hermetic run never leaks into the real ``~/.amplifier``
+    (issue #183 — ``keys_file`` and the source cache used to ignore it).
+    """
+    if amplifier_home is not None:
+        return amplifier_home
+    env_home = os.environ.get("AMPLIFIER_HOME")
+    if env_home:
+        return Path(env_home).expanduser()
+    return Path.home() / ".amplifier"
+
+
 def keys_file(amplifier_home: Path | None = None) -> Path:
-    return (amplifier_home or (Path.home() / ".amplifier")) / "keys.env"
+    return _amplifier_home_dir(amplifier_home) / "keys.env"
 
 
 def provider_env_prefix(module_id: str) -> str:
@@ -494,6 +509,176 @@ different question (which env vars mark a provider as configured for
 """
 
 
+PROVIDER_DISPLAY_NAMES: dict[str, str] = {
+    "provider-anthropic": "Anthropic",
+    "provider-azure-openai": "Azure OpenAI",
+    "provider-chat-completions": "OpenAI-Compatible",
+    "provider-gemini": "Google Gemini",
+    "provider-github-copilot": "GitHub Copilot SDK",
+    "provider-ollama": "Ollama",
+    "provider-openai": "OpenAI",
+    "provider-vllm": "vLLM",
+}
+"""Friendly picker names for catalog modules (app-cli's provider picker).
+
+The provider's own ``get_info().display_name`` wins when the module is
+importable; this table covers the not-yet-installed case, where app-cli
+shows the same names via its ``_PROVIDER_DISPLAY_NAMES`` fallback.
+"""
+
+
+def friendly_provider_name(module_id: str) -> str:
+    """Picker label for *module_id* — the table name, else title-cased."""
+    known = PROVIDER_DISPLAY_NAMES.get(module_id)
+    if known:
+        return known
+    return _provider_display_name(module_id).replace("-", " ").title()
+
+
+def _fallback_field(
+    field_id: str,
+    display_name: str,
+    env_var: str,
+    *,
+    field_type: str = "text",
+    default: str | None = None,
+    required: bool = False,
+) -> ProviderConfigField:
+    return ProviderConfigField(
+        id=field_id,
+        display_name=display_name,
+        prompt="",
+        field_type=field_type,
+        env_var=env_var,
+        default=default,
+        required=required,
+    )
+
+
+PROVIDER_FALLBACK_FIELDS: dict[str, tuple[ProviderConfigField, ...]] = {
+    "provider-vllm": (
+        _fallback_field(
+            "base_url",
+            "Server URL",
+            "VLLM_BASE_URL",
+            default="http://localhost:8000/v1",
+            required=True,
+        ),
+        _fallback_field("api_key", "API Key", "VLLM_API_KEY", field_type="secret"),
+    ),
+    "provider-chat-completions": (
+        _fallback_field(
+            "base_url",
+            "Base URL",
+            "CHAT_COMPLETIONS_BASE_URL",
+            default="http://localhost:8080/v1",
+            required=True,
+        ),
+        _fallback_field("api_key", "API Key", "CHAT_COMPLETIONS_API_KEY", field_type="secret"),
+    ),
+    "provider-ollama": (
+        # The ollama module's endpoint field is ``host`` (OLLAMA_HOST), not
+        # ``base_url`` — the fallback must write a config the module mounts.
+        _fallback_field(
+            "host", "Ollama Host", "OLLAMA_HOST", default="http://localhost:11434", required=True
+        ),
+    ),
+    "provider-azure-openai": (
+        _fallback_field("azure_endpoint", "Azure Endpoint", "AZURE_OPENAI_ENDPOINT", required=True),
+        _fallback_field("api_key", "API Key", "AZURE_OPENAI_API_KEY", field_type="secret"),
+        _fallback_field(
+            "api_version", "API Version", "AZURE_OPENAI_API_VERSION", default="2024-10-01-preview"
+        ),
+    ),
+}
+"""Static minimum config fields per provider, for when the schema is unreadable.
+
+The declared schemas (``get_info().config_fields``) mark ``base_url`` /
+``azure_endpoint`` / ``host`` as the load-bearing endpoint field; a key-only
+entry for these providers cannot mount (issue #182). When the module can't be
+imported AND can't be installed, the wizard prompts for at least these fields
+instead of silently degrading to the key-only basic flow. Copied from the real
+modules' declarations; the live schema always wins when available.
+"""
+
+
+def fallback_provider_fields(module_id: str) -> ProviderFields | None:
+    """A :class:`ProviderFields` built from the static catalog, or ``None``."""
+    fields = PROVIDER_FALLBACK_FIELDS.get(module_id)
+    if not fields:
+        return None
+    key_var: str | None = None
+    key_field_id = "api_key"
+    base_url_var: str | None = None
+    base_url_default: str | None = None
+    for field_spec in fields:
+        if field_spec.field_type == "secret" and key_var is None and field_spec.env_var:
+            key_var = field_spec.env_var
+            key_field_id = field_spec.id
+        if field_spec.id == "base_url":
+            base_url_var = field_spec.env_var
+            base_url_default = field_spec.default
+    return ProviderFields(
+        module_id=module_id,
+        key_var=key_var,
+        key_field_id=key_field_id,
+        base_url_var=base_url_var,
+        base_url_default=base_url_default,
+        has_models=True,  # optimistic: the picker degrades to free text anyway
+        display_name=friendly_provider_name(module_id),
+        config_fields=fields,
+    )
+
+
+async def install_provider_module(
+    module_id: str, source_uri: str, *, amplifier_home: Path | None = None
+) -> tuple[bool, str]:
+    """Install *module_id* into the running environment (app-cli parity).
+
+    The ``sys.path`` graft in :func:`ensure_provider_available` cannot satisfy
+    a provider's own third-party imports (vLLM needs ``openai``), so on an
+    explicit user confirm the console does what app-cli's ``provider install``
+    does: resolve the source into the shared cache and ``uv pip install -e``
+    it into this interpreter's environment (issue #182).
+
+    Returns ``(ok, detail)``; never raises.
+    """
+    import subprocess
+    import sys
+
+    try:
+        local = Path(source_uri).expanduser()
+        if local.is_dir():
+            target = local
+        else:
+            from amplifier_foundation.paths.resolution import parse_uri
+            from amplifier_foundation.sources.git import GitSourceHandler
+
+            cache_dir = _amplifier_home_dir(amplifier_home) / "cache"
+            resolved = await GitSourceHandler().resolve(parse_uri(source_uri), cache_dir)
+            target = Path(getattr(resolved, "active_path", None) or getattr(resolved, "path", ""))
+            if not target.is_dir():
+                return False, "source resolved to no directory"
+        result = subprocess.run(
+            ["uv", "pip", "install", "-e", str(target), "--python", sys.executable],
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — offline/no-uv must degrade, not crash
+        logger.debug("provider install failed for %s", module_id, exc_info=True)
+        return False, f"{type(exc).__name__}: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "install failed").strip().splitlines()
+        return False, detail[-1] if detail else "install failed"
+    import importlib
+
+    importlib.invalidate_caches()
+    reset_provider_info_cache()
+    if _load_provider_class(module_id) is None:
+        return False, "installed, but the module still fails to import"
+    return True, "installed"
+
+
 def effective_provider_sources(
     project_dir: Path | None = None, amplifier_home: Path | None = None
 ) -> dict[str, str]:
@@ -556,7 +741,7 @@ async def ensure_provider_available(
         from amplifier_foundation.paths.resolution import parse_uri
         from amplifier_foundation.sources.git import GitSourceHandler
 
-        cache_dir = (amplifier_home or (Path.home() / ".amplifier")) / "cache"
+        cache_dir = _amplifier_home_dir(amplifier_home) / "cache"
         resolved = await GitSourceHandler().resolve(parse_uri(source_uri), cache_dir)
         path = Path(getattr(resolved, "active_path", None) or getattr(resolved, "path", ""))
         if not path.is_dir():
@@ -970,6 +1155,79 @@ def write_provider_config(
     return path
 
 
+def replace_provider_config(
+    paths: Any, scope: Literal["global", "project", "local"], entry: dict[str, Any]
+) -> Path:
+    """Replace the same-identity entry in *scope*, priorities untouched.
+
+    The edit action's writer: unlike :func:`write_provider_config` it must NOT
+    promote the entry to priority 1 or demote anything else — editing a
+    non-primary provider's endpoint must not make it primary. Appends when no
+    same-identity entry exists at *scope* (an entry inherited from a broader
+    scope gets shadowed rather than mutated in place, same as app-cli).
+    """
+    from .bundle_admin import read_scope, scope_file, write_scope
+
+    path = scope_file(paths, scope)
+    data = read_scope(path)
+    config = data.get("config")
+    if not isinstance(config, dict):
+        config = {}
+        data["config"] = config
+    providers = config.get("providers")
+    if not isinstance(providers, list):
+        providers = []
+    identity = _entry_key(entry)
+    replaced = False
+    updated: list[Any] = []
+    for provider in providers:
+        if not replaced and isinstance(provider, dict) and _entry_key(provider) == identity:
+            updated.append(entry)
+            replaced = True
+        else:
+            updated.append(provider)
+    if not replaced:
+        updated.append(entry)
+    config["providers"] = updated
+    write_scope(path, data)
+    return path
+
+
+def set_provider_priorities(paths: Any, priorities: dict[str, int]) -> None:
+    """Assign ``config.priority`` per identity key, across every scope.
+
+    The reorder action's writer (app-cli's ``[p] Reorder priorities``): the
+    caller maps each entry's identity key (``id | module``) to its new 1-based
+    priority; every scope holding a matching entry is rewritten so the merged
+    view and the runtime agree.
+    """
+    from .bundle_admin import SCOPES, read_scope, scope_file, write_scope
+
+    for scope in SCOPES:
+        path = scope_file(paths, scope)
+        data = read_scope(path)
+        config = data.get("config")
+        providers = config.get("providers") if isinstance(config, dict) else None
+        if not isinstance(providers, list):
+            continue
+        changed = False
+        for entry in providers:
+            if not isinstance(entry, dict):
+                continue
+            wanted = priorities.get(_entry_key(entry))
+            if wanted is None:
+                continue
+            entry_config = entry.get("config")
+            if not isinstance(entry_config, dict):
+                entry_config = {}
+                entry["config"] = entry_config
+            if entry_config.get("priority") != wanted:
+                entry_config["priority"] = wanted
+                changed = True
+        if changed:
+            write_scope(path, data)
+
+
 def detect_provider_from_env() -> str | None:
     """First provider whose credential env vars are all set (app-cli parity)."""
     for module_id, variables in PROVIDER_CREDENTIAL_VARS.items():
@@ -1024,6 +1282,10 @@ class ConfiguredProvider:
     priority: int
     primary: bool  # lowest priority across the merged view (app-cli's ★)
     scope: str  # the most specific scope contributing this entry
+    config: dict[str, Any] = dataclass_field(default_factory=dict, compare=False)
+    """The raw stored ``config`` map (``${VAR}`` placeholders intact) — what
+    the edit/test console actions re-drive the field wizard and probes with."""
+    source: str | None = None  # the entry's persisted ``source:`` URI, if any
 
     @property
     def key(self) -> str:
@@ -1094,6 +1356,7 @@ def configured_providers(
         config = entry.get("config")
         model = config.get("default_model") if isinstance(config, dict) else None
         priority = _entry_priority(entry)
+        source = entry.get("source")
         result.append(
             ConfiguredProvider(
                 module_id=module_id,
@@ -1103,6 +1366,8 @@ def configured_providers(
                 priority=priority,
                 primary=priority == min_priority,
                 scope=scope,
+                config=dict(config) if isinstance(config, dict) else {},
+                source=str(source) if source else None,
             )
         )
     return tuple(sorted(result, key=lambda c: (c.priority, c.name)))
@@ -1253,7 +1518,14 @@ def remove_provider(
 
 __all__ = [
     "PROVIDER_CREDENTIAL_VARS",
+    "PROVIDER_DISPLAY_NAMES",
+    "PROVIDER_FALLBACK_FIELDS",
     "configured_providers",
+    "fallback_provider_fields",
+    "friendly_provider_name",
+    "install_provider_module",
+    "replace_provider_config",
+    "set_provider_priorities",
     "ProviderChoice",
     "ProviderFields",
     "SetupStatus",

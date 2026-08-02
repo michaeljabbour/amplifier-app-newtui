@@ -67,8 +67,8 @@ def _run_coro(coro):  # noqa: ANN001, ANN202 — any coroutine/result
     """Run a coroutine from sync code, loop-safe.
 
     ``routing list``/``use`` are plain sync click commands (no loop —
-    ``asyncio.run`` is fine), but the init wizard calls this from inside
-    ``asyncio.run(_init_wizard())``, where a bare ``asyncio.run`` raises
+    ``asyncio.run`` is fine), but interactive setup can call this from inside
+    an ``asyncio.run(...)`` body, where a bare ``asyncio.run`` raises
     ``RuntimeError``. In that case run it on a worker thread's own loop.
     """
     import asyncio

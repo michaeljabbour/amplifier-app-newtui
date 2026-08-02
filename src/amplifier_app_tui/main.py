@@ -1837,10 +1837,17 @@ def _match_provider(choices, token: str):  # noqa: ANN001, ANN202
 
 
 async def _resolve_provider_schema(choice):  # noqa: ANN001, ANN202
-    """The provider's own config schema, fetching the module if need be.
+    """The provider's own config schema, fetching/installing the module if need be.
 
     A module-level seam on purpose: it is the one place setup reaches the
     network, so tests patch this rather than stubbing git.
+
+    The ``sys.path`` graft cannot satisfy a module's third-party imports
+    (issue #182: vLLM needs ``openai``), so when the schema is still
+    unreadable this offers a real install into the running environment —
+    app-cli's ``provider install`` behavior — on explicit confirm. Declining
+    (or a failed install) returns ``None`` and the caller degrades to the
+    catalog's fallback fields, never silently to the key-only basic flow.
     """
     from .kernel import setup
 
@@ -1848,7 +1855,22 @@ async def _resolve_provider_schema(choice):  # noqa: ANN001, ANN202
         click.echo(f"\n  fetching {choice.module_id} (not installed) …", nl=False)
         availability = await setup.ensure_provider_available(choice.module_id, choice.source_uri)
         click.echo(" ok" if availability.available else f" {availability.reason}")
-    return setup.load_provider_info(choice.module_id)
+    schema = setup.load_provider_info(choice.module_id)
+    if schema is None and choice.source_uri:
+        try:
+            wanted = click.confirm(
+                f"  install {choice.module_id} into this environment to read its setup fields?",
+                default=True,
+            )
+        except (click.Abort, EOFError):
+            wanted = False
+        if wanted:
+            click.echo(f"  installing {choice.module_id} …", nl=False)
+            ok, detail = await setup.install_provider_module(choice.module_id, choice.source_uri)
+            click.echo(" ok" if ok else f" {detail}")
+            if ok:
+                schema = setup.load_provider_info(choice.module_id)
+    return schema
 
 
 def _prompt_config_field(field, *, collected, existing, env_var, keys_path, written):  # noqa: ANN001, ANN202
@@ -1861,13 +1883,31 @@ def _prompt_config_field(field, *, collected, existing, env_var, keys_path, writ
     exports it, so the model probe two steps later can actually connect.
 
     Returns ``None`` when the user aborts, and omits a field they left blank.
+    On edit (*existing* given) stored values are the defaults: ``${VAR}``
+    placeholders resolve through the environment and then keys.env — a fresh
+    CLI process has not exported stored keys — and a blank secret keeps the
+    stored reference rather than dropping the field.
     """
     from .kernel import setup
 
     label = field.display_name or field.id
     prompt_text = f"{label}" if not field.prompt else f"{label}\n  {field.prompt}"
-    current = setup.resolve_placeholder(existing.get(field.id)) if existing else None
-    fallback = current or (os.environ.get(env_var) if env_var else None) or field.default or ""
+    stored = existing.get(field.id) if existing else None
+    current = setup.resolve_placeholder(stored) if existing else None
+    if current is None and isinstance(stored, str) and stored.startswith("${"):
+        current = setup.read_keys(keys_path).get(stored[2:-1])
+    elif current is None and isinstance(stored, str):
+        current = stored
+    env_value = os.environ.get(env_var) if env_var else None
+    fallback = current or env_value or field.default or ""
+
+    # "Found in env" hint, app-cli style: the user learns a value already
+    # exists before deciding whether to type over it.
+    if env_value and not current:
+        if field.field_type == "secret":
+            click.echo(f"\n  ({env_var} found in environment — will use if you don't configure)")
+        elif field.field_type == "text":
+            click.echo(f"\n  (Found: {env_value})")
 
     try:
         if field.field_type == "boolean":
@@ -1900,6 +1940,8 @@ def _prompt_config_field(field, *, collected, existing, env_var, keys_path, writ
         return None
 
     if value is None or value == "":
+        if isinstance(stored, str) and stored.startswith("${"):
+            return (field.id, stored)  # keep the stored reference untouched
         if field.required:
             click.echo(f"  {label} is required", err=True)
             return None
@@ -1908,6 +1950,7 @@ def _prompt_config_field(field, *, collected, existing, env_var, keys_path, writ
         setup.write_key(keys_path, env_var, str(value))
         if env_var not in written:
             written.append(env_var)
+        click.echo("  ✓ Saved")
         return (field.id, f"${{{env_var}}}")
     return (field.id, value)
 
@@ -1962,6 +2005,21 @@ def _prompt_model_selection(catalog, default_model: str | None) -> str | None:
     return (entered or "").strip() or None
 
 
+def _existing_key_override(schema, existing_config) -> str | None:  # noqa: ANN001
+    """Recover an instance's own credential var from its stored ``${VAR}``.
+
+    Re-configuring must keep using the variable the instance already owns
+    rather than suggesting a fresh one (which would collide with itself) or
+    resetting to the type default (app-cli's ``_recover_env_var_override``).
+    """
+    raw = existing_config.get(schema.key_field_id)
+    if isinstance(raw, str) and raw.startswith("${") and raw.endswith("}"):
+        current = raw[2:-1]
+        if current and current != schema.key_var:
+            return current
+    return None
+
+
 async def _configure_provider_interactive(
     choice,  # noqa: ANN001
     schema,  # noqa: ANN001
@@ -1971,12 +2029,14 @@ async def _configure_provider_interactive(
     cli_model: str | None,
     instance_id: str | None,
     keys_path,  # noqa: ANN001
+    existing_config: dict[str, Any] | None = None,
 ):
     """Field-driven provider setup. Returns ``(config, written_vars)`` or None.
 
     Three phases, mirroring app-cli's ``configure_provider``: pre-model fields,
     then the live model picker, then any ``requires_model`` fields (which can
-    ``show_when`` on the chosen model).
+    ``show_when`` on the chosen model). *existing_config* (the edit path)
+    supplies stored values as defaults so Enter keeps every previous choice.
     """
     from .kernel import setup
 
@@ -1989,17 +2049,22 @@ async def _configure_provider_interactive(
         overrides["base_url"] = cli_base_url
 
     # A second instance of the same provider type needs its own credential
-    # variable, or saving it would overwrite the first instance's key.
+    # variable, or saving it would overwrite the first instance's key. On
+    # edit, recover the variable the instance already owns instead — a fresh
+    # suggestion would collide with the instance itself.
     key_env_override: str | None = None
     if instance_id and schema.key_var:
-        try:
-            key_env_override = setup.suggest_instance_env_var(
-                choice.module_id, instance_id, setup.claimed_env_vars()
-            )
-        except ValueError as exc:
-            click.echo(f"{exc}", err=True)
-            return None
-        click.echo(f"  credential variable for this instance: {key_env_override}")
+        if existing_config is not None:
+            key_env_override = _existing_key_override(schema, existing_config)
+        else:
+            try:
+                key_env_override = setup.suggest_instance_env_var(
+                    choice.module_id, instance_id, setup.claimed_env_vars()
+                )
+            except ValueError as exc:
+                click.echo(f"{exc}", err=True)
+                return None
+            click.echo(f"  credential variable for this instance: {key_env_override}")
 
     display = schema.display_name or choice.module_id
     click.echo(f"\nConfiguring {display}")
@@ -2024,7 +2089,7 @@ async def _configure_provider_interactive(
             outcome = _prompt_config_field(
                 field,
                 collected=collected,
-                existing=None,
+                existing=existing_config,
                 env_var=_env_for(field),
                 keys_path=keys_path,
                 written=written,
@@ -2045,9 +2110,10 @@ async def _configure_provider_interactive(
         collected["default_model"] = cli_model
         click.echo(f"\nDefault Model: {cli_model}")
     else:
+        current_model = (existing_config or {}).get("default_model")
         click.echo("\n  fetching available models …")
         catalog = await setup.list_provider_models(choice.module_id, collected)
-        model = _prompt_model_selection(catalog, None)
+        model = _prompt_model_selection(catalog, str(current_model) if current_model else None)
         if model:
             collected["default_model"] = model
 
@@ -2136,21 +2202,60 @@ async def _init(
             scope=write_scope,
         )
 
-    # Interactive: drive the provider's OWN declared schema when we can read
-    # it, so vLLM is asked for a server URL and ollama is not asked for a key.
+    return await _interactive_provider_setup(
+        target,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        instance_id=instance_id,
+        scope=write_scope,
+    )
+
+
+async def _interactive_provider_setup(
+    target,  # noqa: ANN001
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    instance_id: str | None = None,
+    scope: Literal["global", "project", "local"] = "global",
+) -> int:
+    """Interactive schema-driven setup for one provider choice.
+
+    Shared by ``init``/``provider add`` and the ``[a] Add`` console action.
+    Drives the provider's OWN declared schema when readable (so vLLM is asked
+    for a server URL and ollama is not asked for a key); when the schema stays
+    unreadable it falls back to the catalog's minimum fields (issue #182) and
+    only degrades to the key-only basic flow for providers the catalog has no
+    required fields for.
+    """
+    from .kernel import bundle_admin, setup
+
+    path = setup.keys_file()
+    paths = bundle_admin.settings_paths(None, None)
+
     schema = await _resolve_provider_schema(target)
     if schema is None or not schema.config_fields:
-        if schema is None:
-            click.echo(f"  (schema unavailable for {target.module_id} — basic setup)")
-        return _init_basic_interactive(
-            target,
-            base_url=base_url,
-            model=model,
-            instance_id=instance_id,
-            keys_path=path,
-            paths=paths,
-            scope=write_scope,
-        )
+        fallback = setup.fallback_provider_fields(target.module_id)
+        if fallback is not None:
+            click.echo(
+                f"  (schema unavailable for {target.module_id} — "
+                "prompting for the catalog's required fields)"
+            )
+            schema = fallback
+        else:
+            if schema is None:
+                click.echo(f"  (schema unavailable for {target.module_id} — basic setup)")
+            return _init_basic_interactive(
+                target,
+                base_url=base_url,
+                model=model,
+                instance_id=instance_id,
+                keys_path=path,
+                paths=paths,
+                scope=scope,
+            )
 
     if instance_id is None and setup.instance_id_in_use(_default_instance_id(target)):
         suggestion = f"{_default_instance_id(target)}-2"
@@ -2178,7 +2283,7 @@ async def _init(
         instance_id=instance_id,
         source=None if target.installed else target.source_uri,
     )
-    cfg_path = setup.write_provider_config(paths, write_scope, entry)
+    cfg_path = setup.write_provider_config(paths, scope, entry)
     if written:
         click.echo(f"\nwrote {', '.join(written)} → {path}")
     click.echo(f"configured provider {instance_id or target.module_id} → {cfg_path}")
@@ -2309,71 +2414,410 @@ def _init_basic_interactive(
     return 0
 
 
-def _select_routing_interactive() -> None:
-    """Guided routing-matrix selection — the wizard's second step.
+# --------------------------------------------------------------------------
+# init console — the combined setup dashboard (app-cli `amplifier init` parity)
+# --------------------------------------------------------------------------
 
-    Reuses the existing routing ops (``routing_admin.list_matrices`` /
-    ``set_active_matrix`` — the same seams behind ``routing list``/``use``);
-    it only *selects* among matrices, never creates them. A blank answer keeps
-    the current matrix; an empty catalog prints a hint and returns. Prompts are
-    driven through ``click`` so tests can inject input, and EOF is a silent skip
-    so a caller who runs out of piped input never crashes the wizard.
-    """
-    from .kernel import bundle_admin, routing_admin
+_WriteScope = Literal["global", "project", "local"]
 
-    paths = bundle_admin.settings_paths(None, None)
-    entries = routing_admin.list_matrices(
-        project_dir=paths.project_settings.parent.parent,
-        amplifier_home=paths.global_settings.parent,
-        fetch=True,
-    )
-    if not entries:
-        click.echo(
-            "\nno routing matrices found · could not fetch the routing-matrix "
-            "bundle (offline?) — retry with `amplifier-tui routing list` once online"
+_SCOPE_HINTS: dict[str, tuple[str, str]] = {
+    "global": ("~/.amplifier/settings.yaml", ""),
+    "project": (".amplifier/settings.yaml", "(team-shared, committed)"),
+    "local": (".amplifier/settings.local.yaml", "(this machine only, gitignored)"),
+}
+
+
+def _print_scope_indicator(console: Any, scope: str) -> None:
+    """One-line "Saving to:" banner (app-cli's ``print_scope_indicator``)."""
+    file_hint, parenthetical = _SCOPE_HINTS[scope]
+    if scope == "global":
+        console.print(f"  [dim]Saving to:[/dim] [bold]{scope}[/bold]  [dim]{file_hint}[/dim]")
+    else:
+        console.print(
+            f"  [yellow]Saving to:[/yellow] [bold yellow]{scope}[/bold yellow]"
+            f"  [dim]{file_hint}[/dim]  [yellow]{parenthetical}[/yellow]"
         )
-        return
 
-    click.echo("\nrouting matrices:")
-    for index, entry in enumerate(entries, start=1):
-        marker = "●" if entry.active else " "
-        compat = f"{entry.covered}/{entry.total} roles" if entry.has_providers else "no providers"
-        click.echo(f"  {index}. [{marker}] {entry.name}  ·  {compat}")
 
+def _prompt_scope_change(console: Any, current: _WriteScope) -> _WriteScope:
+    """Numbered write-scope picker (app-cli's ``prompt_scope_change``)."""
+    order: tuple[_WriteScope, ...] = ("global", "project", "local")
+    console.print("\n  Write scope:")
+    for index, name in enumerate(order, start=1):
+        file_hint, _paren = _SCOPE_HINTS[name]
+        marker = "▸" if name == current else " "
+        default_tag = " (default)" if name == "global" else ""
+        console.print(f"  {marker} \\[{index}] {name:<8} {file_hint:<40}{default_tag}")
+    console.print()
     try:
         raw = click.prompt(
-            "\nselect routing matrix? (number, or blank to keep current)",
-            default="",
-            show_default=False,
+            "  Scope", default=str(order.index(current) + 1), show_default=False
+        ).strip()
+    except (click.Abort, EOFError):
+        return current
+    try:
+        chosen = order[int(raw) - 1]
+    except (ValueError, IndexError):
+        console.print(f"  invalid selection: {raw}", style="yellow")
+        return current
+    if chosen != current:
+        file_hint, _paren = _SCOPE_HINTS[chosen]
+        console.print(
+            f"  [green]✓ Switched to {chosen} scope. Changes save to {file_hint}.[/green]"
         )
-    except click.Abort:
-        click.echo("")
+    return chosen
+
+
+def _render_provider_table(console: Any, *, numbered: bool = False):  # noqa: ANN202
+    """The configured-providers table (★ = primary). Returns the row entries."""
+    from rich.table import Table
+
+    from .kernel import setup
+
+    providers = setup.configured_providers()
+    if not providers:
+        console.print("\n  [yellow]No providers configured.[/yellow]\n")
+        return providers
+    table = Table(title="Configured Providers" if numbered else "Providers")
+    if numbered:
+        table.add_column("#", justify="right", width=3)
+    table.add_column("Name/ID", style="cyan")
+    table.add_column("Type", style="green")
+    table.add_column("Default Model")
+    table.add_column("Priority", justify="right")
+    table.add_column("Source", style="dim")
+    for index, entry in enumerate(providers, start=1):
+        name_col = f"★ {entry.name}" if entry.primary else f"  {entry.name}"
+        ptype = entry.module_id.removeprefix("provider-")
+        row = [name_col, ptype, entry.model or "-", str(entry.priority), entry.scope]
+        if numbered:
+            row.insert(0, str(index))
+        table.add_row(*row)
+    console.print(table)
+    return providers
+
+
+def _render_routing_summary(console: Any, paths: Any) -> None:
+    """Active matrix name + its Role/Model/Provider resolution table."""
+    from rich.table import Table
+
+    from .kernel import routing_admin
+    from .kernel.config import load_merged_settings
+
+    settings = load_merged_settings(paths)
+    active = routing_admin.active_matrix(settings)
+    console.print(f"  Routing: [bold]{active}[/bold]")
+    matrices = routing_admin.load_all_matrices(
+        routing_admin.discover_matrix_files(paths.global_settings.parent)
+    )
+    matrix_data = matrices.get(active)
+    if not matrix_data:
         return
-    choice = raw.strip()
-    if not choice:
+    rows = routing_admin.resolve_effective(matrix_data, settings)
+    if not rows:
+        return
+    table = Table(title=f"Routing: {active}")
+    table.add_column("Role", style="cyan")
+    table.add_column("Model", style="green")
+    table.add_column("Provider")
+    for row in rows:
+        if row.model and row.provider:
+            table.add_row(row.role, row.model, row.provider)
+        else:
+            table.add_row(row.role, "[yellow]⚠ (no provider)[/yellow]", "[dim]-[/dim]")
+    console.print(table)
+
+
+def _init_console() -> int:
+    """Combined setup dashboard: providers + routing + actions loop.
+
+    The same menu console as app-cli's ``amplifier init``: render the
+    configured-providers table and the active routing resolution, then loop on
+    \\[p] Manage providers / \\[r] Manage routing / \\[w] Change write scope /
+    \\[d] Done. First run (no providers) drops straight into the provider
+    console, exactly like app-cli.
+    """
+    from rich.console import Console
+
+    from .kernel import bundle_admin, setup
+
+    console = Console()
+    scope: _WriteScope = "global"
+
+    if not setup.configured_providers():
+        console.print("\n  [yellow]No providers configured. Let's set one up:[/yellow]\n")
+        scope = _provider_console(scope)
+
+    while True:
+        paths = bundle_admin.settings_paths(None, None)
+        console.print("\n  [bold]══════════════════════════════════════════════════════[/bold]")
+        console.print("  [bold]Amplifier Setup[/bold]")
+        console.print("  [bold]══════════════════════════════════════════════════════[/bold]\n")
+        _print_scope_indicator(console, scope)
+        console.print()
+        _render_provider_table(console)
+        _render_routing_summary(console, paths)
+
+        console.print("\n  Actions:")
+        console.print("    \\[p] Manage providers")
+        console.print("    \\[r] Manage routing")
+        console.print("    \\[w] Change write scope")
+        console.print("    \\[d] Done")
+        console.print()
+        try:
+            choice = click.prompt("  Choice", default="d", show_default=False).strip().lower()
+        except (click.Abort, EOFError):
+            return 0
+        if choice == "d":
+            return 0
+        if choice == "p":
+            scope = _provider_console(scope)
+        elif choice == "r":
+            scope = _routing_console(scope)
+        elif choice == "w":
+            scope = _prompt_scope_change(console, scope)
+
+
+def _provider_console(scope: _WriteScope) -> _WriteScope:
+    """Interactive provider management loop (app-cli's ``provider manage``).
+
+    Tracks the write scope internally and returns it when done, so the init
+    dashboard and this console stay on the same scope.
+    """
+    from rich.console import Console
+
+    console = Console()
+    while True:
+        providers = _render_provider_table(console, numbered=True)
+        _print_scope_indicator(console, scope)
+        console.print("  Actions:")
+        console.print("    \\[a] Add a provider")
+        console.print("    \\[e] Edit a provider (enter number)")
+        console.print("    \\[r] Remove a provider (enter number)")
+        console.print("    \\[p] Reorder priorities")
+        console.print("    \\[t] Test connections")
+        console.print("    \\[w] Change write scope")
+        console.print("    \\[d] Done")
+        console.print()
+        try:
+            choice = click.prompt("  Choice", default="d", show_default=False).strip().lower()
+        except (click.Abort, EOFError):
+            return scope
+        if choice == "d":
+            return scope
+        if choice == "a":
+            _console_add_provider(console, scope)
+        elif choice.startswith("e"):
+            _console_edit_provider(console, choice, providers)
+        elif choice.startswith("r"):
+            _console_remove_provider(console, choice, providers)
+        elif choice == "p":
+            _console_reorder_providers(console, providers)
+        elif choice == "t":
+            _console_test_providers(console, providers)
+        elif choice == "w":
+            scope = _prompt_scope_change(console, scope)
+
+
+def _parse_choice_number(choice: str, prefix: str, count: int, console: Any) -> int | None:
+    """``e2`` / ``r 3`` → 0-based index; prompts when the number is omitted."""
+    num_str = choice[len(prefix) :].strip()
+    if not num_str:
+        try:
+            num_str = click.prompt("  Enter number", default="", show_default=False).strip()
+        except (click.Abort, EOFError):
+            return None
+    try:
+        num = int(num_str)
+    except ValueError:
+        console.print("  [red]Invalid input. Enter a number.[/red]")
+        return None
+    if not 1 <= num <= count:
+        console.print(f"  [red]Invalid number. Enter 1-{count}.[/red]")
+        return None
+    return num - 1
+
+
+def _choice_label(choice) -> str:  # noqa: ANN001
+    from .kernel import setup
+
+    return choice.display or setup.friendly_provider_name(choice.module_id)
+
+
+def _console_add_provider(console: Any, scope: _WriteScope) -> None:
+    """``[a]``: catalog picker (friendly names) → the shared field wizard."""
+    from .kernel import setup
+
+    choices = asyncio.run(setup.onboarding_choices())
+    if not choices:
+        console.print("  [red]No providers available (is amplifier-core installed?)[/red]")
+        return
+    ordered = sorted(choices, key=lambda c: _choice_label(c).lower())
+    console.print("\n  [bold]Available providers:[/bold]")
+    for index, entry in enumerate(ordered, start=1):
+        console.print(f"    \\[{index}] {_choice_label(entry)}")
+    try:
+        raw = click.prompt("  Which provider?", default="", show_default=False).strip()
+    except (click.Abort, EOFError):
+        return
+    if not raw:
         return
     try:
-        selected = entries[int(choice) - 1]
+        target = ordered[int(raw) - 1]
     except (ValueError, IndexError):
-        click.echo(f"invalid selection: {raw}", err=True)
+        console.print(f"  [red]invalid selection: {raw}[/red]")
         return
-    path = routing_admin.set_active_matrix(paths, selected.name, "global")
-    click.echo(f"active routing matrix → {selected.name}  (global: {path})")
+    asyncio.run(_interactive_provider_setup(target, scope=scope))
 
 
-async def _init_wizard() -> int:
-    """No-flag interactive setup: provider credentials, then routing.
+def _console_choice_for(entry) -> Any:  # noqa: ANN001
+    """A ProviderChoice for an already-configured entry (edit path)."""
+    from .kernel import setup
 
-    Composes the existing pieces — the interactive branch of :func:`_init` for
-    the provider + API key, then :func:`_select_routing_interactive` for the
-    routing matrix — so scripting via flags and this guided path share one
-    provider-config implementation.
-    """
-    code = await _init(None, None, None, None, False, False)
-    if code != 0:
-        return code
-    _select_routing_interactive()
-    return 0
+    match = _match_provider(asyncio.run(setup.onboarding_choices()), entry.module_id)
+    if match is not None:
+        return match
+    prefix = setup.provider_env_prefix(entry.module_id)
+    return setup.ProviderChoice(
+        module_id=entry.module_id,
+        name=entry.name,
+        key_var=f"{prefix}_API_KEY",
+        base_url_var=f"{prefix}_BASE_URL",
+        installed=setup.load_provider_info(entry.module_id) is not None,
+        source_uri=setup.effective_provider_sources().get(entry.module_id),
+    )
+
+
+def _console_edit_provider(console: Any, choice: str, providers) -> None:  # noqa: ANN001
+    """``[e N]``: re-run the field wizard with stored values as defaults."""
+    from .kernel import bundle_admin, setup
+
+    if not providers:
+        console.print("  [yellow]No providers to edit.[/yellow]")
+        return
+    idx = _parse_choice_number(choice, "e", len(providers), console)
+    if idx is None:
+        return
+    target_entry = providers[idx]
+    target = _console_choice_for(target_entry)
+    schema = asyncio.run(_resolve_provider_schema(target)) or setup.fallback_provider_fields(
+        target_entry.module_id
+    )
+    if schema is None or not schema.config_fields:
+        console.print(
+            f"  [red]schema unavailable for {target_entry.module_id} — cannot edit; "
+            f"re-add it with \\[a] instead[/red]"
+        )
+        return
+    outcome = asyncio.run(
+        _configure_provider_interactive(
+            target,
+            schema,
+            cli_api_key=None,
+            cli_base_url=None,
+            cli_model=None,
+            instance_id=target_entry.instance_id,
+            keys_path=setup.keys_file(),
+            existing_config=target_entry.config,
+        )
+    )
+    if outcome is None:
+        console.print("  [dim]Cancelled.[/dim]")
+        return
+    collected, _written = outcome
+    entry = setup.provider_config_entry(
+        target_entry.module_id,
+        config=collected,
+        priority=target_entry.priority,  # editing must not reshuffle priorities
+        instance_id=target_entry.instance_id,
+        source=target_entry.source,
+    )
+    paths = bundle_admin.settings_paths(None, None)
+    setup.replace_provider_config(paths, target_entry.scope, entry)  # type: ignore[arg-type]
+    model = collected.get("default_model", "")
+    model_display = f" ({model})" if model else ""
+    console.print(f"\n  [green]✓ Provider updated: {target_entry.name}{model_display}[/green]")
+
+
+def _console_remove_provider(console: Any, choice: str, providers) -> None:  # noqa: ANN001
+    """``[r N]``: confirm, then drop the entry from every scope."""
+    from .kernel import bundle_admin, setup
+
+    if not providers:
+        console.print("  [yellow]No providers to remove.[/yellow]")
+        return
+    idx = _parse_choice_number(choice, "r", len(providers), console)
+    if idx is None:
+        return
+    target_entry = providers[idx]
+    try:
+        if not click.confirm(f"  Remove {target_entry.name}?", default=False):
+            console.print("  [dim]Cancelled.[/dim]")
+            return
+    except (click.Abort, EOFError):
+        return
+    removed = setup.remove_provider(bundle_admin.settings_paths(None, None), target_entry.name)
+    if removed is None:
+        console.print(f"  [red]could not remove {target_entry.name}[/red]")
+        return
+    console.print(f"\n  [green]✓ Removed provider: {removed.name}[/green]")
+
+
+def _console_reorder_providers(console: Any, providers) -> None:  # noqa: ANN001
+    """``[p]``: re-number priorities from a ``2 1 3`` style answer."""
+    from .kernel import bundle_admin, setup
+
+    if len(providers) < 2:
+        console.print("  [dim]Need at least 2 providers to reorder.[/dim]")
+        return
+    console.print("\n  Current order:")
+    for index, entry in enumerate(providers, start=1):
+        console.print(f"    \\[{index}] {entry.name}")
+    try:
+        order_str = click.prompt(
+            "  Enter new order (e.g., 2 1 3)", default="", show_default=False
+        ).strip()
+    except (click.Abort, EOFError):
+        return
+    try:
+        new_order = [int(x) for x in order_str.split()]
+    except ValueError:
+        console.print("  [red]Invalid input. Enter numbers separated by spaces.[/red]")
+        return
+    if sorted(new_order) != list(range(1, len(providers) + 1)):
+        console.print(f"  [red]Please enter all numbers from 1 to {len(providers)}.[/red]")
+        return
+    priorities = {providers[num - 1].key: pri for pri, num in enumerate(new_order, start=1)}
+    setup.set_provider_priorities(bundle_admin.settings_paths(None, None), priorities)
+    console.print("\n  [green]✓ Priorities updated.[/green]")
+
+
+def _console_test_providers(console: Any, providers) -> None:  # noqa: ANN001
+    """``[t]``: ping every provider via ``list_models()`` and tabulate ✓/✗."""
+    from rich.table import Table
+
+    from .kernel import setup
+
+    if not providers:
+        console.print("  [yellow]No providers to test.[/yellow]")
+        return
+    table = Table(title="Provider Test Results")
+    table.add_column("Name", style="cyan")
+    table.add_column("Status")
+    table.add_column("Latency", justify="right")
+    table.add_column("Details")
+    for entry in providers:
+        start = monotonic()
+        catalog = asyncio.run(setup.list_provider_models(entry.module_id, entry.config))
+        latency = f"{monotonic() - start:.1f}s"
+        if catalog.error:
+            detail = catalog.error if len(catalog.error) <= 60 else catalog.error[:57] + "..."
+            table.add_row(entry.name, "[red]✗[/red]", latency, detail)
+        else:
+            table.add_row(
+                entry.name, "[green]✓[/green]", latency, f"{len(catalog.models)} model(s) available"
+            )
+    console.print(table)
 
 
 @main.command()
@@ -2395,16 +2839,17 @@ def init(
 ) -> None:
     """Set up Amplifier: provider credentials plus a routing matrix.
 
-    With no flags this launches an interactive wizard — pick a provider, enter
-    its API key, then choose a routing matrix. Passing any flag
-    (``--provider``/``--api-key``/``--from-env``/``-y``/…) bypasses the wizard
+    With no flags this opens the setup console — the configured-providers and
+    routing tables plus \\[p]/\\[r]/\\[w]/\\[d] actions, the same dashboard as
+    app-cli's ``amplifier init``. Passing any flag
+    (``--provider``/``--api-key``/``--from-env``/``-y``/…) bypasses the console
     and takes the non-interactive path: the key is written to
     ~/.amplifier/keys.env and the provider entry to settings (config.providers).
     """
     flags_given = any([provider, api_key, base_url, model, from_env, yes])
     if flags_given:
         raise SystemExit(asyncio.run(_init(provider, api_key, base_url, model, yes, from_env)))
-    raise SystemExit(asyncio.run(_init_wizard()))
+    raise SystemExit(_init_console())
 
 
 # --------------------------------------------------------------------------
@@ -3395,10 +3840,12 @@ def _manage_view(
     _render_matrix_waterfall(console, name, matrices[name], settings)
 
 
-@routing.command("manage")
-@_scope_options
-def routing_manage(is_global: bool, is_project: bool, is_local: bool) -> None:
-    """Interactive routing-matrix management: select, view details, or create."""
+def _routing_console(scope: Literal["global", "project", "local"]) -> Any:
+    """Interactive routing-matrix management loop: select, view, or create.
+
+    Shared by ``routing manage`` and the init console's ``[r]`` action.
+    Tracks the write scope internally and returns it when done.
+    """
     from rich.console import Console
     from rich.table import Table
 
@@ -3407,7 +3854,6 @@ def routing_manage(is_global: bool, is_project: bool, is_local: bool) -> None:
 
     paths = bundle_admin.settings_paths(None, None)
     home = paths.global_settings.parent
-    scope = _scope(is_global, is_project, is_local)
     console = Console()
 
     while True:
@@ -3424,7 +3870,7 @@ def routing_manage(is_global: bool, is_project: bool, is_local: bool) -> None:
             console.print(
                 "Run `amplifier-tui update` to fetch the routing-matrix bundle.", style="dim"
             )
-            return
+            return scope
 
         provider_types = routing_admin.configured_provider_types(settings)
         names = sorted(matrices)
@@ -3447,21 +3893,35 @@ def routing_manage(is_global: bool, is_project: bool, is_local: bool) -> None:
         if active in matrices:
             _render_matrix_resolution(console, active, matrices[active], settings)
 
-        console.print("\n  [s<N>] select matrix   [v<N>] view details   [c] create   [d] done")
-        raw = click.prompt("choice", default="d", show_default=False).strip().lower()
+        console.print(
+            "\n  [s<N>] select matrix   [v<N>] view details   [c] create   [w] scope   [d] done"
+        )
+        try:
+            raw = click.prompt("choice", default="d", show_default=False).strip().lower()
+        except (click.Abort, EOFError):
+            return scope
         if raw in ("d", "", "q"):
-            return
+            return scope
         if raw == "c":
             try:
                 click.get_current_context().invoke(routing_create)
             except SystemExit:
                 pass
+        elif raw == "w":
+            scope = _prompt_scope_change(console, scope)
         elif raw.startswith("s"):
             _manage_select(console, raw[1:].strip(), names, paths, scope)
         elif raw.startswith("v"):
             _manage_view(console, raw[1:].strip(), names, matrices, settings)
         else:
             console.print(f"unknown choice: {raw}", style="yellow")
+
+
+@routing.command("manage")
+@_scope_options
+def routing_manage(is_global: bool, is_project: bool, is_local: bool) -> None:
+    """Interactive routing-matrix management: select, view details, or create."""
+    _routing_console(_scope(is_global, is_project, is_local))
 
 
 if __name__ == "__main__":

@@ -9,9 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from click.testing import CliRunner
+import yaml
 
 import amplifier_app_tui.main as main_mod
-from amplifier_app_tui.kernel import routing_admin, setup
+from amplifier_app_tui.kernel import setup
 from amplifier_app_tui.main import main
 
 _CHOICES = (
@@ -22,7 +23,7 @@ _CHOICES = (
 )
 
 
-def _stub(monkeypatch, tmp_path: Path, *, schema=None, choices=None):
+def _stub(monkeypatch, tmp_path: Path, *, schema=None, choices=None, stub_schema=True):
     """Offline init wiring: a fixed provider list, a tmp keys file, no settings write.
 
     ``onboarding_choices`` is stubbed whole (not just ``discover_providers``)
@@ -31,8 +32,20 @@ def _stub(monkeypatch, tmp_path: Path, *, schema=None, choices=None):
 
     ``_resolve_provider_schema`` returns *schema*; ``None`` (the default)
     selects the degraded basic flow, which is what the pre-existing
-    key-prompt expectations describe.
+    key-prompt expectations describe. ``stub_schema=False`` keeps the real
+    resolver (the issue-#182 install-path tests exercise it directly).
+
+    The console reads settings through ``bundle_admin.settings_paths``, so
+    the whole run is pinned to a scratch ``AMPLIFIER_HOME`` + project cwd —
+    never the real ~/.amplifier.
     """
+    home = tmp_path / "amp-home"
+    proj = tmp_path / "proj"
+    home.mkdir(exist_ok=True)
+    proj.mkdir(exist_ok=True)
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    monkeypatch.chdir(proj)
+
     path = tmp_path / "keys.env"
     written: list = []
 
@@ -45,7 +58,8 @@ def _stub(monkeypatch, tmp_path: Path, *, schema=None, choices=None):
         return schema
 
     monkeypatch.setattr(setup, "onboarding_choices", _choices)
-    monkeypatch.setattr(main_mod, "_resolve_provider_schema", _schema)
+    if stub_schema:
+        monkeypatch.setattr(main_mod, "_resolve_provider_schema", _schema)
     monkeypatch.setattr(setup, "keys_file", lambda *a, **k: path)
     monkeypatch.setattr(
         setup,
@@ -125,101 +139,329 @@ def test_init_requires_key_with_yes(tmp_path: Path, monkeypatch) -> None:
     assert "--api-key required" in result.output
 
 
-def _no_matrices(monkeypatch) -> None:
-    """Neutralize the wizard's routing step so provider-only paths stay offline."""
-    monkeypatch.setattr(routing_admin, "list_matrices", lambda *a, **k: ())
+# ---------------------------------------------------------------------------
+# The init console — providers/routing tables + [p]/[r]/[w]/[d] actions
+# (app-cli `amplifier init` parity). Menus are driven by scripted stdin.
+# ---------------------------------------------------------------------------
 
 
-def test_init_interactive_selection_and_key(tmp_path: Path, monkeypatch) -> None:
-    path, _written = _stub(monkeypatch, tmp_path)
-    _no_matrices(monkeypatch)
-    # stdin: choose provider #1, then type the key at the hidden prompt.
-    result = CliRunner().invoke(main, ["init"], input="1\nsk-interactive\n")
-    assert result.exit_code == 0
-    assert setup.read_keys(path)["ANTHROPIC_API_KEY"] == "sk-interactive"
-    # No matrices discovered → wizard prints the fetch hint and finishes clean.
-    assert "no routing matrices found" in result.output
+def _amp_home(tmp_path: Path) -> Path:
+    return tmp_path / "amp-home"
 
 
-def _matrix(name: str, *, active: bool = False) -> routing_admin.MatrixEntry:
-    return routing_admin.MatrixEntry(
-        name=name,
-        active=active,
-        description=f"{name} matrix",
-        updated="2026-05-12",
-        covered=2,
-        total=2,
-        has_providers=True,
+def _seed_matrix(tmp_path: Path, name: str, roles: dict | None = None) -> None:
+    """A bundle-cache matrix so routing discovery never attempts a fetch."""
+    routing_dir = _amp_home(tmp_path) / "cache" / "amplifier-bundle-routing-matrix-t" / "routing"
+    routing_dir.mkdir(parents=True, exist_ok=True)
+    (routing_dir / f"{name}.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": name,
+                "description": f"{name} matrix",
+                "updated": "2026-05-12",
+                "roles": roles
+                or {"general": {"candidates": [{"provider": "anthropic", "model": "claude-*"}]}},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
     )
 
 
-def test_init_wizard_selects_provider_then_routing(tmp_path: Path, monkeypatch) -> None:
-    """No-flag init runs the full wizard: provider + key, then routing."""
+def _seed_providers(tmp_path: Path, providers: list[dict]) -> Path:
+    """Real config.providers entries in the scratch global scope."""
+    path = _amp_home(tmp_path) / "settings.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"config": {"providers": providers}}), encoding="utf-8")
+    return path
+
+
+def _global_settings(tmp_path: Path) -> dict:
+    return yaml.safe_load((_amp_home(tmp_path) / "settings.yaml").read_text()) or {}
+
+
+def test_init_console_first_run_adds_provider(tmp_path: Path, monkeypatch) -> None:
+    """No providers → straight into the provider console; [a] adds one."""
     path, written = _stub(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        routing_admin,
-        "list_matrices",
-        lambda *a, **k: (_matrix("balanced", active=True), _matrix("quality")),
+    # [a] add · pick #1 (Anthropic) · key at the hidden prompt · done · done.
+    result = CliRunner().invoke(main, ["init"], input="a\n1\nsk-interactive\nd\nd\n")
+    assert result.exit_code == 0, result.output
+    assert "No providers configured" in result.output
+    assert "Available providers:" in result.output
+    assert setup.read_keys(path)["ANTHROPIC_API_KEY"] == "sk-interactive"
+    (entry,) = written
+    assert entry["module"] == "provider-anthropic"
+    assert "Amplifier Setup" in result.output  # lands on the dashboard after
+
+
+def test_init_console_dashboard_renders_tables(tmp_path: Path, monkeypatch) -> None:
+    """With a provider configured, init renders both tables then exits on [d]."""
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(
+        tmp_path,
+        [{"module": "provider-anthropic", "config": {"default_model": "claude-x", "priority": 1}}],
     )
-    selected: dict = {}
-    monkeypatch.setattr(
-        routing_admin,
-        "set_active_matrix",
-        lambda paths, name, scope: selected.update(name=name, scope=scope) or (tmp_path / "s.yaml"),
-    )
-    # stdin: provider #1, key, then routing matrix #2 (quality).
-    result = CliRunner().invoke(main, ["init"], input="1\nsk-wizard\n2\n")
-    assert result.exit_code == 0
-    assert setup.read_keys(path)["ANTHROPIC_API_KEY"] == "sk-wizard"
-    assert written  # provider persisted
-    assert selected == {"name": "quality", "scope": "global"}
+    _seed_matrix(tmp_path, "balanced")
+    result = CliRunner().invoke(main, ["init"], input="\n")  # blank → default [d]
+    assert result.exit_code == 0, result.output
+    assert "Amplifier Setup" in result.output
+    assert "Providers" in result.output
+    assert "★ anthropic" in result.output
+    assert "claude-x" in result.output
+    assert "Routing: balanced" in result.output
+    assert "Manage providers" in result.output
+
+
+def test_init_console_routing_select(tmp_path: Path, monkeypatch) -> None:
+    """[r] opens the routing console; [s2] activates the second matrix."""
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(tmp_path, [{"module": "provider-anthropic", "config": {"priority": 1}}])
+    _seed_matrix(tmp_path, "balanced")
+    _seed_matrix(tmp_path, "quality")
+    result = CliRunner().invoke(main, ["init"], input="r\ns2\nd\nd\n")
+    assert result.exit_code == 0, result.output
+    assert "Available Matrices" in result.output
     assert "active routing matrix → quality" in result.output
+    assert _global_settings(tmp_path)["routing"]["matrix"] == "quality"
 
 
-def test_init_wizard_blank_routing_keeps_current(tmp_path: Path, monkeypatch) -> None:
-    """A blank routing answer leaves the matrix untouched."""
-    _path, _written = _stub(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        routing_admin, "list_matrices", lambda *a, **k: (_matrix("balanced", active=True),)
-    )
-    touched: list = []
-    monkeypatch.setattr(
-        routing_admin,
-        "set_active_matrix",
-        lambda *a, **k: touched.append(a) or (tmp_path / "s.yaml"),
-    )
-    # provider #1, key, then blank (keep current routing).
-    result = CliRunner().invoke(main, ["init"], input="1\nsk-x\n\n")
-    assert result.exit_code == 0
-    assert touched == []  # routing left as-is
+def test_init_console_routing_invalid_selection(tmp_path: Path, monkeypatch) -> None:
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(tmp_path, [{"module": "provider-anthropic", "config": {"priority": 1}}])
+    _seed_matrix(tmp_path, "balanced")
+    result = CliRunner().invoke(main, ["init"], input="r\ns9\nd\nd\n")
+    assert result.exit_code == 0, result.output
+    assert "out of range: 1-1" in result.output
+    assert "routing" not in _global_settings(tmp_path)
 
 
-def test_init_wizard_invalid_routing_selection(tmp_path: Path, monkeypatch) -> None:
-    _path, _written = _stub(monkeypatch, tmp_path)
-    monkeypatch.setattr(routing_admin, "list_matrices", lambda *a, **k: (_matrix("balanced"),))
-    touched: list = []
-    monkeypatch.setattr(
-        routing_admin,
-        "set_active_matrix",
-        lambda *a, **k: touched.append(a) or (tmp_path / "s.yaml"),
-    )
-    result = CliRunner().invoke(main, ["init"], input="1\nsk-x\n9\n")
-    assert result.exit_code == 0
-    assert "invalid selection: 9" in result.output
-    assert touched == []
-
-
-def test_init_any_flag_bypasses_wizard(tmp_path: Path, monkeypatch) -> None:
-    """Passing a flag must never reach the routing wizard step."""
+def test_init_any_flag_bypasses_console(tmp_path: Path, monkeypatch) -> None:
+    """Passing a flag must never open the interactive console."""
     path, _written = _stub(monkeypatch, tmp_path)
 
     def _boom(*a, **k):
-        raise AssertionError("wizard routing step must not run on the flag path")
+        raise AssertionError("the console must not open on the flag path")
 
-    monkeypatch.setattr(main_mod, "_select_routing_interactive", _boom)
+    monkeypatch.setattr(main_mod, "_init_console", _boom)
     result = CliRunner().invoke(main, ["init", "-p", "anthropic", "--api-key", "sk-flag", "-y"])
     assert result.exit_code == 0
     assert setup.read_keys(path)["ANTHROPIC_API_KEY"] == "sk-flag"
+
+
+def test_provider_console_remove(tmp_path: Path, monkeypatch) -> None:
+    """[p] → [r2] + confirm removes the numbered entry from settings."""
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(
+        tmp_path,
+        [
+            {"module": "provider-anthropic", "config": {"priority": 1}},
+            {"module": "provider-openai", "config": {"priority": 2}},
+        ],
+    )
+    result = CliRunner().invoke(main, ["init"], input="p\nr2\ny\nd\nd\n")
+    assert result.exit_code == 0, result.output
+    assert "✓ Removed provider: openai" in result.output
+    remaining = _global_settings(tmp_path)["config"]["providers"]
+    assert [p["module"] for p in remaining] == ["provider-anthropic"]
+
+
+def test_provider_console_reorder(tmp_path: Path, monkeypatch) -> None:
+    """[p] → [p] `2 1` swaps the two providers' priorities."""
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(
+        tmp_path,
+        [
+            {"module": "provider-anthropic", "config": {"priority": 1}},
+            {"module": "provider-openai", "config": {"priority": 2}},
+        ],
+    )
+    result = CliRunner().invoke(main, ["init"], input="p\np\n2 1\nd\nd\n")
+    assert result.exit_code == 0, result.output
+    assert "✓ Priorities updated." in result.output
+    by_module = {
+        p["module"]: p["config"]["priority"]
+        for p in _global_settings(tmp_path)["config"]["providers"]
+    }
+    assert by_module == {"provider-anthropic": 2, "provider-openai": 1}
+
+
+def test_provider_console_test_connections(tmp_path: Path, monkeypatch) -> None:
+    """[p] → [t] pings each provider via list_models and tabulates ✓/✗."""
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(
+        tmp_path,
+        [
+            {"module": "provider-anthropic", "config": {"priority": 1}},
+            {"module": "provider-openai", "config": {"priority": 2}},
+        ],
+    )
+
+    async def _listing(module_id, collected=None, **k):
+        if module_id == "provider-anthropic":
+            return setup.ModelCatalog(models=(setup.ProviderModel(id="claude-x"),))
+        return setup.ModelCatalog(error="ConnectionError: unreachable")
+
+    monkeypatch.setattr(setup, "list_provider_models", _listing)
+    result = CliRunner().invoke(main, ["init"], input="p\nt\nd\nd\n")
+    assert result.exit_code == 0, result.output
+    assert "Provider Test Results" in result.output
+    assert "1 model(s) available" in result.output
+    assert "ConnectionError: unreachable" in result.output
+
+
+def test_console_scope_toggle(tmp_path: Path, monkeypatch) -> None:
+    """[w] switches the write scope; a later add persists to that scope."""
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(tmp_path, [{"module": "provider-anthropic", "config": {"priority": 1}}])
+    result = CliRunner().invoke(main, ["init"], input="w\n2\nd\n")
+    assert result.exit_code == 0, result.output
+    assert "✓ Switched to project scope." in result.output
+
+
+def test_provider_console_edit_preserves_unspecified_values(tmp_path: Path, monkeypatch) -> None:
+    """[e1] re-runs the field wizard with stored values as Enter-to-keep defaults."""
+    path, _written = _stub(monkeypatch, tmp_path, schema=_VLLM_SCHEMA, choices=(_VLLM_CHOICE,))
+    _models(monkeypatch, "m1", "m2")
+    for var in ("VLLM_BASE_URL", "VLLM_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    setup.write_key(path, "VLLM_BASE_URL", "http://old:8000/v1", update_environ=False)
+    setup.write_key(path, "VLLM_API_KEY", "sk-old", update_environ=False)
+    _seed_providers(
+        tmp_path,
+        [
+            {
+                "module": "provider-vllm",
+                "config": {
+                    "base_url": "${VLLM_BASE_URL}",
+                    "api_key": "${VLLM_API_KEY}",
+                    "default_model": "old-model",
+                    "priority": 3,
+                },
+            }
+        ],
+    )
+    # [p] · [e1] · Enter×3 (keep base_url/api_key, skip context_window) ·
+    # Enter (keep current model) · done · done.
+    result = CliRunner().invoke(main, ["init"], input="p\ne1\n\n\n\n\nd\nd\n")
+    assert result.exit_code == 0, result.output
+    assert "✓ Provider updated: vllm (old-model)" in result.output
+    (entry,) = _global_settings(tmp_path)["config"]["providers"]
+    assert entry["config"] == {
+        "base_url": "${VLLM_BASE_URL}",
+        "api_key": "${VLLM_API_KEY}",
+        "default_model": "old-model",
+        "priority": 3,  # editing must not reshuffle priorities
+    }
+    # The stored values survive untouched in keys.env.
+    keys = setup.read_keys(path)
+    assert keys["VLLM_BASE_URL"] == "http://old:8000/v1"
+    assert keys["VLLM_API_KEY"] == "sk-old"
+
+
+# ---------------------------------------------------------------------------
+# Issue #182 — schema unreadable must never degrade to key-only setup for
+# providers whose catalog declares required fields; the console offers a real
+# install (uv pip) before falling back to those fields.
+# ---------------------------------------------------------------------------
+
+
+def test_add_schema_unavailable_prompts_catalog_required_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path, written = _stub(monkeypatch, tmp_path, schema=None, choices=(_VLLM_CHOICE,))
+    _models(monkeypatch, "glm")
+    monkeypatch.setattr(setup, "instance_id_in_use", lambda *a, **k: False)
+    result = CliRunner().invoke(
+        main,
+        ["provider", "add", "vllm"],
+        input="https://pod.example/v1\nsk-abc\n1\n",  # Server URL · key · model #1
+    )
+    assert result.exit_code == 0, result.output
+    assert "prompting for the catalog's required fields" in result.output
+    assert setup.read_keys(path)["VLLM_BASE_URL"] == "https://pod.example/v1"
+    (entry,) = written
+    assert entry["config"]["base_url"] == "${VLLM_BASE_URL}"
+    assert entry["config"]["default_model"] == "glm"
+
+
+def _install_stubs(monkeypatch, *, schema_after_install):
+    """Drive the real _resolve_provider_schema: graft fails, install is offered."""
+
+    async def _avail(module_id, source_uri, **k):
+        return setup.ProviderAvailability(
+            module_id, False, reason="fetched, but its dependencies are not installed"
+        )
+
+    monkeypatch.setattr(setup, "ensure_provider_available", _avail)
+
+    schemas: list = [None]
+
+    def _load(module_id):
+        return schemas.pop(0) if schemas else schema_after_install
+
+    monkeypatch.setattr(setup, "load_provider_info", _load)
+
+    installs: list = []
+
+    async def _install(module_id, source_uri, **k):
+        installs.append((module_id, source_uri))
+        return True, "installed"
+
+    monkeypatch.setattr(setup, "install_provider_module", _install)
+    monkeypatch.setattr(setup, "instance_id_in_use", lambda *a, **k: False)
+    return installs
+
+
+def test_add_installs_module_on_confirm(tmp_path: Path, monkeypatch) -> None:
+    _path, written = _stub(monkeypatch, tmp_path, choices=(_VLLM_CHOICE,), stub_schema=False)
+    _models(monkeypatch, "glm")
+    installs = _install_stubs(monkeypatch, schema_after_install=_VLLM_SCHEMA)
+    result = CliRunner().invoke(
+        main,
+        ["provider", "add", "vllm"],
+        # y (install) · Server URL · key · context window · model #1
+        input="y\nhttps://pod.example/v1\nsk-abc\n131072\n1\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "installing provider-vllm" in result.output
+    assert installs == [("provider-vllm", setup.PROVIDER_SOURCES["provider-vllm"])]
+    (entry,) = written
+    assert entry["config"]["base_url"] == "${VLLM_BASE_URL}"
+
+
+def test_add_install_declined_falls_back_to_catalog_fields(tmp_path: Path, monkeypatch) -> None:
+    """Declining the install still prompts the catalog's required fields —
+    never the key-only basic flow (the issue-#182 regression shape)."""
+    _path, written = _stub(monkeypatch, tmp_path, choices=(_VLLM_CHOICE,), stub_schema=False)
+    _models(monkeypatch, "glm")
+    installs = _install_stubs(monkeypatch, schema_after_install=None)
+    result = CliRunner().invoke(
+        main,
+        ["provider", "add", "vllm"],
+        input="n\nhttps://pod.example/v1\nsk-abc\n1\n",  # n (no install) · URL · key · model
+    )
+    assert result.exit_code == 0, result.output
+    assert installs == []
+    assert "prompting for the catalog's required fields" in result.output
+    (entry,) = written
+    assert entry["config"]["base_url"] == "${VLLM_BASE_URL}"
+    assert entry["config"]["api_key"] == "${VLLM_API_KEY}"
+
+
+def test_yes_keeps_basic_path_and_skips_install(tmp_path: Path, monkeypatch) -> None:
+    """--yes never installs and never prompts (today's scripted contract)."""
+    path, written = _stub(monkeypatch, tmp_path, choices=(_VLLM_CHOICE,), stub_schema=False)
+
+    async def _boom(*a, **k):
+        raise AssertionError("--yes must never install")
+
+    monkeypatch.setattr(setup, "install_provider_module", _boom)
+    monkeypatch.setattr(setup, "load_provider_info", lambda module_id: None)
+    result = CliRunner().invoke(main, ["provider", "add", "vllm", "--api-key", "sk-x", "-y"])
+    assert result.exit_code == 0, result.output
+    assert setup.read_keys(path)["VLLM_API_KEY"] == "sk-x"
+    (entry,) = written
+    assert entry["module"] == "provider-vllm"
 
 
 # ---------------------------------------------------------------------------

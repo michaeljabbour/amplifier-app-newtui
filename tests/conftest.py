@@ -248,8 +248,12 @@ def _offline_provider_setup(monkeypatch):
     async def _no_models(*args, **kwargs):
         return setup.ModelCatalog()
 
+    async def _no_install(module_id, source_uri, **kwargs):
+        return False, "offline in tests"
+
     monkeypatch.setattr(setup, "ensure_provider_available", _unavailable)
     monkeypatch.setattr(setup, "list_provider_models", _no_models)
+    monkeypatch.setattr(setup, "install_provider_module", _no_install)
     for var in (
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_BASE_URL",
