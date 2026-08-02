@@ -3306,7 +3306,8 @@ async def _update(check_only: bool, yes: bool, force: bool, verbose: bool) -> in
         if package_updates:
             # Advisory only — this command never self-updates the app/platform.
             names = ", ".join(p.name for p in package_updates)
-            console.print(f"  • Update Amplifier packages manually ({names} have updates):")
+            verb = "has" if len(package_updates) == 1 else "have"
+            console.print(f"  • Update Amplifier packages manually ({names} {verb} updates):")
         console.print(updater.self_update_hint(), style="dim")
         return 1 if errored else 0
 
@@ -3326,7 +3327,8 @@ async def _update(check_only: bool, yes: bool, force: bool, verbose: bool) -> in
     if package_updates:
         # Advisory only — updating the app/platform stays out of scope here.
         names = ", ".join(p.name for p in package_updates)
-        console.print(f"  • Update Amplifier packages manually ({names} have updates):")
+        verb = "has" if len(package_updates) == 1 else "have"
+        console.print(f"  • Update Amplifier packages manually ({names} {verb} updates):")
         for line in updater.self_update_hint().splitlines():
             console.print(f"    {line}", style="dim")
 
