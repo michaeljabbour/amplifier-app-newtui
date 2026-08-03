@@ -75,7 +75,7 @@ they block on the human by definition."""
 
 
 def attention_bell_needed(
-    reason: notifications.Reason,
+    reason: notifications.AttentionReason,
     elapsed_s: float = 0.0,
     *,
     environ: Mapping[str, str] | None = None,
@@ -589,6 +589,9 @@ def apply_decision(app: TuiApp, decision_id: str, answer: str) -> None:
     # The denied ACTION is the /improve join key (DenialLog counts by
     # action); the chip label is only the fallback for actionless items.
     app.journal.record_override(item.action or answer)
+    # Acting on the decision IS acknowledging it (B7 AC5): clear the
+    # attention record + its destination indicator where supported.
+    app._acknowledge_attention()
     app.refresh_status()
 
 

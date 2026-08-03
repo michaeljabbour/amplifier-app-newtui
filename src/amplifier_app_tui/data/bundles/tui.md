@@ -73,6 +73,11 @@ hooks:
   # orchestrator:complete event because the default (notify:turn-complete)
   # is emitted by hooks-notify, which the app kernel suppresses at boot
   # (raw OSC-777/BEL stdout corrupts the full-screen Textual TUI).
+  # This push rung fires independently of the in-app AttentionRecord ladder
+  # (ui/notifications.py, B7/issue #47): it is driven straight off this raw
+  # kernel event, not the app's deduped/acknowledgeable record, and it has
+  # no acknowledgement channel back to the TUI (a different device's
+  # notification tray) — see docs/SETTINGS.md "Attention notifications".
   - module: hooks-notify-push
     source: git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=modules/hooks-notify-push
     config:

@@ -3018,9 +3018,10 @@ def _notify_test() -> int:
     paths = bundle_admin.settings_paths(None, None)
     settings = load_merged_settings(paths)
     env = notify_admin.resolved_environ(settings)
-    # A deferred decision always qualifies and, when unfocused, opens the
-    # desktop rung -- so a test exercises the whole ladder the app would fire.
-    rungs = notifications.notification_rungs("decision_deferred", focused=False, environ=env)
+    # An awaiting-approval/clarification reason always qualifies and, when
+    # unfocused, opens the desktop rung -- so a test exercises the whole
+    # ladder the app would fire.
+    rungs = notifications.notification_rungs("awaiting_approval", focused=False, environ=env)
     fired: list[str] = []
     if "bell" in rungs:
         click.echo("\a", nl=False)
