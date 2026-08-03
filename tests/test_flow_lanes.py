@@ -196,7 +196,12 @@ async def test_replayed_agents_turn_reopens_done_lanes() -> None:
             pilot,
             lambda: [r.lane.state for r in app.lanes.lanes] == ["running", "running", "done"],
         )
-        assert list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES
+        # The rows repaint is coalesced under high volume (D5 AC5): the
+        # model above is already exact, but the panel's own cached lines
+        # may lag by up to LANE_ROWS_NOTIFY_SECONDS before the trailing
+        # flush lands — wait for it exactly like the has_lane_tail check
+        # elsewhere in this suite, rather than asserting the instant after.
+        assert await wait_for(pilot, lambda: list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES)
         adapter.release()
         assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
         assert all(r.lane.state == "done" for r in app.lanes.lanes)
@@ -384,3 +389,72 @@ async def test_esc_chain_holds_while_palette_strip_owns_the_keyboard() -> None:
 
         await pilot.press("escape")  # …and only now the palette closes
         assert await wait_for(pilot, lambda: not app.palette.is_open)
+
+
+@pytest.mark.asyncio
+async def test_lanes_panel_survives_viewport_resize_mid_turn() -> None:
+    """Dev note: viewport resizing mid-turn. The panel re-fits its rows on
+    ``on_resize`` (lanes_panel.py) rather than carrying stale truncation
+    from the previous width \u2014 shrink then grow and the lane lines must
+    still be well-formed (bounded to the new width, boundary-safe) at
+    every size, with no crash and no stale content held over."""
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.submit_prompt(AGENTS_PROMPT)
+        assert await wait_for(pilot, lambda: len(app.lanes.lanes) == 3)
+        assert app.lanes_panel.display
+
+        # Shrink to a narrow width mid-turn: rows must re-fit, not crash,
+        # and stay within the new budget (never mid-word per AC3).
+        await pilot.resize_terminal(48, SIZE[1])
+        await pilot.pause()
+        narrow = app.lanes_panel.lane_lines
+        assert len(narrow) == 3
+        for line in narrow:
+            assert len(line) <= 48
+
+        # Grow back wide: rows re-fit again, no stale narrow content held
+        # over (the panel derives lines fresh from state, not by patching
+        # the previous render).
+        await pilot.resize_terminal(SIZE[0], SIZE[1])
+        await pilot.pause()
+        restored = app.lanes_panel.lane_lines
+        assert len(restored) == 3
+        for line in restored:
+            assert len(line) <= SIZE[0]
+
+        adapter.release()
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        assert all(r.lane.state == "done" for r in app.lanes.lanes)
+
+
+@pytest.mark.asyncio
+async def test_agent_completes_while_unfocused_and_panel_reflects_it() -> None:
+    """Dev note: agents completing while unfocused. No lane is ever
+    entered via 'enter' in this test \u2014 the app stays on the main
+    composer/transcript the whole time (AC1/AC2: lanes refresh
+    event-driven without requiring focus) \u2014 yet every lane's completion
+    (including a FAILED one, whose 'error'-kind notify must bypass any
+    coalescing, D5 AC5) is reflected the moment it happens."""
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.submit_prompt(AGENTS_PROMPT)
+        assert await wait_for(pilot, lambda: len(app.lanes.lanes) == 3)
+        # Never focus a lane: composer keeps input focus throughout.
+        assert app.composer.has_focus_within
+        assert app.transcript.focused_lane is None
+
+        adapter.release()
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        # Still unfocused \u2014 nothing in this flow ever entered lane focus.
+        assert app.transcript.focused_lane is None
+        assert all(r.lane.state == "done" for r in app.lanes.lanes)
+        # The panel (not just the model) reflects the completed tri-state,
+        # proving the repaint isn't gated on focus.
+        assert all(
+            glyph == "\u2714" for (glyph,) in [(r.lane.glyph,) for r in app.lanes_panel.records]
+        )

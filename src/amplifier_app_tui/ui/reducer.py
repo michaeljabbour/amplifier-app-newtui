@@ -55,6 +55,7 @@ from ..model.lanes import LaneRegistry, LaneStateName
 from ..model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
 from .lane_reducer import (
     LANE_TAIL_NOTIFY_SECONDS as LANE_TAIL_NOTIFY_SECONDS,
+    LaneNotifyKind,
     LaneReducer,
     _LANE_TRANSCRIPT_MAX_BLOCKS as _LANE_TRANSCRIPT_MAX_BLOCKS,
 )
@@ -708,6 +709,7 @@ class TranscriptReducer:
         evidence_lookup: Any = None,
         session_cost_start: Decimal = Decimal("0"),
         tail_clock: Any = None,
+        schedule_flush: Any = None,
     ) -> None:
         self._host = host
         self._ids = allocator
@@ -750,7 +752,13 @@ class TranscriptReducer:
         # Lane presentation state (per-lane live tail, focused-lane
         # transcripts, pending delegate briefs) lives in its own unit; the
         # turn reducer routes diverted child events onto lanes and drives it.
-        self._lane = LaneReducer(host, allocator=allocator, lanes=lanes, tail_clock=tail_clock)
+        self._lane = LaneReducer(
+            host,
+            allocator=allocator,
+            lanes=lanes,
+            tail_clock=tail_clock,
+            schedule_flush=schedule_flush,
+        )
 
     # -- public state -------------------------------------------------------
 
@@ -999,6 +1007,13 @@ class TranscriptReducer:
             return
         activity: str | None = None
         state: LaneStateName = "running"
+        # D5 AC5: classifies the repaint notification below. "error" is a
+        # discrete failure surfaced against a lane that keeps running (a
+        # tool errored, or came back denied/failed) — distinct from
+        # "final" (the lane itself completing, handled in
+        # ``_agent_completed``). Everything else here is ordinary
+        # narration churn and may be coalesced under high volume.
+        kind: LaneNotifyKind = "progress"
         match event:
             case ev.ToolPre():
                 if self._turn is not None:
@@ -1032,6 +1047,8 @@ class TranscriptReducer:
                     ),
                 )
                 activity = "reviewing tool result"
+                if not ok:
+                    kind = "error"
             case ev.ToolError():
                 self._lane.append_block(
                     record,
@@ -1044,6 +1061,7 @@ class TranscriptReducer:
                     ),
                 )
                 activity = f"recovering from {event.tool_name.replace('_', ' ')} error"
+                kind = "error"
             case ev.StreamBlockStart():
                 activity = "thinking" if event.block_type == "thinking" else "writing response"
             case ev.StreamBlockDelta():
@@ -1073,7 +1091,7 @@ class TranscriptReducer:
         updated = self.lanes.update(event.session_id, activity=activity, state=state)
         if updated is None:
             return
-        self._host.lanes_changed()
+        self._lane.notify_lanes_changed(kind=kind)
 
     # -- agent lanes: focus transcripts + live tail (LaneReducer) ------------
 
@@ -1843,7 +1861,9 @@ class TranscriptReducer:
                 tokens=lane.lane.tokens + event.output_tokens,
                 cost=lane.lane.cost + lane_cost,
             )
-            self._host.lanes_changed()
+            # D5 AC5: per-lane token/cost ticking is high-volume telemetry
+            # churn, not a privileged event — safe to coalesce.
+            self._lane.notify_lanes_changed(kind="progress")
 
     def _context_compacted(self, event: ev.ContextCompacted) -> None:
         """Persist a quiet but inspectable compaction boundary in history."""
@@ -2047,7 +2067,10 @@ class TranscriptReducer:
                 self._fanout_duration_s = max(0.0, end_ts - self._fanout_start_ts)
             self._render_delegate_summary()
         self._update_working()
-        self._host.lanes_changed()
+        # D5 AC5: the lane's terminal lifecycle transition (success OR
+        # failure) is the "final" privileged class — it must never be
+        # coalesced away, however many progress frames preceded it.
+        self._lane.notify_lanes_changed(kind="final")
 
     def _lifecycle_marker(self, text: str) -> None:
         """One compact dim ✳ line in the chat for a delegate lifecycle beat

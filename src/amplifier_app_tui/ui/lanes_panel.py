@@ -19,6 +19,7 @@ transcripts itself — focusing a lane is the app's job.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping, Sequence
 
 from rich.style import Style
@@ -32,6 +33,7 @@ from textual.widgets import Static
 
 from ..model.lanes import LaneRecord, LaneState, lane_labels
 from ..model.formatting import format_tokens_k
+from .keymap import hint_label
 from .live_tail import lane_tail_markup
 from .motion import SHIMMER_INTERVAL_SECONDS, shimmer_band
 
@@ -61,11 +63,47 @@ _MIN_ACTIVITY_WIDTH = 8
 """Floor for the elided activity column — below this, readability is gone
 and the tokens column is dropped whole instead."""
 
+_ELLIPSIS = "…"
+
+EXPAND_HINT_TEXT = f"{hint_label('focus_lane')} to expand"
+"""Trailing marker on a truncated preview (DESIGN-SPEC §8 / D5 AC3).
+
+Sourced from the keymap table — not a hardcoded string — so the row's own
+advertised affordance can never drift from the actual enter/click-to-focus
+action (the same one :data:`LANES_HEADER_HINT` already names)."""
+
+
+def _grapheme_safe_head(text: str, limit: int) -> str:
+    """*text* cut to *limit* code points, nudged left off a trailing base
+    character whose combining mark would otherwise be severed.
+
+    Only reached when a single token has no whitespace boundary to break
+    on at all — even that forced hard cut must never sever one
+    user-perceived character (base + combining accent) in two.
+    """
+    cut = text[:limit]
+    while cut and len(cut) < len(text) and unicodedata.combining(text[len(cut)]):
+        cut = cut[:-1]
+    return cut
+
 
 def _elide(text: str, budget: int) -> str:
+    """Boundary-safe truncation (D5 AC3): never clip mid-word.
+
+    A long preview always ends with exactly one ellipsis, cut at the last
+    whitespace boundary that still fits — ``"recovering from bash error"``
+    narrows to ``"recovering from…"``, never ``"recovering from bash e…"``.
+    Only a single token wider than the whole budget (no space to break on)
+    falls back to a grapheme-safe hard cut.
+    """
     if len(text) <= budget:
         return text
-    return text[: max(budget - 1, 1)] + "…"
+    limit = max(budget - len(_ELLIPSIS), 1)
+    head = text[:limit]
+    break_at = head.rfind(" ")
+    if break_at > 0:
+        return head[:break_at].rstrip() + _ELLIPSIS
+    return _grapheme_safe_head(text, limit) + _ELLIPSIS
 
 
 def format_lane_lines(
@@ -93,6 +131,12 @@ def format_lane_lines(
     CROPPED, and what fell off was the right-side telemetry — the panel's
     whole point. The elastic activity column is elided first; the tokens
     column is dropped whole next. Name, elapsed and cost always survive.
+
+    A row whose activity was actually elided appends :data:`EXPAND_HINT_TEXT`
+    (D5 AC3) — the ellipsis alone only implies more text exists; this names
+    the actual action (enter/click a row, per the keymap) so it is explicit
+    rather than implied. It sits before the queued badge, which keeps the
+    ``▸`` badge last per the paragraph above.
 
     Booting lanes (spawned, no child event yet) end at the elapsed clock —
     ``  ◐ name · booting · Ns`` — because their zeroed tokens/cost cells
@@ -122,7 +166,13 @@ def format_lane_lines(
     tok_w = max(len(text) for text in tokens)
     cost_w = max(len(text) for text in costs)
 
-    def compose(acts: list[str], act_w: int, *, show_tokens: bool) -> tuple[str, ...]:
+    def compose(
+        acts: list[str],
+        act_w: int,
+        *,
+        show_tokens: bool,
+        truncated: Sequence[bool] | None = None,
+    ) -> tuple[str, ...]:
         lines = []
         for i, lane in enumerate(lanes):
             line = (
@@ -137,6 +187,17 @@ def format_lane_lines(
                 if show_tokens:
                     line += f" · {tokens[i]:<{tok_w}}"
                 line += f" · {costs[i]}"
+                # D5 AC3: a preview that was actually clipped names the
+                # expand action explicitly — never just an implied ellipsis.
+                # The core telemetry (through cost) always wins the width
+                # budget; the hint only rides along when it still fits —
+                # the always-visible header hint is the width-independent
+                # fallback (never silently unreachable, just not repeated
+                # on every narrow row).
+                if truncated is not None and truncated[i]:
+                    hinted = f"{line} · {EXPAND_HINT_TEXT}"
+                    if width is None or len(hinted) <= width:
+                        line = hinted
             if badges[i]:
                 line += f" · {badges[i]}"
             lines.append(line)
@@ -149,10 +210,12 @@ def format_lane_lines(
     budget = width - fixed - 3 - tok_w
     if budget >= _MIN_ACTIVITY_WIDTH:
         acts = [_elide(activity, budget) for activity in activities]
-        return compose(acts, max(len(a) for a in acts), show_tokens=True)
+        truncated = [acts[i] != activities[i] for i in range(len(activities))]
+        return compose(acts, max(len(a) for a in acts), show_tokens=True, truncated=truncated)
     budget = max(width - fixed, _MIN_ACTIVITY_WIDTH)
     acts = [_elide(activity, budget) for activity in activities]
-    return compose(acts, max(len(a) for a in acts), show_tokens=False)
+    truncated = [acts[i] != activities[i] for i in range(len(activities))]
+    return compose(acts, max(len(a) for a in acts), show_tokens=False, truncated=truncated)
 
 
 class _LanesHeader(Static):
@@ -390,6 +453,21 @@ class LanesPanel(Vertical):
             self._tail_widget.remove()
             self._tail_widget = None
 
+    def sync_tailed(self, session_id: str | None) -> None:
+        """Update which lane is considered tailed WITHOUT a full row rebuild.
+
+        D5 AC5: ``show_lane_tail`` locates its row via ``self._tailed``,
+        which is normally set by ``update_lanes(tailed_session_id=...)`` —
+        but that now rides the coalesced ``lanes_changed()`` path (high-
+        volume progress churn) and can lag behind. The tail-updated
+        callback fires on its OWN, uncoalesced schedule (design doc D4's
+        throttle is unrelated to AC5's), so it must not wait on a
+        possibly-pending repaint just to learn which row is its own —
+        this lets it resync that one field immediately; the eventual
+        (possibly-coalesced) full repaint still lands and is a no-op here.
+        """
+        self._tailed = session_id
+
     def show_lane_tail(self, text: str) -> None:
         """Paint the focused lane's accumulated tail directly under its row."""
         self._tail_text = text
@@ -541,6 +619,7 @@ class LanesPanel(Vertical):
 
 
 __all__ = [
+    "EXPAND_HINT_TEXT",
     "LANE_MOTION_INTERVAL_SECONDS",
     "LANES_HEADER",
     "LANES_HEADER_HINT",
