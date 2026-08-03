@@ -62,3 +62,48 @@ Every genuine gap was filed as a `parity-gap` issue on 2026-07-23:
 
 Nothing here blocks daily use; the one High-severity safeguard (injection probe, #100) was
 implemented immediately. The rest are tracked, ranked, and independently landable.
+
+## Re-running this audit — the owner-gated loop
+
+This audit is a **pass in a loop**, not a one-off. Parity drifts in both directions (app-cli
+ships something new; tui hardens past it), so the audit is designed to be re-run against a
+later release and to record what each re-run found.
+
+Two versioned TSV artifacts hold the loop's state, written by
+[`pipelines/parity_loop.py`](../../pipelines/parity_loop.py) (stdlib only, never raises) and
+driven by [`pipelines/parity-loop.dot`](../../pipelines/parity-loop.dot):
+
+| Artifact | One row per | Fields |
+|---|---|---|
+| [`parity-passes.tsv`](../../pipelines/parity-passes.tsv) | read-only re-audit pass | `pass · date · commit · outcome · gaps_found · gap_ids · note` |
+| [`parity-gates.tsv`](../../pipelines/parity-gates.tsv) | discovered gap | `gap_id · slug · disposition · owner · date · note` |
+
+The 2026-07-23 audit above is **pass 1** (commit `e6b50cd`, 11 gaps: #100–#110). To re-run:
+redo the three lanes read-only against the new commit, then record what the pass found —
+
+```sh
+python3 pipelines/parity_loop.py record-pass <sha> 111:new-gap-slug   # or `-` if clean
+python3 pipelines/parity_loop.py should-continue                      # CONTINUE | DONE
+```
+
+**The run stops after three consecutive clean passes, or when the owner ends it.** That
+counter is over *read-only re-audits*, and it is deliberately not the transfer pipeline's
+per-gap fix-retry budget (also 3, also bounded, entirely unrelated) — see the side-by-side
+table in [pipelines/README.md](../../pipelines/README.md#owner-gated-parity-loop-continuous-re-audit).
+
+**No gap becomes code without an owner saying so.** Every newly-discovered gap lands
+`pending`, and only an `accepted` disposition opens a code-changing route
+(`parity_loop.py gate <id>` → `PROCEED` / `BLOCKED`). The dispositions exist because parity
+is a *decision process*, not a mandate to copy every app-cli behavior:
+
+| Disposition | Meaning |
+|---|---|
+| `pending` | discovered, not yet ruled on — **blocks** (the safe default) |
+| `accepted` | the owner wants it; may enter the transfer pipeline |
+| `rejected` | not worth building here — including "belongs below the harness or on another surface" |
+| `deferred` | real, but not now |
+| `already-covered` | tui reaches the capability by another route; not a gap |
+
+The 11 gaps from pass 1 are seeded `pending`: they were filed and ranked before this gate
+existed, so none of them carries a recorded owner disposition yet. Triage is the first
+action of the next run.
