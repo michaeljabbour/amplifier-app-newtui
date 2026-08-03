@@ -1424,7 +1424,16 @@ class TranscriptReducer:
             self._append_recap(text)
         else:
             links: tuple[EvidenceLink, ...] = tuple(self._evidence(text))
-            answer = Answer(id=self._ids.next_id(), spans=answer_spans(text), evidence_refs=links)
+            # A scripted demo turn has no provisional/final distinction --
+            # DemoTurnSpec knows the whole script up front, so its one
+            # plain "answer"-role block IS the turn's final response the
+            # moment it lands (AC2 anchor; see Answer.final's docstring).
+            answer = Answer(
+                id=self._ids.next_id(),
+                spans=answer_spans(text),
+                evidence_refs=links,
+                final=True,
+            )
             self._append_content(answer)
             if self._turn is not None:
                 self._turn.rendered_answers.add(text.strip())
@@ -1441,11 +1450,15 @@ class TranscriptReducer:
         for candidate_text, block_id in reversed(turn.response_candidates):
             if candidate_text != text:
                 continue
+            # PromptComplete.response just identified THIS candidate as the
+            # turn's one authoritative answer -- stamp the AC2 start anchor
+            # in the same replace that promotes it (Answer.final's docstring).
             self._host.replace_block(
                 Answer(
                     id=block_id,
                     spans=answer_spans(response),
                     evidence_refs=links,
+                    final=True,
                 )
             )
             turn.rendered_answers.add(text)
@@ -1454,12 +1467,15 @@ class TranscriptReducer:
         # This fallback runs only during close-out. Appending through
         # _append_content would move/re-mount the working pulse immediately
         # before _finish_turn removes it, creating an avoidable Textual race
-        # for non-streaming providers whose answer exists only here.
+        # for non-streaming providers whose answer exists only here. It is
+        # still the turn's one authoritative answer, so it still gets the
+        # AC2 start anchor.
         self._host.append_block(
             Answer(
                 id=self._ids.next_id(),
                 spans=answer_spans(response),
                 evidence_refs=links,
+                final=True,
             )
         )
         turn.rendered_answers.add(text)

@@ -465,11 +465,20 @@ async def test_ctrl_c_copies_transcript_selection_despite_composer_focus() -> No
                 style="",
             )
 
-        app.screen._forward_event(ev(MouseDown, 10, 8))
+        # +1 row: the AC2 final-answer start marker ("● Final answer") now
+        # opens a final answer, so row 0 of the block is the marker, not
+        # prose -- drag one row into the body, which is correct whether or
+        # not a marker is present (region-relative, never a magic number).
+        answer_block = next(b for b in app.transcript.blocks if b.kind == "answer")
+        answer_widget = app.transcript.get_widget(answer_block.id)
+        assert answer_widget is not None
+        row = answer_widget.region.y + 1
+
+        app.screen._forward_event(ev(MouseDown, 10, row))
         await pilot.pause()
-        app.screen._forward_event(ev(MouseMove, 60, 8))
+        app.screen._forward_event(ev(MouseMove, 60, row))
         await pilot.pause()
-        app.screen._forward_event(ev(MouseUp, 60, 8))
+        app.screen._forward_event(ev(MouseUp, 60, row))
         await pilot.pause()
         app.composer.focus_input()
         await pilot.pause()
@@ -547,11 +556,18 @@ async def test_settled_drag_selection_copies_automatically() -> None:
                 style="",
             )
 
-        app.screen._forward_event(ev(MouseDown, 10, 8))
+        # +1 row: see test_ctrl_c_copies_transcript_selection_despite_composer_focus
+        # -- drag one row into the answer body, past the AC2 start marker.
+        answer_block = next(b for b in app.transcript.blocks if b.kind == "answer")
+        answer_widget = app.transcript.get_widget(answer_block.id)
+        assert answer_widget is not None
+        row = answer_widget.region.y + 1
+
+        app.screen._forward_event(ev(MouseDown, 10, row))
         await pilot.pause()
-        app.screen._forward_event(ev(MouseMove, 60, 8))
+        app.screen._forward_event(ev(MouseMove, 60, row))
         await pilot.pause()
-        app.screen._forward_event(ev(MouseUp, 60, 8))
+        app.screen._forward_event(ev(MouseUp, 60, row))
         await pilot.pause(0.7)  # let the 0.4s settle timer fire
         assert copied and len(copied[0]) > 10
         assert app.notice_slot.current.startswith("copied on select · ")

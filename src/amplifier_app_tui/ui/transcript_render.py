@@ -21,6 +21,7 @@ from rich.cells import cell_len
 
 from ..model.blocks import (
     GLYPH_BLOCKED,
+    GLYPH_BULLET,
     GLYPH_CHECKBOX_CHECKED,
     GLYPH_CHECKBOX_EMPTY,
     GLYPH_CHEVRON_COLLAPSED,
@@ -349,6 +350,25 @@ _ANSWER_MARKER_RE = re.compile(
 the head of a logical answer line — its cell width becomes the hanging
 indent for continuation lines."""
 
+FINAL_ANSWER_MARKER = "Final answer"
+"""AC2 stable start-of-final-response label (compliance 2026-08-02 B1).
+
+Rendered only above ``Answer`` blocks the reducer stamped ``final=True``
+(the turn's one authoritative response — see ``model/blocks.py``'s
+``Answer.final`` docstring). Bright + BOLD, its own line: the marker
+identifies the final-response START via label and weight, never color
+alone (AC4), so it stays legible in any theme — including a future light
+theme that does not exist yet (docs/DESIGN-SPEC.md §1 records that
+narrowing). The bullet glyph matches Narration/DelegateSummaryBlock's
+existing bright ``●`` opener so it reads as more conversational content,
+not a utility/system panel (those use a plain ``·``)."""
+
+_FINAL_ANSWER_MARKER_LINE: Line = (
+    Segment(text=f"{GLYPH_BULLET} ", style_token="bright", bold=True),
+    Segment(text=FINAL_ANSWER_MARKER, style_token="bright", bold=True),
+)
+"""Precomputed once: the marker never varies with block content or width."""
+
 
 def _answer_marker_hang(first: Segment) -> int:
     """Cell width of a leading list marker or blockquote gutter, or 0 if
@@ -501,6 +521,11 @@ def _render_answer(block: Answer, width: int) -> tuple[Line, ...]:
         out.pop(0)
     while out and not out[-1]:
         out.pop()
+    if block.final:
+        # AC2 anchor: a stable, non-color-only start marker for the turn's
+        # one authoritative answer (never for provisional/recap Answer
+        # blocks, which stay final=False -- see the reducer's stamp sites).
+        out.insert(0, _FINAL_ANSWER_MARKER_LINE)
     return tuple(out)
 
 

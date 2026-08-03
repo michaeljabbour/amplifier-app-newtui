@@ -102,6 +102,10 @@ Things worth knowing:
   you "edit" it; there's no cancel).
 - **Tool digests** in the transcript (`Read 4 files · ran 6 shell commands · click to
   expand`) expand on click to show the individual calls; click again to collapse.
+- **Final answer marker.** The turn's one authoritative answer opens with a bright/bold
+  `● Final answer` heading (never a color-only cue, so it stays legible in any theme) so
+  its start is always identifiable, even after you've scrolled away to reread earlier
+  context — press **ctrl+f** to jump straight back to it.
 - **Big pastes** (>10 lines or >800 chars) collapse to a `[Pasted #N · …]` stub so the
   composer stays readable; the full text is sent verbatim on submit. Deleting the stub
   removes the paste.
@@ -264,6 +268,7 @@ sandbox around arbitrary interpreter code.
 | ctrl+l | outcome ledger | any time |
 | ctrl+y | needs-you queue | any time |
 | ctrl+r | rewind picker | any time |
+| ctrl+f | jump back to the current turn's final-answer start | any time |
 | esc esc | interrupt, then open rewind | running turn |
 | ↑ ↓ | select in palette/lanes (lanes from an empty composer) | panels |
 | ‹ › (← →) | navigate checkpoints · evidence refs | rewind · evidence |

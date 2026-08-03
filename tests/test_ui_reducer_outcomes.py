@@ -141,6 +141,7 @@ def test_production_text_stays_styled_and_final_response_promotes_exactly_once()
     candidates = [block for block in host.blocks if isinstance(block, Answer)]
     assert [answer_text(block) for block in candidates] == ["Checking the files.", "Done."]
     assert all(not block.clickable for block in candidates)
+    assert all(not block.final for block in candidates)  # AC2: no anchor before promotion
     promoted_id = candidates[-1].id
 
     reducer.handle(ev.PromptComplete(session_id="root", response="Done.", ts=4.0))
@@ -151,6 +152,7 @@ def test_production_text_stays_styled_and_final_response_promotes_exactly_once()
     assert answer_text(final) == "Done."
     assert final.evidence_refs == evidence
     assert final.clickable
+    assert final.final  # AC2: the start anchor is stamped exactly on the promoted block
     # The earlier intermediate prose remains once; the final is replaced in place.
     assert [answer_text(block) for block in answers].count("Done.") == 1
 
@@ -175,6 +177,7 @@ def test_stream_then_durable_close_never_replays_raw_final_markdown() -> None:
     provisional = [block for block in host.blocks if isinstance(block, Answer)]
     assert len(provisional) == 1
     assert not provisional[0].clickable
+    assert not provisional[0].final  # AC2: provisional prose carries no anchor
     assert not any(isinstance(block, Narration) for block in host.blocks)
 
     reducer.handle(ev.PromptComplete(session_id="root", response=response, ts=2.5))
@@ -182,6 +185,7 @@ def test_stream_then_durable_close_never_replays_raw_final_markdown() -> None:
     assert len(final) == 1
     assert final[0].id == provisional[0].id
     assert final[0].clickable
+    assert final[0].final  # AC2: anchor stamped on the same promoted-in-place block
     assert "".join(segment.text for segment in final[0].spans).count("Done.") == 1
 
 
@@ -193,6 +197,7 @@ def test_prompt_complete_appends_one_fallback_answer_without_durable_text() -> N
     answers = [block for block in host.blocks if isinstance(block, Answer)]
     assert len(answers) == 1
     assert answer_text(answers[0]) == "The final answer."
+    assert answers[0].final  # AC2: the close-out fallback append still gets the anchor
 
 
 def test_explicit_demo_answer_is_not_duplicated_at_prompt_complete() -> None:
@@ -211,6 +216,7 @@ def test_explicit_demo_answer_is_not_duplicated_at_prompt_complete() -> None:
     answers = [block for block in host.blocks if isinstance(block, Answer)]
     assert len(answers) == 1
     assert answer_text(answers[0]) == "Scripted answer."
+    assert answers[0].final  # AC2: the demo path's one answer-role block is the anchor
 
 
 def test_foreign_session_execution_cannot_mutate_root_transcript_or_close_out() -> None:
@@ -587,3 +593,22 @@ def test_mixed_tool_burst_collapses_to_one_humanized_digest() -> None:
     # live tree beneath the pulse is bounded to the most recent ops
     working = next(b for b in host.blocks if b.kind == "working_status")
     assert len(working.activity_lines) <= 3
+
+
+def test_recap_shaped_answer_never_carries_the_final_anchor() -> None:
+    """A non-Goal/Next recap renders as an Answer (dim italic ✳ line) but
+    must never be mistaken for the turn's final-response anchor (AC2)."""
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="do it", ts=1.0))
+    reducer.handle(
+        ev.ContentBlockEnd(
+            session_id="root",
+            block_type="text",
+            block={"type": "text", "text": "Wrapping up now.", "demo_role": "recap"},
+            ts=2.0,
+        )
+    )
+    recap_answers = [block for block in host.blocks if isinstance(block, Answer)]
+    assert len(recap_answers) == 1
+    assert not recap_answers[0].clickable
+    assert not recap_answers[0].final

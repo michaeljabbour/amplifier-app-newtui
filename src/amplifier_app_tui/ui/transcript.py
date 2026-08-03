@@ -951,11 +951,21 @@ class TranscriptView(VerticalScroll):
         finally:
             self._compaction_pending = False
 
-    def scroll_block_visible(self, block_id: str) -> None:
-        """Reveal a mounted or archived block without rehydrating history."""
+    def scroll_block_visible(self, block_id: str, *, top: bool = False) -> None:
+        """Reveal a mounted or archived block without rehydrating history.
+
+        ``top=True`` forces the block's own top edge to the viewport's top
+        (Textual's ``scroll_visible(top=...)``) instead of the minimal
+        nudge needed to bring any part of it on screen -- the archived
+        branch already targets the block's start (a few rows above its
+        ``virtual_region`` offset) so it needs no extra flag there. The
+        return-to-answer action (AC2, compliance 2026-08-02 B1) passes
+        ``top=True`` so a long final answer's START comes back into view,
+        not wherever its tail happened to land.
+        """
 
         if widget := self._widgets.get(block_id):
-            widget.scroll_visible(animate=False)
+            widget.scroll_visible(animate=False, top=top)
             return
         if self._archive is None:
             return

@@ -133,6 +133,12 @@ KEYMAP: tuple[Binding, ...] = (
     _b("show_ledger", ("ctrl+l",), "ctrl-l", NO_APPROVAL),
     _b("show_needs_you", ("ctrl+y",), "ctrl-y", NO_APPROVAL),
     _b("open_rewind", ("ctrl+r",), "ctrl-r", NO_APPROVAL),
+    # Return to the current/most-recent turn's final-answer start anchor
+    # (AC2, compliance 2026-08-02 B1). ctrl+f is free in the global table
+    # AND in ComposerInput's TextArea bindings (unlike ctrl+a/ctrl+e, which
+    # TextArea claims for home/end of line) -- so, unlike open_external_editor's
+    # ctrl+e, no composer-side interception is needed for it to reach here.
+    _b("return_to_answer", ("ctrl+f",), "ctrl-f answer", NO_APPROVAL),
     # Plan-panel drilldown: while the ambient plan strip is visible, ctrl+n
     # cycles its row window default → +2 → +3 → back (ctrl+n is claimed by
     # neither the app tables nor Textual's TextArea defaults).

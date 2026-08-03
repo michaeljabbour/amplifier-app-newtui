@@ -274,6 +274,17 @@ def variant_blocks() -> tuple[tuple[str, TranscriptBlock], ...]:
     return (
         ("delegate_summary (expanded)", collapsed.model_copy(update={"expanded": True})),
         (
+            # Same body as canonical g10 -- the ONLY diff is the AC2 start
+            # marker, so this golden pins exactly what `final=True` adds.
+            "answer (final)",
+            Answer(
+                id="g25",
+                spans=answer_spans(_ANSWER_SOURCE),
+                evidence_refs=_EVIDENCE_LINKS,
+                final=True,
+            ),
+        ),
+        (
             "answer (insight callout)",
             Answer(id="g21", spans=answer_spans(_CALLOUT_ANSWER_SOURCE)),
         ),
@@ -319,6 +330,78 @@ def variant_blocks() -> tuple[tuple[str, TranscriptBlock], ...]:
     )
 
 
+_LONG_TURN_PROMPT = (
+    "Track down why the golden width matrix started drifting and add the anchor "
+    "marker to the final answer everywhere it belongs."
+)
+
+_LONG_TURN_ANSWER = (
+    "## Summary\n"
+    "\n"
+    "Six tool calls across two bursts, touching `reducer.py`, "
+    "`transcript_render.py` and the golden fixtures. The regression traced "
+    "back to `_finalize_response` never distinguishing a promoted answer "
+    "from a merely-provisional one, so nothing marked the turn's real "
+    "final-response start -- this line is deliberately long so a wide "
+    "terminal wraps it at the reading measure instead of stretching the "
+    "paragraph across the whole width, the same way a genuinely long turn's "
+    "answer would.\n"
+    "\n"
+    "- [x] stamp `Answer.final` at both promotion sites and the demo path\n"
+    "- [x] render the `● Final answer` start marker (label + weight, not color)\n"
+    "- [ ] a fourth (light) theme — tracked separately, not this turn\n"
+    "\n"
+    "```python\n"
+    "assert promoted.final and not provisional.final\n"
+    "```"
+)
+
+
+def long_turn_blocks() -> tuple[TranscriptBlock, ...]:
+    """AC5 regression fixture: a long turn, multiple tool calls, wrapped
+    Markdown, rendered together (not in isolation) so their interaction at
+    every golden width -- including the narrowest -- is pinned in one place.
+    """
+    return (
+        UserLine(id="g26", text=_LONG_TURN_PROMPT, mode="build"),
+        ToolLine(
+            id="g27",
+            summary="Read 3 files · searched 2× · ran 2 shell commands",
+            body=(
+                "read src/amplifier_app_tui/ui/reducer.py",
+                "read src/amplifier_app_tui/ui/transcript_render.py",
+                "read tests/test_golden_widths.py",
+                "grep final_answer",
+                "grep return_to_answer",
+                "$ uv run pytest -q tests/test_ui_reducer_outcomes.py",
+                "$ uv run ruff check .",
+            ),
+            expanded=True,
+            status="completed",
+        ),
+        ToolLine(
+            id="g28",
+            summary="Wrote 1 file · edited 4 files",
+            body=(
+                "edit src/amplifier_app_tui/model/blocks.py",
+                "edit src/amplifier_app_tui/ui/reducer.py",
+                "edit src/amplifier_app_tui/ui/transcript_render.py",
+                "edit tests/goldens/regen.py",
+                "write tests/test_ui_reducer_outcomes.py",
+            ),
+            expanded=True,
+            status="completed",
+        ),
+        Answer(
+            id="g29",
+            spans=answer_spans(_LONG_TURN_ANSWER),
+            evidence_refs=_EVIDENCE_LINKS,
+            final=True,
+        ),
+        TurnRule(id="g30", checkpoint_id="t-long-turn", label=_SEED.rule_label, shipped=True),
+    )
+
+
 def golden_text(width: int) -> str:
     """The full golden document for one width."""
     parts: list[str] = [f"# transcript renderer golden · width={width}", ""]
@@ -330,6 +413,10 @@ def golden_text(width: int) -> str:
         parts.append(f"=== {label} ===")
         parts.append(render_block_markup(block, width))
         parts.append("")
+    parts.append("=== long turn (multi-tool regression, AC5) ===")
+    for block in long_turn_blocks():
+        parts.append(render_block_markup(block, width))
+    parts.append("")
     return "\n".join(parts)
 
 
