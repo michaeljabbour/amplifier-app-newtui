@@ -34,9 +34,7 @@ _SNAPSHOT_DIR = Path(__file__).parent / "__snapshots__" / "test_ui_composer_stat
 _SIZE = (100, 16)
 _DYNAMIC_TERMINAL_ID = re.compile(r"terminal-\d+")
 
-_IDLE_FOOTER = FooterState(
-    mode_id="chat", bundle="dev-bundle", model="claude-fable-5", session_short="a1b2c3"
-)
+_IDLE_FOOTER = FooterState(mode_id="chat", model="claude-fable-5", session_short="a1b2c3")
 _MENTION_FILES = (
     "src/amplifier_app_tui/ui/composer.py",
     "src/amplifier_app_tui/ui/footer.py",

@@ -134,6 +134,9 @@ class FakeCommandContext:
     def show_modes(self) -> None:
         self.calls.append("show_modes")
 
+    def show_keys(self) -> None:
+        self.calls.append("show_keys")
+
     def set_native_mode(self, name: str | None) -> None:
         self.calls.append(f"set_native_mode:{name}")
 

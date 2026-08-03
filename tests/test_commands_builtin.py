@@ -95,6 +95,9 @@ MOCKUP_TABLE = [
     ("Repair", "/improve", "tune config from ledger + denial log", "skill"),
     # Beyond the mockup table: runtime theme switch (DESIGN-SPEC §1).
     ("Repair", "/theme", "switch theme: slate, graphite, carbon", "built-in"),
+    # Beyond the mockup table: keyboard-shortcut reference (compliance
+    # 2026-08-02, item D4).
+    ("Repair", "/keys", "list every keyboard shortcut and what it does", "built-in"),
 ]
 
 
@@ -105,7 +108,7 @@ def test_table_matches_mockup_exactly() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 39
+    assert len(registry.specs) == 40
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -150,6 +153,15 @@ def test_modes_lists_native_catalog(fake_command_context) -> None:
     ctx = fake_command_context
     registry.run("/modes", ctx)
     assert ctx.calls == ["show_modes"]
+
+
+def test_keys_lists_shortcut_reference(fake_command_context) -> None:
+    """Item D4: ``/keys`` is the discoverability home for the shortcuts the
+    footer's old generic idle hint used to advertise on every frame."""
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/keys", ctx)
+    assert ctx.calls == ["show_keys"]
 
 
 def test_plan_and_brainstorm_jump_modes(fake_command_context) -> None:

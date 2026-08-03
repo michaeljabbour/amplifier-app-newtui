@@ -76,9 +76,8 @@ async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
         await pilot.pause()
         assert not app.rewind.display
         assert app.footer_bar.state.context == "idle"
-        assert footer_right_text(app.footer_bar.state) == (
-            "↑ history · ctrl+j newline · ctrl-r rewind · / commands"
-        )
+        # Item D4: idle no longer carries a persistent generic hint.
+        assert footer_right_text(app.footer_bar.state) == ""
 
 
 @pytest.mark.asyncio

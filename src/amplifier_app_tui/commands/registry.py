@@ -201,6 +201,16 @@ class CommandContext(Protocol):
         """Print the bundle-composed native mode catalog (``/modes``)."""
         ...
 
+    def show_keys(self) -> None:
+        """Print the keyboard-shortcut reference (``/keys``).
+
+        Item D4 (compliance 2026-08-02): the footer's generic ``idle``
+        hint moved here so trimming it never reduces discoverability —
+        the listing renders straight from ``ui.keymap.help_rows``, the
+        same shared table the footer hints and key bindings both read.
+        """
+        ...
+
     def set_native_mode(self, name: str | None) -> None:
         """ADD a bundle-provided mode to the active set (``None`` clears all) —
         actioned through the mounted mode tool, never an app-local list. Only

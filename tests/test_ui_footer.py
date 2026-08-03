@@ -24,7 +24,6 @@ from amplifier_app_tui.ui.themes import DEFAULT_THEME, THEME_TOKENS, register_th
 
 FULL_STATE = FooterState(
     mode_id="build",
-    bundle="dev-bundle",
     model="claude-fable-5",
     session_short="a1b2c3",
     cost=Decimal("0.87"),
@@ -40,8 +39,7 @@ FULL_STATE = FooterState(
 
 def test_left_text_full_state_exact() -> None:
     assert footer_left_text(FULL_STATE) == (
-        "mode build · auto read,test · ask write,net,spend"
-        " · bundle dev-bundle · claude-fable-5 · a1b2c3 · $0.87 ▲ · q1"
+        "mode build · auto read,test · ask write,net,spend · claude-fable-5 · a1b2c3 · $0.87 ▲ · q1"
     )
 
 
@@ -60,15 +58,22 @@ def test_left_text_shows_stacked_native_modes() -> None:
     assert left.startswith("mode build · ◆ audit +team-pulse · ")
 
 
-def test_left_text_labels_bundle_and_carries_model() -> None:
-    """Story #4 (status bar speaks human): the bundle is labeled as a
-    bundle — never a bare name — and the primary model is its own part."""
+def test_left_text_never_shows_bundle() -> None:
+    """AC1 (item D4): the active bundle path renders in exactly ONE
+    persistent location — :class:`~amplifier_app_tui.ui.chrome.TitleBar`,
+    docked at the top. The footer must never paint a second, always-
+    identical copy — ``FooterState`` doesn't even carry a ``bundle``
+    field any more, so there's nothing here left to accidentally show."""
+    assert "bundle" not in footer_left_text(FULL_STATE)
+    assert "bundle" not in footer_left_text(FooterState())
+    assert not hasattr(FooterState(), "bundle")
+
+
+def test_left_text_carries_model() -> None:
+    """Story #4 (status bar speaks human): the primary model is its own
+    part of the left segment."""
     left = footer_left_text(FULL_STATE)
-    assert " · bundle dev-bundle · " in left
     assert " · claude-fable-5 · " in left
-    # Empty identity fields leave no orphaned label behind.
-    bare = FooterState()
-    assert "bundle" not in footer_left_text(bare)
 
 
 def test_left_text_minimal_state() -> None:
@@ -91,7 +96,7 @@ def test_left_text_full_state_estimated_exact() -> None:
     state = FULL_STATE.model_copy(update={"cost_estimated": True})
     assert footer_left_text(state) == (
         "mode build · auto read,test · ask write,net,spend"
-        " · bundle dev-bundle · claude-fable-5 · a1b2c3 · ~$0.87 ▲ · q1"
+        " · claude-fable-5 · a1b2c3 · ~$0.87 ▲ · q1"
     )
 
 
@@ -164,9 +169,9 @@ def test_right_hints_exact_per_context() -> None:
     assert footer_right_text(FooterState(context="running")) == (
         "esc interrupt · enter steer · shift+enter queue"
     )
-    assert footer_right_text(FooterState(context="idle")) == (
-        "↑ history · ctrl+j newline · ctrl-r rewind · / commands"
-    )
+    # Item D4 (AC2/AC3): idle is deliberately empty — the generic reminder
+    # moved to COMPOSER_PLACEHOLDER + /keys instead of riding every frame.
+    assert footer_right_text(FooterState(context="idle")) == ""
 
 
 def test_running_hint_swaps_queue_chord_without_kitty() -> None:
@@ -176,7 +181,7 @@ def test_running_hint_swaps_queue_chord_without_kitty() -> None:
 
 def test_unknown_hint_context_falls_back_to_idle() -> None:
     state = FooterState(context="rewind")
-    assert footer_right_text(state) == "↑ history · ctrl+j newline · ctrl-r rewind · / commands"
+    assert footer_right_text(state) == ""
 
 
 # -- widget rendering ---------------------------------------------------------------
@@ -260,9 +265,10 @@ async def test_footer_left_separators_use_dimmer_token() -> None:
             for span in content.spans
             if span.style == "$dimmer"
         ]
-        # mode·trust, trust·bundle, bundle·model, model·session, session·cost
-        # = 5 separators (the orange "· q1" queue badge separator is NOT dimmer).
-        assert dimmer_runs == [" · "] * 5
+        # mode·trust, trust·model, model·session, session·cost = 4 separators
+        # (item D4 dropped the bundle part, so one fewer than before; the
+        # orange "· q1" queue badge separator is NOT dimmer).
+        assert dimmer_runs == [" · "] * 4
 
 
 @pytest.mark.asyncio
@@ -303,7 +309,7 @@ async def test_footer_badge_wraps_onto_own_row_at_narrow_width() -> None:
         bar.update_state(
             FooterState(
                 mode_id="build",
-                bundle="dev-bundle",
+                model="claude-fable-5",
                 session_short="a1b2c3",
                 cost=Decimal("0.87"),
                 waiting=1,
@@ -358,10 +364,12 @@ def test_footer_left_text_fit_drops_decorations_before_the_plan_count() -> None:
     right edge. Decorative segments drop first; mode/cost/queue/plan never."""
     state = FooterState(
         mode_id="auto",
-        bundle="anchors",
+        model="claude-fable-5",
         session_short="e07d",
         cost=Decimal("0.70"),
         shipped=True,
+        effort="high",
+        context_pct=41,
         plan_done=3,
         plan_total=3,
     )
@@ -375,13 +383,13 @@ def test_footer_left_text_fit_drops_decorations_before_the_plan_count() -> None:
     assert footer_left_text_fit(state, 200) == full
 
 
-def test_footer_left_text_fit_model_outlives_bundle_and_session() -> None:
-    """Story #4 ladder: trust → session → bundle → model. The model is the
-    identity users actually ask about, so it survives longer than the
-    bundle/session decorations but still drops before cost and the plan."""
+def test_footer_left_text_fit_model_outlives_trust_and_session() -> None:
+    """Story #4 ladder (item D4: bundle is gone from this ladder entirely —
+    it no longer rides the footer at all): trust → session → model. The
+    model is the identity users actually ask about, so it survives longer
+    than the other decorations but still drops before cost and the plan."""
     state = FooterState(
         mode_id="auto",
-        bundle="anchors",
         model="claude-fable-5",
         session_short="e07d",
         cost=Decimal("0.70"),
@@ -389,12 +397,12 @@ def test_footer_left_text_fit_model_outlives_bundle_and_session() -> None:
         plan_done=3,
         plan_total=3,
     )
-    # 60 cells: trust, session AND bundle have dropped — the model is still up.
-    fitted = footer_left_text_fit(state, 60)
-    assert cell_len(fitted) <= 60
+    # 50 cells: trust AND session have dropped — the model is still up.
+    fitted = footer_left_text_fit(state, 50)
+    assert cell_len(fitted) <= 50
     assert "claude-fable-5" in fitted
-    assert "bundle" not in fitted and "e07d" not in fitted
-    # 40 cells: the model finally drops; mode/cost/plan never do.
+    assert "e07d" not in fitted
+    # 40 cells: the model finally drops too; mode/cost/plan never do.
     tight = footer_left_text_fit(state, 40)
     assert cell_len(tight) <= 40
     assert "claude-fable-5" not in tight
@@ -409,7 +417,6 @@ async def test_footer_narrow_width_paints_plan_not_clipped() -> None:
         bar = app.query_one("#footer", FooterBar)
         state = FooterState(
             mode_id="auto",
-            bundle="anchors",
             model="claude-fable-5",
             session_short="e07d",
             cost=Decimal("0.70"),
@@ -472,7 +479,7 @@ async def test_footer_border_top_persists_across_every_footer_state() -> None:
         bar = app.query_one("#footer", FooterBar)
         wrap_forcing_state = FooterState(
             mode_id="build",
-            bundle="dev-bundle",
+            model="claude-fable-5",
             session_short="a1b2c3",
             cost=Decimal("0.87"),
             waiting=1,
@@ -503,7 +510,6 @@ async def test_footer_border_top_survives_narrow_width_and_short_height() -> Non
         bar.update_state(
             FooterState(
                 mode_id="auto",
-                bundle="anchors",
                 model="claude-fable-5",
                 session_short="e07d",
                 cost=Decimal("0.70"),
@@ -516,3 +522,67 @@ async def test_footer_border_top_survives_narrow_width_and_short_height() -> Non
         assert bar.styles.border_top[0] == "solid"
         # One border row + at most two wrapped content rows: never balloons.
         assert bar.size.height <= 3
+
+
+# -- D4 AC5: responsive proof — no duplicate metadata, no collisions ----------
+#
+# A fully-loaded footer state, swept across the same width matrix the
+# transcript-renderer goldens treat as "supported" (40/80/97/120 —
+# tests/test_golden_widths.py), proving AC1 (the bundle never rides the
+# footer, at any width) and AC4 (long content truncates safely: it always
+# fits or wraps onto its own row, never overlapping or spilling past the
+# terminal edge) at every size the app is expected to run at — not just
+# the one or two widths the tests above happen to exercise. Also re-proves
+# the D2 seam (border-top) holds throughout, since D4 built inside it.
+
+_SUPPORTED_WIDTHS = (40, 80, 97, 120)
+
+
+@pytest.mark.asyncio
+async def test_footer_responsive_no_bundle_and_no_collision_at_every_width() -> None:
+    loaded_idle = FooterState(
+        mode_id="auto",
+        model="claude-fable-5",
+        session_short="e07d",
+        cost=Decimal("0.70"),
+        shipped=True,
+        effort="high",
+        context_pct=41,
+        queued=1,
+        waiting=2,
+        plan_done=3,
+        plan_total=3,
+        context="idle",
+    )
+    loaded_running = loaded_idle.model_copy(update={"context": "running", "waiting": 0})
+    for width in _SUPPORTED_WIDTHS:
+        for state in (loaded_idle, loaded_running):
+            app = FooterApp()
+            async with app.run_test(size=(width, 24)) as pilot:
+                bar = app.query_one("#footer", FooterBar)
+                bar.update_state(state)
+                await pilot.pause()
+
+                # AC1: single-sourced to the TitleBar — never here, at any width.
+                left_text = _plain(app.query_one("#footer-left", Static))
+                right_text = _plain(app.query_one("#footer-right", Static))
+                assert "bundle" not in left_text
+                assert "bundle" not in right_text
+
+                # AC4/AC5: never wider than the terminal, never clipped —
+                # the widget's own auto layout must stay inside `width`.
+                assert bar.size.width <= width
+                left_group = app.query_one("#footer-left-group")
+                right = app.query_one("#footer-right", Static)
+                if bar.has_class("-wrapped"):
+                    # Hints dropped to their own full-width row below the
+                    # left segment — never overlapping it (AC4: truncates
+                    # safely instead of colliding).
+                    assert right.region.y > left_group.region.y
+                elif right_text:
+                    # Same row: the hints sit strictly to the right of the
+                    # left segment, never underneath/overlapping it.
+                    assert right.region.x >= left_group.region.right
+
+                # D2 seam (do not regress the boundary D4 builds inside).
+                assert bar.styles.border_top[0] == "solid"

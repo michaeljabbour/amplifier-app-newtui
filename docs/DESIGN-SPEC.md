@@ -48,15 +48,17 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
    - Queued-message strip
    - Approval bar (replaces composer while open)
 5. **Composer**: left edge tinted 2px in mode accent; `[mode]` badge (clickable/cyclable) + green bold `❯` + input. Placeholder: `Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )`.
-6. **Footer status bar** (bg-chrome): left = `mode <mode>` (mode color) `· <trust> · <bundle> · <session-short> · $<cost><yield▲><queued q1>` and optional orange `N decisions waiting · ctrl-y`; right = context-sensitive hints.
+6. **Footer status bar** (bg-chrome): left = `mode <mode>` (mode color) `· <trust> · <model> · <session-short> · $<cost><yield▲><queued q1>` and optional orange `N decisions waiting · ctrl-y`; right = context-sensitive hints. The active bundle is not repeated here — item 1's title bar is its one persistent home (compliance 2026-08-02, item D4: a bundle path duplicated between the title and footer was consolidated to the top).
 
 - [ ] Layout matches order & styling above.
+- [ ] The bundle path renders in exactly ONE persistent location (the title bar, item 1) — never a second copy in the footer.
 - [ ] Footer hints change by state:
   - approval open → `arrows select · enter confirm · esc deny`
   - lane focused → `esc back to parent · transcript is the subagent's own`
   - palette open → `↑↓ select · enter run · esc close`
   - running → `esc interrupt · enter steer · shift+enter queue`
-  - idle → `↑ history · ctrl+j newline · / commands`
+  - idle → *(empty — the generic reminder isn't a persistent-frame occupant; see `/keys` and the composer placeholder below)*
+- [ ] `/keys` lists every keyboard shortcut, rendered from the same `ui/keymap.py` table the footer hints and key bindings read (item D4: removing a hint from the footer never costs discoverability).
 
 ## 3. Transcript block grammar
 
