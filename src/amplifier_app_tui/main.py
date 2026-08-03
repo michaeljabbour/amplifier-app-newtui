@@ -555,12 +555,33 @@ def _print_session_table(summaries: list[Any]) -> None:
 @click.option(
     "--resume", "resume", default=None, metavar="SESSION_ID", help="Resume a stored session."
 )
+@click.option(
+    "--attach",
+    "attach",
+    default=None,
+    metavar="REF",
+    help="Attach ref (amplifier-session:<id>[#<handoff>]); claims the handoff on boot.",
+)
+@click.option(
+    "--actor", "actor", default=None, metavar="ID", help="Default actor id for control ops."
+)
+@click.option(
+    "--actor-kind",
+    "actor_kind",
+    type=click.Choice(["human", "automation"]),
+    default="automation",
+    show_default=True,
+    help="Default actor kind (drives lease takeover precedence).",
+)
 def serve(
     bundle: str | None,
     model: str | None,
     provider: str | None,
     mode: str | None,
     resume: str | None,
+    attach: str | None,
+    actor: str | None,
+    actor_kind: str,
 ) -> None:
     """Run an interactive session as a bidirectional line protocol on stdio.
 
@@ -569,9 +590,22 @@ def serve(
     ``approve`` / ``interrupt`` submissions arrive on stdin. This is the seam a
     Rust (or any external) UI drives; it wraps the same ``RealRuntime`` the TUI
     uses, so amplifier-core is untouched. See ``kernel/serve.py`` for the wire.
+
+    ``--attach`` is the human-takeover path: hand a person the ref a paused
+    controller minted (``handoff.created``) and this boots on the SAME session,
+    claims the handoff, and hands them the write lease. ``--actor`` /
+    ``--actor-kind`` stamp the identity that ops without their own ``actor``
+    are attributed to (a ``human`` actor outranks an ``automation`` one when
+    taking the lease over).
     """
     _validate_overrides(model, provider, mode)
     resume_id: str | None = None
+    if attach is not None:
+        from .kernel.session_control import parse_attach_ref
+
+        attached_session, _ = parse_attach_ref(attach)
+        if attached_session:
+            resume = attached_session
     if resume is not None:
         from .kernel import session_manager
 
@@ -579,7 +613,18 @@ def serve(
     from .kernel.serve import serve as _serve
 
     raise SystemExit(
-        asyncio.run(_serve(bundle, mode=mode, model=model, provider=provider, resume_id=resume_id))
+        asyncio.run(
+            _serve(
+                bundle,
+                mode=mode,
+                model=model,
+                provider=provider,
+                resume_id=resume_id,
+                attach=attach,
+                actor=actor,
+                actor_kind=actor_kind,
+            )
+        )
     )
 
 
