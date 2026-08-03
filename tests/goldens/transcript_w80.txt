@@ -48,7 +48,7 @@
 [$rule]──────────────────────────────────[/][$rule] [/][$dimmer]6.1s · 83.9k tok, 91% cached · $0.17 · answer[/]
 
 === evidence ===
-[$teal]· [/][bold $teal]Evidence[/][$dimmer]  1/2 · ←/→ select · enter expand · esc close[/]
+[$teal]· [/][bold $teal]Evidence[/][$dimmer]  1/2 · ←/→ select · enter expand · d detail · esc close[/]
 [$teal]  ¹ [/][$fg]"dashboard and steering wheel"[/][$dim] → [/][$dim]Ran 2 shell commands (pyproject entry points)[/]
 [$teal]  ² [/][$fg]"loads bundles"[/][$dim] → [/][$dim]grep amplifier_core bundle loader[/]
 

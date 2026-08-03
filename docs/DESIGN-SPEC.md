@@ -150,7 +150,11 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 
 - [ ] ctrl-l / `/ledger` prints to scrollback: `· Session ledger  <session> · <bundle>` + `  N turns · $X.XX · N shipped · N answer-only · cache hit NN%`.
 - [ ] Footer `▲` (green) appears when last turn shipped (yield glyph).
-- [ ] Clicking a final answer prints evidence block: `· Evidence  1/N · ←/→ select · enter expand · esc close` + numbered teal claims `¹ "quote" → <tool call that grounds it>`.
+- [ ] Clicking a final answer prints evidence block: `· Evidence  1/N · ←/→ select · enter expand · d detail · esc close` + numbered teal claims `¹ "quote" → <tool call that grounds it>`.
+- [ ] `d` on a focused evidence block opens a side panel (docked beside the transcript) with the selected claim's detail: producing tool call, input/query summary, timestamp, source/output, and originating agent — joined by the claim's tool-call correlation id, never by display order.
+- [ ] `d` again on the same claim closes the panel and restores scroll position + keyboard focus to the evidence row; `←/→` while open re-targets a different claim without closing.
+- [ ] The panel collapses below an 80-column terminal (content preserved, not discarded) and restores on widening back out; opening it below that width shows a notice instead of a dead control.
+- [ ] A claim with no correlation id, one whose tool call no longer resolves, or output too large for the panel each render an explicit fallback message, never a blank panel.
 - [ ] `/context`: `· Context  NN% of 200k` + usage bar line.
 
 ## 11. Turn lifecycle & telemetry

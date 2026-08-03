@@ -577,7 +577,10 @@ def _render_evidence(block: EvidenceBlock, width: int) -> tuple[Line, ...]:
             Segment(text="· ", style_token="teal"),
             Segment(text="Evidence", style_token="teal", bold=True),
             Segment(
-                text=(f"  {block.selected + 1}/{total} · ←/→ select · enter expand · esc close"),
+                text=(
+                    f"  {block.selected + 1}/{total} · ←/→ select · enter expand · "
+                    "d detail · esc close"
+                ),
                 style_token="dimmer",
             ),
         )

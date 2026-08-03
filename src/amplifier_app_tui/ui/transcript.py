@@ -111,6 +111,22 @@ class ViewAnchor(NamedTuple):
     follow: bool
 
 
+class EvidenceFocusAnchor(NamedTuple):
+    """Focused evidence row + scroll snapshot, captured when its detail
+    panel opened (compliance item D7, AC3).
+
+    Reuses the :class:`ViewAnchor` seam (S6): a small store of these is
+    kept per view id (:meth:`TranscriptView._current_view_id`) so a
+    detail panel opened in one view (the parent, or a lane) never
+    clobbers another view's remembered evidence focus. See
+    :meth:`TranscriptView.capture_evidence_focus` /
+    :meth:`TranscriptView.restore_evidence_focus`.
+    """
+
+    block_id: str
+    anchor: ViewAnchor
+
+
 FOCUS_HEADER_TITLE = "‹ Back to parent"
 FOCUS_HEADER_HINT = "esc · click"
 FOCUS_HEADER = f"{FOCUS_HEADER_TITLE}  {FOCUS_HEADER_HINT}"
@@ -180,6 +196,17 @@ class ThinkingToggled(Message):
 class ExpandEvidenceClaim(Message):
     """Enter on a focused evidence block (spec §10 ``enter expand``) —
     deep-link the selected claim to the tool call that grounds it."""
+
+    def __init__(self, block_id: str, link: EvidenceLink) -> None:
+        super().__init__()
+        self.block_id = block_id
+        self.link = link
+
+
+class OpenEvidenceDetail(Message):
+    """``d`` on a focused evidence block (compliance item D7, AC4) — open
+    (or refresh, or toggle-close) the side panel's detail for the
+    currently-selected claim."""
 
     def __init__(self, block_id: str, link: EvidenceLink) -> None:
         super().__init__()
@@ -441,6 +468,11 @@ class BlockWidget(Static):
         block = self._block
         if block.kind == "evidence" and block.links:
             self.post_message(ExpandEvidenceClaim(block.id, block.links[block.selected]))
+
+    def action_evidence_detail(self) -> None:
+        block = self._block
+        if block.kind == "evidence" and block.links:
+            self.post_message(OpenEvidenceDetail(block.id, block.links[block.selected]))
 
     def action_close_evidence(self) -> None:
         if self._block.kind == "evidence":
@@ -747,6 +779,11 @@ class HistoryArchive(Static):
         if block is not None and block.links:
             self.post_message(ExpandEvidenceClaim(block.id, block.links[block.selected]))
 
+    def action_evidence_detail(self) -> None:
+        block = self._active_evidence()
+        if block is not None and block.links:
+            self.post_message(OpenEvidenceDetail(block.id, block.links[block.selected]))
+
     def action_close_evidence(self) -> None:
         block = self._active_evidence()
         if block is not None:
@@ -851,6 +888,7 @@ class TranscriptView(VerticalScroll):
         self._focused_lane: str | None = None
         self._main_stash: list[TranscriptBlock] | None = None
         self._view_anchors: dict[str, ViewAnchor] = {}
+        self._evidence_focus: dict[str, EvidenceFocusAnchor] = {}
         self._streaming = False
         self._reflow_hold = False
         self._reflow_deferred = False
@@ -1181,6 +1219,50 @@ class TranscriptView(VerticalScroll):
             return
         self.scroll_to(y=anchor.scroll_y, animate=False, immediate=True)
 
+    # -- evidence-panel focus/scroll seam (D7 AC3) ------------------------
+    #
+    # Reuses the ViewAnchor seam above (S6), exactly as its docstring
+    # anticipated: keyed by _current_view_id() so a detail panel opened
+    # while a lane is focused restores independently of one opened in the
+    # parent transcript.
+
+    def capture_evidence_focus(self, block_id: str) -> None:
+        """Snapshot the evidence row + scroll position before its detail
+        panel opens, so closing the panel can restore both (AC3)."""
+        self._evidence_focus[self._current_view_id()] = EvidenceFocusAnchor(
+            block_id=block_id,
+            anchor=ViewAnchor(scroll_y=self.scroll_y, follow=self.follow),
+        )
+
+    def restore_evidence_focus(self) -> None:
+        """Closing the detail panel: restore the transcript's scroll
+        position and give keyboard focus back to the evidence row exactly
+        as it was before the panel opened (AC3).
+
+        ``immediate=True`` for the same reason as :meth:`_restore_anchor`
+        (S6 hit this bug): a deferred ``scroll_to`` can be silently
+        clobbered by a later deferred call before it ever fires.
+        """
+        remembered = self._evidence_focus.pop(self._current_view_id(), None)
+        if remembered is None:
+            return
+        widget = self._widgets.get(remembered.block_id)
+        # scroll_visible=False: Widget.focus() schedules its own
+        # scroll-into-view via app.call_later — a DEFERRED callback that
+        # would otherwise resolve after our own immediate=True scroll_to
+        # below and silently clobber it, no matter which of the two we
+        # call first (the exact S6 lesson: immediate=True must be the
+        # last word — here that means disabling the competing scroll
+        # entirely, since it can never be synchronously "before").
+        if widget is not None:
+            widget.focus(scroll_visible=False)
+        if remembered.anchor.follow:
+            self.anchor()
+        else:
+            self.scroll_to(y=remembered.anchor.scroll_y, animate=False, immediate=True)
+        if widget is None:
+            self.scroll_block_visible(remembered.block_id)
+
     async def _swap(self, blocks: Sequence[TranscriptBlock]) -> None:
         await self.remove_children()
         self._blocks.clear()
@@ -1302,11 +1384,13 @@ __all__ = [
     "CloseEvidence",
     "CopyCodeFence",
     "DelegateSummaryToggled",
+    "EvidenceFocusAnchor",
     "ExpandEvidenceClaim",
     "FocusHeader",
     "HistoryArchive",
     "LaneFocusChanged",
     "NeedsYouBlockWidget",
+    "OpenEvidenceDetail",
     "OpenRewind",
     "ShowEvidence",
     "ToolLineToggled",

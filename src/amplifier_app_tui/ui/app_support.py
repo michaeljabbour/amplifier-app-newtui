@@ -765,6 +765,31 @@ def sync_plan_surfaces(app: TuiApp) -> None:
     app.refresh_status()  # footer carries the fallback count (Task 5)
 
 
+EVIDENCE_PANEL_MIN_WIDTH = 80
+"""Below this terminal width the evidence detail side panel collapses
+(compliance item D7, AC4) — a docked sidebar plus a still-usable
+transcript needs more room than a bare 40-col minimum; 80 matches the
+narrowest golden width the transcript renderer itself is pinned to
+(tests/goldens), so the panel never claims space the transcript can't
+spare."""
+
+
+def sync_evidence_panel(app: TuiApp, width: int) -> None:
+    """One decision point for the evidence panel's responsive collapse
+    (D7 AC4) — mirrors :func:`sync_plan_surfaces` (D2). Called on every
+    terminal resize; the open/close/refresh decision itself is made where
+    ``OpenEvidenceDetail`` is handled, not here.
+
+    *width* is the resize event's OWN carried size (``event.size.width``),
+    not ``app.size.width`` — empirically, ``app.size`` has not always
+    settled to the new value at the point ``on_resize`` runs, while the
+    event's own field is authoritative immediately (the same reason
+    ``on_resize`` already feeds ``event.size.width`` to
+    ``adapter.terminal.set_cols`` rather than reading ``app.size``).
+    """
+    app.evidence_panel.sync_width(width, min_width=EVIDENCE_PANEL_MIN_WIDTH)
+
+
 def plan_footer_counts(app: TuiApp) -> tuple[int, int]:
     """``(done, total)`` for the footer — (0, 0) unless the panel is hidden
     while todos exist (the count never shows twice; design D2)."""
@@ -809,6 +834,7 @@ def footer_state(app: TuiApp) -> FooterState:
 
 __all__ = [
     "APPROVAL_NOTICE",
+    "EVIDENCE_PANEL_MIN_WIDTH",
     "EscSequence",
     "LANE_FOCUS_INTRO_NOTICE",
     "PLAN_PANEL_MIN_WIDTH",
@@ -817,6 +843,7 @@ __all__ = [
     "announce_ready",
     "apply_decision",
     "apply_plan_change",
+    "sync_evidence_panel",
     "confirm_fork",
     "echo_lane_steer",
     "echo_steer",

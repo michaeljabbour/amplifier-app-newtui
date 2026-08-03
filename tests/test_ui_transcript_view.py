@@ -41,6 +41,7 @@ from amplifier_app_tui.ui.transcript import (
     BlockWidget,
     CloseEvidence,
     CopyCodeFence,
+    EvidenceFocusAnchor,
     ExpandEvidenceClaim,
     FOCUS_HEADER_HINT,
     FOCUS_HEADER_TITLE,
@@ -49,10 +50,12 @@ from amplifier_app_tui.ui.transcript import (
     HISTORY_WIDGET_LIMIT,
     HistoryArchive,
     LaneFocusChanged,
+    OpenEvidenceDetail,
     OpenRewind,
     ShowEvidence,
     ToolLineToggled,
     TranscriptView,
+    ViewAnchor,
     fence_text_at_row,
     render_block,
 )
@@ -69,6 +72,7 @@ class Harness(App[None]):
         self.toggles: list[ToolLineToggled] = []
         self.lane_changes: list[LaneFocusChanged] = []
         self.expanded_claims: list[ExpandEvidenceClaim] = []
+        self.opened_details: list[OpenEvidenceDetail] = []
         self.closed_evidence: list[CloseEvidence] = []
         self.decisions: list[NeedsYouList.DecisionTaken] = []
         self.fence_copies: list[CopyCodeFence] = []
@@ -97,6 +101,9 @@ class Harness(App[None]):
 
     def on_expand_evidence_claim(self, message: ExpandEvidenceClaim) -> None:
         self.expanded_claims.append(message)
+
+    def on_open_evidence_detail(self, message: OpenEvidenceDetail) -> None:
+        self.opened_details.append(message)
 
     def on_close_evidence(self, message: CloseEvidence) -> None:
         self.closed_evidence.append(message)
@@ -703,3 +710,150 @@ async def test_archived_history_retains_answer_rewind_evidence_and_decisions() -
         assert app.closed_evidence[-1].block_id == "old-evidence"
         assert app.decisions[-1].item_id == "decision-1"
         assert app.decisions[-1].choice == "apply it"
+
+
+# ---------------------------------------------------------------------------
+# Evidence detail panel seam (compliance item D7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flat_evidence_widget_action_detail_posts_open_evidence_detail() -> None:
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        link = EvidenceLink(claim_quote="tests pass", tool_ref="pytest run", tool_call_id="c1")
+        widget = view.append(EvidenceBlock(id="e1", links=(link,)))
+        assert isinstance(widget, BlockWidget)
+        widget.action_evidence_detail()
+        await pilot.pause()
+        assert len(app.opened_details) == 1
+        assert app.opened_details[0].block_id == "e1"
+        assert app.opened_details[0].link == link
+
+
+@pytest.mark.asyncio
+async def test_flat_evidence_widget_action_detail_is_a_noop_without_links() -> None:
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        widget = view.append(EvidenceBlock(id="e-empty", links=()))
+        assert isinstance(widget, BlockWidget)
+        widget.action_evidence_detail()
+        await pilot.pause()
+        assert app.opened_details == []
+
+
+@pytest.mark.asyncio
+async def test_archived_evidence_action_detail_posts_open_evidence_detail() -> None:
+    """The consolidated HistoryArchive path mirrors the flat-widget one
+    (same dual-path pattern as action_evidence_expand/action_close_evidence)."""
+    app = Harness()
+    async with app.run_test(size=(100, 30)) as pilot:
+        view = _view(app)
+        link = EvidenceLink(
+            claim_quote="the claim", tool_ref="read_file · source.py", tool_call_id="c9"
+        )
+        for i in range(HISTORY_COMPACT_TRIGGER + 5):
+            view.append(UserLine(id=f"filler-{i}", text=f"line {i}"))
+        view.append(EvidenceBlock(id="old-evidence", links=(link,)))
+        await pilot.pause()
+
+        archive = view.query_one(HistoryArchive)
+        archive.action_archive_activate("old-evidence")  # focuses the archived block
+        archive.action_evidence_detail()
+        await pilot.pause()
+
+        assert len(app.opened_details) == 1
+        assert app.opened_details[0].block_id == "old-evidence"
+        assert app.opened_details[0].link == link
+
+
+# ---------------------------------------------------------------------------
+# Evidence focus/scroll restore seam (compliance item D7 AC3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_capture_and_restore_evidence_focus_returns_scroll_and_widget_focus() -> None:
+    """AC3: closing detail restores BOTH scroll position and keyboard
+    focus to the evidence row -- reuses the S6 ViewAnchor seam."""
+    app = Harness()
+    async with app.run_test(size=(80, 10)) as pilot:
+        view = _view(app)
+        view.release_anchor()  # a fixed scroll position, not tail-follow
+        for i in range(60):
+            view.append(Narration(id=f"n{i}", text=f"narration line number {i}"))
+        link = EvidenceLink(claim_quote="c", tool_ref="r", tool_call_id="c1")
+        view.append(EvidenceBlock(id="ev-row", links=(link,)))
+        await pilot.pause()
+
+        widget = view.get_widget("ev-row")
+        assert widget is not None
+        view.scroll_to(y=12, animate=False, immediate=True)
+        await pilot.pause()
+        captured_scroll = view.scroll_y
+        assert captured_scroll == 12
+
+        # Opening detail captures the anchor (mimics on_open_evidence_detail).
+        view.capture_evidence_focus("ev-row")
+
+        # Something else steals scroll + focus (mimics the docked panel's
+        # width reflow moving the viewport, and the panel never focusing).
+        view.scroll_to(y=0, animate=False, immediate=True)
+        app.set_focus(None)
+        await pilot.pause()
+        assert view.scroll_y == 0
+        assert not widget.has_focus
+
+        # Closing detail restores both (mimics close_evidence_panel).
+        view.restore_evidence_focus()
+        await pilot.pause()
+        assert view.scroll_y == captured_scroll
+        restored_widget = view.get_widget("ev-row")
+        assert restored_widget is not None
+        assert restored_widget.has_focus
+
+
+@pytest.mark.asyncio
+async def test_restore_evidence_focus_is_a_noop_when_nothing_was_captured() -> None:
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(Narration(id="n1", text="hello"))
+        await pilot.pause()
+        view.restore_evidence_focus()  # nothing captured -- must not raise
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_evidence_focus_is_keyed_per_view_like_view_anchor() -> None:
+    """Mirrors ViewAnchor's per-view keying (S6): a lane's own evidence
+    focus must not clobber the parent's, and vice versa."""
+    app = Harness()
+    async with app.run_test(size=(80, 10)) as pilot:
+        view = _view(app)
+        view.release_anchor()
+        for i in range(40):
+            view.append(Narration(id=f"main-{i}", text=f"main {i}"))
+        view.append(
+            EvidenceBlock(id="main-ev", links=(EvidenceLink(claim_quote="c", tool_ref="r"),))
+        )
+        await pilot.pause()
+        view.scroll_to(y=8, animate=False, immediate=True)
+        await pilot.pause()
+        view.capture_evidence_focus("main-ev")
+        main_anchor = view._evidence_focus[view._current_view_id()]
+        assert isinstance(main_anchor, EvidenceFocusAnchor)
+        assert main_anchor.block_id == "main-ev"
+        assert isinstance(main_anchor.anchor, ViewAnchor)
+
+        await view.focus_lane("lane-1", [Narration(id="lane-n", text="lane content")])
+        await pilot.pause()
+        # The lane's own view has no captured evidence focus of its own yet.
+        assert "lane-1" not in view._evidence_focus
+
+        await view.restore_main()
+        await pilot.pause()
+        # The parent's remembered evidence focus survived the round trip.
+        assert view._evidence_focus[view._current_view_id()].block_id == "main-ev"

@@ -267,6 +267,7 @@ sandbox around arbitrary interpreter code.
 | esc esc | interrupt, then open rewind | running turn |
 | ↑ ↓ | select in palette/lanes (lanes from an empty composer) | panels |
 | ‹ › (← →) | navigate checkpoints · evidence refs | rewind · evidence |
+| d | open/refresh/close evidence detail panel | evidence |
 | ctrl+c | copy mouse-selected transcript text | after selecting |
 | ctrl+d | quit | any time |
 | esc | one step "out" | see below |
@@ -348,8 +349,20 @@ ledger accounting roll back with it.
 
 **Click any answer** to reveal its evidence: a block opens (and takes the keyboard)
 listing each claim and the tool call that backs it — `· Evidence 1/N · ←/→ select ·
-enter expand · esc close`. **enter** jumps to and expands the tool line grounding the
-selected claim. Answers with no recorded evidence say so in a notice.
+enter expand · d detail · esc close`. **enter** jumps to and expands the tool line
+grounding the selected claim in the transcript itself. Answers with no recorded
+evidence say so in a notice.
+
+**Press d** to open the **evidence detail panel**, docked beside the transcript, for
+the currently-selected claim: the producing tool call and its input/query summary,
+when it ran, its source/output, and the originating agent. **←/→** while the panel is
+open re-targets it to a different claim; **d** again on the same claim closes it and
+restores your scroll position and keyboard focus to that evidence row. On a narrow
+terminal (under 80 columns) `d` shows a notice instead of squeezing the transcript
+unreadably thin, and an already-open panel collapses (without losing its content) if
+you resize below that width, reappearing when you widen back out. If a claim's
+grounding tool call has no correlation id, is no longer resolvable, or its output is
+too large to show inline, the panel says so explicitly — never a blank or dead panel.
 
 ## 13. Copying and exporting
 

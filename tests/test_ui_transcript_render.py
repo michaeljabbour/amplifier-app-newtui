@@ -437,7 +437,9 @@ def test_turn_rule_label_dim_when_shipped_dimmer_otherwise() -> None:
 
 def test_evidence_exact() -> None:
     lines = render_block(_blocks()["evidence"], 80)
-    assert line_plain(lines[0]) == ("· Evidence  1/2 · ←/→ select · enter expand · esc close")
+    assert line_plain(lines[0]) == (
+        "· Evidence  1/2 · ←/→ select · enter expand · d detail · esc close"
+    )
     # Header counter + hints are ONE dimmer run (mockup showEvidence).
     assert lines[0][-1].style_token == "dimmer"
     assert line_plain(lines[1]) == '  ¹ "all tests pass" → pytest run · 34 passed'

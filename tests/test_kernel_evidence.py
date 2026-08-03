@@ -180,3 +180,76 @@ def test_bridge_tap_failure_never_blocks_the_queue() -> None:
     bridge.emit(PromptSubmit(session_id=SID, prompt="hi"))
     assert queue.qsize() == 1
     assert bridge.dropped == 0
+
+
+# ---------------------------------------------------------------------------
+# Provenance store (compliance item D7): ToolCallRecord / record_for
+# ---------------------------------------------------------------------------
+
+
+def test_input_hint_and_result_output_are_the_single_source_tool_ref_uses() -> None:
+    from amplifier_app_tui.kernel.evidence import input_hint, result_output
+
+    assert input_hint({"command": "git  status"}) == "git status"
+    assert input_hint({}) == ""
+    assert result_output({"output": "hello"}) == "hello"
+    assert result_output({"status": "success"}) == "{'status': 'success'}"
+    assert result_output({}) == ""
+
+
+def test_record_for_persists_provenance_independent_of_links_for() -> None:
+    """D7: the provenance store is keyed by tool_call_id at the SOURCE
+    (ToolPost), not inferred from however links_for/derive_links pairs
+    claims to sentences."""
+    collector = EvidenceCollector()
+    collector.observe(PromptSubmit(session_id=SID, prompt="check the tests"))
+    collector.observe(_tool_post(name="bash", call_id="c1", command="uv run pytest -q"))
+    record = collector.record_for("c1")
+    assert record is not None
+    assert record.tool_call_id == "c1"
+    assert record.tool_name == "bash"
+    assert record.tool_input == {"command": "uv run pytest -q"}
+    assert record.agent == "main agent"
+    assert record.ts > 0
+
+
+def test_record_for_unknown_or_empty_id_returns_none() -> None:
+    collector = EvidenceCollector()
+    collector.observe(PromptSubmit(session_id=SID, prompt="go"))
+    collector.observe(_tool_post())
+    assert collector.record_for("never-seen") is None
+    assert collector.record_for("") is None
+
+
+def test_record_for_skips_denied_and_plan_calls_like_links_for_does() -> None:
+    collector = EvidenceCollector()
+    collector.observe(PromptSubmit(session_id=SID, prompt="go"))
+    collector.observe(
+        _tool_post(call_id="denied-1", result={"status": "denied", "reason": "trust"})
+    )
+    collector.observe(_tool_post(name="update_plan", call_id="plan-1", command=""))
+    assert collector.record_for("denied-1") is None
+    assert collector.record_for("plan-1") is None
+
+
+def test_record_for_ignores_subagent_lane_calls_like_links_for_does() -> None:
+    """Provenance is main-session-only, mirroring EvidenceCollector.observe's
+    is_top_level_session gate (subagent lanes ground their own transcripts)."""
+    collector = EvidenceCollector()
+    collector.observe(PromptSubmit(session_id=SID, prompt="go"))
+    collector.observe(_tool_post(call_id="lane-1", session_id="sess-1-ab_researcher"))
+    assert collector.record_for("lane-1") is None
+
+
+def test_record_for_survives_a_turn_boundary_unlike_the_calls_buffer() -> None:
+    """links_for's positional pairing resets self._calls each PromptSubmit
+    (test_collector_resets_calls_each_turn); the provenance store must NOT
+    lose earlier turns' records the same way \u2014 a claim can reference a
+    call from an earlier turn and still resolve its detail."""
+    collector = EvidenceCollector()
+    collector.observe(PromptSubmit(session_id=SID, prompt="one"))
+    collector.observe(_tool_post(call_id="c1"))
+    collector.observe(PromptSubmit(session_id=SID, prompt="two"))
+    collector.observe(_tool_post(call_id="c2"))
+    assert collector.record_for("c1") is not None
+    assert collector.record_for("c2") is not None
