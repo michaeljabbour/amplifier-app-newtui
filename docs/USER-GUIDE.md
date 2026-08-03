@@ -14,7 +14,7 @@ uv run amplifier-tui              # full-screen TUI, real session
 uv run amplifier-tui --demo       # scripted demo — no credentials needed
 uv run amplifier-tui --bundle B   # pick a bundle by name or URI
 uv run amplifier-tui sessions     # list stored sessions for this project
-uv run amplifier-tui resume ID    # resume a stored session
+uv run amplifier-tui resume SESSION_ID    # resume a stored session
 uv run amplifier-tui run "PROMPT" # headless one-shot, prints the answer
 printf 'PROMPT\n' | uv run amplifier-tui run # stdin one-shot
 uv run amplifier-tui run --output-format json "PROMPT" # machine-readable stdout
@@ -363,8 +363,18 @@ terminal's native selection.
 
 Sessions persist under `~/.amplifier/projects/<project>/sessions/` — transcript, metadata,
 and a full event log. Saving is incremental (after every tool call), so even a crash loses
-almost nothing. `sessions` lists them; `resume ID` picks one back up with history, cost,
-and checkpoints intact.
+almost nothing. `sessions` lists them; `resume SESSION_ID` picks one back up with history,
+cost, and checkpoints intact. A prefix works too (`resume abc123`); an ambiguous prefix lists
+every match instead of guessing, and `resume`/`session resume`/`run --resume`/`serve --resume`
+all use distinct, stable exit codes (0 ok, 2 no match, 3 ambiguous, 4 corrupt) instead of a
+blanket 1 — see the table below.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Resumed (or launched) fine; the session's own exit status then applies |
+| `2` | No stored session matches the given id/prefix |
+| `3` | The prefix matches more than one stored session (candidates are listed) |
+| `4` | The match is unambiguous but its metadata is corrupt, even from backup |
 
 ## 15. When something's off
 

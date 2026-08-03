@@ -39,9 +39,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from .persistence import METADATA_FILENAME, TRANSCRIPT_FILENAME, SessionStore
+from .persistence import (
+    METADATA_FILENAME,
+    TRANSCRIPT_FILENAME,
+    AmbiguousSessionError,
+    SessionStore,
+)
 
 MAX_NAME_LENGTH = 50
 """app-cli ``_rename_session`` clamps the stored name to 50 chars."""
@@ -234,13 +239,70 @@ def resolve(store: SessionStore, partial_id: str) -> str:
     return store.find_session(partial_id)
 
 
+@dataclass(frozen=True)
+class ResumeResolution:
+    """Outcome of resolving one resume target -- the resume path's one decision
+    point (S3), shared by ``resume`` / ``session resume`` / ``run --resume`` /
+    ``serve --resume`` so all four commands report the same deterministic
+    outcome from a single, kernel-tested function instead of four hand-rolled
+    try/excepts that can (and did) drift apart.
+
+    Exactly one status applies:
+
+    - ``"ok"`` -- ``session_id`` is the resolved, readable, unambiguous id.
+    - ``"not_found"`` -- no stored session matches ``partial_id``.
+    - ``"ambiguous"`` -- ``partial_id`` matches every session in ``candidates``
+      (newest-first, full :class:`SessionSummary` rows -- enough to render an
+      actionable table, not just a truncated id preview).
+    - ``"corrupt"`` -- ``session_id`` resolved to exactly one session, but its
+      metadata (and its ``.backup``) could not be read. ``SessionStore``
+      already degrades this to a synthesized ``recovered`` stub rather than
+      raising (:meth:`SessionStore._load_metadata`); this status is the
+      resume path's own probe of that stub so it can refuse to launch into a
+      session with no known bundle/identity instead of failing deeper and
+      less clearly inside the runtime.
+    """
+
+    status: Literal["ok", "not_found", "ambiguous", "corrupt"]
+    session_id: str = ""
+    candidates: tuple[SessionSummary, ...] = ()
+    partial_id: str = ""
+
+
+def resolve_for_resume(store: SessionStore, partial_id: str) -> ResumeResolution:
+    """Resolve *partial_id* for a resume-family command; never raises.
+
+    Thin wrapper over :meth:`SessionStore.find_session` that turns its two
+    exception types (``FileNotFoundError``, :class:`AmbiguousSessionError`)
+    plus a post-resolve corruption probe into one :class:`ResumeResolution`,
+    so CLI callers map status -> exit code / guidance text with no
+    try/except of their own (S3).
+    """
+    try:
+        resolved = store.find_session(partial_id)
+    except FileNotFoundError:
+        return ResumeResolution(status="not_found", partial_id=partial_id)
+    except AmbiguousSessionError as error:
+        candidates = tuple(summary_for(store, sid) for sid in error.matches)
+        return ResumeResolution(status="ambiguous", candidates=candidates, partial_id=partial_id)
+    except ValueError:
+        # e.g. an empty/whitespace id: nothing to resolve, and not a
+        # candidate-bearing ambiguity -- the same user-facing outcome as
+        # "not found" rather than a fifth status the CLI brief never asked for.
+        return ResumeResolution(status="not_found", partial_id=partial_id)
+    metadata = store.get_metadata(resolved)
+    if not metadata or metadata.get("recovered"):
+        return ResumeResolution(status="corrupt", session_id=resolved, partial_id=partial_id)
+    return ResumeResolution(status="ok", session_id=resolved, partial_id=partial_id)
+
+
 def find_across_projects(
     partial_id: str, amplifier_home: Path | None = None
 ) -> list[tuple[str, str]]:
     """Search EVERY project's session store for a (prefix) id match.
 
     Sessions live per working directory (``~/.amplifier/projects/<slug>/
-    sessions/``), so a bare ``resume <id>`` only sees the current dir's
+    sessions/``), so a bare ``resume SESSION_ID`` only sees the current dir's
     project — a user who ``cd``'d elsewhere gets a bare "no session found"
     even though the session exists. This backstops that error with an
     actionable cross-project hint. Returns ``(full_id, working_dir)`` pairs

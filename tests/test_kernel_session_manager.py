@@ -119,6 +119,61 @@ def test_resolve_prefix_and_errors(store: SessionStore) -> None:
         sm.resolve(store, "ab")  # ambiguous
 
 
+# -- resolve_for_resume (S3: one resolution -> exit-code/guidance decision) -
+
+
+def test_resolve_for_resume_ok(store: SessionStore) -> None:
+    _seed(store, "abc123")
+    result = sm.resolve_for_resume(store, "abc")
+    assert result.status == "ok"
+    assert result.session_id == "abc123"
+    assert result.candidates == ()
+
+
+def test_resolve_for_resume_not_found(store: SessionStore) -> None:
+    result = sm.resolve_for_resume(store, "zzz")
+    assert result.status == "not_found"
+    assert result.partial_id == "zzz"
+    assert result.session_id == ""
+
+
+def test_resolve_for_resume_empty_id_is_not_found_not_a_crash(store: SessionStore) -> None:
+    """An empty/whitespace id is a plain ``ValueError`` from ``find_session``
+    (not :class:`sm.AmbiguousSessionError`) -- resolve_for_resume folds it
+    into ``not_found`` rather than raising a fifth status."""
+    result = sm.resolve_for_resume(store, "   ")
+    assert result.status == "not_found"
+
+
+def test_resolve_for_resume_ambiguous_carries_full_candidates(store: SessionStore) -> None:
+    _seed(store, "abc123", name="one")
+    _seed(store, "abd999", name="two")
+    result = sm.resolve_for_resume(store, "ab")
+    assert result.status == "ambiguous"
+    assert result.session_id == ""
+    assert {c.session_id for c in result.candidates} == {"abc123", "abd999"}
+    assert {c.name for c in result.candidates} == {"one", "two"}
+
+
+def test_resolve_for_resume_corrupt_metadata_unreadable_even_from_backup(
+    store: SessionStore,
+) -> None:
+    _seed(store, "deadbeef")
+    (store.session_dir("deadbeef") / METADATA_FILENAME).write_text("{broken", encoding="utf-8")
+    result = sm.resolve_for_resume(store, "dead")
+    assert result.status == "corrupt"
+    assert result.session_id == "deadbeef"
+
+
+def test_resolve_for_resume_corrupt_when_metadata_entirely_missing(store: SessionStore) -> None:
+    """A session dir that exists but was never ``save()``-d (no metadata.json
+    at all) is corrupt too -- there is nothing to resume into."""
+    session_dir = store.session_dir("nometa01")
+    session_dir.mkdir(parents=True)
+    result = sm.resolve_for_resume(store, "nometa01")
+    assert result.status == "corrupt"
+
+
 # -- rename -----------------------------------------------------------------
 
 

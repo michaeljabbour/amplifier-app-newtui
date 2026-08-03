@@ -62,6 +62,27 @@ def is_top_level_session(session_id: str) -> bool:
     return "_" not in session_id
 
 
+class AmbiguousSessionError(ValueError):
+    """Raised by :meth:`SessionStore.find_session` when a prefix matches >1 session.
+
+    Subclasses ``ValueError`` so every EXISTING ``except ValueError`` call site
+    (rename/delete/tag/fork/export -- see ``session_manager.py``) keeps working
+    unchanged: ``str(error)`` renders the identical truncated-preview message
+    they already echo. The ADDITION is :attr:`matches`, the full unfiltered
+    candidate list, which resume-path callers (S3) use to render an actionable
+    table instead of a 3-item text preview.
+    """
+
+    def __init__(self, partial_id: str, matches: list[str]) -> None:
+        self.partial_id = partial_id
+        self.matches = matches
+        preview = ", ".join(m[:12] + "…" for m in matches[:3])
+        extra = f" and {len(matches) - 3} more" if len(matches) > 3 else ""
+        super().__init__(
+            f"Ambiguous session ID '{partial_id}' matches {len(matches)} sessions: {preview}{extra}"
+        )
+
+
 def _validate_session_id(session_id: str) -> str:
     if not session_id or not session_id.strip():
         raise ValueError("session_id cannot be empty")
@@ -375,12 +396,7 @@ class SessionStore:
         if not matches:
             raise FileNotFoundError(f"No session found matching '{partial_id}'")
         if len(matches) > 1:
-            preview = ", ".join(m[:12] + "…" for m in matches[:3])
-            extra = f" and {len(matches) - 3} more" if len(matches) > 3 else ""
-            raise ValueError(
-                f"Ambiguous session ID '{partial_id}' matches "
-                f"{len(matches)} sessions: {preview}{extra}"
-            )
+            raise AmbiguousSessionError(partial_id, matches)
         return matches[0]
 
     # -- lifecycle mutation (delete / cleanup) ------------------------------

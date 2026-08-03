@@ -17,6 +17,7 @@ from amplifier_app_tui.kernel.persistence import (
     LEGACY_EVENTS_FILENAME,
     METADATA_FILENAME,
     TRANSCRIPT_FILENAME,
+    AmbiguousSessionError,
     IncrementalSaver,
     SessionStore,
     is_top_level_session,
@@ -289,6 +290,21 @@ def test_list_and_find_sessions_top_level_filter(store: SessionStore) -> None:
         store.find_session("aaaa")  # ambiguous
     with pytest.raises(FileNotFoundError):
         store.find_session("zzzz")
+
+
+def test_find_session_ambiguous_error_carries_full_match_list(store: SessionStore) -> None:
+    """AmbiguousSessionError subclasses ValueError (every EXISTING
+    ``except ValueError`` call site keeps working unchanged, S3) but also
+    carries the full, untruncated ``matches`` list so a resume-path caller
+    can render every candidate instead of a 3-item text preview."""
+    store.save("aaaa-1111", [], {})
+    store.save("aaaa-2222", [], {})
+    with pytest.raises(AmbiguousSessionError) as exc_info:
+        store.find_session("aaaa")
+    error = exc_info.value
+    assert set(error.matches) == {"aaaa-1111", "aaaa-2222"}
+    assert error.partial_id == "aaaa"
+    assert "Ambiguous session ID 'aaaa' matches 2 sessions" in str(error)
 
 
 # --------------------------------------------------------------------------

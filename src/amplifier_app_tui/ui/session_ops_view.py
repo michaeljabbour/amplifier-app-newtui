@@ -109,7 +109,7 @@ def sessions_spans(
 
     The live session (its short id is a prefix of *current*) is marked with
     a green ▸; the rest read dim. Read-only — switching sessions is a fresh
-    ``amplifier-tui resume <id>`` (noted in the header), never an
+    ``amplifier-tui resume SESSION_ID`` (noted in the header), never an
     in-place teardown.
     """
     if not summaries:
@@ -122,7 +122,7 @@ def sessions_spans(
     spans = list(
         _header(
             "Sessions",
-            f"{len(summaries)} stored · resume: amplifier-tui resume <id>",
+            f"{len(summaries)} stored · resume: amplifier-tui resume SESSION_ID",
         )
     )
     for summary in summaries:
