@@ -62,11 +62,30 @@ SPEC_TABLE: dict[str, dict[str, str]] = {
         "teal": "#57c8c8",
         "rule": "#2a3140",
     },
+    "paper": {
+        "bg-page": "#e7e2d3",
+        "bg-term": "#f7f5f0",
+        "bg-chrome": "#efece3",
+        "bg-tab": "#dcd4bf",
+        "fg": "#3a352c",
+        "bright": "#1c1812",
+        "dim": "#6e6656",
+        "dimmer": "#948c78",
+        "green": "#146536",
+        "orange": "#8a4d0a",
+        "red": "#9c2f27",
+        "blue": "#1a45b8",
+        "teal": "#0a5f58",
+        "rule": "#cfc6ae",
+    },
 }
 
+DARK_THEMES = ("slate", "graphite", "carbon")
+LIGHT_THEMES = ("paper",)
 
-def test_three_themes_exist() -> None:
-    assert set(THEMES) == {"slate", "graphite", "carbon"}
+
+def test_four_themes_exist() -> None:
+    assert set(THEMES) == {"slate", "graphite", "carbon", "paper"}
     assert DEFAULT_THEME == "slate"
 
 
@@ -95,7 +114,16 @@ def test_textual_theme_variables_expose_every_token() -> None:
 def test_theme_names_are_registered_ids() -> None:
     for theme_name, theme in THEMES.items():
         assert theme.name == theme_id(theme_name) == f"amplifier-{theme_name}"
-        assert theme.dark is True
+
+
+def test_dark_flag_matches_theme_kind() -> None:
+    """AC4/#210: the three original themes are dark; ``paper`` is light --
+    Textual's own ``dark`` flag must say so (it drives fallback ANSI
+    color mapping, not just cosmetics)."""
+    for theme_name in DARK_THEMES:
+        assert THEMES[theme_name].dark is True, theme_name
+    for theme_name in LIGHT_THEMES:
+        assert THEMES[theme_name].dark is False, theme_name
 
 
 def test_semantic_slots_come_from_tokens() -> None:
@@ -136,7 +164,7 @@ def test_theme_command_is_registered() -> None:
 
     spec = build_registry().get("/theme")
     assert spec is not None
-    assert spec.desc == "switch theme: slate, graphite, carbon"
+    assert spec.desc == "switch theme: slate, graphite, carbon, paper"
 
 
 @pytest.mark.asyncio
@@ -158,15 +186,35 @@ async def test_theme_switch_at_runtime_via_command() -> None:
         assert app.theme == theme_id("graphite")
         assert app.notice_slot.current == "theme graphite"
 
-        # Bare /theme cycles graphite → carbon.
+        # Bare /theme cycles graphite → carbon → paper (AC4/#210) → slate.
         await type_text(pilot, "/theme")
         await pilot.press("enter")
         await pilot.pause()
         assert app.theme == theme_id("carbon")
 
+        await type_text(pilot, "/theme")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.theme == theme_id("paper")
+        assert app.notice_slot.current == "theme paper"
+
+        await type_text(pilot, "/theme")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.theme == theme_id("slate")
+
         # Unknown names change nothing and explain the choices.
         await type_text(pilot, "/theme neon")
         await pilot.press("enter")
         await pilot.pause()
-        assert app.theme == theme_id("carbon")
-        assert app.notice_slot.current == ("unknown theme · neon · themes: slate, graphite, carbon")
+        assert app.theme == theme_id("slate")
+        assert app.notice_slot.current == (
+            "unknown theme · neon · themes: slate, graphite, carbon, paper"
+        )
+
+        # The light theme is reachable directly by name too.
+        await type_text(pilot, "/theme paper")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.theme == theme_id("paper")
+        assert app.notice_slot.current == "theme paper"

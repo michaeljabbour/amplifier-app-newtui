@@ -611,7 +611,7 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         group="Repair",
         name="/theme",
-        desc="switch theme: slate, graphite, carbon",
+        desc="switch theme: slate, graphite, carbon, paper",
         tag="built-in",
         handler=_cmd_theme,
     ),
