@@ -50,6 +50,12 @@ GLYPH_QUEUED = "▹"
 GLYPH_REWIND_LEFT = "‹"
 GLYPH_REWIND_RIGHT = "›"
 GLYPH_ERROR = "✖"
+GLYPH_ATTENTION = "!"
+"""Lane-row marker for a lane that hit a discrete failure signal (a tool
+error, or a failed tool result) while still active — distinct from both
+ordinary progress and the terminal :data:`GLYPH_ERROR` (D5 AC1). Plain
+ASCII: guaranteed single-cell width in every terminal, unlike a wider
+warning glyph."""
 GLYPH_CHEVRON_COLLAPSED = "▸"
 GLYPH_CHEVRON_EXPANDED = "▾"
 GLYPH_CHECKBOX_CHECKED = "✓"

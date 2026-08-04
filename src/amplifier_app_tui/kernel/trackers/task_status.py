@@ -19,7 +19,7 @@ from typing import Any
 
 from amplifier_core import HookResult
 
-from ...model.lanes import LaneRecord, LaneRegistry
+from ...model.lanes import TERMINAL_LANE_STATES, LaneRecord, LaneRegistry
 from ..events import AgentCompleted, AgentResumed, AgentSpawned, normalize
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,7 @@ class TaskStatusTracker:
             self._notify()
             return
         record = self.lanes.get(session_id)
-        if record is not None and record.lane.state != "done":
+        if record is not None and record.lane.state not in TERMINAL_LANE_STATES:
             self.lanes.complete(session_id)
             self._notify()
 

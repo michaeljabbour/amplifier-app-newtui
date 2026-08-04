@@ -52,7 +52,7 @@ from ..model.blocks import (
 from ..model.codemode import CODE_MODE_TOOL
 from ..model.evidence import EvidenceLink
 from ..model.formatting import command_digest
-from ..model.lanes import LaneRegistry, LaneStateName
+from ..model.lanes import TERMINAL_LANE_STATES, LaneRegistry, LaneStateName
 from ..model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
 from .lane_reducer import (
     LANE_TAIL_NOTIFY_SECONDS as LANE_TAIL_NOTIFY_SECONDS,
@@ -972,8 +972,13 @@ class TranscriptReducer:
         # Lanes the log never completed (same crash case) must not keep
         # ticking against the wall clock after resume.
         for record in self.lanes.lanes:
-            if record.lane.state != "done":
-                self.lanes.complete(record.session_id, result="interrupted")
+            if record.lane.state not in TERMINAL_LANE_STATES:
+                # "cancelled" (not the "done" default): the log ended
+                # without this lane ever reporting a real outcome — a
+                # crash/interruption is closer to a cancelled turn than a
+                # successful completion (D5 AC1: no outcome folds into a
+                # glyph that doesn't match what actually happened).
+                self.lanes.complete(record.session_id, result="interrupted", state="cancelled")
         checkpoints = self.ledger.checkpoints
         if not checkpoints or checkpoints[-1].turn_id != turn_base:
             # Degrade explicitly: the event log disagrees with the stored
@@ -1157,10 +1162,18 @@ class TranscriptReducer:
         """
 
         record = self.lanes.get(event.session_id)
-        if record is None or record.lane.state == "done":
+        if record is None or record.lane.state in TERMINAL_LANE_STATES:
             return
         activity: str | None = None
-        state: LaneStateName = "running"
+        # ``None`` is a sentinel meaning "ordinary narration — neither
+        # enters nor clears attention" (resolved below): only a fresh tool
+        # attempt (ToolPre) clears a prior ``attention`` back to ``working``,
+        # and only a discrete failure (ToolError / a failed ToolPost) enters
+        # it. Everything else (stream/content/orchestrator narration)
+        # preserves whatever attention-ness the lane already has — an
+        # attention row must survive the very next unrelated narration
+        # beat, not flicker off before anyone can see it (D5 AC1).
+        state: LaneStateName | None = None
         # D5 AC5: classifies the repaint notification below. "error" is a
         # discrete failure surfaced against a lane that keeps running (a
         # tool errored, or came back denied/failed) — distinct from
@@ -1177,7 +1190,7 @@ class TranscriptReducer:
                         "actor": record.lane.name,
                     }
                 activity = _live_op_label(event.tool_name, event.tool_input or {})
-                state = "working"
+                state = "working"  # a fresh attempt always clears a prior attention
             case ev.ToolPost():
                 call = (
                     self._turn.child_calls.pop((record.session_id, event.tool_call_id), None)
@@ -1203,6 +1216,7 @@ class TranscriptReducer:
                 activity = "reviewing tool result"
                 if not ok:
                     kind = "error"
+                    state = "attention"  # a failed result needs notice (D5 AC1)
             case ev.ToolError():
                 self._lane.append_block(
                     record,
@@ -1216,6 +1230,7 @@ class TranscriptReducer:
                 )
                 activity = f"recovering from {event.tool_name.replace('_', ' ')} error"
                 kind = "error"
+                state = "attention"  # same discrete-failure signal as above
             case ev.StreamBlockStart():
                 activity = "thinking" if event.block_type == "thinking" else "writing response"
             case ev.StreamBlockDelta():
@@ -1240,6 +1255,8 @@ class TranscriptReducer:
                 activity = "wrapping up"
             case _:
                 return
+        if state is None:
+            state = "attention" if record.lane.state == "attention" else "running"
         if activity is None or (record.lane.activity == activity and record.lane.state == state):
             return
         updated = self.lanes.update(event.session_id, activity=activity, state=state)
@@ -1374,12 +1391,25 @@ class TranscriptReducer:
         # durable summary never claims work that was interrupted (edge-case
         # table, ambient-progress design).
         if turn.cancelled and any(row.state == "running" for row in self._delegate_rows.values()):
-            for row in self._delegate_rows.values():
+            lane_changed = False
+            for sub_session_id, row in self._delegate_rows.items():
                 if row.state == "running":
                     row.state = "cancelled"
                     row.elapsed_s = max(0.0, turn.last_ts - row.spawned_ts)
+                    # Reconcile rather than duplicate (D5 AC1): the lane itself
+                    # settles to the SAME "cancelled" outcome as the delegate
+                    # row above, driven by the identical turn.cancelled signal
+                    # — not a second, independently-derived notion.
+                    record = self.lanes.get(sub_session_id)
+                    if record is not None and record.lane.state not in TERMINAL_LANE_STATES:
+                        self.lanes.complete(sub_session_id, state="cancelled")
+                        lane_changed = True
             self._fanout_duration_s = max(0.0, turn.last_ts - self._fanout_start_ts)
             self._render_delegate_summary()
+            if lane_changed:
+                # A lane's terminal transition must never be coalesced away
+                # (D5 AC5's "final" privilege applies here too).
+                self._lane.notify_lanes_changed(kind="final")
         # Re-resolve at close: mid-turn events (e.g. a denied approval)
         # may have changed the adapter's close-out spec for this prompt.
         spec = self._spec_lookup(turn.prompt) or turn.spec
@@ -2242,12 +2272,22 @@ class TranscriptReducer:
                     clickable=False,
                 ),
             )
-        self.lanes.complete(event.sub_session_id, result=_lane_result_summary(result))
         hint = _lane_result_summary(result)
+        # A reasonless failure's ``result`` fallback IS the literal word
+        # "failed" (see above) — showing it back as a "reason" would read
+        # as "failed · failed". One shared, meaningful hint feeds BOTH the
+        # chat's ✳ marker and the lane's own activity text, so neither
+        # surface can independently regress the other (D5 AC1 reconciliation).
+        meaningful_hint = hint if (event.success or hint != "failed") else ""
+        self.lanes.complete(
+            event.sub_session_id,
+            result=meaningful_hint,
+            state="done" if event.success else "error",
+        )
         if event.success:
-            marker = f"{event.agent} done" + (f" · {hint}" if hint else "")
+            marker = f"{event.agent} done" + (f" · {meaningful_hint}" if meaningful_hint else "")
         else:
-            marker = f"{event.agent} failed" + (f" · {hint}" if hint and hint != "failed" else "")
+            marker = f"{event.agent} failed" + (f" · {meaningful_hint}" if meaningful_hint else "")
         self._lifecycle_marker(marker)
         row = self._delegate_rows.get(event.sub_session_id)
         if row is not None:

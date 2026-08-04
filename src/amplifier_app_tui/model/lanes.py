@@ -9,7 +9,10 @@ parent appears.
 
 Lane line format: ``  <glyph> <name> · <activity> · <elapsed> · $<cost>``
 with glyph/color per state: ``◐`` teal running, ``■`` fg working, ``✔``
-dim done.
+dim done, ``!`` orange attention, ``✖`` red error, ``⊘`` red cancelled (D5 AC1
+— the error/cancelled glyphs are the SAME ones ``ui/transcript_render.py``'s
+``_DELEGATE_GLYPHS`` already uses for the delegate-summary block, so a
+lane and its post-turn summary row read consistently).
 """
 
 from __future__ import annotations
@@ -22,21 +25,64 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .blocks import StyleToken
+from .blocks import GLYPH_ATTENTION, GLYPH_BLOCKED, GLYPH_ERROR, StyleToken
 
-LaneStateName = Literal["booting", "running", "working", "done"]
+LaneStateName = Literal["booting", "running", "working", "attention", "done", "error", "cancelled"]
+"""The full lane lifecycle (D5 AC1).
+
+``booting``/``running``/``working`` are ordinary in-flight phases (a
+spawned child with no event yet, idle, and mid-tool-call respectively) —
+this is the "waiting"/"active" half of the design note's "consistent
+active, waiting, blocked, completed, and failed states" ask. ``attention``
+is the missing live state: a discrete failure signal (a tool error, or a
+failed tool result) surfaced against a lane that is STILL RUNNING — driven
+by ``ui/reducer.py``'s ``_track_child_activity`` (the same event kinds that
+already bypass repaint-coalescing as ``kind="error"``). ``done``/``error``/
+``cancelled`` are the three terminal outcomes — :data:`TERMINAL_LANE_STATES`
+— replacing the old fold-everything-into-``done`` behavior where a
+failure's only trace was free-text activity. ``error``/``cancelled``
+mirror ``model.blocks.DelegateState`` verbatim (``ui/reducer.py``'s
+``_DelegateRow``/``DelegateSummaryBlock`` already distinguished
+success/failure/cancellation for the post-turn summary; lanes now derive
+from the SAME signals instead of maintaining a parallel notion — see
+``_agent_completed`` and ``_finish_turn``).
+
+Not modeled as a separate state: an agent "blocked" on its OWN pending
+approval. Sub-agent tool-approval events aren't distinctly routed to lanes
+today (a real gap, but a different one from D5) — inventing a state with
+no driving event would be a renderer flag, exactly what this design avoids.
+"""
 
 _STATE_GLYPHS: dict[LaneStateName, tuple[str, StyleToken]] = {
     # A spawned child whose session has produced no event yet (bundle
-    # composition can run ~tens of seconds). The spec's glyph set (§8) is
-    # closed, so booting reuses the running glyph; the panel row instead
-    # swaps the zeroed telemetry cells for the honest ``booting · Ns``
-    # clock (see ``ui/lanes_panel.py``).
+    # composition can run ~tens of seconds). The original spec glyph set
+    # (§8) was closed to 3 states, so booting reuses the running glyph; the
+    # panel row instead swaps the zeroed telemetry cells for the honest
+    # ``booting · Ns`` clock (see ``ui/lanes_panel.py``).
     "booting": ("◐", "teal"),
     "running": ("◐", "teal"),
     "working": ("■", "fg"),
+    "attention": (GLYPH_ATTENTION, "orange"),
     "done": ("✔", "dim"),
+    "error": (GLYPH_ERROR, "red"),
+    "cancelled": (GLYPH_BLOCKED, "red"),
 }
+
+TERMINAL_LANE_STATES: frozenset[LaneStateName] = frozenset({"done", "error", "cancelled"})
+"""Lane states that will never change again — the ONE place "is this lane
+finished" is defined, so :class:`LaneRegistry` (active/tail/advance/reopen)
+and the reducer's child-activity guard can never drift out of sync on what
+counts as terminal."""
+
+_TERMINAL_VERBS: dict[LaneStateName, str] = {
+    "done": "done",
+    "error": "failed",
+    "cancelled": "cancelled",
+}
+"""Human-facing verb for :meth:`LaneRegistry.complete`'s activity text —
+``error`` reads as "failed" (matching the chat's own ✳ lifecycle marker
+wording, e.g. ``researcher failed · migration blew up``), not the internal
+state name."""
 
 _REDACTED_SESSION_RE = re.compile(r"^\[REDACTED:[^\]]+\](?P<suffix>.+)$")
 
@@ -153,7 +199,7 @@ class LaneRegistry:
 
     @property
     def active(self) -> tuple[LaneRecord, ...]:
-        return tuple(r for r in self.lanes if r.lane.state != "done")
+        return tuple(r for r in self.lanes if r.lane.state not in TERMINAL_LANE_STATES)
 
     @property
     def active_count(self) -> int:
@@ -190,7 +236,11 @@ class LaneRegistry:
         existing_key = self._resolve_id(session_id)
         existing = self._records.get(existing_key) if existing_key is not None else None
         if existing is not None:
-            if reopen and existing.lane.state == "done" and state != "done":
+            if (
+                reopen
+                and existing.lane.state in TERMINAL_LANE_STATES
+                and state not in TERMINAL_LANE_STATES
+            ):
                 fresh = existing.model_copy(
                     update={
                         "started_at": now,
@@ -283,7 +333,7 @@ class LaneRegistry:
         """
         changed = False
         for session_id, record in self._records.items():
-            if record.lane.state == "done" or record.started_at <= 0:
+            if record.lane.state in TERMINAL_LANE_STATES or record.started_at <= 0:
                 continue
             elapsed = now - record.started_at
             if elapsed < 0 or elapsed == record.lane.elapsed:
@@ -293,10 +343,22 @@ class LaneRegistry:
             changed = True
         return changed
 
-    def complete(self, session_id: str, *, result: str = "") -> LaneRecord | None:
-        """Mark a lane done (``✔`` dim), recording its result summary."""
-        activity = f"done · {result}" if result else "done"
-        return self.update(session_id, state="done", activity=activity)
+    def complete(
+        self, session_id: str, *, result: str = "", state: LaneStateName = "done"
+    ) -> LaneRecord | None:
+        """Settle a lane at its terminal transition, recording its result summary.
+
+        ``state`` is one of :data:`TERMINAL_LANE_STATES` — ``done`` (``✔``,
+        success, the default), ``error`` (``✖``, failure) or ``cancelled``
+        (``⊘``, the turn ended while this lane was still going). The caller
+        (``ui/reducer.py``'s ``_agent_completed`` / ``_finish_turn``) passes
+        the SAME success/cancellation signal it already computes for the
+        delegate-summary row — this is not a second, independently-derived
+        outcome (D5 AC1).
+        """
+        verb = _TERMINAL_VERBS.get(state, state)
+        activity = f"{verb} · {result}" if result else verb
+        return self.update(session_id, state=state, activity=activity)
 
     # -- lane tail focus (DESIGN-SPEC §8: live tail) ------------------------
 
@@ -313,7 +375,7 @@ class LaneRegistry:
                 continue
             key = self._resolve_id(candidate)
             record = self._records.get(key) if key is not None else None
-            if record is not None and record.lane.state != "done":
+            if record is not None and record.lane.state not in TERMINAL_LANE_STATES:
                 return record
         active = self.active
         return active[0] if active else None
@@ -326,7 +388,7 @@ class LaneRegistry:
         """
         key = self._resolve_id(session_id)
         record = self._records.get(key) if key is not None else None
-        if record is not None and record.lane.state != "done":
+        if record is not None and record.lane.state not in TERMINAL_LANE_STATES:
             self._tail_recent = key
 
     def cycle_tail_focus(self) -> LaneRecord | None:

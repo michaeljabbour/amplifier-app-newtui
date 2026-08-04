@@ -52,7 +52,7 @@ from ..model.blocks import (
     UserLine,
 )
 from ..model.evidence import EvidenceLink, build_evidence_detail
-from ..model.lanes import LaneRegistry
+from ..model.lanes import TERMINAL_LANE_STATES, LaneRegistry
 from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
 from ..model.prompt_stash import PromptStash, stash_list_spans
@@ -990,8 +990,9 @@ class TuiApp(App[None]):
         # any undelivered steers queued for it — otherwise a stale ▸ queued
         # badge would pin to a done lane (issue #39).
         for record in self.lanes.lanes:
-            if record.lane.state == "done" and self.adapter.lane_steering.queued_count(
-                record.session_id
+            if (
+                record.lane.state in TERMINAL_LANE_STATES
+                and self.adapter.lane_steering.queued_count(record.session_id)
             ):
                 self.adapter.lane_steering.drain(record.session_id)
         tailed = self.lanes.tail_lane
@@ -1270,7 +1271,7 @@ class TuiApp(App[None]):
         focused = self.transcript.focused_lane
         if focused is not None:
             record = self.lanes.get(focused)
-            if record is not None and record.lane.state != "done":
+            if record is not None and record.lane.state not in TERMINAL_LANE_STATES:
                 app_support.echo_lane_steer(self, record.session_id, message.text)
                 return
         if self.adapter.steering.pending_steers:

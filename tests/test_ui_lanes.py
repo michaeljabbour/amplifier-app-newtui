@@ -552,3 +552,296 @@ def test_format_lane_lines_expand_hint_sits_before_queued_badge() -> None:
     assert EXPAND_HINT_TEXT in lines[0]
     assert "▸ 2 queued" in lines[0]
     assert lines[0].index(EXPAND_HINT_TEXT) < lines[0].index("▸ 2 queued")
+
+
+# -- D5 gap 2: hardening _elide's edges (CJK, ZWJ/emoji, ANSI, empty) --------
+# The AC3 word-boundary + single-token grapheme-safe-cut behavior above was
+# already covered. These probe the specific edge cases the reviewer named:
+# a genuinely-broken CJK/wide-character budget, a genuinely-broken ZWJ/emoji
+# split, a raw control/escape leak, and the empty/whitespace degenerate case.
+
+
+def test_elide_cjk_respects_the_cell_budget_not_code_point_count() -> None:
+    """The bug found live: a 20-code-point CJK sentence is 40 TERMINAL
+    CELLS. The old code-point-only budget let it through at ~2x its
+    intended width; ``_elide`` must measure with ``rich.cells.cell_len``."""
+    from rich.cells import cell_len
+
+    cjk = "\u626b\u63cf\u4ee3\u7801\u5e93\u4e2d\u7684\u76f8\u5173\u6587\u4ef6\u5bfb\u627e\u6709\u5173\u914d\u7f6e\u7684\u4fe1\u606f"
+    assert cell_len(cjk) == 40 and len(cjk) == 20  # the discrepancy that broke it
+    for budget in (8, 15, 20, 39, 40, 41):
+        out = _elide(cjk, budget)
+        assert cell_len(out) <= budget, (budget, out)
+
+
+def test_format_lane_lines_cjk_activity_never_overflows_the_row_budget() -> None:
+    """End-to-end (not just ``_elide`` in isolation): the OUTER \"do we even
+    need to truncate\" decision in ``format_lane_lines`` must also compare
+    cell width, not code-point length, or a CJK activity can skip eliding
+    entirely and blow the row width (found live at width 70/80)."""
+    from decimal import Decimal
+
+    from rich.cells import cell_len
+
+    cjk = "\u626b\u63cf\u4ee3\u7801\u5e93\u4e2d\u7684\u76f8\u5173\u6587\u4ef6\u5bfb\u627e\u6709\u5173\u914d\u7f6e\u7684\u4fe1\u606f\u91cd\u8981\u6027"
+    lane = LaneState.for_state(
+        name="researcher",
+        state="running",
+        activity=cjk,
+        elapsed=41,
+        tokens=1000,
+        cost=Decimal("0.09"),
+    )
+    for width in (40, 45, 50, 58, 70, 80, 97, 120):
+        lines = format_lane_lines((lane,), width=width)
+        assert cell_len(lines[0]) <= width, (width, lines[0])
+
+
+def test_elide_zwj_emoji_sequence_never_splits_the_cluster() -> None:
+    """A family/profession emoji is several code points joined by U+200D
+    ZWJ. Cutting anywhere inside it used to render a bare/dangling
+    fragment (a lone person emoji plus a stray joiner) instead of backing
+    off before the whole cluster."""
+    zwj = "\u200d"
+    family = "\U0001f468" + zwj + "\U0001f469" + zwj + "\U0001f467" + zwj + "\U0001f466"
+    token = "workingon" + family * 4
+    for budget in range(6, 30):
+        out = _elide(token, budget)
+        body = out[:-1] if out.endswith("\u2026") else out
+        assert not body.endswith(zwj), (budget, out)  # never a dangling joiner
+        assert zwj not in body or body.count(zwj) == token[: len(body)].count(zwj), (budget, out)
+
+
+def test_elide_variation_selector_stays_with_its_base() -> None:
+    """A text/emoji presentation selector (VS-15/VS-16) must not be severed
+    from the character it modifies \u2014 that changes which glyph renders."""
+    token = "status" + ("\u2764\ufe0f" * 10)  # heavy black heart + VS16, repeated
+    for budget in range(6, 20):
+        out = _elide(token, budget)
+        body = out[:-1] if out.endswith("\u2026") else out
+        assert not body.endswith("\u2764"), (budget, out)  # never a bare heart w/o its VS16
+
+
+def test_elide_strips_ansi_escape_bytes_from_the_preview() -> None:
+    """A raw ANSI fragment (e.g. leaking through an unsanitized bash
+    command) must never ride into a lane row \u2014 even though Textual's own
+    compositor doesn't execute it like a raw stdout write would, a preview
+    should never carry literal control bytes (they cost 0 cells, so they
+    would otherwise ride the truncation budget for free)."""
+    ansi = "\x1b[31mrunning tests\x1b[0m and a lot more text after the color codes"
+    out = _elide(ansi, 20)
+    assert "\x1b" not in out
+    from rich.cells import cell_len
+
+    assert cell_len(out) <= 20
+
+
+@pytest.mark.parametrize("activity", ["", "   ", "\t\t", " ", "\x1b[31m\x1b[0m"])
+def test_elide_empty_or_whitespace_or_control_only_never_crashes(activity: str) -> None:
+    from rich.cells import cell_len
+
+    out = _elide(activity, 5)
+    assert cell_len(out) <= 5
+    assert "\x1b" not in out
+
+
+def test_format_lane_lines_empty_activity_renders_a_valid_row() -> None:
+    """No crash, no exception, a well-formed (if visually sparse) row."""
+    lane = LaneState.for_state(name="researcher", state="running", activity="")
+    lines = format_lane_lines((lane,), width=80)
+    assert lines[0].startswith("  \u25d0 researcher")
+    assert lines[0].endswith("$0.00")
+
+
+def test_format_lane_lines_whitespace_only_activity_renders_a_valid_row() -> None:
+    lane = LaneState.for_state(name="researcher", state="running", activity="   ")
+    lines = format_lane_lines((lane,), width=40)
+    assert len(lines) == 1
+    from rich.cells import cell_len
+
+    assert cell_len(lines[0]) <= 40
+
+
+def test_elide_multiple_stacked_combining_marks_never_split(**_kw: object) -> None:
+    """Hardening beyond the single-mark case already covered above: a base
+    with TWO stacked combining accents must still never be severed."""
+    token = "e\u0301\u0300" * 12  # "e" + acute + grave, repeated, no spaces
+    for budget in range(4, 16):
+        out = _elide(token, budget)
+        if out == token:
+            continue
+        body = out[:-1]
+        if len(body) < len(token):
+            next_char = token[len(body)]
+            assert not unicodedata.combining(next_char), (budget, out)
+
+
+# -- D5 gap 3: the expand affordance must PERSIST, not just appear --------
+# The hint only rides along when it fits (tested above via the pure
+# ``format_lane_lines`` function). These drive the actual mounted WIDGET
+# through its real lifecycle events -- repaint, a simulated coalesced
+# burst, a resize, and "focus" (row selection / ctrl-o tail pin / live
+# tail mounted under the row) -- to prove a truncated row's hint is never
+# silently dropped by any of them.
+
+# Same shape as _BLOB_ACTIVITY above: one short word + one long unbreakable
+# token, which leaves slack for the hint to fit alongside full telemetry
+# (unlike a natural multi-word sentence, which can legitimately leave no
+# room -- see test_format_lane_lines_expand_hint_never_pushes_past_width).
+_PERSISTENT_BLOB = "processing " + ("x" * 80)
+
+
+def _blob_record(sid: str, name: str) -> LaneRecord:
+    return LaneRecord(
+        session_id=sid,
+        parent_id="root",
+        lane=LaneState.for_state(
+            name=name,
+            state="working",
+            activity=_PERSISTENT_BLOB,
+            elapsed=41,
+            tokens=100,
+            cost=Decimal("0.09"),
+        ),
+    )
+
+
+def _row_line(panel: LanesPanel, index: int = 0) -> str:
+    from amplifier_app_tui.ui.lanes_panel import _LaneRow  # test-only
+
+    rows = sorted(panel.query(_LaneRow), key=lambda r: r.index)
+    return rows[index].line
+
+
+@pytest.mark.asyncio
+async def test_expand_hint_survives_a_repaint_with_identical_data() -> None:
+    app = LanesHost()
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes((_blob_record("s1", "researcher"),))
+        panel.show_panel()
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+        # A repaint that changes NOTHING (e.g. a redundant lanes_changed()
+        # fan-out) must not lose the hint that's already showing.
+        panel.update_lanes((_blob_record("s1", "researcher"),))
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+
+
+@pytest.mark.asyncio
+async def test_expand_hint_survives_a_simulated_coalesced_burst() -> None:
+    """A coalesced repaint delivers whatever is CURRENT once it finally
+    fires (D5 AC5) -- simulated here as several back-to-back update_lanes()
+    calls landing before a single paint is observed."""
+    app = LanesHost()
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes((_blob_record("s1", "researcher"),))
+        panel.show_panel()
+        await pilot.pause()
+        for _ in range(20):
+            panel.update_lanes((_blob_record("s1", "researcher"),))
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+
+
+@pytest.mark.asyncio
+async def test_expand_hint_survives_a_resize_cycle() -> None:
+    """Narrow (truncated, hint showing) -> wide (fits, hint correctly
+    gone) -> narrow again (hint must REAPPEAR, not stay lost)."""
+    app = LanesHost()
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes((_blob_record("s1", "researcher"),))
+        panel.show_panel()
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+
+        await pilot.resize_terminal(220, 40)
+        await pilot.pause()
+        assert "\u2026" not in _row_line(panel)  # fits whole now -- nothing to hint at
+        assert EXPAND_HINT_TEXT not in _row_line(panel)
+
+        await pilot.resize_terminal(90, 40)
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)  # reappears, not stranded gone
+
+
+@pytest.mark.asyncio
+async def test_expand_hint_survives_row_selection() -> None:
+    """Highlighting a row (arrow keys / ``-selected``) must not touch its
+    text content."""
+    app = LanesHost()
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes((_blob_record("s1", "researcher"), _blob_record("s2", "coder")))
+        panel.show_panel()
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel, 0)
+        panel.move_selection(1)
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel, 0)
+        panel.move_selection(-1)
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel, 0)
+
+
+@pytest.mark.asyncio
+async def test_expand_hint_survives_ctrl_o_tail_focus_and_live_tail_mount() -> None:
+    """A lane becoming the ctrl-o tail focus (\u25b8 marker inline in the SAME
+    padded name column) and its live tail mounting underneath must not
+    disturb the row's own truncated/hinted text."""
+    app = LanesHost()
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes((_blob_record("s1", "researcher"),))
+        panel.show_panel()
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+
+        panel.update_lanes((_blob_record("s1", "researcher"),), tailed_session_id="s1")
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+        assert "\u25b8" in _row_line(panel)  # the tail marker rides in the SAME row
+
+        panel.show_lane_tail("some live streaming text")
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)  # unaffected by the mounted tail widget
+
+
+@pytest.mark.asyncio
+async def test_expand_hint_survives_hide_show_cycle() -> None:
+    """Toggling the panel closed then reopened (ctrl-t twice) must not
+    strand a stale, un-refit row from before the hide."""
+    app = LanesHost()
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes((_blob_record("s1", "researcher"),))
+        panel.show_panel()
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+
+        panel.hide_panel()
+        await pilot.pause()
+        panel.show_panel()
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+
+
+@pytest.mark.asyncio
+async def test_expand_hint_on_existing_row_survives_a_fanout_rebuild() -> None:
+    """A second lane joining forces the row-count-changed REBUILD path
+    (not the in-place patch path) -- the first lane's hint must survive
+    getting rebuilt alongside the newcomer."""
+    app = LanesHost()
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(LanesPanel)
+        panel.update_lanes((_blob_record("s1", "researcher"),))
+        panel.show_panel()
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel)
+
+        panel.update_lanes((_blob_record("s1", "researcher"), _blob_record("s2", "coder")))
+        await pilot.pause()
+        assert EXPAND_HINT_TEXT in _row_line(panel, 0)
