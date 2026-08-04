@@ -167,3 +167,16 @@ def test_stash_prompt_bound_to_ctrl_s_idle_and_running() -> None:
     assert binding.label == "ctrl-s stash"
     assert len(binding.label) <= 32
     validate()
+
+
+def test_return_to_answer_is_bound_to_ctrl_f_everywhere_but_approval() -> None:
+    """AC2 return-to-answer action (compliance 2026-08-02 B1): ctrl+f is free
+    in both the keymap table and ComposerInput's TextArea bindings (unlike
+    ctrl+a/ctrl+e, which TextArea claims for home/end of line), so no
+    composer-side interception is needed for it to reach the app."""
+    binding = next(b for b in KEYMAP if b.action == "return_to_answer")
+    assert binding.keys == ("ctrl+f",)
+    assert binding.contexts == NO_APPROVAL
+    assert binding.label == "ctrl-f answer"
+    assert len(binding.label) <= 32
+    validate()

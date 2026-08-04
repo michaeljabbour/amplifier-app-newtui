@@ -388,6 +388,20 @@ class Answer(_FrozenModel):
     clickable: bool = True
     compact: bool = False
     """Suppress paragraph spacing for structural rows such as agent trees."""
+    final: bool = False
+    """True marks this Answer as the turn's one authoritative final-response
+    anchor (AC2, compliance 2026-08-02 item B1): the reducer stamps it
+    exactly once per turn, either when ``PromptComplete.response`` promotes
+    a provisional candidate (or, lacking one, appends the close-out
+    fallback -- ``ui/reducer.py:_finalize_response``) or when a scripted
+    demo turn's single ``demo_role="answer"`` block lands. The renderer
+    prepends a stable start marker driven by label + weight, never color
+    alone (AC4), so the turn's final-response START stays identifiable
+    after scrolling away and back, resume replay, or history navigation; a
+    return-to-answer action targets this block's id. Deliberately a
+    separate field from ``clickable`` (today the two happen to coincide)
+    so "this is the anchor" stays an explicit semantic decision rather
+    than an inferred side effect of the evidence-click affordance."""
 
 
 class SteerEcho(_FrozenModel):

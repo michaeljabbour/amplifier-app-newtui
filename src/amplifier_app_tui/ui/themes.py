@@ -8,6 +8,17 @@ a runtime theme switch (``App.theme = "amplifier-graphite"``) is a
 repaint, not a rebuild (ADR-0007 resolution 11).
 
 Default theme: ``slate``.
+
+AC4 scope note (compliance 2026-08-02, item B1): all three themes below are
+DARK token sets -- there is no light theme. The final-answer start marker
+(``model/blocks.py``'s ``Answer.final``, rendered by
+``ui/transcript_render.py``'s ``FINAL_ANSWER_MARKER``) is deliberately
+built from a label + bold weight, never color alone, so it is structurally
+ready for a light theme today even though none exists yet. Rather than add
+a fourth token set as a side effect of a final-answer-emphasis item --  a
+change touching every widget, golden and snapshot -- AC4 is narrowed here
+to these three dark themes; a full light theme is tracked separately
+(issue #210). See docs/DESIGN-SPEC.md §1 for the user-facing record.
 """
 
 from __future__ import annotations

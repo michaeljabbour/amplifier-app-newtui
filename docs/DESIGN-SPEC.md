@@ -34,6 +34,17 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 - [ ] Theme switchable at runtime (settings/command), default `slate`.
 - [ ] Monospace rendering; JetBrains-Mono-flavored glyph choices (❯ ● ✳ ✦ ✧ ■ ✔ □ ⊘ ◐ ├─ └ ↳ ▲ ▹ ‹ ›).
 
+**Scope note (compliance 2026-08-02, item B1):** all three themes above are dark token
+sets — there is no light theme. AC4 ("final-answer emphasis remains legible in light and
+dark themes and does not rely on color alone") is narrowed here to **the three dark
+themes above**. The final-answer start marker (§3 below; `model/blocks.py`'s
+`Answer.final`, rendered by `ui/transcript_render.py`'s `FINAL_ANSWER_MARKER`) is built
+from a label + bold weight, never color alone, so it is structurally ready for a light
+theme today — but no light theme has been built or golden-tested, so the claim is not
+made for one. A full light theme (new token set, every widget/golden/snapshot
+re-verified against it) is a large, separately-scoped surface tracked as its own
+follow-up (issue #210) rather than folded into a final-answer-emphasis item.
+
 ## 2. Screen layout (top → bottom)
 
 1. **Title bar** (bg-chrome): centered title `amplifier-app-tui — Amplifier — <state> — <bundle> — <session-short>`; while running, prefix with orange spinner glyph cycling `✳ ✦ ✧ ✦` every ~260ms and mirror a visibly rotating braille frame into native terminal chrome; title's `<state>` reflects current plan step (lowercased) or `ready` / `planning` / `brainstorming` / `✳ coordinating N agents`.
@@ -69,6 +80,10 @@ Three themes, switchable at runtime. Exact token values (from the mockup):
 - [ ] **Working status line** (while running): pulsing spinner `✳/✦/✧` orange + `working · Ns · ↓ X.Xk tok · ` dim + `esc to interrupt · type to steer` dimmer, with the live activity tree beneath (above). Before any tool runs it shows the inline note (`thinking`, else `1 agent`) in place of the tree. A fan-out turn renders `Coordinating N agents · Ns · ↓ X.Xk tok · ` dim + `esc to interrupt` dimmer instead (mockup runAgentsTurn — no `working ·` prefix, no steer hint, dedicated agent tree not this one). Updates every second; removed at turn end.
 - [ ] **Recap line** (turn end): `✳ ` dimmer + italic dim `Goal: <goal>. Next: <next>.`
 - [ ] **Final answer**: fg text with selective bright/bold and teal inline code; clickable → evidence.
+  The turn's one authoritative answer additionally opens with a stable `● Final answer`
+  start marker (bright/bold — label + weight, not color alone, AC4) so its START stays
+  identifiable after scrolling away and back, resume replay, or history navigation
+  (AC2); `ctrl-f` (return-to-answer) jumps back to it for long turns.
 - [ ] **Steer echo**: `  ↳ ` teal + `steer queued: "<text>" ` teal + `· applies at next step boundary` dimmer; steer application logged as narration `Applying steer: <text>`.
 - [ ] **Turn rule**: full-width 1px rule (rule token) + right-aligned label `<Ns> · <X.Xk> tok, <N>% cached · $<cost> · <outcome>`; label dim when shipped, dimmer when answer-only/interrupted. Outcomes seen in mockup: `answer`, `3 files · +142/−38 · tests ✔`, `· interrupted`, `· plan ready`.
 - [ ] Turn rules are clickable → open rewind picker at that checkpoint.

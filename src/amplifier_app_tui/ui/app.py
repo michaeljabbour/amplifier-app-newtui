@@ -1736,6 +1736,24 @@ class TuiApp(App[None]):
     def action_open_rewind(self) -> None:
         self.open_rewind_strip(None)
 
+    def action_return_to_answer(self) -> None:
+        """ctrl+f: jump back to the current/most-recent turn's final-answer
+        start anchor (AC2, compliance 2026-08-02 B1).
+
+        Scans the visible transcript (main, or a focused lane's own list --
+        whichever ``self.transcript.blocks`` currently holds) for the most
+        recent ``Answer`` the reducer stamped ``final`` and scrolls its
+        START into view, same block-id targeting as toggle_thinking. A
+        long answer's start survives scrolling away and back, resume
+        replay, and history navigation because it rides the block's own
+        persisted state, not a transient scroll position."""
+        for block in reversed(self.transcript.blocks):
+            if block.kind == "answer" and block.final:
+                self.transcript.scroll_block_visible(block.id, top=True)
+                self.show_notice("back to the final answer")
+                return
+        self.show_notice("no final answer yet")
+
     def action_plan_drilldown(self) -> None:
         """ctrl+n: cycle the plan panel's row window (default → +2 → +3).
 

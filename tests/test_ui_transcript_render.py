@@ -860,6 +860,35 @@ def test_fence_text_at_row_extracts_dedented_fence() -> None:
     assert fence_text_at_row(lines, len(lines)) is None
 
 
+def test_render_answer_final_marker_present_and_labeled() -> None:
+    """AC2: a ``final=True`` Answer opens with a stable, non-color-only
+    start marker -- bright+bold label, not a color-only cue (AC4)."""
+    block = Answer(id="a", spans=answer_spans("Done."), final=True)
+    lines = render_block(block, 80)
+    assert line_plain(lines[0]) == "● Final answer"
+    assert lines[0][0].bold and lines[0][1].bold
+    assert line_plain(lines[1]) == "Done."
+
+
+def test_render_answer_without_final_flag_has_no_marker() -> None:
+    """Provisional/recap-shaped Answer blocks (``final=False``, the
+    default) render exactly as before -- the marker is opt-in, never
+    universal."""
+    block = Answer(id="a", spans=answer_spans("Checking the files."))
+    lines = render_block(block, 80)
+    assert line_plain(lines[0]) == "Checking the files."
+    assert not any("Final answer" in line_plain(line) for line in lines)
+
+
+def test_render_answer_final_marker_sits_above_the_first_real_content_line() -> None:
+    """The marker is inserted after leading-blank trimming, so it always
+    sits directly above the first real content line."""
+    block = Answer(id="a", spans=(Segment(text="\nDone.", style_token="fg"),), final=True)
+    lines = render_block(block, 80)
+    assert line_plain(lines[0]) == "● Final answer"
+    assert line_plain(lines[1]) == "Done."
+
+
 # -- S5: unsupported-block placeholder + per-block render isolation ----------
 
 
