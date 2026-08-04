@@ -15,6 +15,7 @@ from textual.app import App, ComposeResult
 from amplifier_app_tui.model.blocks import TodoItem
 from amplifier_app_tui.ui.plan_panel import (
     PLAN_MAX_ROWS,
+    PLAN_PANEL_HEIGHT_FLOOR,
     PlanPanel,
     plan_panel_max_height,
 )
@@ -293,3 +294,101 @@ async def test_expanded_panel_is_bounded_and_scrolls_instead_of_growing() -> Non
         # the computed bound -- it scrolls its own content instead.
         assert panel.size.height <= bound
         assert panel.max_scroll_y > 0
+
+
+# -- S7 gap 2: the control itself survives narrow widths / short heights ----
+#
+# The panel's HEIGHT is bounded (AC5 above), but that says nothing about
+# whether the CONTROL stays present, focusable, and click/keyboard-
+# activatable at the repo's standard widths, or at a short terminal height
+# -- i.e. whether it gets clipped/dropped exactly when the disclosure
+# matters most. These pin that it does not.
+
+STANDARD_WIDTHS = (40, 80, 97, 120)
+"""The repo's standard width matrix (docs/DEVELOPMENT.md golden files)."""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", STANDARD_WIDTHS)
+async def test_overflow_control_stays_present_focusable_and_clickable_at_every_width(
+    width: int,
+) -> None:
+    """Gap 2: at every standard width, the control is never clipped or
+    dropped -- it stays displayed and focusable, and both click and
+    keyboard (Enter) still toggle it."""
+    app = PlanHost()
+    async with app.run_test(size=(width, 24)) as pilot:
+        panel = app.query_one(PlanPanel)
+        panel.update_plan(LONG_PLAN)
+        panel.show_panel()
+        await pilot.pause()
+        assert panel.overflow_control.display is True
+        assert panel.overflow_control.can_focus is True
+
+        await pilot.click("#plan-overflow")
+        await pilot.pause()
+        assert panel.expanded is True
+
+        panel.overflow_control.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert panel.expanded is False
+
+
+@pytest.mark.asyncio
+async def test_overflow_control_stays_reachable_at_the_height_floor() -> None:
+    """Gap 2: a short terminal forces the bounded/scrolling case (AC5) --
+    the collapsed control (header + PLAN_MAX_ROWS rows + control) always
+    fits within even :data:`PLAN_PANEL_HEIGHT_FLOOR`, so it is never
+    itself scrolled out of reach before a keyboard-only user gets to press
+    anything."""
+    app = PlanHost()
+    async with app.run_test(size=(40, PLAN_PANEL_HEIGHT_FLOOR + 2)) as pilot:
+        panel = app.query_one(PlanPanel)
+        bound = plan_panel_max_height(pilot.app.size.height)
+        assert bound == PLAN_PANEL_HEIGHT_FLOOR  # exercising the floor itself
+        panel.styles.max_height = bound
+        panel.update_plan(LONG_PLAN)
+        panel.show_panel()
+        await pilot.pause()
+
+        assert panel.overflow_control.display is True
+        assert panel.overflow_control.can_focus is True
+        assert panel.max_scroll_y == 0  # the collapsed view never needs to scroll
+
+        # Both pre-existing paths still work at the floor height.
+        await pilot.click("#plan-overflow")
+        await pilot.pause()
+        assert panel.expanded is True
+        panel.overflow_control.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert panel.expanded is False
+
+
+@pytest.mark.asyncio
+async def test_overflow_control_remains_focusable_after_expansion_scrolls_it_off_view() -> None:
+    """Gap 2, the harder case: once expanded at a short height, the (now
+    much longer) list can scroll the "Show less" control below the
+    visible viewport -- but Textual's default ``focus(scroll_visible=True)``
+    still finds and can activate it programmatically (the path a
+    keyboard-only user drives), so it never becomes a dead, unreachable
+    widget just because it is not currently painted on screen."""
+    app = PlanHost()
+    async with app.run_test(size=(40, 10)) as pilot:
+        panel = app.query_one(PlanPanel)
+        bound = plan_panel_max_height(pilot.app.size.height)
+        panel.styles.max_height = bound
+        panel.update_plan(_items("in_progress", *(["pending"] * 39)))  # 40 items
+        panel.show_panel()
+        panel.expand()
+        await pilot.pause()
+        assert panel.max_scroll_y > 0  # really did overflow the bound
+
+        assert panel.overflow_control.display is True
+        panel.overflow_control.focus()
+        await pilot.pause()
+        assert app.focused is panel.overflow_control  # reached, not stranded
+        await pilot.press("enter")
+        await pilot.pause()
+        assert panel.expanded is False  # still activatable, on screen or not

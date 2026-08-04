@@ -221,3 +221,15 @@ def test_plan_panel_max_height_floors_and_halves_the_screen() -> None:
     # A very short terminal still gets the floor, not a near-zero cap.
     assert plan_panel_max_height(10) == PLAN_PANEL_HEIGHT_FLOOR == 8
     assert plan_panel_max_height(0) == PLAN_PANEL_HEIGHT_FLOOR
+
+
+# -- S7 gap 1: the ctrl+h reach/toggle chord's own notice -------------------
+
+
+def test_plan_overflow_notice_names_expanded_and_collapsed() -> None:
+    """Mirrors plan_drill_notice's shape for the sibling ctrl+n chord, so
+    both plan-panel keyboard actions confirm themselves the same way."""
+    from amplifier_app_tui.ui.plan_panel import plan_overflow_notice
+
+    assert plan_overflow_notice(True) == "plan · expanded"
+    assert plan_overflow_notice(False) == "plan · collapsed"

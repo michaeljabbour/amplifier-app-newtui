@@ -237,3 +237,23 @@ def test_return_to_answer_is_bound_to_ctrl_f_everywhere_but_approval() -> None:
     assert binding.label == "ctrl-f answer"
     assert len(binding.label) <= 32
     validate()
+
+
+def test_toggle_plan_overflow_is_bound_to_ctrl_h_everywhere_but_approval() -> None:
+    """S7 gap 1 (keyboard reachability): ctrl+h reaches AND toggles the plan
+    overflow control directly -- mirroring how ctrl+n's plan_drilldown
+    already works globally without ever moving focus off the composer."""
+    binding = next(b for b in KEYMAP if b.action == "toggle_plan_overflow")
+    assert binding.keys == ("ctrl+h",)
+    assert binding.contexts == NO_APPROVAL
+    assert binding.label == "ctrl-h plan"
+    assert len(binding.label) <= 32
+    validate()
+
+
+def test_toggle_plan_overflow_is_taught_in_keys_reference() -> None:
+    """Requirement: a new binding lives in the data-driven keymap table so
+    /keys teaches it automatically -- never a hand-copied help string."""
+    assert "toggle_plan_overflow" in HELP_ACTIONS
+    rows = dict(help_rows())
+    assert rows["ctrl-h plan"] == "expand or collapse the plan panel's hidden rows"
