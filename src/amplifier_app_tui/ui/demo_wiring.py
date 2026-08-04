@@ -165,6 +165,13 @@ class DemoRuntimeAdapter(RuntimeAdapter):
     def __init__(self, *, instant: bool = False) -> None:
         super().__init__()
         self.bundle_name = DEMO_BUNDLE
+        # The demo never resolves anything real -- there is no filesystem/git
+        # lookup behind DEMO_BUNDLE -- so its "resolved URI" IS the same
+        # stand-in string as its name. A crafted long/realistic URI proving
+        # the title's viewport-aware fitting is exercised via a dedicated
+        # TitleBar harness instead (tests/test_ui_chrome_snapshots.py),
+        # keeping every existing demo-driven title/snapshot assertion intact.
+        self.bundle_uri = DEMO_BUNDLE
         self.model_name = DEMO_MODEL
         self.session_short = DEMO_SESSION_SHORT
         self.banner = DEMO_BANNER

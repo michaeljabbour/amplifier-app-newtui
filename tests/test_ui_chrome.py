@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
+from rich.cells import cell_len
+
 from amplifier_app_tui.ui.chrome import (
     APP_TITLE_NAME,
     SPINNER_INTERVAL,
@@ -12,6 +14,7 @@ from amplifier_app_tui.ui.chrome import (
     TERMINAL_SPINNER_FRAMES,
     TITLE_BUNDLE_MAX_CELLS,
     TitleBar,
+    _bundle_fit_budget,
     _truncate_bundle_label,
     terminal_title_sequence,
     write_terminal_title,
@@ -39,7 +42,7 @@ class ChromeApp(App[None]):
 def test_idle_title_exact_format() -> None:
     bar = TitleBar()
     bar.set_reactive(TitleBar.state_text, "ready")
-    bar.set_reactive(TitleBar.bundle, "dev-bundle")
+    bar.set_reactive(TitleBar.bundle_uri, "dev-bundle")
     bar.set_reactive(TitleBar.session_short, "a1b2c3")
     assert bar.title_text() == "amplifier — ready — dev-bundle — a1b2c3"
 
@@ -50,20 +53,32 @@ def test_empty_identity_fragments_are_skipped() -> None:
     assert bar.title_text() == "amplifier — planning"
 
 
-# -- D4 AC4: long bundle paths truncate safely, never wrap the composer -------
+# -- D4 AC4/gap 2: long bundle paths truncate safely, never wrap the composer -
 #
 # Finding 2 (post-merge compliance audit): ``TitleBar`` is the sole persistent
 # home for the active bundle (item D4 AC1), but a ``--bundle`` path/URI or a
 # ``bundle.active`` settings value (``kernel/config.resolve_bundle_source``)
-# is user-supplied and unbounded. Before this fix ``_plain_title`` appended it
-# verbatim -- no truncation, no ellipsis, no tooltip -- so Textual silently
-# hard-clipped an over-long value with zero visual cue anything was cut. These
-# tests pin the reconciled behavior: a bounded, cell-width-safe truncation
-# that always ends a cut value in one visible ellipsis, while the row itself
-# never grows past its fixed ``height: 1`` (so it can never wrap down onto the
-# composer docked below it). The FULL value stays inspectable via ``/status``
-# (test_ui_session_ops_view.py pins that ``status_spans`` never truncates its
-# ``bundle`` row).
+# is user-supplied and unbounded. The first fix bounded it to a FIXED cell
+# count (``TITLE_BUNDLE_MAX_CELLS``) regardless of the actual terminal width
+# -- safe, but not viewport-aware: a wide terminal wasted space it could have
+# used to show more of the real value, and a narrow one could still overflow
+# once state/session grew (the fixed cap only ever bounded the bundle
+# fragment, not the whole title). ``_bundle_fit_budget`` (D4 gap 2) replaces
+# the constant with a live computation from the title row's actual rendered
+# width, mirroring the footer's fit-ladder idiom (``ui/footer.py:_fit_drops``):
+# reserve what the rest of the title needs, hand the remainder to the bundle
+# fragment, and drop the fragment entirely once even a truncated stub would
+# be meaningless. The row itself never grows past its fixed ``height: 1``
+# (so it can never wrap down onto the composer docked below it), and the FULL
+# value stays inspectable via ``/status`` (test_ui_session_ops_view.py pins
+# that ``status_spans`` never truncates its ``bundle`` row).
+
+_LONG_REALISTIC_BUNDLE_URI = (
+    "git+https://github.com/microsoft/amplifier-foundation@main#bundles/anchors"
+)
+"""74 cells — realistic enough to fit in full at width 120 (budget 91) but
+need truncation at 97/80/40 (budgets 68/51/11), so tests exercise both ends
+of the viewport-aware ladder with one representative value."""
 
 
 def test_truncate_bundle_label_passes_short_values_through_unchanged() -> None:
@@ -85,18 +100,146 @@ def test_truncate_bundle_label_truncates_long_values_with_one_ellipsis() -> None
     assert len(truncated) == TITLE_BUNDLE_MAX_CELLS
 
 
-def test_idle_title_truncates_long_bundle_with_ellipsis() -> None:
-    """AC4, via the real rendering path (title_text -> _plain_title)."""
+def test_truncate_bundle_label_honors_an_explicit_dynamic_budget() -> None:
+    """The truncation helper itself is budget-agnostic — callers (``_plain_title``)
+    supply a LIVE, viewport-derived ``max_cells`` instead of always defaulting
+    to the fixed constant (D4 gap 2)."""
+    long_path = "/Users/dev/projects/" + ("nested-dir/" * 10) + "bundle.md"
+    for budget in (4, 11, 51, 68):
+        truncated = _truncate_bundle_label(long_path, max_cells=budget)
+        assert cell_len(truncated) == budget
+        assert truncated.endswith("\u2026")
+
+
+# -- _bundle_fit_budget: the viewport-aware replacement for the fixed cap -----
+
+
+def test_bundle_fit_budget_falls_back_to_fixed_cap_before_layout() -> None:
+    """``width <= 0`` means no real layout pass yet (a bare, unmounted
+    ``TitleBar``) — falls back to the historical fixed budget rather than
+    an unbounded or zero value."""
+    assert _bundle_fit_budget(0, "ready", "a1b2c3") == TITLE_BUNDLE_MAX_CELLS
+    assert _bundle_fit_budget(-1, "brainstorming", "") == TITLE_BUNDLE_MAX_CELLS
+
+
+def test_bundle_fit_budget_reserves_exactly_what_the_rest_of_the_title_needs() -> None:
+    """Budget = width - (app name + separators + state + session), matching
+    ``_plain_title``'s own assembly so the WHOLE title, not just the bundle
+    fragment, is guaranteed to fit."""
+    width = 120
+    state, session = "ready", "a1b2c3"
+    budget = _bundle_fit_budget(width, state, session)
+    # Directly against _plain_title's own separator math instead of a
+    # hand-derived constant, so this test breaks if the two ever disagree.
+    reserved = cell_len(f"{APP_TITLE_NAME} — {state}") + cell_len(" — ") * 2 + cell_len(session)
+    assert budget == width - reserved
+
+
+def test_bundle_fit_budget_with_no_session_reserves_only_one_separator() -> None:
+    """No session yet (fresh boot): only ONE separator is reserved (state ->
+    bundle), not two — matching ``_plain_title`` skipping the empty fragment."""
+    width = 80
+    budget = _bundle_fit_budget(width, "ready", "")
+    reserved = cell_len(f"{APP_TITLE_NAME} — ready") + cell_len(" — ")
+    assert budget == width - reserved
+
+
+def test_bundle_fit_budget_grows_with_a_wider_viewport() -> None:
+    """The core D4 gap 2 fix: the budget tracks the ACTUAL width instead of
+    being stuck at a constant — a wider terminal shows more."""
+    budgets = [_bundle_fit_budget(w, "ready", "a1b2c3") for w in (40, 80, 97, 120)]
+    assert budgets == sorted(budgets)  # strictly non-decreasing as width grows
+    assert budgets[-1] > TITLE_BUNDLE_MAX_CELLS  # wide terminals now exceed the old fixed cap
+
+
+def test_bundle_fit_budget_drops_the_fragment_when_hopelessly_narrow() -> None:
+    """Below ``_MIN_BUNDLE_CELLS`` a truncated stub would read as noise, not
+    identity — the budget collapses to 0 (drop the fragment) rather than
+    show one or two characters plus an ellipsis."""
+    assert _bundle_fit_budget(20, "brainstorming", "a1b2c3") == 0
+
+
+def test_idle_title_truncates_long_bundle_with_ellipsis_before_layout() -> None:
+    """AC4, via the real rendering path (title_text -> _plain_title), for a
+    bare/unmounted bar — no live width exists yet, so this pins the fixed
+    pre-layout fallback (see test_bundle_fit_budget_falls_back_to_fixed_cap_before_layout).
+    The mounted, viewport-aware path is proven below with a real Pilot app."""
     long_bundle = "org/" + "x" * 100 + "/tui-bundle"
     bar = TitleBar()
     bar.set_reactive(TitleBar.state_text, "ready")
-    bar.set_reactive(TitleBar.bundle, long_bundle)
+    bar.set_reactive(TitleBar.bundle_uri, long_bundle)
     bar.set_reactive(TitleBar.session_short, "a1b2c3")
     title = bar.title_text()
     assert long_bundle not in title  # the raw unbounded value never rides the title
     assert "\u2026" in title
     assert title.startswith("amplifier — ready — org/")
     assert title.endswith("— a1b2c3")  # session fragment survives after the truncated one
+
+
+# -- viewport-aware fitting, mounted (D4 gap 2): mirrors the footer's own
+# responsive-at-every-golden-width proof (test_ui_footer.py) rather than a
+# second, invented mechanism.
+
+_GOLDEN_WIDTHS = (40, 80, 97, 120)
+
+
+@pytest.mark.asyncio
+async def test_title_bundle_fits_the_viewport_at_every_golden_width() -> None:
+    for width in _GOLDEN_WIDTHS:
+        app = ChromeApp()
+        async with app.run_test(size=(width, 24)) as pilot:
+            bar = app.query_one("#title", TitleBar)
+            bar.state_text = "ready"
+            bar.bundle_uri = _LONG_REALISTIC_BUNDLE_URI
+            bar.session_short = "a1b2c3"
+            await pilot.pause()
+            title = bar.title_text()
+
+            # The core guarantee: never wider than the terminal (never
+            # wraps the height:1 row down onto the composer).
+            assert cell_len(title) <= width
+            assert bar.size.height == 1
+
+            if width == 120:
+                # Wide enough for the full, real URI — no ellipsis needed,
+                # and the resolved value is genuinely all there (AC1).
+                assert _LONG_REALISTIC_BUNDLE_URI in title
+                assert "\u2026" not in title
+            else:
+                # Too narrow for the full URI: a safe, cell-bounded prefix
+                # plus exactly one ellipsis, never the raw unbounded value.
+                assert _LONG_REALISTIC_BUNDLE_URI not in title
+                if width > 40:
+                    # 80/97: still room for a meaningful truncated stub.
+                    assert "\u2026" in title
+                    assert title.startswith("amplifier — ready — git+https")
+            assert title.endswith("— a1b2c3")  # session always survives
+
+
+@pytest.mark.asyncio
+async def test_title_bundle_reflows_on_live_resize() -> None:
+    """Resizing the terminal mid-session changes the fit live — the same
+    "reflow on resize" contract the footer's fit ladder already has."""
+    app = ChromeApp()
+    async with app.run_test(size=(120, 24)) as pilot:
+        bar = app.query_one("#title", TitleBar)
+        bar.state_text = "ready"
+        bar.bundle_uri = _LONG_REALISTIC_BUNDLE_URI
+        bar.session_short = "a1b2c3"
+        await pilot.pause()
+        wide_title = bar.title_text()
+        assert _LONG_REALISTIC_BUNDLE_URI in wide_title  # fits in full at 120
+
+        await pilot.resize_terminal(40, 24)
+        await pilot.pause()
+        narrow_title = bar.title_text()
+        assert cell_len(narrow_title) <= 40
+        assert _LONG_REALISTIC_BUNDLE_URI not in narrow_title
+        assert "\u2026" in narrow_title  # dropped to a truncated, ellipsized stub
+
+        await pilot.resize_terminal(120, 24)
+        await pilot.pause()
+        assert bar.title_text() == wide_title  # widening back restores the full value
 
 
 def test_running_title_prefixes_spinner_and_cycles_frames() -> None:
@@ -170,7 +313,7 @@ async def test_title_bar_spinner_runs_only_while_running() -> None:
     async with app.run_test() as pilot:
         bar = app.query_one("#title", TitleBar)
         bar.state_text = "ready"
-        bar.bundle = "dev"
+        bar.bundle_uri = "dev"
         bar.session_short = "a1b2c3"
         await pilot.pause()
         assert bar._spinner_timer is None

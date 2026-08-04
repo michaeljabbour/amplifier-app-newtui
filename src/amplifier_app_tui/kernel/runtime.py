@@ -581,6 +581,15 @@ class RealRuntime:
         self.directory_policy: DirectoryPolicy | None = None
         self._session_settings_path: Path | None = None
         self.bundle_name = ""
+        self.bundle_uri = ""
+        """The actually-resolved bundle URI/path (``ResolvedConfig.bundle_uri``,
+        ``kernel/config.resolve_bundle_source``) — distinct from
+        :attr:`bundle_name`, which is the short name/argument a bundle was
+        *requested* by (e.g. ``anchors``) and can differ from where it was
+        actually loaded from (a packaged file path, a fetched git URI, …).
+        Set once :meth:`start` resolves config; this is the value that must
+        reach the UI's one persistent bundle display (D4 AC1) so "the full
+        active bundle path" claim is actually true."""
         self.model_name = ""
         self.session_short = ""
         self.banner: tuple[str, str] = ("", "")
@@ -938,6 +947,7 @@ class RealRuntime:
             self.session_cost_start = self.cost.session_cost
 
         self.bundle_name = resolved.bundle_name
+        self.bundle_uri = resolved.bundle_uri
         self.session_short = initialized.session_id[:6]
         self.degraded_notice = initialized.degraded_notice
         self.mount_report = initialized.mount_report

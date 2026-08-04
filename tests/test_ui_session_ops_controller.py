@@ -29,6 +29,7 @@ class _FakeAdapter:
 
     def __init__(self) -> None:
         self.bundle_name = "dev-bundle"
+        self.bundle_uri = "file:///workspace/dev-bundle/bundle.md"
         self.session_short = "a1b2c3"
         self.compaction = CompactionConfig()
         self.calls: list[str] = []
@@ -197,7 +198,11 @@ def test_show_status_appends_block(controller: SessionOpsController, host: _Fake
     controller.show_status()
     assert host.adapter.calls == ["status"]
     body = _text(host.blocks[0])
-    assert "Status" in body and "dev-bundle" in body and "$1.50" in body
+    assert "Status" in body and "$1.50" in body
+    # D4 gap 1: /status shows the FULL resolved bundle URI, not the short
+    # name -- the two differ here specifically so this can't pass by accident.
+    assert host.adapter.bundle_uri in body
+    assert host.adapter.bundle_uri != host.adapter.bundle_name
 
 
 def test_show_model_no_arg_lists(controller: SessionOpsController, host: _FakeHost) -> None:
