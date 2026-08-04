@@ -6,6 +6,11 @@
 #     python3 scripts/adoption_gate.py promote <stage>
 # `-` means "not yet recorded". Git history is the audit trail.
 #
+# owner must be a real, named person - `TBD` / `-` / `?` and friends are a hard `check`
+# error. tested_commit must be a real commit in this repo (7-40 hex, resolved via git).
+# Setting decision=promoted by hand does NOT bypass the gate: `check` re-derives every
+# promotion condition against every row that claims to be promoted.
+#
 # decision: pending | promoted | held | rolled-back
 #
 # stage	owner	min_window_days	entry_criteria	exit_criteria	tested_commit	start_date	end_date	entry_evidence	exit_evidence	decision

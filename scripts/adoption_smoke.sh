@@ -13,6 +13,10 @@
 #                                      scripts/forge_capability.sh — self-skipping when
 #                                      forge or its daemon is unavailable
 #   6. adoption_gate.py check          the stage ledger parses and every row is legal
+#   7. adoption_gate.py rollback       the MECHANICAL half of the documented rollback
+#                                      path still holds (command shapes, the pinned
+#                                      commit, side-by-side installability). It prints
+#                                      the half only a human can walk.
 #
 # Steps 1-4 are the same gates a PR must pass, so a red smoke is never a smoke-only
 # problem. Step 5 is the acceptance oracle for "does the thing a daily driver actually
@@ -63,6 +67,9 @@ fi
 
 step "adoption ledger check"
 python3 scripts/adoption_gate.py check
+
+step "adoption rollback mechanics"
+python3 scripts/adoption_gate.py rollback
 
 echo
 echo "adoption smoke PASS @ ${COMMIT}"
