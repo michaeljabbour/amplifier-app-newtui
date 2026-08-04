@@ -392,17 +392,34 @@ async def _first_run_gate() -> int | None:
     return 0
 
 
-async def _run_preflight(bundle: str | None, provider: str | None, model: str | None) -> Any:
+async def _run_preflight(
+    bundle: str | None,
+    provider: str | None,
+    model: str | None,
+    *,
+    live_verify: bool = False,
+) -> Any:
     """Resolve mounts/providers for THIS launch, without creating a session.
 
     Thin seam onto :func:`kernel.preflight.run_preflight` (mirrors
     ``_first_run_gate``/``_launch_tui`` immediately below): tests monkeypatch
     this name so the CLI wiring is verified without touching real bundle
     resolution. Returns a ``kernel.preflight.PreflightReport``.
+
+    ``live_verify`` opts into the networked models-list check (S4 AC4
+    follow-up -- see ``kernel/preflight_verify.py``); ``_dry_run_preflight``
+    is the only caller that passes ``True`` today, since ``--dry-run`` is
+    the one moment a user has already signalled "I'm willing to wait for a
+    more thorough answer" (mirrors ``reset --dry-run``'s own preview shape).
     """
     from .kernel.preflight import run_preflight
 
-    return await run_preflight(bundle, provider_override=provider, model_override=model)
+    return await run_preflight(
+        bundle,
+        provider_override=provider,
+        model_override=model,
+        verify_live=live_verify,
+    )
 
 
 def _render_preflight_failure(report: Any) -> None:
@@ -477,7 +494,11 @@ def _dry_run_preflight(
     if demo:
         click.echo("--demo has no real mounts/providers to preflight (fully offline)")
         return 0
-    report = asyncio.run(_run_preflight(bundle, provider, model))
+    # --dry-run is the opt-in "I'll wait for a thorough answer" moment (see
+    # _run_preflight): it additionally confirms the selected model actually
+    # exists via a live, network-bound models-list call, not just the
+    # normal launch's fast/offline checks.
+    report = asyncio.run(_run_preflight(bundle, provider, model, live_verify=True))
     if not report.ok:
         _render_preflight_failure(report)
         return 1

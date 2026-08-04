@@ -51,6 +51,8 @@ This is the complete set of keys the app consumes:
 | `routing.overrides` | Per-role candidate overrides merged onto the matrix | none | project |
 | `config.providers` | Provider entries merged by identity (`id` \| `instance_id` \| `module`): reconfigure the bundled provider or append new ones (see the README's Providers section) | none | global (credentials via `${VAR}`) |
 | `context.max_tokens` | Effective context window used by `context-simple` and `/context` | `300000` (inherited from the composed anchors bundle) | global or project |
+| `preflight.verify_provider` | Whether the pre-takeover preflight (S4/AC4) really mounts the priority provider and checks its credentials, in addition to resolving the mount plan. `false` is an escape hatch back to plan-only checking | `true` | global or project |
+| `preflight.verify_live` | Also confirms the selected model exists via a live, network-bound `list_models()` call (and, as a side effect, that the credential is accepted). Normal launches skip this by default; `--dry-run` always enables it for that one invocation regardless of this setting | `false` | global or project |
 | `context.compact_threshold` | `context-simple` window fraction that triggers automatic compaction (`0 < value <= 1`) | `0.8` (inherited from the composed anchors bundle) | global or project |
 | `context.auto_compact` | Enable `context-simple` automatic compaction; the runtime binding also disables legacy threshold-only context modules truthfully | `true` (inherited from the composed anchors bundle) | global or project |
 | `modules.tools` | Tool entries merged by identity; filesystem permission lists union across scopes | project root is implicitly writable | global / project / local / session |

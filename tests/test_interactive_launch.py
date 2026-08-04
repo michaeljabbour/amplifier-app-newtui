@@ -232,8 +232,8 @@ def test_help_lists_dry_run_flag() -> None:
 
 
 def test_dry_run_reports_and_exits_zero_without_launching(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_preflight(bundle, provider, model) -> PreflightReport:  # noqa: ANN001
-        del bundle, provider, model
+    async def fake_preflight(bundle, provider, model, **kwargs) -> PreflightReport:  # noqa: ANN001
+        del bundle, provider, model, kwargs
         return _OK_REPORT
 
     async def boom_gate() -> int | None:
@@ -256,8 +256,8 @@ def test_dry_run_reports_and_exits_zero_without_launching(monkeypatch: pytest.Mo
 
 
 def test_dry_run_failure_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_preflight(bundle, provider, model) -> PreflightReport:  # noqa: ANN001
-        del bundle, provider, model
+    async def fake_preflight(bundle, provider, model, **kwargs) -> PreflightReport:  # noqa: ANN001
+        del bundle, provider, model, kwargs
         return PreflightReport(
             ok=False, error="bundle not found: nope", remediation="check --bundle name/path"
         )
@@ -285,8 +285,8 @@ def test_run_command_dry_run_short_circuits_without_tty_or_prompt(
     """``run --dry-run`` must not require a TTY or a prompt -- it short-circuits
     before the interactive-vs-headless branch (and before ``--resume`` lookup)."""
 
-    async def fake_preflight(bundle, provider, model) -> PreflightReport:  # noqa: ANN001
-        del bundle, provider, model
+    async def fake_preflight(bundle, provider, model, **kwargs) -> PreflightReport:  # noqa: ANN001
+        del bundle, provider, model, kwargs
         return _OK_REPORT
 
     monkeypatch.setattr(main_mod, "_run_preflight", fake_preflight)
@@ -298,8 +298,8 @@ def test_run_command_dry_run_short_circuits_without_tty_or_prompt(
 
 
 def test_run_command_dry_run_failure_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_preflight(bundle, provider, model) -> PreflightReport:  # noqa: ANN001
-        del bundle, provider, model
+    async def fake_preflight(bundle, provider, model, **kwargs) -> PreflightReport:  # noqa: ANN001
+        del bundle, provider, model, kwargs
         return PreflightReport(ok=False, error="no provider configured", remediation="run init")
 
     monkeypatch.setattr(main_mod, "_run_preflight", fake_preflight)
