@@ -50,7 +50,7 @@ from ..model.blocks import (
     TranscriptBlock,
     UserLine,
 )
-from ..model.lanes import LaneRegistry, lane_labels
+from ..model.lanes import LaneRegistry
 from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
 from ..model.prompt_stash import PromptStash, stash_list_spans
@@ -915,33 +915,15 @@ class TuiApp(App[None]):
         # Throttle + focus policy live in the reducer (design doc D4); this
         # just paints. The tail renders under its lane's row in the lanes
         # panel (issue #90) — co-located with the agent it streams for, not a
-        # detached strip.
+        # detached strip. Child streams (thinking/narration) render in the
+        # lanes panel ONLY: the old main-chat delegate tail mirrored the
+        # same text under the working line, duplicating lane content into
+        # the chat transcript — the chat now carries compact lifecycle
+        # markers instead (reducer._agent_spawned/_agent_completed).
         self.lanes_panel.show_lane_tail(text)
-        # Main-chat delegate tail (joint enhancement with the Rust client):
-        # the same throttled text also renders under the working line via
-        # LiveTail's lane mode, labeled with the tailed lane's short name —
-        # unless the lanes panel holds the keyboard or a focused lane
-        # already fills the screen with its own transcript. Root streams
-        # keep preempting inside show_lane_tail.
-        if self.lanes_panel.has_focus or self.transcript.focused_lane is not None:
-            return
-        self.live_tail.show_lane_tail(text, label=self._tail_lane_label())
 
     def lane_tail_cleared(self) -> None:
         self.lanes_panel.clear_lane_tail()
-        self.live_tail.clear_lane_tail()
-
-    def _tail_lane_label(self) -> str:
-        """The tailed lane's short label — the exact disambiguated name its
-        panel row shows (``lane_labels``), so the two surfaces always agree."""
-        tailed = self.lanes.tail_lane
-        if tailed is None:
-            return ""
-        records = self.lanes.lanes
-        for record, label in zip(records, lane_labels(records), strict=True):
-            if record.session_id == tailed.session_id:
-                return label
-        return tailed.lane.name
 
     # -- approvals -------------------------------------------------------------------
 
@@ -1324,9 +1306,6 @@ class TuiApp(App[None]):
         # The panel stays open while a lane is focused (mockup focusLane
         # never touches lanesOpen); its row snaps to the focused lane.
         self.lanes_panel.set_focused(message.name)
-        # The focused lane's transcript fills the screen — drop the
-        # main-chat delegate tail (the lane's own stream is now on show).
-        self.live_tail.clear_lane_tail()
         # Esc must resolve via ESC_CHAIN (lane_focus first, lanes later),
         # so the keyboard returns to the composer, not the panel.
         self.composer.focus_input()
@@ -1536,9 +1515,6 @@ class TuiApp(App[None]):
                 queued_counts=self.adapter.lane_steering.counts(),
             )
             self.lanes_panel.show_panel()
-            # The panel takes the keyboard: its own ┆ tail is on show under
-            # the tailed lane's row — retire the main-chat delegate tail.
-            self.live_tail.clear_lane_tail()
             if self.approval_bar is not None:
                 self.approval_bar.focus()  # approval owns the keyboard (spec §7)
         self._refresh_footer()
