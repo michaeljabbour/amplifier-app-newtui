@@ -184,6 +184,48 @@ def test_unknown_hint_context_falls_back_to_idle() -> None:
     assert footer_right_text(state) == ""
 
 
+# -- Finding 1 (post-merge compliance audit): S1 AC1 x D4 AC2/AC3 -------------
+#
+# S1 ("Make rewind and turn labels self-explanatory") AC1: "the footer
+# exposes the rewind shortcut in plain language when the action is
+# available." PR #205 (item D4) emptied FOOTER_HINTS["idle"] unconditionally,
+# which broke AC1 the moment checkpoints existed -- rewind was available but
+# nothing on screen said so any more. The fix restores exactly the one
+# affected chord, and ONLY when it is genuinely available (a checkpoint
+# exists), so D4's own AC2 (no permanent teaching copy squatting on the
+# footer) and AC3 (only transient status / immediately-available actions)
+# still hold: this is not the old always-on reminder row coming back.
+
+
+def test_idle_hint_stays_empty_without_a_rewind_checkpoint_d4_ac2_ac3() -> None:
+    """D4 AC2/AC3: a fresh session with no checkpoints yet advertises nothing
+    -- ``rewind_available`` defaults False, so the footer reserves no space
+    for an action that does not exist yet (no regression from D4's fix)."""
+    assert footer_right_text(FooterState(context="idle")) == ""
+    assert footer_right_text(FooterState(context="idle", rewind_available=False)) == ""
+
+
+def test_idle_hint_surfaces_ctrl_r_rewind_once_available_s1_ac1() -> None:
+    """S1 AC1: once a checkpoint exists (``rewind_available=True``), the
+    footer exposes the rewind shortcut in plain language -- restoring AC1
+    without reintroducing D4's removed always-on history/newline/commands
+    reminder (only the one state-tied chord rides the hint, nothing else)."""
+    state = FooterState(context="idle", rewind_available=True)
+    assert footer_right_text(state) == "ctrl-r rewind"
+    # Exactly that chord -- not the old generic row's other fragments.
+    assert "history" not in footer_right_text(state)
+    assert "commands" not in footer_right_text(state)
+
+
+def test_rewind_available_only_affects_the_idle_hint() -> None:
+    """Sanity: the flag is meaningless outside idle -- every other context's
+    hint is untouched by it (still exact DESIGN-SPEC §2 strings, D4 AC2)."""
+    for context in ("approval", "lane_focus", "palette", "mention", "sessions"):
+        with_flag = footer_right_text(FooterState(context=context, rewind_available=True))
+        without_flag = footer_right_text(FooterState(context=context, rewind_available=False))
+        assert with_flag == without_flag
+
+
 # -- widget rendering ---------------------------------------------------------------
 
 

@@ -842,6 +842,14 @@ def footer_state(app: TuiApp) -> FooterState:
         kitty_protocol=app.kitty_protocol,
         plan_done=done,
         plan_total=total,
+        # Finding 1 (post-merge audit): S1 AC1 x D4 AC2/AC3 reconciliation --
+        # see footer.FooterState.rewind_available. Checkpoints existing is
+        # the SAME test open_rewind_strip already uses to decide whether
+        # ctrl-r has anything to do ("no rewind checkpoints yet"); the
+        # picker already being open is excluded so the hint never doubles
+        # up on the rewind strip's own header, which already advertises
+        # the equivalent affordance while it owns the screen.
+        rewind_available=bool(app.ledger.checkpoints) and not app.rewind.display,
     )
 
 

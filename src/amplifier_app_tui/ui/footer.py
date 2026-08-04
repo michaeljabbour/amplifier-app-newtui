@@ -9,11 +9,15 @@ queued; an optional orange, clickable ``N decisions waiting · ctrl-y``
 badge preceded by a dimmer ``·`` separator.
 
 Right segment: context-sensitive hints — the EXACT strings from
-``keymap.FOOTER_HINTS``, except the running hint which is composed live
-from :func:`keymap.hint_label` so the advertised queue chord swaps to
-``alt+enter`` on terminals without the kitty keyboard protocol. ``idle``
-is deliberately empty (item D4 below) — the resting state needs no
-action, so it reserves no persistent space.
+``keymap.FOOTER_HINTS``, except the running hint (composed live from
+:func:`keymap.hint_label` so the advertised queue chord swaps to
+``alt+enter`` on terminals without the kitty keyboard protocol) and the
+``idle`` hint, which is conditionally empty (item D4 below): plain "" the
+moment nothing state-tied is available to act on, but ``ctrl-r rewind``
+once :attr:`FooterState.rewind_available` is True (S1 AC1 — "the footer
+exposes the rewind shortcut in plain language when the action is
+available" — reconciled post-merge with D4 AC2/AC3 below; see
+``test_ui_footer.py`` for the pinned reconciliation).
 
 Like the mockup's ``flex-wrap: wrap`` footer, when both segments do not
 fit on one row the hints drop to their own full-width second row instead
@@ -50,6 +54,16 @@ previously shown on literally every idle frame) also moved out, to
 (:func:`keymap.help_rows`) — see ``keymap.FOOTER_HINTS`` for the
 reasoning. This box now carries only transient status, attention,
 model/mode and immediately-available actions (AC3).
+
+Post-merge compliance audit (Finding 1): removing ``ctrl-r rewind`` from
+the generic idle hint accidentally broke item S1's own AC1, which
+requires the footer to expose that shortcut in plain language once it is
+genuinely available. :func:`footer_right_text` now restores exactly that
+one chord — and only that one — the moment :attr:`FooterState.
+rewind_available` says checkpoints actually exist; it is still absent the
+rest of the time (a fresh session, or while the rewind picker itself is
+already open), so this is a state-tied, immediately-available action
+(AC3) rather than the always-on reminder row AC2 removed.
 """
 
 from __future__ import annotations
@@ -130,6 +144,12 @@ class FooterState(BaseModel):
     """Which hint set the right segment shows."""
     kitty_protocol: bool = True
     """Terminal probe result; False swaps shift+enter → alt+enter in hints."""
+    rewind_available: bool = False
+    """At least one rewind checkpoint exists AND the rewind picker itself
+    is not already open — the idle hint surfaces ``ctrl-r rewind`` only
+    then (S1 AC1: "the footer exposes the rewind shortcut in plain
+    language when the action is available"), never as an always-on
+    reminder (D4 AC2/AC3)."""
 
 
 # -- pure text builders (exact strings; tests assert on these) ---------------
@@ -232,11 +252,21 @@ def footer_waiting_text(state: FooterState) -> str:
 
 
 def footer_right_text(state: FooterState) -> str:
-    """Context-sensitive hints (exact DESIGN-SPEC §2 strings)."""
+    """Context-sensitive hints (exact DESIGN-SPEC §2 strings).
+
+    ``idle`` is the one hint composed live rather than read verbatim from
+    :data:`FOOTER_HINTS`: it stays the empty string from that table unless
+    :attr:`FooterState.rewind_available` says the ctrl-r chord genuinely
+    has something to do right now, in which case it surfaces exactly that
+    one chord — never the old always-on reminder row (S1 AC1 × D4 AC2/
+    AC3; see the module docstring and ``test_ui_footer.py``).
+    """
     if state.context == "running":
         overrides = None if state.kitty_protocol else {"queue_message": "alt+enter"}
         queue_chord = hint_label("queue_message", overrides)
         return f"esc interrupt · enter steer · {queue_chord} queue"
+    if state.context == "idle" and state.rewind_available:
+        return f"{hint_label('open_rewind')} rewind"
     return FOOTER_HINTS.get(state.context, FOOTER_HINTS["idle"])
 
 
