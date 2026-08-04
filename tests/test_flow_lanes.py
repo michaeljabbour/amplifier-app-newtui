@@ -33,12 +33,19 @@ from .test_flow_helpers import (
     GatedDemoAdapter,
     blocks_of,
     line_texts,
+    snapshot_texts,
     rules,
     seed_done,
     wait_for,
 )
 
-_LANE_LINE = re.compile(r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$")
+_LANE_LINE = re.compile(
+    r"^  [◐■✔] .+? · t\d+ · .+? · [\dms ]+? · ↓ [\d.]+k tokens\s* · \$\d+\.\d{2}$"
+)
+r"""D6 AC4: every row now states its turn as a `` · tN · `` tag between the
+name and activity columns; the name segment is matched lazily (not
+``\S+\s*``) because a tailed row's name carries an internal `` ▸ `` marker,
+not just trailing padding."""
 
 # The mid-turn panel snapshot at the demo's park point: the child stream
 # bursts (kernel/demo.py `_lane_stream`) have already run, so both live lanes
@@ -47,9 +54,22 @@ _LANE_LINE = re.compile(r"^  [◐■✔] \S+\s* · .+? · [\dms ]+? · ↓ [\d.]
 # running lane — coder (tester streamed last but is seeded done, so it never
 # takes the tail). Name column re-padded to fit the marker.
 TAILED_PANEL_LINES = [
-    "  ◐ researcher · reviewing response · 41s    · ↓ 100.1k tokens · $0.09",
-    "  ◐ coder ▸    · reviewing response · 2m 04s · ↓ 48.3k tokens  · $0.31",
-    "  ✔ tester     · done · tests ✔     · 55s    · ↓ 3.2k tokens   · $0.07",
+    "  ◐ researcher · t2 · reviewing response · 41s    · ↓ 100.1k tokens · $0.09",
+    "  ◐ coder ▸    · t2 · reviewing response · 2m 04s · ↓ 48.3k tokens  · $0.31",
+    "  ✔ tester     · t2 · done · tests ✔     · 55s    · ↓ 3.2k tokens   · $0.07",
+]
+
+# D6 AC4: re-running AGENTS_PROMPT (test_replayed_agents_turn_reopens_done_lanes)
+# spawns under turn 3 -- researcher/coder both reset live and pick it up, but
+# tester's re-spawn call arrives ALREADY done (its scripted seed is pre-
+# completed), so LaneRegistry.register()'s existing idempotent-return path
+# (state already terminal -> no-op) never restamps it: tester correctly keeps
+# reporting the turn that actually produced its current state (t2), not the
+# turn of a call that changed nothing about it.
+REPLAYED_TAILED_PANEL_LINES = [
+    "  ◐ researcher · t3 · reviewing response · 41s    · ↓ 100.1k tokens · $0.09",
+    "  ◐ coder ▸    · t3 · reviewing response · 2m 04s · ↓ 48.3k tokens  · $0.31",
+    "  ✔ tester     · t2 · done · tests ✔     · 55s    · ↓ 3.2k tokens   · $0.07",
 ]
 
 
@@ -207,7 +227,13 @@ async def test_replayed_agents_turn_reopens_done_lanes() -> None:
         # may lag by up to LANE_ROWS_NOTIFY_SECONDS before the trailing
         # flush lands — wait for it exactly like the has_lane_tail check
         # elsewhere in this suite, rather than asserting the instant after.
-        assert await wait_for(pilot, lambda: list(app.lanes_panel.lane_lines) == TAILED_PANEL_LINES)
+        # D6 AC4: this run is turn 3 (seed=t1, first agents run=t2) -- a
+        # DIFFERENT expected constant than the first run's, proving the
+        # panel distinguishes "the same agent, a later turn" rather than
+        # silently repeating a stale label.
+        assert await wait_for(
+            pilot, lambda: list(app.lanes_panel.lane_lines) == REPLAYED_TAILED_PANEL_LINES
+        )
         adapter.release()
         assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
         assert all(r.lane.state == "done" for r in app.lanes.lanes)
@@ -267,9 +293,9 @@ async def test_focus_lane_child_transcript_banner_and_esc_back() -> None:
         blocks = app.transcript.blocks
         banner = blocks[0]
         assert banner.kind == "session_banner"
-        assert banner.focus_note == focused_lane_banner("coder", DEMO_SESSION_ID)
+        assert banner.focus_note == focused_lane_banner("coder", DEMO_SESSION_ID, 2)
         assert banner.focus_note == (
-            "focused: coder · subagent of e07de0 · own context window"
+            "focused: coder · subagent of e07de0 · turn 2 · own context window"
             " · results report back to parent · esc back"
         )
         delegated = blocks[1]
@@ -557,3 +583,137 @@ async def test_agent_completes_while_unfocused_and_panel_reflects_it() -> None:
         assert all(
             glyph == "\u2714" for (glyph,) in [(r.lane.glyph,) for r in app.lanes_panel.records]
         )
+
+
+@pytest.mark.asyncio
+async def test_focus_transitions_during_active_stream_preserve_parent_and_lane_content() -> None:
+    """D6 AC5: entering/leaving a focused lane while the turn is still
+    ACTIVELY STREAMING (gate held, lanes running) must never re-emit,
+    duplicate or reorder content, and the parent transcript must be
+    intact on every return -- not just the first one. Drives real
+    ctrl-t/down/enter/esc keypresses, never calling the reducer/transcript
+    helpers directly.
+    """
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.submit_prompt(AGENTS_PROMPT)
+        # Parked mid-fan-out (the same park point test_lane_tail_streams_
+        # mid_fanout_then_clears uses): lanes running, turn genuinely
+        # still active -- this is the "tokens still arriving" state.
+        assert await wait_for(pilot, lambda: len(app.lanes.lanes) == 3)
+        assert app.turn_active
+        assert app.lanes.get(DEMO_LANE_BY_NAME["researcher"].sub_session_id).lane.state == "running"
+        parent_before = list(app.transcript.blocks)
+
+        async def _open_panel() -> None:
+            """Ensure the lanes panel is open AND keyboard-focused,
+            regardless of its current state: ctrl-t is a bare toggle
+            (open+focus / close), so closing first (only if already open)
+            then opening lands on "open+focused" from either starting
+            point -- unlike a fixed "press it twice", which only happens
+            to work from the auto-opened-but-unfocused fan-out state.
+            """
+            if app.lanes_panel.display:
+                await pilot.press("ctrl+t")
+                await pilot.pause()
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+
+        async def _back_to_parent() -> None:
+            await pilot.press("escape")
+            assert await wait_for(pilot, lambda: app.transcript.focused_lane is None)
+
+        def _assert_parent_unchanged() -> None:
+            """Same blocks, same order, same content on return -- except the
+            live working-status pulse's spinner_frame, which legitimately
+            advances on the app's 1s heartbeat while the turn runs, wholly
+            independent of any focus transition (not a duplication bug).
+            """
+            now = list(app.transcript.blocks)
+            assert [(b.id, b.kind) for b in now] == [(b.id, b.kind) for b in parent_before]
+            assert [b for b in now if b.kind != "working_status"] == [
+                b for b in parent_before if b.kind != "working_status"
+            ]
+
+        researcher = DEMO_LANE_BY_NAME["researcher"]
+        coder = DEMO_LANE_BY_NAME["coder"]
+
+        # Focus researcher (row 0) while the turn is still running.
+        await _open_panel()
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot, lambda: app.transcript.focused_lane == researcher.sub_session_id
+        )
+        assert app.turn_active  # still genuinely streaming -- not parked by us
+        researcher_view_1 = list(app.transcript.blocks)
+        banner_1 = researcher_view_1[0]
+        assert banner_1.kind == "session_banner"
+        assert "focused: researcher" in banner_1.focus_note
+        assert "turn 2" in banner_1.focus_note  # D6 AC4: seed=t1, this run=t2
+
+        await _back_to_parent()
+        # Round trip 1: the parent summary/working-line/etc. is untouched.
+        _assert_parent_unchanged()
+
+        # Re-focus the SAME lane again, still streaming: idempotent --
+        # byte-identical content, no duplication, no reordering.
+        await _open_panel()
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot, lambda: app.transcript.focused_lane == researcher.sub_session_id
+        )
+        researcher_view_2 = list(app.transcript.blocks)
+        # The demo's static per-focus fallback re-mints fresh block ids on
+        # every call (harmless bookkeeping, not a duplication bug), so the
+        # "no re-emission/duplication/reordering" guarantee is checked on
+        # rendered CONTENT (what a human actually sees), not raw object
+        # identity -- same length, same kind/order, same visible lines.
+        assert [b.kind for b in researcher_view_2] == [b.kind for b in researcher_view_1]
+        assert snapshot_texts(researcher_view_2) == snapshot_texts(researcher_view_1)
+
+        await _back_to_parent()
+        # Round trip 2: still untouched.
+        _assert_parent_unchanged()
+
+        # Focus a DIFFERENT lane (coder, row 1) while still streaming --
+        # its own distinct content, no leakage from researcher's.
+        await _open_panel()
+        await pilot.press("down")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane == coder.sub_session_id)
+        coder_view = list(app.transcript.blocks)
+        assert "focused: coder" in coder_view[0].focus_note
+        researcher_texts = " ".join(snapshot_texts(researcher_view_1))
+        coder_texts = " ".join(snapshot_texts(coder_view))
+        assert "undocumented streaming flags" in researcher_texts  # researcher's own log
+        assert "undocumented streaming flags" not in coder_texts  # never leaked to coder
+        assert "SessionStore" in coder_texts  # coder's own log
+        assert "SessionStore" not in researcher_texts  # never leaked to researcher
+
+        await _back_to_parent()
+        # Round trip 3: still untouched, and the D6 guarantee never
+        # weakened -- neither child's own chatter ever reached the parent.
+        _assert_parent_unchanged()
+        parent_texts = " ".join(snapshot_texts(parent_before))
+        assert "undocumented streaming flags" not in parent_texts
+        assert "SessionStore" not in parent_texts
+
+        # Let the turn finish, then focus once more: content still
+        # consistent (same turn tag), nothing corrupted by the three
+        # in-flight focus/unfocus round trips above.
+        adapter.release()
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        await _open_panel()
+        # Selection was last left on coder (row 1) above -- "up" is
+        # clamped at row 0, so pressing it twice lands on researcher
+        # regardless of where the cursor happened to be left.
+        await pilot.press("up")
+        await pilot.press("up")
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot, lambda: app.transcript.focused_lane == researcher.sub_session_id
+        )
+        researcher_final = list(app.transcript.blocks)
+        assert "turn 2" in researcher_final[0].focus_note

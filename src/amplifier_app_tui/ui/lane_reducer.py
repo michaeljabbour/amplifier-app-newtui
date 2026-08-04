@@ -185,6 +185,10 @@ class LaneReducer:
         """
         record = self.lanes.get(event.sub_session_id)
         key = record.session_id if record is not None else event.sub_session_id
+        # D6 AC4: the registry is the single authority for which turn
+        # spawned this lane -- _agent_spawned registers it there BEFORE
+        # calling here, so the record (when known) already carries it.
+        turn = record.turn if record is not None else 0
         # The envelope session_id IS the parent for agent_spawned and sits
         # on the redaction module's structural allowlist; the payload's
         # parent_session_id may arrive scrubbed.
@@ -193,7 +197,7 @@ class LaneReducer:
             SessionBanner(
                 id=self._ids.next_id(),
                 headline="",
-                focus_note=focused_lane_banner(event.agent, _display_short(parent)),
+                focus_note=focused_lane_banner(event.agent, _display_short(parent), turn),
             )
         ]
         brief = self._pending_briefs.pop(event.agent, "")
@@ -218,7 +222,7 @@ class LaneReducer:
                     id=self._ids.next_id(),
                     headline="",
                     focus_note=focused_lane_banner(
-                        record.lane.name, _display_short(record.parent_id or "")
+                        record.lane.name, _display_short(record.parent_id or ""), record.turn
                     ),
                 )
             ]

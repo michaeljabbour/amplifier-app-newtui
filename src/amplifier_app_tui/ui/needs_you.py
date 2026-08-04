@@ -108,18 +108,25 @@ def decision_why_line(reason: str) -> str:
     return f"    why · {reason}"
 
 
-def focused_lane_banner_parts(name: str, parent_session: str) -> tuple[str, str]:
-    """(bright bold prefix, dim tail) of the focused-lane banner (spec §8)."""
+def focused_lane_banner_parts(name: str, parent_session: str, turn: int = 0) -> tuple[str, str]:
+    """(bright bold prefix, dim tail) of the focused-lane banner (spec §8).
+
+    ``turn`` -- the 1-indexed turn that spawned this lane (D6 AC4: every
+    visible stream states its producing agent AND its turn) -- rides
+    between the parent-session clause and the context-window clause when
+    known (``<= 0`` omits it cleanly rather than printing ``turn 0``).
+    """
+    turn_clause = f" · turn {turn}" if turn > 0 else ""
     return (
         f"focused: {name} ",
-        f"· subagent of {parent_session} · own context window"
+        f"· subagent of {parent_session}{turn_clause} · own context window"
         " · results report back to parent · esc back",
     )
 
 
-def focused_lane_banner(name: str, parent_session: str) -> str:
+def focused_lane_banner(name: str, parent_session: str, turn: int = 0) -> str:
     """The full focused-lane banner line as plain text."""
-    prefix, tail = focused_lane_banner_parts(name, parent_session)
+    prefix, tail = focused_lane_banner_parts(name, parent_session, turn)
     return prefix + tail
 
 

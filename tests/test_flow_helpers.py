@@ -57,15 +57,26 @@ def rules(app: TuiApp) -> int:
     return sum(b.kind == "turn_rule" for b in app.transcript.blocks)
 
 
-def line_texts(app: TuiApp, width: int = 200) -> list[str]:
-    """Every rendered transcript line as plain text (spec-string asserts)."""
+def snapshot_texts(blocks, width: int = 200) -> list[str]:
+    """Every rendered line of an arbitrary block list as plain text.
+
+    The same rendering :func:`line_texts` uses for the live app,
+    generalized off a captured block-list snapshot (e.g. a focused
+    lane's transcript at some earlier point) so it can be text-searched
+    the same way (D6 AC5: cross-lane / parent-vs-child content checks).
+    """
     from amplifier_app_tui.ui.transcript import render_block
 
     return [
         "".join(segment.text for segment in line)
-        for block in app.transcript.blocks
+        for block in blocks
         for line in render_block(block, width)
     ]
+
+
+def line_texts(app: TuiApp, width: int = 200) -> list[str]:
+    """Every rendered transcript line as plain text (spec-string asserts)."""
+    return snapshot_texts(app.transcript.blocks, width)
 
 
 async def seed_done(pilot, app: TuiApp) -> None:
