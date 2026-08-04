@@ -28,6 +28,27 @@ short viewports the panel is a bounded, independently-scrolling region
 (``VerticalScroll``) sized by :func:`plan_panel_max_height`, so an expanded
 long plan can never grow the bottom strip enough to push the composer
 off-screen (``ui/app_support.py:sync_plan_surfaces``).
+
+S7 follow-up (2026-08-04, two outstanding gaps closed): (1) the control was
+keyboard-*activatable* once focused, but nothing gave a keyboard-only user
+a way to *reach* it -- Tab is not a general focus chain in this app (it is
+claimed by mention-accept/approval nav, and shift+tab is ``cycle_mode``),
+and the composer intentionally keeps focus so typing always steers (the
+same reasoning ``ui/transcript.py``'s ``FocusHeader`` docstring records for
+S6). The fix follows this app's real idiom instead of Tab order: a
+dedicated global chord, ``toggle_plan_overflow`` (ctrl+h, ``ui/keymap.py``),
+that toggles the SAME state Enter/Space/click do -- the same way ctrl+n
+already drives ``cycle_drill`` without stealing composer focus. See
+:func:`plan_overflow_notice` and ``TuiApp.action_toggle_plan_overflow``.
+(2) At narrow widths/short heights the control stays present, focusable,
+and click/keyboard-activatable throughout (pinned at 40/80/97/120 cols and
+a short height in ``test_ui_plan_panel_expand.py``): the collapsed default
+view is always header + at most :data:`PLAN_MAX_ROWS` rows + the control,
+comfortably inside even :data:`PLAN_PANEL_HEIGHT_FLOOR`, so the control a
+keyboard-only user needs first is never itself scrolled out of reach.
+ctrl+h is doubly robust here: unlike a click, it acts on the panel
+directly rather than screen coordinates, so it keeps working even if an
+already-expanded list has scrolled the control off-screen.
 """
 
 from __future__ import annotations
@@ -63,6 +84,14 @@ collapses back (see :func:`format_plan_body_and_control`)."""
 def plan_drill_notice(extra: int) -> str:
     """The notice shown when the drill level changes (both apps verbatim)."""
     return f"plan · +{extra} rows" if extra else "plan · default rows"
+
+
+def plan_overflow_notice(expanded: bool) -> str:
+    """The notice shown when the ``toggle_plan_overflow`` chord (ctrl+h,
+    S7 gap 1) fires -- mirrors :func:`plan_drill_notice`'s shape for the
+    sibling ctrl+n chord, so both plan-panel keyboard actions confirm
+    themselves the same way."""
+    return "plan · expanded" if expanded else "plan · collapsed"
 
 
 PLAN_PANEL_WIDTH = 37
@@ -264,6 +293,12 @@ class _PlanOverflowControl(Static):
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002
         super().__init__(id=id)
         self._line: Line = ()
+        # Bonus discoverability channel (S7 gap 1: "the panel itself"): a
+        # mouse-hover hint naming the ctrl+h reach path, mirroring
+        # ui/transcript.py's turn_rule tooltip idiom. Static text (not
+        # derived from set_line()) since the rendered label itself is
+        # pinned verbatim by tests/goldens and must not gain a suffix.
+        self.tooltip = "click, enter/space when focused, or ctrl-h · toggle hidden plan rows"
 
     def set_line(self, line: Line) -> None:
         if line == self._line:
@@ -464,6 +499,7 @@ __all__ = [
     "format_plan_lines",
     "plan_counts",
     "plan_drill_notice",
+    "plan_overflow_notice",
     "plan_panel_max_height",
     "plan_panel_width",
 ]

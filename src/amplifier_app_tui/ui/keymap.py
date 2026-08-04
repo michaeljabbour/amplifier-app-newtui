@@ -146,6 +146,18 @@ KEYMAP: tuple[Binding, ...] = (
     # cycles its row window default → +2 → +3 → back (ctrl+n is claimed by
     # neither the app tables nor Textual's TextArea defaults).
     _b("plan_drilldown", ("ctrl+n",), "ctrl-n", NO_APPROVAL),
+    # S7 gap 1 (keyboard reachability): Enter/Space only ACTIVATE the plan
+    # overflow control once it already has focus -- nothing in this table
+    # gave a keyboard-only user a way to reach it in the first place (Tab
+    # is not a general focus chain here: mention_accept/approval_next
+    # claim plain tab, shift+tab is cycle_mode), and the composer
+    # intentionally keeps focus so typing always steers (the same call
+    # ui/transcript.py's FocusHeader docstring records for S6, which
+    # deliberately did NOT make that header Tab-reachable either). ctrl+h
+    # follows ctrl+n's own idiom for this exact panel instead: a dedicated
+    # global chord that toggles the SAME state Enter/Space/click do,
+    # directly, so the composer never loses focus.
+    _b("toggle_plan_overflow", ("ctrl+h",), "ctrl-h plan", NO_APPROVAL),
     # Prompt-stash (HGT from opencode): stash the in-progress draft. The
     # save direction MUST be a keybind — typing a "/stash" command would make
     # the composer text the palette filter, clobbering the very draft it means
@@ -294,6 +306,7 @@ HELP_ACTIONS: tuple[str, ...] = (
     "open_rewind",
     "return_to_answer",
     "plan_drilldown",
+    "toggle_plan_overflow",
     "stash_prompt",
     "open_palette",
 )
@@ -326,6 +339,7 @@ ACTION_HELP: dict[str, str] = {
     "open_rewind": "open the rewind picker",
     "return_to_answer": "jump back to the current/most-recent turn's final answer",
     "plan_drilldown": "cycle the plan panel's row window",
+    "toggle_plan_overflow": "expand or collapse the plan panel's hidden rows",
     "stash_prompt": "stash the in-progress draft; /unstash restores it",
     "open_palette": "open the command palette",
 }

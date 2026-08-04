@@ -91,10 +91,12 @@ shortcut list any time, run **/keys**.
 **Plan panel.** When the agent keeps a live checklist (the `todo` tool), a compact
 **`Plan N/M`** panel appears in the bottom strip's right column: `✔` done, `▶` in
 progress, `○` pending — windowed around the in-progress item, with a `⋮ +N more`
-control when the plan is long. **`↑↓`/click** it (or **ctrl-n**, which instead widens
-the window default → +2 → +3 rows → back) to see more — the `+N more` control
-itself is focusable: **enter**, **space**, or a **click** expands the full list in
-place and flips the control to **`▾ Show less`** to collapse it again; at a short
+control when the plan is long. **Click** it, or press **ctrl-h** — which works from
+anywhere, no need to focus it first — to expand the full list in place (**ctrl-n**
+is a different chord: it instead widens the row window default → +2 → +3 rows →
+back). The control is also focusable, so **enter**/**space** re-toggle it once it
+has focus (matching ctrl-h/click). Either path flips the control to
+**`▾ Show less`** to collapse it again; at a short
 terminal height the expanded list scrolls inside the panel rather than covering the
 composer. Once every item completes it collapses to the header line (done stays
 visible). On narrow terminals the panel hides and the footer carries the `Plan N/M`

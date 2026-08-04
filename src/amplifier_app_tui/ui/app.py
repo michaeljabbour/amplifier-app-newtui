@@ -77,7 +77,7 @@ from .live_tail import LiveTail
 from .needs_you import NeedsYouList
 from .notices import NoticeSlot
 from .palette import PaletteStrip
-from .plan_panel import PlanPanel, plan_drill_notice
+from .plan_panel import PlanPanel, plan_drill_notice, plan_overflow_notice
 from .queued_strip import QueuedStrip
 from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
@@ -1868,6 +1868,29 @@ class TuiApp(App[None]):
             return
         extra = self.plan_panel.cycle_drill()
         self.show_notice(plan_drill_notice(extra))
+
+    def action_toggle_plan_overflow(self) -> None:
+        """ctrl+h: reach + toggle the plan panel's hidden-rows control.
+
+        S7 gap 1: Enter/Space already activated ``_PlanOverflowControl``
+        once it had focus, but nothing gave a keyboard-only user a way to
+        REACH it -- Tab is not a general focus chain here (mention/approval
+        claim it; shift+tab is cycle_mode), and the composer intentionally
+        keeps focus so typing always steers (S6's FocusHeader made the
+        same call, documented in its own docstring). This follows the
+        app's real idiom instead of Tab order: a dedicated global chord
+        that acts on the panel directly, exactly like ctrl+n's
+        action_plan_drilldown right above -- so the composer never loses
+        focus mid-typing. No-op notices mirror that action's own shape.
+        """
+        if not self.plan_panel.display:
+            self.show_notice("no plan panel to expand")
+            return
+        if not self.plan_panel.overflow_control.display:
+            self.show_notice("plan · nothing hidden to expand")
+            return
+        expanded = self.plan_panel.toggle_expand()
+        self.show_notice(plan_overflow_notice(expanded))
 
     def action_palette_up(self) -> None:
         self.palette.move_selection(-1)
