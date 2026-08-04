@@ -42,7 +42,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from .persistence import METADATA_FILENAME, TRANSCRIPT_FILENAME, SessionStore
+from .persistence import (
+    METADATA_FILENAME,
+    TRANSCRIPT_FILENAME,
+    AmbiguousSessionError,
+    SessionStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -284,13 +289,88 @@ def resolve(store: SessionStore, partial_id: str) -> str:
     return store.find_session(partial_id)
 
 
+@dataclass(frozen=True)
+class ResumeResolution:
+    """Outcome of resolving one resume target -- the resume path's one decision
+    point (S3), shared by ``resume`` / ``session resume`` / ``run --resume`` /
+    ``serve --resume`` so all four commands report the same deterministic
+    outcome from a single, kernel-tested function instead of four hand-rolled
+    try/excepts that can (and did) drift apart.
+
+    Exactly one status applies:
+
+    - ``"ok"`` -- ``session_id`` is the resolved, readable, unambiguous id.
+    - ``"not_found"`` -- no stored session matches ``partial_id``.
+    - ``"ambiguous"`` -- ``partial_id`` matches every session in ``candidates``
+      (newest-first, full :class:`SessionSummary` rows -- enough to render an
+      actionable table, not just a truncated id preview).
+    - ``"corrupt"`` -- ``session_id`` resolved to exactly one session, but it
+      is not healthy: either :func:`summary_for` (S2's own per-session probe,
+      the SAME one :func:`list_summaries` uses) reports a :data:`SessionState`
+      other than ``"ok"``, or it has no ``metadata.json`` at all (see
+      :func:`resolve_for_resume` for why that extra case is resume-specific
+      rather than a second corruption probe).
+    """
+
+    status: Literal["ok", "not_found", "ambiguous", "corrupt"]
+    session_id: str = ""
+    candidates: tuple[SessionSummary, ...] = ()
+    partial_id: str = ""
+
+
+def resolve_for_resume(store: SessionStore, partial_id: str) -> ResumeResolution:
+    """Resolve *partial_id* for a resume-family command; never raises.
+
+    Thin wrapper over :meth:`SessionStore.find_session` that turns its two
+    exception types (``FileNotFoundError``, :class:`AmbiguousSessionError`)
+    plus a post-resolve health check into one :class:`ResumeResolution`, so
+    CLI callers map status -> exit code / guidance text with no try/except
+    of their own (S3).
+
+    The health check reuses :func:`summary_for` -- the SAME per-session
+    probe :func:`list_summaries` uses (S2) -- rather than a second,
+    independent reading of ``metadata.json``: any :data:`SessionState`
+    other than ``"ok"`` (``"recovered"`` or ``"corrupt"``) maps to this
+    function's ``"corrupt"`` status. ``summary_for`` itself never raises,
+    but the call is still guarded here so this function's own "never
+    raises" contract cannot be broken by a future change to it.
+
+    One extra, resume-specific rule sits on top of that shared probe: a
+    session directory with NO ``metadata.json`` at all is ``state="ok"``
+    for :func:`summary_for` (S2 treats a still-being-written brand-new
+    session as healthy, not damaged, so it lists cleanly) -- but there is
+    no bundle/identity to relaunch a resume into, so this refuses it too
+    rather than failing deeper and less clearly inside the runtime.
+    """
+    try:
+        resolved = store.find_session(partial_id)
+    except FileNotFoundError:
+        return ResumeResolution(status="not_found", partial_id=partial_id)
+    except AmbiguousSessionError as error:
+        candidates = tuple(summary_for(store, sid) for sid in error.matches)
+        return ResumeResolution(status="ambiguous", candidates=candidates, partial_id=partial_id)
+    except ValueError:
+        # e.g. an empty/whitespace id: nothing to resolve, and not a
+        # candidate-bearing ambiguity -- the same user-facing outcome as
+        # "not found" rather than a fifth status the CLI brief never asked for.
+        return ResumeResolution(status="not_found", partial_id=partial_id)
+    try:
+        healthy = summary_for(store, resolved).state == "ok"
+    except Exception:  # noqa: BLE001 -- resolve_for_resume must never raise (S3)
+        healthy = False
+    has_metadata = (store.session_dir(resolved) / METADATA_FILENAME).is_file()
+    if not healthy or not has_metadata:
+        return ResumeResolution(status="corrupt", session_id=resolved, partial_id=partial_id)
+    return ResumeResolution(status="ok", session_id=resolved, partial_id=partial_id)
+
+
 def find_across_projects(
     partial_id: str, amplifier_home: Path | None = None
 ) -> list[tuple[str, str]]:
     """Search EVERY project's session store for a (prefix) id match.
 
     Sessions live per working directory (``~/.amplifier/projects/<slug>/
-    sessions/``), so a bare ``resume <id>`` only sees the current dir's
+    sessions/``), so a bare ``resume SESSION_ID`` only sees the current dir's
     project — a user who ``cd``'d elsewhere gets a bare "no session found"
     even though the session exists. This backstops that error with an
     actionable cross-project hint. Returns ``(full_id, working_dir)`` pairs

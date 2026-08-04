@@ -7,7 +7,7 @@ session (RealRuntime); ``--demo`` swaps in the scripted DemoRuntime
 - ``run [PROMPT]`` — one-shot session from an argument or piped stdin;
   emits text, one-document JSON, or live versioned JSONL events.
 - ``sessions``     — named table of stored sessions (``--plain`` for ids).
-- ``resume ID``    — launch the TUI resuming a stored session.
+- ``resume SESSION_ID`` — launch the TUI resuming a stored session.
 - ``continue``     — resume the most recent stored session (no picker).
 - ``init``         — interactive provider + routing setup (flags bypass it).
 - ``version``      — app + amplifier-core/-foundation versions.
@@ -27,11 +27,61 @@ import os
 from pathlib import Path
 import sys
 from time import monotonic
-from typing import IO, Any, Literal, cast
+from typing import IO, TYPE_CHECKING, Any, Literal, cast
 
 import click
 
 from . import __version__
+
+if TYPE_CHECKING:
+    from click.shell_completion import CompletionItem
+
+# -- resume-path exit codes (S3) --------------------------------------------
+# Deterministic and documented (USER-GUIDE.md's "Resume exit codes" table):
+# every resume-family command (``resume``, ``session resume``, ``run
+# --resume``, ``serve --resume``) uses exactly these, never a blanket 1.
+# 0 keeps its universal success meaning -- the launched session's own exit
+# status then takes over. 1 keeps its existing house meaning elsewhere in
+# this CLI (a generic/unexpected error, e.g. ``doctor`` findings) and is
+# never reused here for one of these three specific outcomes.
+RESUME_EXIT_NOT_FOUND = 2
+"""No stored session matches the given id/prefix."""
+RESUME_EXIT_AMBIGUOUS = 3
+"""The given prefix matches more than one stored session."""
+RESUME_EXIT_CORRUPT = 4
+"""The match is unambiguous but its metadata (and its ``.backup``) could not
+be read -- ``SessionStore`` already degrades this to a synthesized
+``recovered`` stub rather than raising; see
+``kernel.session_manager.resolve_for_resume``."""
+
+
+def _complete_session_id(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Shell-completion candidates for a resume session id (S3).
+
+    The SAME short-id form used in help text and exit/error guidance,
+    sourced live from THIS project's stored sessions -- so
+    ``amplifier-tui resume <TAB>`` (bash/zsh/fish, via Click's
+    ``_AMPLIFIER_TUI_COMPLETE`` mechanism) can never drift from what the
+    CLI actually prints or accepts. Best-effort: any lookup failure
+    completes to nothing rather than raising inside a shell's completion
+    hook.
+    """
+    del ctx, param  # unused -- completion only needs the partial text
+    from click.shell_completion import CompletionItem
+
+    from .kernel import session_manager
+
+    try:
+        summaries = session_manager.list_summaries(_session_store())
+    except Exception:  # noqa: BLE001 -- completion must never crash a shell
+        return []
+    return [
+        CompletionItem(summary.short_id, help=summary.name or summary.bundle)
+        for summary in summaries
+        if summary.short_id.startswith(incomplete)
+    ]
 
 
 async def _launch_tui(
@@ -76,10 +126,18 @@ def _print_resume_hint(session_id: str) -> None:
     Mirrors amplifier-app-cli's farewell banner with the CORRECT tui
     commands (S4 / #148): real sessions carry a stored id; demo sessions
     do not, so the hint is skipped when there is nothing to resume.
+
+    Prints the SHORT (8-char) id: the one canonical form every other resume
+    hint in this module already uses (cross-project hint, fork, import,
+    branch/fork notices) and the same form the sessions table shows. This
+    was the one holdout printing the full id (S3); ``resolve()``/prefix
+    matching accepts the short form the same as it always has, and the new
+    ambiguity output (S3) covers the astronomically-unlikely case where an
+    8-char prefix stops being unique.
     """
     if not session_id:
         return
-    click.echo(f"resume this session: amplifier-tui resume {session_id}")
+    click.echo(f"resume this session: amplifier-tui resume {session_id[:8]}")
     click.echo("list sessions:       amplifier-tui sessions")
 
 
@@ -550,6 +608,7 @@ def main(
     "resume",
     default=None,
     metavar="SESSION_ID",
+    shell_complete=_complete_session_id,
     help="Seed this one-shot from an existing session's stored context.",
 )
 @click.option(
@@ -600,17 +659,7 @@ def run(
     # so an unknown/ambiguous id errors clearly before any boot work begins.
     resume_id: str | None = None
     if resume is not None:
-        from .kernel import session_manager
-
-        try:
-            resume_id = session_manager.resolve(_session_store(), resume)
-        except FileNotFoundError:
-            click.echo(f"no session found matching '{resume}'", err=True)
-            _echo_cross_project_hint(resume)
-            raise SystemExit(1) from None
-        except ValueError as error:
-            click.echo(str(error), err=True)
-            raise SystemExit(1) from None
+        resume_id = _resolve_resume_target(_session_store(), resume)
     # A bare `run` on a TTY (no prompt, nothing piped, plain text output) means
     # "start a session" — boot the interactive TUI with the same overrides
     # rather than refusing. Headless use (piped stdin, non-TTY, or a JSON
@@ -642,14 +691,18 @@ def run(
     )
 
 
-def _print_session_table(summaries: list[Any]) -> None:
+def _print_session_table(
+    summaries: list[Any], *, title: str = "Sessions", stderr: bool = False
+) -> None:
     """Render session *summaries* as the shared rich table (newest-first).
 
-    The single renderer behind both ``sessions`` and ``session list`` so the
-    two can't drift (S3): Name · Session · Bundle · Msgs · Turns · Age. The
-    Turns column reflects the ``turn_count`` the incremental saver records in
-    ``metadata.json``; sessions whose stored metadata predates that field show
-    ``—`` rather than a fabricated ``0``.
+    The single renderer behind ``sessions``, ``session list``, AND the
+    resume path's ambiguous-prefix listing (S3), so all three can't drift:
+    Name · Session · Bundle · Msgs · Turns · Age. The Turns column reflects
+    the ``turn_count`` the incremental saver records in ``metadata.json``;
+    sessions whose stored metadata predates that field show ``—`` rather
+    than a fabricated ``0``. ``stderr=True`` routes the table to stderr (the
+    ambiguous-resume error path, S3) so stdout stays clean on failure.
 
     A trailing dim ``State`` column appears only when at least one session
     is damaged (S2 compliance): ``recovered`` (metadata could not be parsed;
@@ -661,7 +714,7 @@ def _print_session_table(summaries: list[Any]) -> None:
     from rich.table import Table
 
     show_state = any(summary.state != "ok" for summary in summaries)
-    table = Table(title="Sessions", title_justify="center", header_style="bold cyan")
+    table = Table(title=title, title_justify="center", header_style="bold cyan")
     table.add_column("Name", style="cyan", overflow="fold")
     table.add_column("Session", style="green", no_wrap=True)
     table.add_column("Bundle", style="magenta", no_wrap=True)
@@ -683,7 +736,7 @@ def _print_session_table(summaries: list[Any]) -> None:
             state_style = "yellow" if summary.state == "recovered" else "red"
             row.append("—" if summary.state == "ok" else f"[{state_style}]{summary.state}[/]")
         table.add_row(*row)
-    Console().print(table)
+    Console(stderr=stderr).print(table)
 
 
 @main.command()
@@ -692,7 +745,12 @@ def _print_session_table(summaries: list[Any]) -> None:
 @click.option("--provider", "-p", default=None, help="Provider override for THIS invocation.")
 @click.option("--mode", "mode", default=None, help="Interaction mode to start in.")
 @click.option(
-    "--resume", "resume", default=None, metavar="SESSION_ID", help="Resume a stored session."
+    "--resume",
+    "resume",
+    default=None,
+    metavar="SESSION_ID",
+    shell_complete=_complete_session_id,
+    help="Resume a stored session.",
 )
 @click.option(
     "--attach",
@@ -730,6 +788,10 @@ def serve(
     Rust (or any external) UI drives; it wraps the same ``RealRuntime`` the TUI
     uses, so amplifier-core is untouched. See ``kernel/serve.py`` for the wire.
 
+    ``--resume``'s exit codes are the same deterministic S3 set as ``resume``
+    (2 not-found, 3 ambiguous, 4 corrupt) -- previously either case raised an
+    uncaught traceback here instead of a clean message.
+
     ``--attach`` is the human-takeover path: hand a person the ref a paused
     controller minted (``handoff.created``) and this boots on the SAME session,
     claims the handoff, and hands them the write lease. ``--actor`` /
@@ -746,9 +808,7 @@ def serve(
         if attached_session:
             resume = attached_session
     if resume is not None:
-        from .kernel import session_manager
-
-        resume_id = session_manager.resolve(_session_store(), resume)
+        resume_id = _resolve_resume_target(_session_store(), resume)
     from .kernel.serve import serve as _serve
 
     raise SystemExit(
@@ -824,7 +884,7 @@ def _current_usernames() -> tuple[str, ...]:
 def _echo_cross_project_hint(partial: str) -> None:
     """After a per-project 'no session found', point to the session if it lives
     in another project. Sessions are stored per working directory, so a bare
-    ``resume <id>`` only sees the current dir's project — this makes the error
+    ``resume SESSION_ID`` only sees the current dir's project — this makes the error
     actionable instead of a dead end."""
     from .kernel import session_manager
 
@@ -839,10 +899,62 @@ def _echo_cross_project_hint(partial: str) -> None:
         click.echo(f"    …and {len(matches) - 3} more", err=True)
 
 
+def _print_ambiguous_candidates(partial_id: str, candidates: tuple[Any, ...]) -> None:
+    """Actionable ambiguous-prefix output (S3).
+
+    Every matching session as a real rich table (name/bundle/msgs/age --
+    the SAME renderer ``sessions``/``session list`` use) plus the exact
+    next command to run, instead of a 3-item truncated id preview. All on
+    stderr: the resume path failed, so stdout stays clean for scripts.
+    """
+    click.echo(
+        f"'{partial_id}' matches {len(candidates)} sessions \u2014 resume needs an "
+        "exact id or a longer prefix:",
+        err=True,
+    )
+    _print_session_table(list(candidates), title="Matching sessions", stderr=True)
+    from rich.console import Console
+
+    example = candidates[0].short_id
+    Console(stderr=True).print(
+        f"resume one directly, e.g. amplifier-tui resume {example}", style="dim"
+    )
+
+
+def _resolve_resume_target(store: Any, partial_id: str) -> str:
+    """Resolve *partial_id* to a full session id, or exit with a deterministic,
+    documented resume-path code (S3): 2 not-found, 3 ambiguous-prefix (with
+    an actionable candidates table), 4 corrupt-session -- never the
+    historical blanket 1. Shared by ``resume``, ``session resume``,
+    ``run --resume`` and ``serve --resume`` so all four commands agree.
+    """
+    from .kernel import session_manager
+
+    resolution = session_manager.resolve_for_resume(store, partial_id)
+    if resolution.status == "ok":
+        return resolution.session_id
+    if resolution.status == "ambiguous":
+        _print_ambiguous_candidates(partial_id, resolution.candidates)
+        raise SystemExit(RESUME_EXIT_AMBIGUOUS)
+    if resolution.status == "corrupt":
+        short = resolution.session_id[:8]
+        click.echo(
+            f"session '{short}' is corrupt \u2014 its stored metadata could not be "
+            "read (even from backup)",
+            err=True,
+        )
+        click.echo(f"  remove it: amplifier-tui session delete {short} --force", err=True)
+        raise SystemExit(RESUME_EXIT_CORRUPT)
+    # "not_found"
+    click.echo(f"no session found matching '{partial_id}'", err=True)
+    _echo_cross_project_hint(partial_id)
+    raise SystemExit(RESUME_EXIT_NOT_FOUND)
+
+
 def _pick_session_id(limit: int) -> str | None:
     """Print a numbered picker of recent sessions; return the chosen id.
 
-    The interactive counterpart to ``resume ID`` (amplifier-app-cli
+    The interactive counterpart to ``resume SESSION_ID`` (amplifier-app-cli
     ``resume`` with no argument): a single-session store auto-selects, an
     empty store returns ``None`` with a hint, and ``q`` cancels. Numbering
     is 1-based over the newest-first listing.
@@ -877,27 +989,28 @@ def _pick_session_id(limit: int) -> str | None:
 
 
 @main.command()
-@click.argument("session_id", required=False, default=None)
+@click.argument(
+    "session_id",
+    required=False,
+    default=None,
+    shell_complete=_complete_session_id,
+)
 @click.option("--bundle", default=None, help="Bundle name or URI.")
 @click.option("--limit", "-n", default=10, show_default=True, help="Sessions shown in the picker.")
 def resume(session_id: str | None, bundle: str | None, limit: int) -> None:
-    """Launch the TUI resuming a stored session (interactive picker if no id)."""
+    """Launch the TUI resuming a stored session (interactive picker if no id).
+
+    Exit codes are deterministic (S3): 0 success, 2 no session matches, 3 the
+    prefix is ambiguous (candidates are listed), 4 the match is corrupt
+    (unreadable metadata, even from backup) -- see USER-GUIDE.md's "Resume
+    exit codes" table.
+    """
     if session_id is None:
         resolved = _pick_session_id(limit)
         if resolved is None:
             raise SystemExit(0)
     else:
-        from .kernel import session_manager
-
-        try:
-            resolved = session_manager.resolve(_session_store(), session_id)
-        except FileNotFoundError:
-            click.echo(f"no session found matching '{session_id}'", err=True)
-            _echo_cross_project_hint(session_id)
-            raise SystemExit(1) from None
-        except ValueError as error:
-            click.echo(str(error), err=True)
-            raise SystemExit(1) from None
+        resolved = _resolve_resume_target(_session_store(), session_id)
     raise SystemExit(asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=resolved)))
 
 
@@ -1384,8 +1497,8 @@ def session_import(file: str, new_name: str) -> None:
     click.echo(f"resume it: amplifier-tui resume {new_id[:8]}")
 
 
-# ``session resume <id>`` — alias to the top-level ``resume`` command, so both
-# amplifier-app-cli spellings work (``resume`` interactive + ``session resume
+# ``session resume SESSION_ID`` — alias to the top-level ``resume`` command, so
+# both amplifier-app-cli spellings work (``resume`` interactive + ``session resume
 # <id>``). Registering the same Command object reuses the one handler rather
 # than forking the logic (S4 / #148).
 session.add_command(resume, "resume")

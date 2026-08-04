@@ -183,7 +183,7 @@ class RuntimeAdapter:
         self.session_short: str = ""
         self.session_id: str = ""
         """Full stored-session id, surfaced on exit so the CLI can print the
-        exact ``amplifier-tui resume <id>`` command (S4). Empty for demo
+        exact ``amplifier-tui resume SESSION_ID`` command (S4). Empty for demo
         sessions, which have no resumable store entry."""
         self.banner: tuple[str, str] = ("", "")
         self.session_cost_start: Decimal = Decimal("0")

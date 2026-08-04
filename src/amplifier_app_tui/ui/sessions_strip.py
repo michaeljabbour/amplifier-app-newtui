@@ -14,7 +14,7 @@ Activating a session posts :class:`SessionsStrip.SessionActivated`; the
 app opens that session's full detail (``session_ops_view.
 session_detail_spans``) rather than attempting an in-place resume -- the
 stored-session roster has always been read-only here: switching sessions
-is a fresh ``amplifier-tui resume <id>``, never a live teardown of the
+is a fresh ``amplifier-tui resume SESSION_ID``, never a live teardown of the
 running one.
 
 Rows render as a small table (Session id \xb7 name/bundle or state \xb7 msgs/age),
