@@ -2224,6 +2224,10 @@ class TranscriptReducer:
             # the demo's virtual clock legitimately starts at 0.0, and an
             # `or time.time()` here mixes clock domains (0s durations).
             now=event.ts,
+            # D6 AC4: every visible stream states its producing agent
+            # AND its turn — 0 (never a real 1-indexed turn_id) is the
+            # sentinel for the defensive no-active-turn case.
+            turn=turn.turn_id if turn is not None else 0,
         )
         if seed.elapsed or seed.cost or seed.tokens:
             self.lanes.update(

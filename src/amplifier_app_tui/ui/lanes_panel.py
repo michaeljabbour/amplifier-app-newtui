@@ -193,6 +193,7 @@ def format_lane_lines(
     tailed_index: int | None = None,
     *,
     labels: Sequence[str] | None = None,
+    turns: Sequence[int] | None = None,
     width: int | None = None,
     queued_counts: Sequence[int] | None = None,
 ) -> tuple[str, ...]:
@@ -208,6 +209,13 @@ def format_lane_lines(
     badge after the cost when a lane has messages queued for it (issue
     #39) — it rhymes with the tail-pin ``▸`` and sits last so it never
     disturbs the aligned columns.
+
+    ``turns`` (aligned to *lanes*) states the 1-indexed turn that spawned
+    each lane as a ``t<N>`` tag between the name and activity (D6 AC4:
+    every visible stream states its producing agent AND its turn) —
+    an entry ``<= 0`` renders blank (unknown), never a literal ``t0``.
+    Carries the same "always survives" priority as name/elapsed/cost
+    below — it is never elided under width pressure.
 
     ``width`` is the row budget: rows are height-1 Statics, so overflow is
     CROPPED, and what fell off was the right-side telemetry — the panel's
@@ -235,6 +243,14 @@ def format_lane_lines(
         else ""
         for index in range(len(lanes))
     ]
+    turn_labels = (
+        [
+            f"t{turns[index]}" if index < len(turns) and turns[index] > 0 else ""
+            for index in range(len(lanes))
+        ]
+        if turns is not None
+        else None
+    )
     names = [
         f"{display[index]} ▸" if index == tailed_index else display[index]
         for index in range(len(lanes))
@@ -247,6 +263,11 @@ def format_lane_lines(
     el_w = max(len(text) for text in elapsed)
     tok_w = max(len(text) for text in tokens)
     cost_w = max(len(text) for text in costs)
+    turn_w = max((len(text) for text in turn_labels), default=0) if turn_labels is not None else 0
+    # A listing where every entry's turn is unknown (turn <= 0, e.g. a
+    # fixture that never set it) degrades exactly like turns=None --
+    # never a dangling "· " separator with nothing after it.
+    show_turn = turn_w > 0
 
     def compose(
         acts: list[str],
@@ -257,9 +278,14 @@ def format_lane_lines(
     ) -> tuple[str, ...]:
         lines = []
         for i, lane in enumerate(lanes):
-            line = (
-                f"  {lane.glyph} {names[i]:<{name_w}} · {acts[i]:<{act_w}} · {elapsed[i]:<{el_w}}"
-            )
+            line = f"  {lane.glyph} {names[i]:<{name_w}}"
+            # Re-assert ``turn_labels is not None`` here (not just
+            # ``show_turn``): pyright can't carry the show_turn->non-None
+            # implication across the two separately-computed booleans, so
+            # this is the narrowing guard, not a redundant runtime check.
+            if show_turn and turn_labels is not None:
+                line += f" · {turn_labels[i]:<{turn_w}}"
+            line += f" · {acts[i]:<{act_w}} · {elapsed[i]:<{el_w}}"
             # A booting lane has produced no telemetry yet — rendering
             # ``↓ 0.0k tokens · $0.00`` reads as a hung agent, so the row
             # ends at the honest ``booting · Ns`` clock instead.
@@ -296,7 +322,10 @@ def format_lane_lines(
     # when CJK/ASCII activities are mixed in the same panel is a narrower,
     # documented cosmetic residual, not the overflow this fixes.
     act_cells = max(cell_len(activity) for activity in activities)
-    fixed = 4 + name_w + 3 + 3 + el_w + 3 + cost_w  # everything but activity/tokens
+    turn_segment_w = (3 + turn_w) if show_turn else 0
+    fixed = (
+        4 + name_w + turn_segment_w + 3 + 3 + el_w + 3 + cost_w
+    )  # everything but activity/tokens
     if width is None or width - fixed - 3 - tok_w >= act_cells:
         return compose(activities, act_w, show_tokens=True)
     budget = width - fixed - 3 - tok_w
@@ -489,6 +518,7 @@ class LanesPanel(Vertical):
             tuple(record.lane for record in self._records),
             tailed_index,
             labels=lane_labels(self._records),
+            turns=[record.turn for record in self._records],
             # Pre-layout (width 0) → no budget; rows refit on_resize.
             width=width if width > 0 else None,
             queued_counts=[self._queued.get(record.session_id, 0) for record in self._records],

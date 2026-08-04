@@ -176,3 +176,84 @@ def test_lane_transcript_is_bounded_and_keeps_the_seed_rows() -> None:
     assert isinstance(blocks[0], SessionBanner)
     assert isinstance(blocks[1], UserLine)  # seed rows survive the trim
     assert f"row {_LANE_TRANSCRIPT_MAX_BLOCKS + 24}" in _texts(blocks)[-1]
+
+
+def test_focus_reads_across_growing_stream_never_duplicate_or_reorder() -> None:
+    """D6 AC5: "entering/leaving a focused lane while tokens are still
+    arriving" at the accumulation layer that feeds every focus read --
+    repeated ``lane_transcript`` reads (the same call app.py's focus/
+    re-focus path makes) interleaved with genuinely NEW child events
+    landing in between must never re-emit, duplicate or reorder what a
+    PRIOR read already saw: each read is a byte-for-byte prefix-preserving
+    extension of the last, and the D6 foreign-turn guarantee holds
+    throughout (none of it ever reaches the root transcript).
+    """
+    reducer, host = make_reducer()
+    _start_and_delegate(reducer, "researcher", "s1", "find the flaky tests")
+
+    # Focus #1: nothing has streamed yet -- just the seed rows.
+    snap_1 = reducer.lane_transcript("s1")
+    assert snap_1 is not None
+    assert len(snap_1) == 2  # banner + delegated brief
+
+    # Tokens keep arriving while the supervisor is elsewhere ("unfocused").
+    reducer.handle(
+        ev.ContentBlockEnd(
+            **_child_env("s1", 2.0), block_type="text", block={"text": "Scanning CI history."}
+        )
+    )
+    # Focus #2: the new prose landed -- snap_1's rows are UNCHANGED, in the
+    # SAME order, and the new content appears exactly once.
+    snap_2 = reducer.lane_transcript("s1")
+    assert snap_2 is not None
+    assert snap_2[: len(snap_1)] == snap_1
+    assert len(snap_2) == len(snap_1) + 1
+    assert _texts(snap_2).count("Scanning CI history.") == 1
+
+    # More tool activity + prose arrive between focus reads.
+    reducer.handle(
+        ev.ToolPost(
+            **_child_env("s1", 3.0),
+            tool_name="read_file",
+            tool_call_id="t1",
+            tool_input={"path": "ci.log"},
+            result={"success": True},
+        )
+    )
+    reducer.handle(
+        ev.ContentBlockEnd(
+            **_child_env("s1", 3.5), block_type="text", block={"text": "3 flaky tests found."}
+        )
+    )
+    # Focus #3: same prefix-preservation guarantee, now with two more rows.
+    snap_3 = reducer.lane_transcript("s1")
+    assert snap_3 is not None
+    assert snap_3[: len(snap_2)] == snap_2
+    assert len(snap_3) == len(snap_2) + 2
+
+    # Completion lands; the recap is appended exactly once, everything
+    # earlier is still exactly where it was.
+    reducer.handle(
+        ev.AgentCompleted(
+            **_env(4.0),
+            agent="researcher",
+            sub_session_id="s1",
+            parent_session_id=SID,
+            success=True,
+            result="3 flaky tests found",
+        )
+    )
+    snap_4 = reducer.lane_transcript("s1")
+    assert snap_4 is not None
+    assert snap_4[: len(snap_3)] == snap_3
+    assert len(snap_4) == len(snap_3) + 1
+
+    # Re-reading the SAME settled state repeatedly (a supervisor bouncing
+    # focus in and out after completion) is fully idempotent.
+    assert reducer.lane_transcript("s1") == snap_4
+    assert reducer.lane_transcript("s1") == snap_4
+
+    # D6's own guarantee still holds throughout: none of the child's
+    # thinking/prose ever reached the root/main chat.
+    assert "Scanning CI history" not in " ".join(_texts(host.blocks))
+    assert "3 flaky tests found." not in " ".join(_texts(host.blocks))

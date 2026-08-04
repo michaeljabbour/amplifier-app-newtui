@@ -111,13 +111,21 @@ def lane_seed_for(name: str) -> LaneSeed | None:
     )
 
 
-def lane_focus_blocks(lane: DemoLane, allocator: BlockIdAllocator) -> list[TranscriptBlock]:
-    """The focused-lane transcript (DESIGN-SPEC §8) from DEMO_LANES data."""
+def lane_focus_blocks(
+    lane: DemoLane, allocator: BlockIdAllocator, turn: int = 0
+) -> list[TranscriptBlock]:
+    """The focused-lane transcript (DESIGN-SPEC §8) from DEMO_LANES data.
+
+    ``turn`` (D6 AC4) is looked up by the caller from the live
+    LaneRegistry -- the SAME typed ``task:agent_spawned`` events drive
+    both the demo and real runtimes (AGENTS.md non-negotiable #7), so the
+    registry, not this static mockup data, is the turn authority.
+    """
     blocks: list[TranscriptBlock] = [
         SessionBanner(
             id=allocator.next_id(),
             headline="",
-            focus_note=focused_lane_banner(lane.name, DEMO_SESSION_ID),
+            focus_note=focused_lane_banner(lane.name, DEMO_SESSION_ID, turn),
         ),
         UserLine(id=allocator.next_id(), text=lane.brief, mode="delegated"),
     ]
@@ -415,7 +423,13 @@ class DemoRuntimeAdapter(RuntimeAdapter):
                     break
         if lane is None:
             return None
-        return lane_focus_blocks(lane, allocator)
+        # D6 AC4: the LaneRegistry (populated by the same AgentSpawned
+        # event this lane's live spawn fired) is the turn authority --
+        # not this static mockup row, which predates any turn concept.
+        record = None
+        if self.app is not None:
+            record = self.app.lanes.get(session_id or lane.sub_session_id)
+        return lane_focus_blocks(lane, allocator, turn=record.turn if record is not None else 0)
 
     def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
         # Mockup: every final-answer click reveals the same scripted

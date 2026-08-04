@@ -164,6 +164,13 @@ class LaneRecord(BaseModel):
     parent_id: str | None
     depth: int = Field(default=1, ge=0)
     started_at: float = Field(default=0.0, ge=0)
+    turn: int = Field(default=0, ge=0)
+    """The 1-indexed turn (``_Turn.turn_id``) that spawned this lane (D6
+    AC4: every visible stream states its producing agent AND its turn).
+    ``0`` means unknown -- a defensive fallback for a spawn observed
+    outside any tracked turn (never expected live), or a caller (tests,
+    demo backstory seeds) that never had turn context to give. Rendering
+    surfaces treat ``0`` as "omit", never as a literal ``turn 0``."""
     lane: LaneState
 
 
@@ -223,6 +230,7 @@ class LaneRegistry:
         state: LaneStateName = "running",
         reopen: bool = False,
         now: float = 0.0,
+        turn: int = 0,
     ) -> LaneRecord:
         """Open a lane for a spawned subagent.
 
@@ -231,7 +239,9 @@ class LaneRegistry:
         its spawn must stay done). With ``reopen=True`` a *finished* lane
         spawned again (a replayed demo turn reuses its sub-session ids) is
         reset to a fresh spawned state so the panel shows the live
-        tri-state glyphs instead of a stale ``✔ done``.
+        tri-state glyphs instead of a stale ``✔ done`` -- ``turn`` is
+        re-stamped too, so a reused sub-session id spawned under a LATER
+        turn reports that turn, not the one it first opened under (D6 AC4).
         """
         existing_key = self._resolve_id(session_id)
         existing = self._records.get(existing_key) if existing_key is not None else None
@@ -244,6 +254,7 @@ class LaneRegistry:
                 fresh = existing.model_copy(
                     update={
                         "started_at": now,
+                        "turn": turn,
                         "lane": LaneState.for_state(name=name, state=state, activity=activity),
                     }
                 )
@@ -256,6 +267,7 @@ class LaneRegistry:
             parent_id=parent_id,
             depth=(parent.depth + 1) if parent else 1,
             started_at=now,
+            turn=turn,
             lane=LaneState.for_state(name=name, state=state, activity=activity),
         )
         self._records[session_id] = record
