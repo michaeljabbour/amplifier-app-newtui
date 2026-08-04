@@ -1,0 +1,12 @@
+# gap_id	slug	disposition	owner	date	note
+100	injection-probe-tool-output	pending	-	2026-08-02	awaiting owner disposition
+101	deferred-decision-dependency-blocking	pending	-	2026-08-02	awaiting owner disposition
+102	two-stage-classifier-seam	pending	-	2026-08-02	awaiting owner disposition
+103	provider-keystore-advisory-lock	pending	-	2026-08-02	awaiting owner disposition
+104	sources-bundles-not-fed-to-prepare	pending	-	2026-08-02	awaiting owner disposition
+105	bundle-added-name-resolution	pending	-	2026-08-02	awaiting owner disposition
+106	notification-config-and-cli	pending	-	2026-08-02	awaiting owner disposition
+107	tool-invoke-cli	pending	-	2026-08-02	awaiting owner disposition
+108	fork-session-directive	pending	-	2026-08-02	awaiting owner disposition
+109	run-per-invocation-flags-and-resume	pending	-	2026-08-02	awaiting owner disposition
+110	data-safe-reset-command	pending	-	2026-08-02	awaiting owner disposition

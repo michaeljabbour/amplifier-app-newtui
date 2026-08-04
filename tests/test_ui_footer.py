@@ -20,7 +20,7 @@ from amplifier_app_tui.ui.footer import (
     footer_right_text,
     footer_waiting_text,
 )
-from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, THEME_TOKENS, register_themes, theme_id
 
 FULL_STATE = FooterState(
     mode_id="build",
@@ -423,3 +423,96 @@ async def test_footer_narrow_width_paints_plan_not_clipped() -> None:
         assert "Plan 3/3" in painted
         assert "claude-fable-5" in painted  # the model outlives the trust drop
         assert cell_len(painted) <= 80
+
+
+# -- D2 structural seam: composer/status boundary (compliance 2026-08-02) -----
+#
+# David Koleczek's UX review (2026-07-31): the composer and this footer used
+# to share one undivided ``$bg-chrome`` band. ``FooterBar`` now carries an
+# unconditional ``border-top: solid $rule`` in DEFAULT_CSS -- these tests pin
+# that it is a REAL structural border (not padding/spacing simulating one),
+# that it renders in every theme's own ``$rule`` color (AC1/AC2's "every
+# theme" bar), and that it survives every footer content state -- idle,
+# narrow-width fit-dropping, ``-wrapped``, ``-badge-wrapped`` -- so status
+# updates never dissolve the boundary while the user is typing (AC3), even
+# at narrow widths / short heights (AC4). Item D4 (footer hint + bundle-
+# metadata consolidation) builds new footer content inside this same
+# bordered box; these tests protect the seam it will build on.
+
+
+@pytest.mark.asyncio
+async def test_footer_border_top_is_a_real_border_in_every_theme() -> None:
+    """The seam is a Textual border (structural), colored from ``$rule`` --
+    never a color-only cue, and never simulated with blank padding rows."""
+    for theme_name, tokens in THEME_TOKENS.items():
+        app = FooterApp()
+        async with app.run_test() as pilot:
+            app.theme = theme_id(theme_name)
+            await pilot.pause()  # theme swap re-resolves CSS on the next refresh
+            bar = app.query_one("#footer", FooterBar)
+            edge, color = bar.styles.border_top
+            assert edge == "solid", f"{theme_name}: seam must be a real border edge"
+            assert color.hex.lower() == tokens["rule"].lower(), (
+                f"{theme_name}: seam color must track the theme's own $rule token"
+            )
+
+
+@pytest.mark.asyncio
+async def test_footer_border_top_persists_across_every_footer_state() -> None:
+    """AC3: a resize/rewrap/badge never dissolves the boundary.
+
+    Sweeps a representative state per footer layout mode -- plain idle,
+    a fully loaded left segment, the exact state proven elsewhere
+    (``test_footer_badge_wraps_onto_own_row_at_narrow_width``) to force
+    BOTH ``-wrapped`` and ``-badge-wrapped``, and the running/"streaming"
+    context -- and asserts the seam outlives every one of them.
+    """
+    app = FooterApp()
+    async with app.run_test(size=(100, 24)) as pilot:
+        bar = app.query_one("#footer", FooterBar)
+        wrap_forcing_state = FooterState(
+            mode_id="build",
+            bundle="dev-bundle",
+            session_short="a1b2c3",
+            cost=Decimal("0.87"),
+            waiting=1,
+            context="idle",
+        )
+        states = (FooterState(), FULL_STATE, wrap_forcing_state, FooterState(context="running"))
+        for state in states:
+            bar.update_state(state)
+            await pilot.pause()
+            assert bar.styles.border_top[0] == "solid"
+            if state is wrap_forcing_state:
+                # Proven elsewhere (test_footer_badge_wraps_onto_own_row_at_narrow_width)
+                # to force BOTH classes at this exact width -- confirm the fixture is
+                # still doing its job precisely where the seam is most at risk.
+                assert bar.has_class("-wrapped")
+                assert bar.has_class("-badge-wrapped")
+                assert bar.styles.border_top[0] == "solid"
+
+
+@pytest.mark.asyncio
+async def test_footer_border_top_survives_narrow_width_and_short_height() -> None:
+    """AC4: readable at narrow widths / short heights -- the seam doesn't
+    vanish, and the footer never grows so tall it eats the composer's row
+    above it (a 1-row border, not a multi-row redesign)."""
+    app = FooterApp()
+    async with app.run_test(size=(40, 10)) as pilot:
+        bar = app.query_one("#footer", FooterBar)
+        bar.update_state(
+            FooterState(
+                mode_id="auto",
+                bundle="anchors",
+                model="claude-fable-5",
+                session_short="e07d",
+                cost=Decimal("0.70"),
+                shipped=True,
+                plan_done=3,
+                plan_total=3,
+            )
+        )
+        await pilot.pause()
+        assert bar.styles.border_top[0] == "solid"
+        # One border row + at most two wrapped content rows: never balloons.
+        assert bar.size.height <= 3

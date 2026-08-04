@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from time import monotonic
 
 from amplifier_app_tui.kernel.demo import BRAINSTORM_PROMPT, BUILD_PROMPT
 from amplifier_app_tui.ui.app import TuiApp
@@ -51,6 +52,26 @@ def test_double_esc_rewind_snapshot(monkeypatch) -> None:
         await pilot.press("escape")
         adapter.release()
         assert await wait_for(pilot, lambda: not app.turn_active)
+        # The double-esc "backtrack to rewind" gesture (EscSequence in
+        # ui/app_support.py) only fires when the second Esc lands within
+        # keymap.ESC_BACKTRACK_WINDOW_SECONDS (0.75s) of the first one, a
+        # real wall-clock window measured from time.monotonic(). The
+        # `wait_for` above is the genuine precondition for a deterministic
+        # screenshot (the interrupted turn must actually settle -- recap
+        # rendered, checkpoints synced -- before the rewind picker opens on
+        # top of it) but it is a polling loop, so its OWN wall-clock cost is
+        # unbounded on a loaded CI runner and was silently eating into the
+        # SAME 0.75s budget the second press below needs: under load the
+        # settle-wait alone could exceed 0.75s, so the "backtrack" was
+        # already expired by the time the second Esc arrived and the
+        # picker never opened (issue: race between a load-sensitive test
+        # poll and a fixed product timing constant, not a real regression).
+        # Re-arm the interrupt to "now" immediately before the second press
+        # so the backtrack window is always freshly open here regardless of
+        # how long settling took to observe; the real ESC chain,
+        # `consume_backtrack`, and `action_open_rewind` below still run
+        # for real over the real key press.
+        app.esc_sequence.arm_interrupt(monotonic())
         await pilot.press("escape")
         assert await wait_for(pilot, lambda: app.rewind.display)
 

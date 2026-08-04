@@ -334,6 +334,99 @@ async def _first_run_gate() -> int | None:
     return 0
 
 
+async def _run_preflight(bundle: str | None, provider: str | None, model: str | None) -> Any:
+    """Resolve mounts/providers for THIS launch, without creating a session.
+
+    Thin seam onto :func:`kernel.preflight.run_preflight` (mirrors
+    ``_first_run_gate``/``_launch_tui`` immediately below): tests monkeypatch
+    this name so the CLI wiring is verified without touching real bundle
+    resolution. Returns a ``kernel.preflight.PreflightReport``.
+    """
+    from .kernel.preflight import run_preflight
+
+    return await run_preflight(bundle, provider_override=provider, model_override=model)
+
+
+def _render_preflight_failure(report: Any) -> None:
+    """Plain-terminal preflight failure — printed BEFORE any screen takeover.
+
+    Same clear-error idiom as the init/update consoles (#186/#188): a colored
+    headline plus a dim, actionable remediation line. Always stderr, so it
+    reads even when stdout is redirected/captured (AC4: this is the message
+    the user gets INSTEAD of a corrupted or blank full-screen surface).
+    """
+    from rich.console import Console
+
+    console = Console(stderr=True)
+    console.print(f"[red]✗ cannot launch: {report.error}[/red]")
+    if report.remediation:
+        console.print(f"  → {report.remediation}", style="dim")
+
+
+def _render_preflight_dry_run(report: Any) -> None:
+    """``--dry-run``'s success report: what WOULD mount, nothing launched.
+
+    Same rich-table idiom as ``init``'s provider/routing tables (#186) and
+    ``update``'s package/source tables (#188), closed out with a dim
+    confirmation line mirroring ``reset --dry-run``'s own "nothing was
+    changed".
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    table = Table(title="Would Launch", title_justify="center", header_style="bold cyan")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value")
+    table.add_row("Bundle", report.bundle_name or "-")
+    table.add_row("Provider", report.provider or "-")
+    table.add_row("Model", report.model or "(provider default)")
+    table.add_row("Routing", "enabled" if report.routing_enabled else "disabled")
+    table.add_row("Providers configured", str(report.provider_count))
+    table.add_row("Tool modules configured", str(report.tool_count))
+    console.print(table)
+    console.print("DRY RUN -- nothing was launched", style="dim")
+
+
+def _preflight_or_none(
+    *, bundle: str | None, provider: str | None, model: str | None
+) -> int | None:
+    """Run the pre-takeover preflight; ``None`` to proceed, else an exit code.
+
+    AC4: mounts/providers are resolved (``kernel/preflight.py``) BEFORE the
+    caller ever imports Textual. On failure the plain-terminal error prints
+    right here, so the alternate screen is never touched when mounts/
+    providers won't resolve.
+    """
+    report = asyncio.run(_run_preflight(bundle, provider, model))
+    if report.ok:
+        return None
+    _render_preflight_failure(report)
+    return 1
+
+
+def _dry_run_preflight(
+    *, demo: bool, bundle: str | None, provider: str | None, model: str | None
+) -> int:
+    """``--dry-run``: report what an interactive launch would mount; never launches.
+
+    Mirrors ``reset --dry-run``: read-only, safe to run anytime. Exits 0 when
+    the resolved plan looks launchable (the "would launch" table prints) and
+    1 — same rendering as a real launch's preflight failure — when it does
+    not. ``--demo`` never touches a real bundle/provider, so there is nothing
+    to preflight; it just says so and exits 0.
+    """
+    if demo:
+        click.echo("--demo has no real mounts/providers to preflight (fully offline)")
+        return 0
+    report = asyncio.run(_run_preflight(bundle, provider, model))
+    if not report.ok:
+        _render_preflight_failure(report)
+        return 1
+    _render_preflight_dry_run(report)
+    return 0
+
+
 def _interactive_launch(
     *,
     demo: bool,
@@ -343,16 +436,23 @@ def _interactive_launch(
     provider: str | None = None,
     model: str | None = None,
 ) -> int:
-    """Run the first-run provider gate (real sessions), then boot the TUI.
+    """Run the first-run provider gate, the mount/provider preflight, then boot the TUI.
 
-    The single path every interactive entry point funnels through so the gate
-    and the per-invocation overrides stay consistent. Returns the process exit
-    code; ``--demo`` skips the gate (fully offline).
+    The single path every interactive entry point funnels through so the gate,
+    the preflight and the per-invocation overrides stay consistent. Returns
+    the process exit code; ``--demo`` skips both (fully offline, no real
+    mounts to check).
     """
     if not demo:
         gate = asyncio.run(_first_run_gate())
         if gate is not None:
             return gate
+        # AC4: resolve mounts/providers BEFORE Textual takes the alternate
+        # screen, so a failure prints to plain scrollback instead of
+        # corrupting (or hiding inside) the full-screen surface.
+        failure = _preflight_or_none(bundle=bundle, provider=provider, model=model)
+        if failure is not None:
+            return failure
     return asyncio.run(
         _launch_tui(
             demo=demo,
@@ -388,6 +488,11 @@ def _interactive_launch(
     default=None,
     help="Interaction mode to start in (chat, plan, brainstorm, build, auto).",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Resolve mounts/providers and report what would launch; change/launch nothing.",
+)
 @click.version_option(__version__, prog_name="amplifier-tui")
 @click.pass_context
 def main(
@@ -397,16 +502,23 @@ def main(
     provider: str | None,
     model: str | None,
     mode: str | None,
+    dry_run: bool,
 ) -> None:
     """Amplifier full-screen TUI (v3 Cohesive).
 
     ``--provider``/``--model`` override the resolved plan for THIS launch only
     (never written to a settings scope); ``--mode`` seeds the interaction
     posture the TUI opens in. Same ephemeral semantics as the ``run`` command.
+    ``--dry-run`` previews the mount/provider resolution and exits without
+    ever launching (see ``run --dry-run``).
     """
     if ctx.invoked_subcommand is not None:
         return
     _validate_overrides(model, provider, mode)
+    if dry_run:
+        raise SystemExit(
+            _dry_run_preflight(demo=demo, bundle=bundle, provider=provider, model=model)
+        )
     raise SystemExit(
         _interactive_launch(demo=demo, bundle=bundle, mode=mode, provider=provider, model=model)
     )
@@ -447,6 +559,11 @@ def main(
     show_default=True,
     help="Response format; JSON modes reserve stdout for machine-readable output.",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Resolve mounts/providers and report what would launch; run nothing.",
+)
 def run(
     prompt: str | None,
     bundle: str | None,
@@ -455,6 +572,7 @@ def run(
     mode: str | None,
     resume: str | None,
     output_format: str,
+    dry_run: bool,
 ) -> None:
     """Execute PROMPT (or piped stdin) in one real session.
 
@@ -466,10 +584,18 @@ def run(
     output), ``run`` launches the full-screen TUI with these same overrides
     instead of erroring — so ``run -p ... -m ... --mode chat`` opens a chat
     session. Piped/non-interactive/JSON invocations stay prompt-required.
+
+    ``--dry-run`` resolves mounts/providers and reports what would launch
+    (bundle, provider, routing) without starting anything — same guarantee
+    as ``reset --dry-run``: read-only, safe to run anytime.
     """
     # Shared with the interactive launcher: --model requires --provider, and
     # --mode must name a real interaction mode (both fail loud, nonzero exit).
     _validate_overrides(model, provider, mode)
+    if dry_run:
+        raise SystemExit(
+            _dry_run_preflight(demo=False, bundle=bundle, provider=provider, model=model)
+        )
     # --resume resolves a (possibly partial) id to one stored session up front,
     # so an unknown/ambiguous id errors clearly before any boot work begins.
     resume_id: str | None = None
@@ -524,10 +650,17 @@ def _print_session_table(summaries: list[Any]) -> None:
     Turns column reflects the ``turn_count`` the incremental saver records in
     ``metadata.json``; sessions whose stored metadata predates that field show
     ``—`` rather than a fabricated ``0``.
+
+    A trailing dim ``State`` column appears only when at least one session
+    is damaged (S2 compliance): ``recovered`` (metadata could not be parsed;
+    a synthetic shell was substituted) or ``corrupt`` (the row itself could
+    not be summarized). A healthy roster renders byte-for-byte as before --
+    no blank column noise for the common case.
     """
     from rich.console import Console
     from rich.table import Table
 
+    show_state = any(summary.state != "ok" for summary in summaries)
     table = Table(title="Sessions", title_justify="center", header_style="bold cyan")
     table.add_column("Name", style="cyan", overflow="fold")
     table.add_column("Session", style="green", no_wrap=True)
@@ -535,15 +668,21 @@ def _print_session_table(summaries: list[Any]) -> None:
     table.add_column("Msgs", justify="right")
     table.add_column("Turns", justify="right")
     table.add_column("Age", style="dim", no_wrap=True)
+    if show_state:
+        table.add_column("State", style="dim", no_wrap=True)
     for summary in summaries:
-        table.add_row(
+        row = [
             summary.name or "—",
             summary.short_id,
             summary.bundle,
             str(summary.messages),
             "—" if summary.turns is None else str(summary.turns),
             summary.time_ago,
-        )
+        ]
+        if show_state:
+            state_style = "yellow" if summary.state == "recovered" else "red"
+            row.append("—" if summary.state == "ok" else f"[{state_style}]{summary.state}[/]")
+        table.add_row(*row)
     Console().print(table)
 
 
@@ -555,12 +694,33 @@ def _print_session_table(summaries: list[Any]) -> None:
 @click.option(
     "--resume", "resume", default=None, metavar="SESSION_ID", help="Resume a stored session."
 )
+@click.option(
+    "--attach",
+    "attach",
+    default=None,
+    metavar="REF",
+    help="Attach ref (amplifier-session:<id>[#<handoff>]); claims the handoff on boot.",
+)
+@click.option(
+    "--actor", "actor", default=None, metavar="ID", help="Default actor id for control ops."
+)
+@click.option(
+    "--actor-kind",
+    "actor_kind",
+    type=click.Choice(["human", "automation"]),
+    default="automation",
+    show_default=True,
+    help="Default actor kind (drives lease takeover precedence).",
+)
 def serve(
     bundle: str | None,
     model: str | None,
     provider: str | None,
     mode: str | None,
     resume: str | None,
+    attach: str | None,
+    actor: str | None,
+    actor_kind: str,
 ) -> None:
     """Run an interactive session as a bidirectional line protocol on stdio.
 
@@ -569,9 +729,22 @@ def serve(
     ``approve`` / ``interrupt`` submissions arrive on stdin. This is the seam a
     Rust (or any external) UI drives; it wraps the same ``RealRuntime`` the TUI
     uses, so amplifier-core is untouched. See ``kernel/serve.py`` for the wire.
+
+    ``--attach`` is the human-takeover path: hand a person the ref a paused
+    controller minted (``handoff.created``) and this boots on the SAME session,
+    claims the handoff, and hands them the write lease. ``--actor`` /
+    ``--actor-kind`` stamp the identity that ops without their own ``actor``
+    are attributed to (a ``human`` actor outranks an ``automation`` one when
+    taking the lease over).
     """
     _validate_overrides(model, provider, mode)
     resume_id: str | None = None
+    if attach is not None:
+        from .kernel.session_control import parse_attach_ref
+
+        attached_session, _ = parse_attach_ref(attach)
+        if attached_session:
+            resume = attached_session
     if resume is not None:
         from .kernel import session_manager
 
@@ -579,7 +752,18 @@ def serve(
     from .kernel.serve import serve as _serve
 
     raise SystemExit(
-        asyncio.run(_serve(bundle, mode=mode, model=model, provider=provider, resume_id=resume_id))
+        asyncio.run(
+            _serve(
+                bundle,
+                mode=mode,
+                model=model,
+                provider=provider,
+                resume_id=resume_id,
+                attach=attach,
+                actor=actor,
+                actor_kind=actor_kind,
+            )
+        )
     )
 
 
@@ -1851,8 +2035,9 @@ async def _resolve_provider_schema(choice):  # noqa: ANN001, ANN202
     """
     from .kernel import setup
 
-    if not choice.installed and choice.source_uri:
-        click.echo(f"\n  fetching {choice.module_id} (not installed) …", nl=False)
+    if not choice.installed:
+        verb = "loading" if choice.cached else "fetching"
+        click.echo(f"\n  {verb} {choice.module_id} …", nl=False)
         availability = await setup.ensure_provider_available(choice.module_id, choice.source_uri)
         click.echo(" ok" if availability.available else f" {availability.reason}")
     schema = setup.load_provider_info(choice.module_id)
@@ -2159,7 +2344,7 @@ async def _init(
     for index, choice in enumerate(choices, start=1):
         mark = "✓" if choice.has_key else " "
         label = f"{choice.display} · {choice.module_id}" if choice.display else choice.module_id
-        suffix = "" if choice.installed else "  · not installed"
+        suffix = f"  · {choice.availability}" if choice.availability else ""
         click.echo(f"  {index}. [{mark}] {label}  → {choice.key_var}{suffix}")
 
     # Resolve the target provider.
@@ -3017,9 +3202,10 @@ def _notify_test() -> int:
     paths = bundle_admin.settings_paths(None, None)
     settings = load_merged_settings(paths)
     env = notify_admin.resolved_environ(settings)
-    # A deferred decision always qualifies and, when unfocused, opens the
-    # desktop rung -- so a test exercises the whole ladder the app would fire.
-    rungs = notifications.notification_rungs("decision_deferred", focused=False, environ=env)
+    # An awaiting-approval/clarification reason always qualifies and, when
+    # unfocused, opens the desktop rung -- so a test exercises the whole
+    # ladder the app would fire.
+    rungs = notifications.notification_rungs("awaiting_approval", focused=False, environ=env)
     fired: list[str] = []
     if "bell" in rungs:
         click.echo("\a", nl=False)

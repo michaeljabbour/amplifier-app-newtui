@@ -33,6 +33,12 @@ uv tool install git+https://github.com/microsoft/amplifier
 amplifier init
 ```
 
+The two commands coexist on purpose: this app installs `amplifier-tui`, the platform installs
+`amplifier`. That is a settled decision, not a placeholder —
+[ADR-0008](docs/decisions/ADR-0008-console-script-name.md) records why (a second package
+claiming `amplifier` breaks both installs and self-update) and what the only viable path to a
+plain `amplifier` TUI would be.
+
 ### From a clone (development)
 
 ```sh
@@ -190,7 +196,7 @@ bundle.md                   the repo's amplifier bundle (packaged copy kept byte
 | [docs/DESIGN-SPEC.md](docs/DESIGN-SPEC.md) | the behavioral spec the app is built to (authoritative) |
 | [docs/BACKLOG.md](docs/BACKLOG.md) | what's next, calibrated against what's already shipped |
 | [docs/design-v3-cohesive.html](docs/design-v3-cohesive.html) | executable mockup — exact strings, colors, timing, state machines |
-| [docs/decisions/](docs/decisions/) | ADRs — why it's shaped this way (ADR-0007 = the architecture rules) |
+| [docs/decisions/](docs/decisions/) | ADRs — why it's shaped this way (ADR-0007 = the architecture rules; ADR-0008 = the `amplifier-tui` command name) |
 | [docs/plans/](docs/plans/) | dated implementation plans, each with a status banner (all landed to date) |
 
 ## Architecture
