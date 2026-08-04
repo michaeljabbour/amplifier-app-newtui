@@ -23,6 +23,9 @@ Widget communication is Textual messages only (no callbacks into the app):
   in place (click or enter).
 - :class:`DelegateSummaryToggled` — a delegate fan-out summary was
   expanded/collapsed in place (click or enter).
+- :class:`ExpandEvidenceClaim` — an evidence row's selected claim was
+  expanded (click or enter, spec §10 AC1 — the two paths post the same
+  message so they cannot diverge).
 - :class:`LaneFocusChanged` — the view swapped to a subagent's block list
   or back (DESIGN-SPEC §8).
 
@@ -194,8 +197,10 @@ class ThinkingToggled(Message):
 
 
 class ExpandEvidenceClaim(Message):
-    """Enter on a focused evidence block (spec §10 ``enter expand``) —
-    deep-link the selected claim to the tool call that grounds it."""
+    """Enter *or click* on a focused evidence block (spec §10 ``enter
+    expand``, compliance item D7 AC1) — deep-link the selected claim to
+    the tool call that grounds it. Click posts this identical message
+    (never a separate one) so the two input paths cannot diverge."""
 
     def __init__(self, block_id: str, link: EvidenceLink) -> None:
         super().__init__()
@@ -512,6 +517,15 @@ class BlockWidget(Static):
             self.post_message(ShowEvidence(block.id, block.evidence_refs))
         elif block.kind == "turn_rule":
             self.post_message(OpenRewind(block.checkpoint_id))
+        elif block.kind == "evidence":
+            # AC1 ("every evidence row that advertises an action is
+            # focusable and opens with Enter and click"): a click on the
+            # row must perform the IDENTICAL action Enter does -- expand
+            # the selected claim -- never a dead control. This is a
+            # DIFFERENT target than the answer branch above (which stays
+            # untouched): that one is the coarser reveal-the-block click
+            # on the final answer, before any EvidenceBlock even exists.
+            self.action_evidence_expand()
 
 
 class NeedsYouBlockWidget(NeedsYouList):
@@ -737,6 +751,11 @@ class HistoryArchive(Static):
         elif block.kind == "evidence":
             self._active_evidence_id = block.id
             self.focus()
+            # AC1 parity (mirrors the flat BlockWidget._activate() fix
+            # above): a click must not merely arm the row for a SECOND,
+            # separate enter press -- it performs the same expand action
+            # Enter does, immediately.
+            self.action_evidence_expand()
 
     def action_archive_decision(self, block_id: str, item_index: int, choice_index: int) -> None:
         block = self._owner.get_block(block_id)
