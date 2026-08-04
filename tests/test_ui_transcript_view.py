@@ -770,6 +770,128 @@ async def test_archived_evidence_action_detail_posts_open_evidence_detail() -> N
 
 
 # ---------------------------------------------------------------------------
+# AC1 click parity (compliance item D7's outstanding gap): a click on an
+# evidence row must perform the SAME action as Enter (action_evidence_expand
+# -> ExpandEvidenceClaim), never a dead control and never the coarser
+# answer-click reveal (ShowEvidence is a DIFFERENT target -- the answer
+# block, before any EvidenceBlock exists -- see test_answer_click_posts_
+# show_evidence above, unchanged).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_evidence_click_posts_expand_evidence_claim_like_enter() -> None:
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        link = EvidenceLink(claim_quote="tests pass", tool_ref="pytest run", tool_call_id="c1")
+        widget = view.append(EvidenceBlock(id="e1", links=(link,)))
+        assert isinstance(widget, BlockWidget)
+        await pilot.pause()
+
+        await pilot.click(widget)
+        await pilot.pause()
+
+        assert len(app.expanded_claims) == 1
+        assert app.expanded_claims[0].block_id == "e1"
+        assert app.expanded_claims[0].link == link
+        assert app.evidence == []  # never the coarser answer-click reveal
+
+
+@pytest.mark.asyncio
+async def test_evidence_click_with_no_links_is_a_noop_like_enter() -> None:
+    """Click mirrors Enter's existing no-op for a linkless block -- never
+    invent a click-only behavior Enter itself doesn't have."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        widget = view.append(EvidenceBlock(id="e-empty", links=()))
+        assert isinstance(widget, BlockWidget)
+        await pilot.pause()
+
+        await pilot.click(widget)
+        await pilot.pause()
+
+        assert app.expanded_claims == []
+
+
+@pytest.mark.asyncio
+async def test_evidence_click_expands_the_currently_selected_claim() -> None:
+    """Click reads live selection state (moved by \u2190/\u2192), the same claim
+    Enter would expand -- not always the first link."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        link_a = EvidenceLink(claim_quote="a", tool_ref="ref a", tool_call_id="c1")
+        link_b = EvidenceLink(claim_quote="b", tool_ref="ref b", tool_call_id="c2")
+        widget = view.append(EvidenceBlock(id="e1", links=(link_a, link_b)))
+        assert isinstance(widget, BlockWidget)
+        await pilot.pause()
+        widget.action_evidence_next()  # existing AC1 control: select claim b
+
+        await pilot.click(widget)
+        await pilot.pause()
+
+        assert app.expanded_claims[-1].link == link_b
+
+
+@pytest.mark.asyncio
+async def test_archived_evidence_click_posts_expand_evidence_claim() -> None:
+    """The consolidated HistoryArchive path mirrors the flat-widget one: a
+    REAL click (not a direct action call) on an archived evidence row
+    performs the expand action immediately, rather than merely selecting
+    + focusing the row for a second, separate enter press."""
+    app = Harness()
+    async with app.run_test(size=(100, 30)) as pilot:
+        view = _view(app)
+        link = EvidenceLink(
+            claim_quote="the claim", tool_ref="read_file \u00b7 source.py", tool_call_id="c9"
+        )
+        view.append(EvidenceBlock(id="old-evidence", links=(link,)))
+        for i in range(HISTORY_COMPACT_TRIGGER + 5):
+            view.append(UserLine(id=f"filler-{i}", text=f"line {i}"))
+        await pilot.pause(0.2)
+
+        archive = view.query_one(HistoryArchive)
+        view.release_anchor()
+        view.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        await pilot.click(archive, offset=(5, 0))  # row 0: the evidence block's header line
+        await pilot.pause()
+
+        assert app.expanded_claims[-1].block_id == "old-evidence"
+        assert app.expanded_claims[-1].link == link
+
+
+@pytest.mark.asyncio
+async def test_evidence_keyboard_and_click_produce_equivalent_state() -> None:
+    """Keyboard/mouse parity: exercise the SAME shape of row via Enter and
+    via click and assert the resulting state is equivalent, so the two
+    input paths cannot silently diverge again."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        link = EvidenceLink(claim_quote="tests pass", tool_ref="pytest run", tool_call_id="c1")
+
+        enter_widget = view.append(EvidenceBlock(id="via-enter", links=(link,)))
+        click_widget = view.append(EvidenceBlock(id="via-click", links=(link,)))
+        assert isinstance(enter_widget, BlockWidget)
+        assert isinstance(click_widget, BlockWidget)
+        await pilot.pause()
+
+        enter_widget.focus()
+        await pilot.press("enter")
+        await pilot.click(click_widget)
+        await pilot.pause()
+
+        assert len(app.expanded_claims) == 2
+        by_row = {message.block_id: message.link for message in app.expanded_claims}
+        assert by_row["via-enter"] == link
+        assert by_row["via-click"] == link
+        assert by_row["via-enter"] == by_row["via-click"]  # equivalent resulting state
+
+
+# ---------------------------------------------------------------------------
 # Evidence focus/scroll restore seam (compliance item D7 AC3)
 # ---------------------------------------------------------------------------
 
