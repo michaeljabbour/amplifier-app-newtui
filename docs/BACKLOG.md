@@ -97,7 +97,7 @@ touches amplifier-core.
 |---|---|---|
 | [#90](https://github.com/michaeljabbour/amplifier-app-tui/issues/90) | 🟢 open | Live tail: attach the streaming block to the lane/item it's working on (not a detached bottom strip) |
 | [#91](https://github.com/michaeljabbour/amplifier-app-tui/issues/91) | 🟢 open | Lane "done" row shows raw markdown result instead of a clean summary |
-| [#210](https://github.com/michaeljabbour/amplifier-app-tui/issues/210) | ✅ (this PR) | Light theme (`paper`) shipped: selectable via `/theme paper` (or cycling bare `/theme`), every theme's token pairs WCAG-contrast-tested (`tests/test_ui_theme_contrast.py`) -- AC4 fully met, no longer scoped out. See docs/DESIGN-SPEC.md §1 |
+| [#210](https://github.com/michaeljabbour/amplifier-app-tui/issues/210) | ✅ #216 | Light theme (`paper`) shipped: selectable via `/theme paper` (or cycling bare `/theme`), every theme's token pairs WCAG-contrast-tested (`tests/test_ui_theme_contrast.py`) -- AC4 fully met, no longer scoped out. See docs/DESIGN-SPEC.md §1 |
 
 ## Non-goals
 
