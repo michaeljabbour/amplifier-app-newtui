@@ -12,7 +12,9 @@ from amplifier_app_tui.ui.session_ops_view import (
     mcp_spans,
     model_listing_spans,
     names_spans,
+    resume_command_for,
     session_detail_spans,
+    session_resume_spans,
     sessions_spans,
     skill_loaded_spans,
     skills_spans,
@@ -327,3 +329,87 @@ def test_session_detail_spans_includes_tags_and_metadata() -> None:
     assert "7" in text
     assert "3" in text
     assert "#frontend #urgent" in text
+
+
+# -- S2 compliance gap 3: explicit indexing states --------------------------
+
+
+def test_sessions_spans_labels_transcript_lost_state() -> None:
+    rows = (SessionSummary(session_id="abc12345ff", name="auth", state="transcript_lost"),)
+    spans = sessions_spans(rows)
+    text = _text(spans)
+    assert "transcript lost" in text
+    chip = next(sp for sp in spans if "transcript lost" in sp.text)
+    assert chip.style_token == "orange"
+    assert chip.bold is True
+
+
+def test_sessions_spans_labels_indexing_state() -> None:
+    rows = (SessionSummary(session_id="abc12345ff", state="indexing"),)
+    spans = sessions_spans(rows)
+    text = _text(spans)
+    assert "indexing" in text
+    chip = next(sp for sp in spans if "indexing" in sp.text)
+    assert chip.style_token == "red"
+    assert chip.bold is True
+
+
+def test_session_detail_spans_explains_transcript_lost_state() -> None:
+    summary = SessionSummary(session_id="deadbeef" * 4, state="transcript_lost")
+    text = _text(session_detail_spans(summary))
+    assert "transcript lost" in text
+    assert "conversation history for this session is gone" in text
+
+
+def test_session_detail_spans_explains_indexing_state() -> None:
+    summary = SessionSummary(session_id="deadbeef" * 4, state="indexing")
+    text = _text(session_detail_spans(summary))
+    assert "indexing" in text
+    assert "no metadata record was ever written" in text
+
+
+# -- S2 compliance gap 2: keyboard/mouse resume ------------------------------
+
+
+def test_resume_command_for_uses_the_short_id() -> None:
+    summary = SessionSummary(session_id="abc123def456" + "0" * 20, name="auth")
+    assert resume_command_for(summary) == "amplifier-tui resume abc123de"
+
+
+def test_session_resume_spans_shows_the_exact_command() -> None:
+    summary = SessionSummary(session_id="abc123def456" + "0" * 20, name="auth", bundle="tui")
+    spans = session_resume_spans(summary)
+    text = _text(spans)
+    assert "Resume ready" in text
+    assert "amplifier-tui resume abc123de" in text
+    command_spans = [sp for sp in spans if sp.text.strip() == "amplifier-tui resume abc123de"]
+    assert command_spans, "the command must appear as its own unambiguous span"
+    assert command_spans[0].style_token == "bright"
+    assert command_spans[0].bold is True
+
+
+def test_session_resume_spans_states_the_read_only_contract() -> None:
+    """S2 gap 2: the keyboard path must say, in the UI, that it is not an
+    in-place resume -- it stays a fresh out-of-process command."""
+    summary = SessionSummary(session_id="deadbeef" * 4, name="auth")
+    text = _text(session_resume_spans(summary))
+    assert "read-only" in text
+    assert "new terminal" in text
+
+
+def test_session_resume_spans_ok_state_has_no_warning_glyph() -> None:
+    summary = SessionSummary(session_id="deadbeef" * 4, name="auth", bundle="tui")
+    text = _text(session_resume_spans(summary))
+    assert "\u26a0" not in text
+
+
+def test_session_resume_spans_includes_state_chip_when_damaged() -> None:
+    """A damaged session still gets a ready command -- S3's own resume path
+    already reports a clear, distinct exit code for it -- but the state
+    chip + explanation ride along too, so a keyboard user learns WHY
+    resume might refuse the id without separately opening detail."""
+    summary = SessionSummary(session_id="deadbeef" * 4, state="indexing")
+    text = _text(session_resume_spans(summary))
+    assert "\u26a0" in text
+    assert "indexing" in text
+    assert "amplifier-tui resume deadbeef" in text

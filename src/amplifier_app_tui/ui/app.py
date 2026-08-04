@@ -83,7 +83,7 @@ from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
 from .runtime_adapter import RuntimeAdapter
 from .session_ops_controller import SessionOpsController
-from .session_ops_view import session_detail_spans, sessions_spans
+from .session_ops_view import session_detail_spans, session_resume_spans, sessions_spans
 from .splash import BootSplash
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
@@ -1572,6 +1572,29 @@ class TuiApp(App[None]):
             return
         self.copy_to_clipboard(summary.session_id)
         self.append_block(Answer(id=self.allocator.next_id(), spans=session_detail_spans(summary)))
+
+    def on_sessions_strip_resume_requested(self, message: SessionsStrip.ResumeRequested) -> None:
+        """``r``, or a click on a row's resume glyph -- S2 gap 2: post the
+        session's exact ready-to-run ``amplifier-tui resume SESSION_ID``
+        command rather than an in-place teardown (the stored-session
+        roster stays read-only, same as :meth:`on_sessions_strip_session_
+        activated` above) -- and best-effort copy that command (not the
+        bare id) to the clipboard, so pasting it into a new terminal just
+        works."""
+        message.stop()
+        summary = next(
+            (s for s in self.sessions_strip.summaries if s.session_id == message.session_id),
+            None,
+        )
+        self.sessions_strip.close_strip()
+        self._restore_keyboard()
+        self._refresh_footer()
+        if summary is None:
+            return
+        from .session_ops_view import resume_command_for
+
+        self.copy_to_clipboard(resume_command_for(summary))
+        self.append_block(Answer(id=self.allocator.next_id(), spans=session_resume_spans(summary)))
 
     def on_sessions_strip_closed(self, message: SessionsStrip.Closed) -> None:
         message.stop()

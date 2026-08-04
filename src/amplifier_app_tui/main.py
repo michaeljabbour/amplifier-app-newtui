@@ -691,6 +691,22 @@ def run(
     )
 
 
+_STATE_TABLE_COLORS: dict[str, str] = {
+    "recovered": "yellow",
+    "transcript_lost": "yellow",
+    "indexing": "red",
+    "corrupt": "red",
+}
+"""Rich console color per non-``"ok"`` :data:`~amplifier_app_tui.kernel.
+session_manager.SessionState` (S2 gap 3): yellow for a session that is
+still identifiable (metadata intact), red for one with no trustworthy
+identity to show. Mirrors ``ui/session_ops_view.STATE_STYLE_TOKENS``
+(orange/red) in the CLI's own raw-rich-color palette rather than the
+TUI's closed theme-token set -- the two are independent color systems by
+design (this table prints via a plain ``rich.console.Console``, not the
+app's theme variables)."""
+
+
 def _print_session_table(
     summaries: list[Any], *, title: str = "Sessions", stderr: bool = False
 ) -> None:
@@ -733,8 +749,9 @@ def _print_session_table(
             summary.time_ago,
         ]
         if show_state:
-            state_style = "yellow" if summary.state == "recovered" else "red"
-            row.append("—" if summary.state == "ok" else f"[{state_style}]{summary.state}[/]")
+            state_style = _STATE_TABLE_COLORS.get(summary.state, "red")
+            label = summary.state.replace("_", " ")
+            row.append("—" if summary.state == "ok" else f"[{state_style}]{label}[/]")
         table.add_row(*row)
     Console(stderr=stderr).print(table)
 

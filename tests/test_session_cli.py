@@ -571,3 +571,86 @@ def test_sessions_never_crashes_when_one_session_is_corrupt(
     assert result.exit_code == 0
     assert "corrupt" in result.output
     assert "auth work" in result.output
+
+
+# -- S2 compliance gap 3: explicit indexing states ---------------------------
+
+
+def test_sessions_labels_a_transcript_lost_session(scratch: SessionStore) -> None:
+    """Metadata intact, transcript unreadable (main + backup) -- must show
+    an explicit 'transcript lost' state, not a plain healthy row."""
+    _seed(scratch, "healthyid", name="auth work", messages=3)
+    # A single hyphenated token (matching the existing "will-be-lost" style
+    # fixture above) -- a multi-word name can word-wrap across the Name
+    # column's two display lines once the State column widens the table,
+    # which would break a plain substring assertion for reasons that have
+    # nothing to do with what this test actually checks.
+    _seed(scratch, "brokenidx", name="willlose", messages=1)
+    _seed(scratch, "brokenidx", name="willlose", messages=2)  # real .backup
+    session_dir = scratch.session_dir("brokenidx")
+    (session_dir / "transcript.jsonl").write_bytes(b"\xff\xfe\x00garbage\n")
+    (session_dir / "transcript.jsonl.backup").write_bytes(b"\xff\xfe\x00garbage\n")
+
+    result = CliRunner().invoke(main, ["sessions"])
+
+    assert result.exit_code == 0
+    assert "State" in result.output
+    assert "transcript lost" in result.output
+    assert "willlose" in result.output  # name survives -- only history is gone
+    assert "auth work" in result.output
+
+
+def test_sessions_labels_an_indexing_session(scratch: SessionStore) -> None:
+    """Real transcript content but no metadata.json at all -- must show an
+    explicit 'indexing' state, not a blank/unknown-but-ok row."""
+    _seed(scratch, "healthyid", name="auth work", messages=3)
+    _seed(scratch, "nometaidx", messages=2)
+    (scratch.session_dir("nometaidx") / "metadata.json").unlink()
+
+    result = CliRunner().invoke(main, ["sessions"])
+
+    assert result.exit_code == 0
+    assert "State" in result.output
+    assert "indexing" in result.output
+    assert "nometaid" in result.output  # the id is still shown
+
+
+def test_resume_transcript_lost_session_still_launches(
+    scratch: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S2 gap 3: a transcript_lost session keeps its metadata, so resume
+    must still succeed (exit 0) -- exactly as it did before this state
+    existed; only the listing gained an explicit label."""
+
+    async def fake_launch(
+        *, demo: bool, bundle: str | None = None, resume_id: str | None = None
+    ) -> int:
+        return 0
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+    _seed(scratch, "cafef00d", name="auth work", messages=1)
+    _seed(scratch, "cafef00d", name="auth work", messages=2)
+    session_dir = scratch.session_dir("cafef00d")
+    (session_dir / "transcript.jsonl").write_bytes(b"\xff\xfe\x00garbage\n")
+    (session_dir / "transcript.jsonl.backup").write_bytes(b"\xff\xfe\x00garbage\n")
+
+    result = CliRunner().invoke(main, ["resume", "cafef00d"])
+
+    assert result.exit_code == 0
+    assert result.exit_code not in (
+        main_mod.RESUME_EXIT_NOT_FOUND,
+        main_mod.RESUME_EXIT_AMBIGUOUS,
+        main_mod.RESUME_EXIT_CORRUPT,
+    )
+
+
+def test_resume_indexing_session_exits_distinct_code(scratch: SessionStore) -> None:
+    """An indexing session (transcript present, no metadata) has no
+    bundle/identity to relaunch into -- refused with the same distinct
+    corrupt exit code as recovered/corrupt, not launched blind."""
+    _seed(scratch, "nometaidx", messages=2)
+    (scratch.session_dir("nometaidx") / "metadata.json").unlink()
+
+    result = CliRunner().invoke(main, ["resume", "nometaidx"])
+
+    assert result.exit_code == main_mod.RESUME_EXIT_CORRUPT

@@ -472,3 +472,49 @@ def test_load_transcript_marks_recovery_failed_on_binary_bytes(store: SessionSto
     transcript, _metadata = store.load("s1")
     assert transcript == []
     assert store.transcript_recovery_failed is True
+
+
+# -- S2 compliance gap 3: transcript_ok() (explicit indexing states) --------
+
+
+def test_transcript_ok_true_when_no_transcript_at_all(store: SessionStore) -> None:
+    """A brand-new session dir with nothing saved yet is NOT unreadable --
+    absence and corruption are different states (S2 gap 3)."""
+    store.session_dir("fresh01").mkdir(parents=True)
+    assert store.transcript_ok("fresh01") is True
+    assert store.transcript_recovery_failed is False
+
+
+def test_transcript_ok_true_when_transcript_parses(store: SessionStore) -> None:
+    store.save("s1", [{"role": "user", "content": "hi"}], {"session_id": "s1"})
+    assert store.transcript_ok("s1") is True
+
+
+def test_transcript_ok_false_when_main_and_backup_both_unreadable(store: SessionStore) -> None:
+    """Two saves so a real ``.backup`` exists, then corrupt BOTH copies --
+    the exact shape a real resume would also find unreadable."""
+    store.save("s1", [{"role": "user", "content": "hi"}], {"session_id": "s1"})
+    store.save(
+        "s1",
+        [{"role": "user", "content": "hi"}, {"role": "user", "content": "two"}],
+        {"session_id": "s1"},
+    )
+    session_dir = store.session_dir("s1")
+    (session_dir / TRANSCRIPT_FILENAME).write_bytes(b"\xff\xfe\x00not-utf8\n")
+    (session_dir / (TRANSCRIPT_FILENAME + ".backup")).write_bytes(b"\xff\xfe\x00not-utf8\n")
+    assert store.transcript_ok("s1") is False
+    assert store.transcript_recovery_failed is True
+
+
+def test_transcript_ok_true_when_backup_recovers_a_corrupt_main(store: SessionStore) -> None:
+    """Main corrupt but a readable ``.backup`` exists -- the store's own
+    recovery already handles this at ``load()`` time; the probe agrees."""
+    store.save("s1", [{"role": "user", "content": "hi"}], {"session_id": "s1"})
+    store.save(
+        "s1",
+        [{"role": "user", "content": "hi"}, {"role": "user", "content": "two"}],
+        {"session_id": "s1"},
+    )
+    session_dir = store.session_dir("s1")
+    (session_dir / TRANSCRIPT_FILENAME).write_bytes(b"\xff\xfe\x00not-utf8\n")
+    assert store.transcript_ok("s1") is True

@@ -181,6 +181,10 @@ KEYMAP: tuple[Binding, ...] = (
     _b("sessions_up", ("up",), "↑↓ select", _SESSIONS),
     _b("sessions_down", ("down",), "↑↓ select", _SESSIONS),
     _b("sessions_activate", ("enter",), "enter open", _SESSIONS),
+    # Keyboard resume (S2 gap 2): read-only stays read-only -- this
+    # surfaces the exact ready-to-run resume command rather than an
+    # in-place teardown (SessionsStrip.ResumeRequested docstring).
+    _b("sessions_resume", ("r",), "r resume", _SESSIONS),
     _b("evidence_prev", ("left",), "←/→", _EVIDENCE),
     _b("evidence_next", ("right",), "←/→", _EVIDENCE),
     _b("evidence_expand", ("enter",), "enter", _EVIDENCE),
@@ -246,7 +250,7 @@ FOOTER_HINTS: dict[str, str] = {
     "lane_focus": "esc back to parent · transcript is the subagent's own",
     "palette": "↑↓ select · enter run · esc close",
     "mention": "↑↓ select · enter/tab insert · esc close",
-    "sessions": "↑↓ select · enter open · esc close",
+    "sessions": "↑↓ select · enter open · r resume · esc close",
     "running": "esc interrupt · enter steer · shift+enter queue",
     "idle": "",
 }

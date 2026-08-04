@@ -24,6 +24,8 @@ _DIFF_MAX_LINES = 400
 STATE_LABELS: dict[SessionState, str] = {
     "recovered": "recovered",
     "corrupt": "corrupt",
+    "transcript_lost": "transcript lost",
+    "indexing": "indexing",
 }
 """Display label for a non-``"ok"`` :class:`SessionState` (S2 compliance:
 a damaged session is labeled explicitly, never dropped or shown as healthy)."""
@@ -31,10 +33,14 @@ a damaged session is labeled explicitly, never dropped or shown as healthy)."""
 STATE_STYLE_TOKENS: dict[SessionState, StyleToken] = {
     "recovered": "orange",
     "corrupt": "red",
+    "transcript_lost": "orange",
+    "indexing": "red",
 }
-"""Theme token per non-``"ok"`` state -- orange (warning) for a session the
-store patched back together from a backup/synthetic shell, red (error) for
-one the listing itself could not summarize at all."""
+"""Theme token per non-``"ok"`` state -- orange (warning) for a session that
+is still identifiable/nameable (a patched-together metadata shell, or one
+whose only loss is the transcript), red (error) for one with no
+trustworthy identity at all (the listing could not summarize it, or there
+is no catalog entry to read a name/bundle from)."""
 
 
 def _header(label: str, detail: str) -> list[Segment]:
@@ -190,6 +196,8 @@ def sessions_spans(
 STATE_EXPLANATIONS: dict[SessionState, str] = {
     "recovered": "metadata.json could not be parsed; showing a recovered shell (name/bundle/tags may be missing)",
     "corrupt": "this session's files could not be summarized at all; only the id below is trustworthy",
+    "transcript_lost": "metadata is intact, but the transcript (and its backup) could not be read; conversation history for this session is gone",
+    "indexing": "transcript content exists but no metadata record was ever written (interrupted mid-save, or created by another tool); name, bundle and turn count are unknown",
 }
 """One-line, plain-language reason shown under a damaged session's state
 chip in :func:`session_detail_spans` (S2 compliance: explain, don't just
@@ -248,6 +256,64 @@ def session_detail_spans(summary: SessionSummary) -> tuple[Segment, ...]:
     spans.append(
         Segment(
             text="  select the full id above to copy it · /copy re-copies this detail\n",
+            style_token="dimmer",
+        )
+    )
+    return tuple(spans)
+
+
+def resume_command_for(summary: SessionSummary) -> str:
+    """The exact, ready-to-run command that resumes *summary* (S2 gap 2).
+
+    Single source for this string -- the keyboard-resume block below and
+    the app's clipboard copy both call this rather than hand-formatting
+    ``f"amplifier-tui resume {short_id}"`` a second time.
+    """
+    return f"amplifier-tui resume {summary.short_id}"
+
+
+def session_resume_spans(summary: SessionSummary) -> tuple[Segment, ...]:
+    """Keyboard-resume block for one session (S2 compliance gap 2).
+
+    ``/sessions`` has always been read-only here: switching sessions is a
+    fresh ``amplifier-tui resume SESSION_ID`` process, never an in-place
+    teardown of the one currently running (the picker's own docstring;
+    :func:`sessions_spans`'s header note). That contract is NOT changed by
+    this block -- it exists so a keyboard-only user reaches the SAME
+    resume path a mouse user gets from reading the id off the detail view
+    and typing it in by hand, without leaving the keyboard or transcribing
+    an 8-char id. Posting this block also best-effort copies the command
+    to the clipboard (``TuiApp.copy_to_clipboard``), mirroring how
+    :func:`session_detail_spans` copies the bare id.
+
+    A damaged session (``state != "ok"``) still gets its command line --
+    the CLI's own resume path already reports a clear, distinct exit code
+    for a corrupt/unindexed target (S3's ``RESUME_EXIT_CORRUPT``) rather
+    than needing this surface to gate it twice -- but the state chip and
+    explanation are repeated here too, so a keyboard user does not have to
+    separately open detail to learn WHY resume might refuse the id.
+    """
+    command = resume_command_for(summary)
+    spans = [
+        Segment(text="\u00b7 ", style_token="blue"),
+        Segment(text="Resume ready", style_token="bright", bold=True),
+        Segment(text=f"  {summary.short_id}\n", style_token="dim"),
+        Segment(text="  command  ", style_token="dim"),
+        Segment(text=f"{command}\n", style_token="bright", bold=True),
+    ]
+    if summary.state != "ok":
+        spans.append(
+            Segment(
+                text=f"  \u26a0 {STATE_LABELS[summary.state]}  ",
+                style_token=STATE_STYLE_TOKENS[summary.state],
+                bold=True,
+            )
+        )
+        spans.append(Segment(text=f"{STATE_EXPLANATIONS[summary.state]}\n", style_token="dim"))
+    spans.append(
+        Segment(
+            text="  /sessions stays read-only \u2014 run the command above in a new terminal"
+            " (or after quitting) to switch into it; nothing here is torn down\n",
             style_token="dimmer",
         )
     )
@@ -380,7 +446,9 @@ __all__ = [
     "mcp_spans",
     "model_listing_spans",
     "names_spans",
+    "resume_command_for",
     "session_detail_spans",
+    "session_resume_spans",
     "sessions_spans",
     "skill_loaded_spans",
     "skills_spans",

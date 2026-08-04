@@ -122,13 +122,22 @@ def _coerce_tags(raw: object) -> tuple[str, ...]:
     return tuple(sorted(out))
 
 
-SessionState = Literal["ok", "recovered", "corrupt"]
+SessionState = Literal["ok", "recovered", "corrupt", "transcript_lost", "indexing"]
 """Health of one session row in the listing (S2 compliance: a damaged
-session must be labeled, never dropped or shown as if it were healthy):
+session must be labeled, never dropped or shown as if it were healthy).
 
-- ``"ok"`` -- metadata parsed normally (this also covers a brand-new
-  session with no ``metadata.json`` yet -- that is a normal, not a
-  damaged, state).
+Two independent axes are folded into one field: whether ``metadata.json``
+parses, and whether the transcript/index backing it is intact. Only
+``ok``/``recovered``/``corrupt`` were surfaced originally; ``transcript_lost``
+and ``indexing`` (S2 gap 3, "explicit indexing states") close the gap
+between those two extremes for shapes that are genuinely detectable from
+the files ``SessionStore`` already reads for a listing -- no state here is
+inferred or guessed at:
+
+- ``"ok"`` -- metadata parsed normally AND (when metadata exists) the
+  transcript is readable. This also covers a brand-new session with no
+  ``metadata.json`` yet and nothing written -- that is a normal, not a
+  damaged, state.
 - ``"recovered"`` -- ``metadata.json`` (and its ``.backup``) existed but
   neither could be parsed; :meth:`~amplifier_app_tui.kernel.persistence.
   SessionStore._load_metadata` already substitutes a synthetic
@@ -137,7 +146,39 @@ session must be labeled, never dropped or shown as if it were healthy):
 - ``"corrupt"`` -- building the summary itself raised past that recovery;
   :func:`list_summaries` catches it at the per-session boundary so one bad
   directory cannot take down the whole listing.
+- ``"transcript_lost"`` -- metadata parsed cleanly (name/bundle/turns are
+  all trustworthy), but ``transcript.jsonl`` (and its ``.backup``, if any)
+  EXISTED and neither parsed -- :meth:`~amplifier_app_tui.kernel.
+  persistence.SessionStore.transcript_ok` reuses the exact recovery probe
+  a real resume runs. The conversation history is gone; the session's
+  identity is not. Unlike ``recovered``/``corrupt``, this state is still
+  resumable (see :data:`RESUMABLE_STATES`) -- the runtime already resumes
+  it today with an empty restored history plus a loud warning
+  (``kernel/runtime.py``'s ``transcript_recovery_failed`` notice); this
+  just stops the listing from hiding that fact behind a plain ``ok``.
+- ``"indexing"`` -- the OPPOSITE asymmetry: ``transcript.jsonl`` has real
+  content (``_message_count`` > 0) but ``metadata.json`` does not exist as
+  a file at all -- not "recovered" (which requires a file that failed to
+  parse), genuinely absent. Every code path that writes a session
+  (:meth:`~amplifier_app_tui.kernel.persistence.SessionStore.save`) writes
+  the transcript then the metadata in the same call, so this shape is the
+  detectable fingerprint of a save interrupted mid-way (a session still
+  being indexed/cataloged) or a directory populated by something other
+  than this app. Name/bundle/turn count are genuinely unknown, not merely
+  unparsed -- there is nothing to resume into (:data:`RESUMABLE_STATES`
+  excludes it, matching :func:`resolve_for_resume`'s pre-existing
+  no-metadata-at-all refusal).
 """
+
+RESUMABLE_STATES: frozenset[SessionState] = frozenset({"ok", "transcript_lost"})
+"""States :func:`resolve_for_resume` treats as launchable (S2 gap 3).
+
+``ok`` and ``transcript_lost`` both carry a fully-readable ``metadata.json``
+(bundle/name intact) -- enough for ``RealRuntime`` to boot the same
+session; ``transcript_lost`` merely resumes with an empty restored history
+plus the existing ``transcript was unreadable`` warning, exactly as it did
+before this state existed. ``recovered``, ``corrupt`` and ``indexing`` all
+lack a trustworthy bundle/identity to relaunch into, so they stay refused."""
 
 
 @dataclass(frozen=True)
@@ -219,6 +260,13 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
     Best-effort: missing/corrupt metadata degrades to empty name and an
     ``unknown`` bundle rather than raising — a listing must never crash on
     one bad session directory.
+
+    Two damage axes are probed independently (S2 gap 3), in priority
+    order: a metadata parse failure (``"recovered"``) always wins over the
+    transcript-side checks below, since a synthetic metadata shell already
+    means the row is degraded and the finer-grained states assume metadata
+    IS trustworthy. See :data:`SessionState` for exactly what each value
+    means and how it is detected.
     """
     session_dir = store.session_dir(session_id)
     mtime = 0.0
@@ -231,30 +279,46 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
     turns: int | None = None
     tags: tuple[str, ...] = ()
     state: SessionState = "ok"
-    if (session_dir / METADATA_FILENAME).is_file():
+    has_metadata = (session_dir / METADATA_FILENAME).is_file()
+    if has_metadata:
         try:
             metadata = store.get_metadata(session_id)
-            if metadata.get("recovered") is True:
-                # persistence.py's own corruption fallback: metadata.json
-                # (and its .backup) existed but neither parsed as JSON.
-                state = "recovered"
-            name = str(metadata.get("name", "") or "")
-            bundle = str(metadata.get("bundle", "") or "unknown")
-            raw_turns = metadata.get("turn_count")
-            if isinstance(raw_turns, int) and not isinstance(raw_turns, bool):
-                turns = raw_turns
-            tags = _coerce_tags(metadata.get(TAGS_KEY))
         except (FileNotFoundError, OSError, ValueError):
             # Belt-and-suspenders: _load_metadata degrades a parse failure
             # to a "recovered" dict instead of raising, so this branch is a
             # defensive backstop (e.g. a file removed mid-read) rather than
             # the common path -- either way it is damage, not health.
             state = "recovered"
+        else:
+            if metadata.get("recovered") is True:
+                # persistence.py's own corruption fallback: metadata.json
+                # (and its .backup) existed but neither parsed as JSON.
+                state = "recovered"
+            else:
+                name = str(metadata.get("name", "") or "")
+                bundle = str(metadata.get("bundle", "") or "unknown")
+                raw_turns = metadata.get("turn_count")
+                if isinstance(raw_turns, int) and not isinstance(raw_turns, bool):
+                    turns = raw_turns
+                tags = _coerce_tags(metadata.get(TAGS_KEY))
+                # Metadata is genuinely healthy -- the ONLY branch where the
+                # transcript-side probe applies (a "recovered" shell already
+                # means the row is damaged; no need to compound it).
+                if not store.transcript_ok(session_id):
+                    state = "transcript_lost"
+    messages = _message_count(store, session_id)
+    if not has_metadata and messages > 0:
+        # The opposite asymmetry: real transcript content but no catalog
+        # entry at all -- every save() writes both files together, so this
+        # is the fingerprint of an interrupted write (S2 gap 3), not a
+        # brand-new/empty session (which has messages == 0 here too and
+        # correctly stays "ok").
+        state = "indexing"
     return SessionSummary(
         session_id=session_id,
         name=name,
         bundle=bundle,
-        messages=_message_count(store, session_id),
+        messages=messages,
         mtime=mtime,
         turns=turns,
         tags=tags,
@@ -305,11 +369,15 @@ class ResumeResolution:
       (newest-first, full :class:`SessionSummary` rows -- enough to render an
       actionable table, not just a truncated id preview).
     - ``"corrupt"`` -- ``session_id`` resolved to exactly one session, but it
-      is not healthy: either :func:`summary_for` (S2's own per-session probe,
-      the SAME one :func:`list_summaries` uses) reports a :data:`SessionState`
-      other than ``"ok"``, or it has no ``metadata.json`` at all (see
-      :func:`resolve_for_resume` for why that extra case is resume-specific
-      rather than a second corruption probe).
+      is not resumable: :func:`summary_for` (S2's own per-session probe, the
+      SAME one :func:`list_summaries` uses) reports a :data:`SessionState`
+      outside :data:`RESUMABLE_STATES`, or it has no ``metadata.json`` at all
+      (see :func:`resolve_for_resume` for why that extra case is
+      resume-specific rather than a second corruption probe). Note this is
+      NOT simply "state != ok": ``"transcript_lost"`` still resolves ``"ok"``
+      here -- its metadata is intact, so the runtime can still boot it (with
+      an empty restored history and a loud warning), unlike ``"recovered"``,
+      ``"corrupt"`` and ``"indexing"``.
     """
 
     status: Literal["ok", "not_found", "ambiguous", "corrupt"]
@@ -330,17 +398,23 @@ def resolve_for_resume(store: SessionStore, partial_id: str) -> ResumeResolution
     The health check reuses :func:`summary_for` -- the SAME per-session
     probe :func:`list_summaries` uses (S2) -- rather than a second,
     independent reading of ``metadata.json``: any :data:`SessionState`
-    other than ``"ok"`` (``"recovered"`` or ``"corrupt"``) maps to this
-    function's ``"corrupt"`` status. ``summary_for`` itself never raises,
-    but the call is still guarded here so this function's own "never
-    raises" contract cannot be broken by a future change to it.
+    outside :data:`RESUMABLE_STATES` maps to this function's ``"corrupt"``
+    status (S2 gap 3: ``"transcript_lost"`` is the one non-``"ok"`` state
+    that still counts as resumable -- its metadata is fully intact, so
+    ``RealRuntime`` boots it exactly as it always has, just with an empty
+    restored history and the pre-existing loud warning; ``"recovered"``,
+    ``"corrupt"`` and ``"indexing"`` all still refuse). ``summary_for``
+    itself never raises, but the call is still guarded here so this
+    function's own "never raises" contract cannot be broken by a future
+    change to it.
 
     One extra, resume-specific rule sits on top of that shared probe: a
-    session directory with NO ``metadata.json`` at all is ``state="ok"``
-    for :func:`summary_for` (S2 treats a still-being-written brand-new
-    session as healthy, not damaged, so it lists cleanly) -- but there is
-    no bundle/identity to relaunch a resume into, so this refuses it too
-    rather than failing deeper and less clearly inside the runtime.
+    session directory with NO ``metadata.json`` at all is refused here
+    even on the rare chance :func:`summary_for` reported ``"ok"`` for it
+    (a still-being-written, message-less brand-new session lists cleanly
+    as ``"ok"`` -- see :data:`SessionState`) -- there is no bundle/identity
+    to relaunch a resume into, so this refuses it too rather than failing
+    deeper and less clearly inside the runtime.
     """
     try:
         resolved = store.find_session(partial_id)
@@ -355,7 +429,7 @@ def resolve_for_resume(store: SessionStore, partial_id: str) -> ResumeResolution
         # "not found" rather than a fifth status the CLI brief never asked for.
         return ResumeResolution(status="not_found", partial_id=partial_id)
     try:
-        healthy = summary_for(store, resolved).state == "ok"
+        healthy = summary_for(store, resolved).state in RESUMABLE_STATES
     except Exception:  # noqa: BLE001 -- resolve_for_resume must never raise (S3)
         healthy = False
     has_metadata = (store.session_dir(resolved) / METADATA_FILENAME).is_file()
@@ -700,6 +774,7 @@ __all__ = [
     "MAX_TAG_LENGTH",
     "NAME_PATTERN",
     "PENDING_DIRECTIVE_KEY",
+    "RESUMABLE_STATES",
     "TAGS_KEY",
     "TAG_PATTERN",
     "SessionState",

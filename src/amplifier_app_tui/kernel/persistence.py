@@ -260,6 +260,27 @@ class SessionStore:
             raise FileNotFoundError(f"Session '{session_id}' not found")
         return self._load_metadata(session_dir)
 
+    def transcript_ok(self, session_id: str) -> bool:
+        """Best-effort transcript-readability probe (S2 compliance gap 3).
+
+        Reuses :meth:`_load_transcript` -- the EXACT logic a real resume
+        runs -- so a listing's prediction of "will this resume cleanly"
+        can never disagree with what an actual resume finds. Returns
+        ``False`` only when ``transcript.jsonl`` (and its ``.backup``, if
+        present) EXISTED but neither parsed; a session with no transcript
+        file at all (brand new, nothing saved yet) is NOT unreadable --
+        see :data:`~amplifier_app_tui.kernel.session_manager.SessionState`
+        for why absence and corruption are different states.
+
+        Does not materialize metadata or keep the parsed message list --
+        callers that only need the boolean (session listings) avoid
+        holding a second full transcript copy in memory alongside whatever
+        :func:`~amplifier_app_tui.kernel.session_manager._message_count`
+        already read.
+        """
+        self._load_transcript(self.session_dir(session_id))
+        return not self.transcript_recovery_failed
+
     def update_metadata(self, session_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         metadata = self.get_metadata(session_id)
         metadata.update(updates)
