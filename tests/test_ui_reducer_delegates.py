@@ -394,3 +394,229 @@ def test_straggler_completion_after_turn_end_adds_no_marker() -> None:
     _complete(reducer, "coder", "s1", 4.0, result="late result")
     assert _markers(host) == before
     assert _summaries(host)[0].entries[0].state == "done"  # summary still settles
+
+
+# -- D5 AC1: lane-level attention state (reconciled with _delegate_rows) -----
+# The delegate-summary tests above cover `_delegate_rows`/`DelegateSummaryBlock`
+# state (running/done/error/cancelled). These cover the SAME real events'
+# effect on the per-lane `LaneRegistry` state (booting/running/working/
+# attention/done/error/cancelled) \u2014 proving the two surfaces are driven by
+# the identical signal rather than two independently-maintained notions.
+
+
+def _child_env2(sub: str, ts: float, n: int = 0) -> dict:
+    return {"event_id": f"ac{ts}-{n}", "session_id": sub, "parent_id": SID, "ts": ts}
+
+
+def test_agent_completed_success_sets_lane_state_done() -> None:
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "researcher", "s1", 1.0)
+    _complete(reducer, "researcher", "s1", 2.0, result="3 findings")
+    lane = reducer.lanes.get("s1")
+    assert lane is not None
+    assert lane.lane.state == "done"
+    assert lane.lane.activity == "done \u00b7 3 findings"
+
+
+def test_agent_completed_failure_sets_lane_state_error_not_done() -> None:
+    """The gap the reviewer flagged: a failure used to fold into ``done``
+    with the distinction living only in free text. Now the STATE itself
+    (glyph/color) differs, matching the delegate row's own ``error``."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "coder", "s1", 1.0)
+    _complete(reducer, "coder", "s1", 3.0, success=False, result="migration blew up")
+    lane = reducer.lanes.get("s1")
+    assert lane is not None
+    assert lane.lane.state == "error"
+    assert lane.lane.activity == "failed \u00b7 migration blew up"
+    # Reconciliation: the lane and the delegate-summary row agree.
+    assert _summaries(host)[0].entries[0].state == "error"
+
+
+def test_agent_completed_reasonless_failure_lane_activity_is_bare_failed() -> None:
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "tester", "s1", 1.0)
+    _complete(reducer, "tester", "s1", 2.0, success=False)
+    assert reducer.lanes.get("s1").lane.activity == "failed"  # never "failed \u00b7 failed"
+
+
+def test_tool_error_on_child_lane_enters_attention_state() -> None:
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "debugger", "s1", 1.0)
+    reducer.handle(
+        ev.ToolError(
+            **_child_env2("s1", 2.0),
+            tool_name="read_file",
+            tool_call_id="t1",
+            error_message="no such file",
+        )
+    )
+    lane = reducer.lanes.get("s1")
+    assert lane is not None
+    assert lane.lane.state == "attention"
+    assert lane.lane.activity == "recovering from read file error"
+
+
+def test_failed_tool_post_on_child_lane_enters_attention_state() -> None:
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "debugger", "s1", 1.0)
+    reducer.handle(
+        ev.ToolPost(
+            **_child_env2("s1", 2.0),
+            tool_name="bash",
+            tool_call_id="t1",
+            tool_input={"command": "pytest"},
+            result={"success": False},
+        )
+    )
+    assert reducer.lanes.get("s1").lane.state == "attention"
+
+
+def test_successful_tool_post_does_not_enter_attention() -> None:
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "debugger", "s1", 1.0)
+    reducer.handle(
+        ev.ToolPost(
+            **_child_env2("s1", 2.0),
+            tool_name="read_file",
+            tool_call_id="t1",
+            tool_input={"path": "ci.log"},
+            result={"success": True},
+        )
+    )
+    assert reducer.lanes.get("s1").lane.state == "running"
+
+
+def test_fresh_tool_attempt_clears_a_prior_attention_state() -> None:
+    """A new ToolPre is itself evidence of recovery \u2014 it clears attention
+    back to ``working``, the same as any other fresh tool attempt."""
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "debugger", "s1", 1.0)
+    reducer.handle(
+        ev.ToolError(
+            **_child_env2("s1", 2.0), tool_name="bash", tool_call_id="t1", error_message="boom"
+        )
+    )
+    assert reducer.lanes.get("s1").lane.state == "attention"
+    reducer.handle(
+        ev.ToolPre(
+            **_child_env2("s1", 3.0),
+            tool_name="bash",
+            tool_call_id="t2",
+            tool_input={"command": "pytest --lf"},
+        )
+    )
+    assert reducer.lanes.get("s1").lane.state == "working"
+
+
+def test_attention_survives_ordinary_narration_until_next_tool_attempt() -> None:
+    """A stream/content beat right after a failure must NOT silently clear
+    attention \u2014 otherwise the signal would vanish before anyone could see
+    it (D5 AC1: the state must be real, not a flicker)."""
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "debugger", "s1", 1.0)
+    reducer.handle(
+        ev.ToolError(
+            **_child_env2("s1", 2.0), tool_name="bash", tool_call_id="t1", error_message="boom"
+        )
+    )
+    reducer.handle(
+        ev.StreamBlockEnd(
+            **_child_env2("s1", 2.2), request_id="r1", block_index=0, block_type="text"
+        )
+    )
+    assert reducer.lanes.get("s1").lane.state == "attention"
+    reducer.handle(
+        ev.ContentBlockEnd(
+            **_child_env2("s1", 2.3),
+            block_type="text",
+            block={"text": "let me try a different approach"},
+        )
+    )
+    assert reducer.lanes.get("s1").lane.state == "attention"
+
+
+def test_attention_lane_still_counted_active_and_ticks_elapsed() -> None:
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "debugger", "s1", 1.0)
+    reducer.handle(
+        ev.ToolError(
+            **_child_env2("s1", 2.0), tool_name="bash", tool_call_id="t1", error_message="boom"
+        )
+    )
+    assert reducer.lanes.active_count == 1
+    reducer.tick(10.0)
+    assert reducer.lanes.get("s1").lane.elapsed > 0  # not frozen like a terminal state
+
+
+def test_cancelled_turn_settles_lane_state_matching_delegate_row() -> None:
+    """Reconciliation (D5 AC1): the SAME turn.cancelled signal that marks
+    the delegate-summary row \"cancelled\" must also settle the lane itself
+    \u2014 previously the lane stayed \"running\" forever after a cancelled turn."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "coder", "s1", 1.0)
+    reducer.handle(ev.CancelCompleted(**_env(4.0)))
+    reducer.handle(ev.PromptComplete(**_env(5.0)))
+    lane = reducer.lanes.get("s1")
+    assert lane is not None
+    assert lane.lane.state == "cancelled"
+    assert lane.lane.activity == "cancelled"
+    assert _summaries(host)[0].entries[0].state == "cancelled"  # both surfaces agree
+    assert reducer.lanes.active_count == 0  # cancelled is terminal
+
+
+def test_cancelled_turn_leaves_an_already_done_lane_alone() -> None:
+    """A lane that genuinely finished before the cancellation must not be
+    clobbered back to \"cancelled\" \u2014 only STILL-RUNNING rows settle."""
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "coder", "s1", 1.0)
+    _spawn(reducer, "tester", "s2", 1.0)
+    _complete(reducer, "coder", "s1", 2.0, result="ok")
+    reducer.handle(ev.CancelCompleted(**_env(4.0)))
+    reducer.handle(ev.PromptComplete(**_env(5.0)))
+    assert reducer.lanes.get("s1").lane.state == "done"  # untouched
+    assert reducer.lanes.get("s2").lane.state == "cancelled"  # settled
+
+
+def test_cancelled_lane_settlement_is_not_coalesced_away() -> None:
+    """The new cancellation call site must preserve the D5 AC5 guarantee:
+    a lane's terminal transition always lands as its own repaint, however
+    many progress frames immediately preceded it in the same instant."""
+    from amplifier_app_tui.model.lanes import LaneRegistry
+    from amplifier_app_tui.model.blocks import BlockIdAllocator
+    from amplifier_app_tui.model.turn import OutcomeLedger
+    from amplifier_app_tui.ui.reducer import TranscriptReducer
+
+    from .test_ui_lanes_telemetry import CountingHost
+
+    host = CountingHost("chat")
+    reducer = TranscriptReducer(
+        host, allocator=BlockIdAllocator(), ledger=OutcomeLedger(), lanes=LaneRegistry()
+    )
+    reducer.handle(ev.PromptSubmit(**_env(0.0), prompt="fan out"))
+    _spawn(reducer, "coder", "s1", 1.0)
+    # Flood the coalescible progress path immediately beforehand.
+    for n in range(200):
+        reducer.handle(
+            ev.ToolPre(
+                **_child_env2("s1", 1.0, n),
+                tool_name="bash",
+                tool_call_id=f"t{n}",
+                tool_input={"command": "echo hi"},
+            )
+        )
+    before = host.lanes_changed_calls
+    reducer.handle(ev.CancelCompleted(**_env(1.0)))
+    reducer.handle(ev.PromptComplete(**_env(1.0)))
+    assert host.lanes_changed_calls > before  # the cancellation ALWAYS repaints

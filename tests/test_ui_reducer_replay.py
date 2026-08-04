@@ -245,14 +245,26 @@ def test_replay_rebuilds_delegate_summary_lane_transcript_and_plan() -> None:
 
 
 def test_replay_settles_lanes_the_log_never_completed() -> None:
-    """A crashed session's dangling lane must not tick wall-clock forever."""
+    """A crashed session's dangling lane must not tick wall-clock forever.
+
+    Settled as "cancelled", not "done" (D5 AC1): the log ended without this
+    lane ever reporting a real outcome, and a done ✔ would misrepresent a
+    crash/interruption as a genuine success — exactly the kind of outcome
+    folding into the wrong glyph the reviewer flagged elsewhere.
+    """
     reducer, _host = make_reducer()
     events: list[ev.UIEvent] = [
         ev.PromptSubmit(**_env(0.0), prompt="fan out"),
         ev.AgentSpawned(**_env(1.0), agent="coder", sub_session_id="sub9", parent_session_id=SID),
     ]
     assert reducer.replay(events, turn_base=1) is True
-    assert all(record.lane.state == "done" for record in reducer.lanes.lanes)
+    assert all(record.lane.state == "cancelled" for record in reducer.lanes.lanes)
+    # Settled via _finish_turn's OWN cancellation handling (the synthetic
+    # close-out PromptComplete replay() dispatches for a mid-turn crash
+    # marks turn.cancelled, which _finish_turn already reconciles against
+    # _delegate_rows/LaneRegistry — the SAME bare "cancelled" text a live
+    # interrupt leaves, not a second, differently-worded outcome).
+    assert reducer.lanes.lanes[0].lane.activity == "cancelled"
 
 
 def test_replay_reconciles_cost_to_the_kernel_baseline() -> None:

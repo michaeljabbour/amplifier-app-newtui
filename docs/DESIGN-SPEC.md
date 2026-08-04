@@ -152,7 +152,7 @@ file. Issue #210 is closed by this change.
 
 ## 8. Agent lanes & subagent focus
 
-- [ ] ctrl-t (or `/tasks`) toggles lanes panel: header `Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close` + one aligned line per subagent: `  <glyph> <name> · <activity> · <elapsed> · $<cost>` (glyph/color per state: ◐ teal running, ■ fg working, ✔ dim done).
+- [ ] ctrl-t (or `/tasks`) toggles lanes panel: header `Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close` + one aligned line per subagent: `  <glyph> <name> · <activity> · <elapsed> · $<cost>` (glyph/color per state: ◐ teal running, ■ fg working, ✔ dim done, `!` orange attention (a discrete failure surfaced against a still-running lane), ✖ red error, ⊘ red cancelled — D5 AC1; error/cancelled glyphs match the post-turn delegate-summary block's own).
 - [ ] Multi-agent turn: per-agent progress lives in the lanes panel and the delegate
   summary (§3), not per-agent transcript tree lines. Successful native file writes still
   aggregate into one expandable, diff-styled `Changed N files` row.

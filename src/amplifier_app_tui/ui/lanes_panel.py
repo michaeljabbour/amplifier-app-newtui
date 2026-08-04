@@ -19,9 +19,11 @@ transcripts itself — focusing a lane is the app's job.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 
+from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 from textual import events
@@ -31,7 +33,7 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Static
 
-from ..model.lanes import LaneRecord, LaneState, lane_labels
+from ..model.lanes import LaneRecord, LaneState, LaneStateName, lane_labels
 from ..model.formatting import format_tokens_k
 from .keymap import hint_label
 from .live_tail import lane_tail_markup
@@ -65,6 +67,12 @@ and the tokens column is dropped whole instead."""
 
 _ELLIPSIS = "…"
 
+_MOTION_STATES: frozenset[LaneStateName] = frozenset({"booting", "running", "working"})
+"""States whose name column shimmers (D5 AC1): ordinary in-flight churn
+only. ``attention`` deliberately stops shimmering — an alert row should
+read as a steady, distinct color, not blend into the same animated motion
+as everything still running normally — and no terminal state ever moved."""
+
 EXPAND_HINT_TEXT = f"{hint_label('focus_lane')} to expand"
 """Trailing marker on a truncated preview (DESIGN-SPEC §8 / D5 AC3).
 
@@ -73,33 +81,107 @@ advertised affordance can never drift from the actual enter/click-to-focus
 action (the same one :data:`LANES_HEADER_HINT` already names)."""
 
 
-def _grapheme_safe_head(text: str, limit: int) -> str:
-    """*text* cut to *limit* code points, nudged left off a trailing base
-    character whose combining mark would otherwise be severed.
+_ZERO_WIDTH_JOINER = "\u200d"
+_VARIATION_SELECTORS = ("\ufe0e", "\ufe0f")
+"""Text/emoji presentation selectors (VS-15/VS-16) — zero-width, but
+severing one from its base changes which glyph renders (D5 AC3 hardening)."""
+
+# C0/C1 control and escape bytes that must never ride into a preview: found
+# live via bash tool_input (D5 AC3 audit) — a raw command containing a
+# color escape (``printf '\e[31m...'``) would otherwise smuggle literal
+# control bytes through, since ``cell_len`` scores them as zero-width (they
+# would cost nothing against the truncation budget and survive untouched).
+# Whitespace-flavored controls collapse to one space (never disappear —
+# that would jam words together); everything else is dropped outright.
+_CONTROL_WHITESPACE_RE = re.compile("[\t\n\r\f\v]")
+_CONTROL_STRIP_RE = re.compile("[\x00-\x08\x0e-\x1f\x7f-\x9f]")
+
+
+def _sanitize_preview(text: str) -> str:
+    """Neutralize control/escape bytes before they ever reach a lane row.
+
+    Textual's own compositor — unlike a raw ``print()`` to stdout — does
+    not execute embedded escapes, but a preview should never contain literal
+    control bytes regardless: leaving them in would silently smuggle
+    invisible-width content through the truncation budget below.
+    """
+    text = _CONTROL_WHITESPACE_RE.sub(" ", text)
+    return _CONTROL_STRIP_RE.sub("", text)
+
+
+def _severs_grapheme(text: str, cut: int) -> bool:
+    """True if slicing *text* at code-point index *cut* would sever one
+    user-perceived character: a base from its combining accent, an emoji
+    from its text/emoji-presentation selector, or either side of a
+    zero-width joiner (family/profession emoji, flag-with-modifier
+    sequences — D5 AC3 hardening). Deliberately narrower than full UAX #29
+    grapheme segmentation (no such segmenter is vendored here); regional-
+    indicator flag PAIRS are not additionally protected beyond this.
+    """
+    if cut <= 0 or cut >= len(text):
+        return False
+    if unicodedata.combining(text[cut]):
+        return True
+    if text[cut] in _VARIATION_SELECTORS:
+        return True
+    return text[cut - 1] == _ZERO_WIDTH_JOINER or text[cut] == _ZERO_WIDTH_JOINER
+
+
+def _cell_head(text: str, budget: int) -> str:
+    """The longest prefix of *text* whose terminal CELL width fits *budget*.
+
+    Uses ``rich.cells.cell_len`` — the same measure Textual uses to lay out
+    a row — not code-point count. A naive ``text[:n]`` code-point slice
+    routinely UNDER-truncates wide content: a 20-code-point CJK sentence is
+    40 terminal cells, so slicing on code points alone can blow a column
+    budget by ~2x (D5 AC3 hardening; found via direct probing, not a naive
+    assumption).
+    """
+    used = 0
+    for index, ch in enumerate(text):
+        width = cell_len(ch)
+        if used + width > budget:
+            return text[:index]
+        used += width
+    return text
+
+
+def _grapheme_safe_head(text: str, budget: int) -> str:
+    """*text* cut to fit *budget* terminal cells, nudged left off a
+    boundary that would otherwise sever one user-perceived character: a
+    base + combining accent, an emoji variation selector, or a zero-width-
+    joined sequence (e.g. family emoji).
 
     Only reached when a single token has no whitespace boundary to break
-    on at all — even that forced hard cut must never sever one
-    user-perceived character (base + combining accent) in two.
+    on at all — even that forced hard cut must never visibly mangle one
+    character in two.
     """
-    cut = text[:limit]
-    while cut and len(cut) < len(text) and unicodedata.combining(text[len(cut)]):
-        cut = cut[:-1]
-    return cut
+    cut = len(_cell_head(text, budget))
+    while cut and cut < len(text) and _severs_grapheme(text, cut):
+        cut -= 1
+    return text[:cut]
 
 
 def _elide(text: str, budget: int) -> str:
-    """Boundary-safe truncation (D5 AC3): never clip mid-word.
+    """Boundary-safe truncation (D5 AC3): never clip mid-word, never sever
+    one on-screen character, and never exceed *budget* terminal CELLS
+    (``rich.cells.cell_len``) — not code points, so CJK/emoji content is
+    measured the way the terminal actually renders it, not how many Python
+    code points it happens to contain.
 
     A long preview always ends with exactly one ellipsis, cut at the last
     whitespace boundary that still fits — ``"recovering from bash error"``
     narrows to ``"recovering from…"``, never ``"recovering from bash e…"``.
     Only a single token wider than the whole budget (no space to break on)
-    falls back to a grapheme-safe hard cut.
+    falls back to a grapheme-safe hard cut. Control/escape bytes (a stray
+    ANSI fragment riding in through a raw bash command, say) are stripped
+    first — see :func:`_sanitize_preview`.
     """
-    if len(text) <= budget:
+    text = _sanitize_preview(text)
+    if cell_len(text) <= budget:
         return text
-    limit = max(budget - len(_ELLIPSIS), 1)
-    head = text[:limit]
+    limit = max(budget - cell_len(_ELLIPSIS), 1)
+    head = _cell_head(text, limit)
     break_at = head.rfind(" ")
     if break_at > 0:
         return head[:break_at].rstrip() + _ELLIPSIS
@@ -196,7 +278,7 @@ def format_lane_lines(
                 # on every narrow row).
                 if truncated is not None and truncated[i]:
                     hinted = f"{line} · {EXPAND_HINT_TEXT}"
-                    if width is None or len(hinted) <= width:
+                    if width is None or cell_len(hinted) <= width:
                         line = hinted
             if badges[i]:
                 line += f" · {badges[i]}"
@@ -204,8 +286,18 @@ def format_lane_lines(
         return tuple(lines)
 
     act_w = max(len(activity) for activity in activities)
+    # The FIT decisions below compare against terminal CELL width
+    # (rich.cells.cell_len), not code-point count — a CJK/emoji-heavy
+    # activity is far wider on screen than its code-point length suggests
+    # (D5 AC3 hardening: a naive ``len()`` comparison here let a ~2x-over-
+    # budget CJK activity through completely unclipped). ``act_w`` itself
+    # stays code-point-based: it only drives ``str.format`` padding, which
+    # is unavoidably code-point-addressed — cross-row separator alignment
+    # when CJK/ASCII activities are mixed in the same panel is a narrower,
+    # documented cosmetic residual, not the overflow this fixes.
+    act_cells = max(cell_len(activity) for activity in activities)
     fixed = 4 + name_w + 3 + 3 + el_w + 3 + cost_w  # everything but activity/tokens
-    if width is None or width - fixed - 3 - tok_w >= act_w:
+    if width is None or width - fixed - 3 - tok_w >= act_cells:
         return compose(activities, act_w, show_tokens=True)
     budget = width - fixed - 3 - tok_w
     if budget >= _MIN_ACTIVITY_WIDTH:
@@ -261,7 +353,7 @@ class _LaneRow(Static):
         tokens = self.app.theme_variables
         text = Text(self.line, style=Style(color=tokens.get(self.record.lane.color_token)))
         lane = self.record.lane
-        if lane.state != "done" and lane.name:
+        if lane.state in _MOTION_STATES and lane.name:
             name_start = self.line.find(lane.name)
             for offset, token, bold in shimmer_band(len(lane.name), self.motion_frame):
                 start = name_start + offset
@@ -599,7 +691,9 @@ class LanesPanel(Vertical):
             row.set_class(row.index == self._selected, "-selected")
 
     def _sync_motion(self) -> None:
-        active = bool(self.display) and any(record.lane.state != "done" for record in self._records)
+        active = bool(self.display) and any(
+            record.lane.state in _MOTION_STATES for record in self._records
+        )
         if active and self.is_mounted and self._motion_timer is None:
             self._motion_timer = self.set_interval(
                 LANE_MOTION_INTERVAL_SECONDS, self._advance_motion
