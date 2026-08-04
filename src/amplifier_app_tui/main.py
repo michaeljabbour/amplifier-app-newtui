@@ -7,7 +7,7 @@ session (RealRuntime); ``--demo`` swaps in the scripted DemoRuntime
 - ``run [PROMPT]`` — one-shot session from an argument or piped stdin;
   emits text, one-document JSON, or live versioned JSONL events.
 - ``sessions``     — named table of stored sessions (``--plain`` for ids).
-- ``resume ID``    — launch the TUI resuming a stored session.
+- ``resume SESSION_ID`` — launch the TUI resuming a stored session.
 - ``continue``     — resume the most recent stored session (no picker).
 - ``init``         — interactive provider + routing setup (flags bypass it).
 - ``version``      — app + amplifier-core/-foundation versions.
@@ -27,11 +27,61 @@ import os
 from pathlib import Path
 import sys
 from time import monotonic
-from typing import IO, Any, Literal, cast
+from typing import IO, TYPE_CHECKING, Any, Literal, cast
 
 import click
 
 from . import __version__
+
+if TYPE_CHECKING:
+    from click.shell_completion import CompletionItem
+
+# -- resume-path exit codes (S3) --------------------------------------------
+# Deterministic and documented (USER-GUIDE.md's "Resume exit codes" table):
+# every resume-family command (``resume``, ``session resume``, ``run
+# --resume``, ``serve --resume``) uses exactly these, never a blanket 1.
+# 0 keeps its universal success meaning -- the launched session's own exit
+# status then takes over. 1 keeps its existing house meaning elsewhere in
+# this CLI (a generic/unexpected error, e.g. ``doctor`` findings) and is
+# never reused here for one of these three specific outcomes.
+RESUME_EXIT_NOT_FOUND = 2
+"""No stored session matches the given id/prefix."""
+RESUME_EXIT_AMBIGUOUS = 3
+"""The given prefix matches more than one stored session."""
+RESUME_EXIT_CORRUPT = 4
+"""The match is unambiguous but its metadata (and its ``.backup``) could not
+be read -- ``SessionStore`` already degrades this to a synthesized
+``recovered`` stub rather than raising; see
+``kernel.session_manager.resolve_for_resume``."""
+
+
+def _complete_session_id(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Shell-completion candidates for a resume session id (S3).
+
+    The SAME short-id form used in help text and exit/error guidance,
+    sourced live from THIS project's stored sessions -- so
+    ``amplifier-tui resume <TAB>`` (bash/zsh/fish, via Click's
+    ``_AMPLIFIER_TUI_COMPLETE`` mechanism) can never drift from what the
+    CLI actually prints or accepts. Best-effort: any lookup failure
+    completes to nothing rather than raising inside a shell's completion
+    hook.
+    """
+    del ctx, param  # unused -- completion only needs the partial text
+    from click.shell_completion import CompletionItem
+
+    from .kernel import session_manager
+
+    try:
+        summaries = session_manager.list_summaries(_session_store())
+    except Exception:  # noqa: BLE001 -- completion must never crash a shell
+        return []
+    return [
+        CompletionItem(summary.short_id, help=summary.name or summary.bundle)
+        for summary in summaries
+        if summary.short_id.startswith(incomplete)
+    ]
 
 
 async def _launch_tui(
@@ -76,10 +126,18 @@ def _print_resume_hint(session_id: str) -> None:
     Mirrors amplifier-app-cli's farewell banner with the CORRECT tui
     commands (S4 / #148): real sessions carry a stored id; demo sessions
     do not, so the hint is skipped when there is nothing to resume.
+
+    Prints the SHORT (8-char) id: the one canonical form every other resume
+    hint in this module already uses (cross-project hint, fork, import,
+    branch/fork notices) and the same form the sessions table shows. This
+    was the one holdout printing the full id (S3); ``resolve()``/prefix
+    matching accepts the short form the same as it always has, and the new
+    ambiguity output (S3) covers the astronomically-unlikely case where an
+    8-char prefix stops being unique.
     """
     if not session_id:
         return
-    click.echo(f"resume this session: amplifier-tui resume {session_id}")
+    click.echo(f"resume this session: amplifier-tui resume {session_id[:8]}")
     click.echo("list sessions:       amplifier-tui sessions")
 
 
@@ -334,6 +392,99 @@ async def _first_run_gate() -> int | None:
     return 0
 
 
+async def _run_preflight(bundle: str | None, provider: str | None, model: str | None) -> Any:
+    """Resolve mounts/providers for THIS launch, without creating a session.
+
+    Thin seam onto :func:`kernel.preflight.run_preflight` (mirrors
+    ``_first_run_gate``/``_launch_tui`` immediately below): tests monkeypatch
+    this name so the CLI wiring is verified without touching real bundle
+    resolution. Returns a ``kernel.preflight.PreflightReport``.
+    """
+    from .kernel.preflight import run_preflight
+
+    return await run_preflight(bundle, provider_override=provider, model_override=model)
+
+
+def _render_preflight_failure(report: Any) -> None:
+    """Plain-terminal preflight failure — printed BEFORE any screen takeover.
+
+    Same clear-error idiom as the init/update consoles (#186/#188): a colored
+    headline plus a dim, actionable remediation line. Always stderr, so it
+    reads even when stdout is redirected/captured (AC4: this is the message
+    the user gets INSTEAD of a corrupted or blank full-screen surface).
+    """
+    from rich.console import Console
+
+    console = Console(stderr=True)
+    console.print(f"[red]✗ cannot launch: {report.error}[/red]")
+    if report.remediation:
+        console.print(f"  → {report.remediation}", style="dim")
+
+
+def _render_preflight_dry_run(report: Any) -> None:
+    """``--dry-run``'s success report: what WOULD mount, nothing launched.
+
+    Same rich-table idiom as ``init``'s provider/routing tables (#186) and
+    ``update``'s package/source tables (#188), closed out with a dim
+    confirmation line mirroring ``reset --dry-run``'s own "nothing was
+    changed".
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    table = Table(title="Would Launch", title_justify="center", header_style="bold cyan")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value")
+    table.add_row("Bundle", report.bundle_name or "-")
+    table.add_row("Provider", report.provider or "-")
+    table.add_row("Model", report.model or "(provider default)")
+    table.add_row("Routing", "enabled" if report.routing_enabled else "disabled")
+    table.add_row("Providers configured", str(report.provider_count))
+    table.add_row("Tool modules configured", str(report.tool_count))
+    console.print(table)
+    console.print("DRY RUN -- nothing was launched", style="dim")
+
+
+def _preflight_or_none(
+    *, bundle: str | None, provider: str | None, model: str | None
+) -> int | None:
+    """Run the pre-takeover preflight; ``None`` to proceed, else an exit code.
+
+    AC4: mounts/providers are resolved (``kernel/preflight.py``) BEFORE the
+    caller ever imports Textual. On failure the plain-terminal error prints
+    right here, so the alternate screen is never touched when mounts/
+    providers won't resolve.
+    """
+    report = asyncio.run(_run_preflight(bundle, provider, model))
+    if report.ok:
+        return None
+    _render_preflight_failure(report)
+    return 1
+
+
+def _dry_run_preflight(
+    *, demo: bool, bundle: str | None, provider: str | None, model: str | None
+) -> int:
+    """``--dry-run``: report what an interactive launch would mount; never launches.
+
+    Mirrors ``reset --dry-run``: read-only, safe to run anytime. Exits 0 when
+    the resolved plan looks launchable (the "would launch" table prints) and
+    1 — same rendering as a real launch's preflight failure — when it does
+    not. ``--demo`` never touches a real bundle/provider, so there is nothing
+    to preflight; it just says so and exits 0.
+    """
+    if demo:
+        click.echo("--demo has no real mounts/providers to preflight (fully offline)")
+        return 0
+    report = asyncio.run(_run_preflight(bundle, provider, model))
+    if not report.ok:
+        _render_preflight_failure(report)
+        return 1
+    _render_preflight_dry_run(report)
+    return 0
+
+
 def _interactive_launch(
     *,
     demo: bool,
@@ -343,16 +494,23 @@ def _interactive_launch(
     provider: str | None = None,
     model: str | None = None,
 ) -> int:
-    """Run the first-run provider gate (real sessions), then boot the TUI.
+    """Run the first-run provider gate, the mount/provider preflight, then boot the TUI.
 
-    The single path every interactive entry point funnels through so the gate
-    and the per-invocation overrides stay consistent. Returns the process exit
-    code; ``--demo`` skips the gate (fully offline).
+    The single path every interactive entry point funnels through so the gate,
+    the preflight and the per-invocation overrides stay consistent. Returns
+    the process exit code; ``--demo`` skips both (fully offline, no real
+    mounts to check).
     """
     if not demo:
         gate = asyncio.run(_first_run_gate())
         if gate is not None:
             return gate
+        # AC4: resolve mounts/providers BEFORE Textual takes the alternate
+        # screen, so a failure prints to plain scrollback instead of
+        # corrupting (or hiding inside) the full-screen surface.
+        failure = _preflight_or_none(bundle=bundle, provider=provider, model=model)
+        if failure is not None:
+            return failure
     return asyncio.run(
         _launch_tui(
             demo=demo,
@@ -388,6 +546,11 @@ def _interactive_launch(
     default=None,
     help="Interaction mode to start in (chat, plan, brainstorm, build, auto).",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Resolve mounts/providers and report what would launch; change/launch nothing.",
+)
 @click.version_option(__version__, prog_name="amplifier-tui")
 @click.pass_context
 def main(
@@ -397,16 +560,23 @@ def main(
     provider: str | None,
     model: str | None,
     mode: str | None,
+    dry_run: bool,
 ) -> None:
     """Amplifier full-screen TUI (v3 Cohesive).
 
     ``--provider``/``--model`` override the resolved plan for THIS launch only
     (never written to a settings scope); ``--mode`` seeds the interaction
     posture the TUI opens in. Same ephemeral semantics as the ``run`` command.
+    ``--dry-run`` previews the mount/provider resolution and exits without
+    ever launching (see ``run --dry-run``).
     """
     if ctx.invoked_subcommand is not None:
         return
     _validate_overrides(model, provider, mode)
+    if dry_run:
+        raise SystemExit(
+            _dry_run_preflight(demo=demo, bundle=bundle, provider=provider, model=model)
+        )
     raise SystemExit(
         _interactive_launch(demo=demo, bundle=bundle, mode=mode, provider=provider, model=model)
     )
@@ -438,6 +608,7 @@ def main(
     "resume",
     default=None,
     metavar="SESSION_ID",
+    shell_complete=_complete_session_id,
     help="Seed this one-shot from an existing session's stored context.",
 )
 @click.option(
@@ -447,6 +618,11 @@ def main(
     show_default=True,
     help="Response format; JSON modes reserve stdout for machine-readable output.",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Resolve mounts/providers and report what would launch; run nothing.",
+)
 def run(
     prompt: str | None,
     bundle: str | None,
@@ -455,6 +631,7 @@ def run(
     mode: str | None,
     resume: str | None,
     output_format: str,
+    dry_run: bool,
 ) -> None:
     """Execute PROMPT (or piped stdin) in one real session.
 
@@ -466,25 +643,23 @@ def run(
     output), ``run`` launches the full-screen TUI with these same overrides
     instead of erroring — so ``run -p ... -m ... --mode chat`` opens a chat
     session. Piped/non-interactive/JSON invocations stay prompt-required.
+
+    ``--dry-run`` resolves mounts/providers and reports what would launch
+    (bundle, provider, routing) without starting anything — same guarantee
+    as ``reset --dry-run``: read-only, safe to run anytime.
     """
     # Shared with the interactive launcher: --model requires --provider, and
     # --mode must name a real interaction mode (both fail loud, nonzero exit).
     _validate_overrides(model, provider, mode)
+    if dry_run:
+        raise SystemExit(
+            _dry_run_preflight(demo=False, bundle=bundle, provider=provider, model=model)
+        )
     # --resume resolves a (possibly partial) id to one stored session up front,
     # so an unknown/ambiguous id errors clearly before any boot work begins.
     resume_id: str | None = None
     if resume is not None:
-        from .kernel import session_manager
-
-        try:
-            resume_id = session_manager.resolve(_session_store(), resume)
-        except FileNotFoundError:
-            click.echo(f"no session found matching '{resume}'", err=True)
-            _echo_cross_project_hint(resume)
-            raise SystemExit(1) from None
-        except ValueError as error:
-            click.echo(str(error), err=True)
-            raise SystemExit(1) from None
+        resume_id = _resolve_resume_target(_session_store(), resume)
     # A bare `run` on a TTY (no prompt, nothing piped, plain text output) means
     # "start a session" — boot the interactive TUI with the same overrides
     # rather than refusing. Headless use (piped stdin, non-TTY, or a JSON
@@ -516,35 +691,52 @@ def run(
     )
 
 
-def _print_session_table(summaries: list[Any]) -> None:
+def _print_session_table(
+    summaries: list[Any], *, title: str = "Sessions", stderr: bool = False
+) -> None:
     """Render session *summaries* as the shared rich table (newest-first).
 
-    The single renderer behind both ``sessions`` and ``session list`` so the
-    two can't drift (S3): Name · Session · Bundle · Msgs · Turns · Age. The
-    Turns column reflects the ``turn_count`` the incremental saver records in
-    ``metadata.json``; sessions whose stored metadata predates that field show
-    ``—`` rather than a fabricated ``0``.
+    The single renderer behind ``sessions``, ``session list``, AND the
+    resume path's ambiguous-prefix listing (S3), so all three can't drift:
+    Name · Session · Bundle · Msgs · Turns · Age. The Turns column reflects
+    the ``turn_count`` the incremental saver records in ``metadata.json``;
+    sessions whose stored metadata predates that field show ``—`` rather
+    than a fabricated ``0``. ``stderr=True`` routes the table to stderr (the
+    ambiguous-resume error path, S3) so stdout stays clean on failure.
+
+    A trailing dim ``State`` column appears only when at least one session
+    is damaged (S2 compliance): ``recovered`` (metadata could not be parsed;
+    a synthetic shell was substituted) or ``corrupt`` (the row itself could
+    not be summarized). A healthy roster renders byte-for-byte as before --
+    no blank column noise for the common case.
     """
     from rich.console import Console
     from rich.table import Table
 
-    table = Table(title="Sessions", title_justify="center", header_style="bold cyan")
+    show_state = any(summary.state != "ok" for summary in summaries)
+    table = Table(title=title, title_justify="center", header_style="bold cyan")
     table.add_column("Name", style="cyan", overflow="fold")
     table.add_column("Session", style="green", no_wrap=True)
     table.add_column("Bundle", style="magenta", no_wrap=True)
     table.add_column("Msgs", justify="right")
     table.add_column("Turns", justify="right")
     table.add_column("Age", style="dim", no_wrap=True)
+    if show_state:
+        table.add_column("State", style="dim", no_wrap=True)
     for summary in summaries:
-        table.add_row(
+        row = [
             summary.name or "—",
             summary.short_id,
             summary.bundle,
             str(summary.messages),
             "—" if summary.turns is None else str(summary.turns),
             summary.time_ago,
-        )
-    Console().print(table)
+        ]
+        if show_state:
+            state_style = "yellow" if summary.state == "recovered" else "red"
+            row.append("—" if summary.state == "ok" else f"[{state_style}]{summary.state}[/]")
+        table.add_row(*row)
+    Console(stderr=stderr).print(table)
 
 
 @main.command()
@@ -553,7 +745,30 @@ def _print_session_table(summaries: list[Any]) -> None:
 @click.option("--provider", "-p", default=None, help="Provider override for THIS invocation.")
 @click.option("--mode", "mode", default=None, help="Interaction mode to start in.")
 @click.option(
-    "--resume", "resume", default=None, metavar="SESSION_ID", help="Resume a stored session."
+    "--resume",
+    "resume",
+    default=None,
+    metavar="SESSION_ID",
+    shell_complete=_complete_session_id,
+    help="Resume a stored session.",
+)
+@click.option(
+    "--attach",
+    "attach",
+    default=None,
+    metavar="REF",
+    help="Attach ref (amplifier-session:<id>[#<handoff>]); claims the handoff on boot.",
+)
+@click.option(
+    "--actor", "actor", default=None, metavar="ID", help="Default actor id for control ops."
+)
+@click.option(
+    "--actor-kind",
+    "actor_kind",
+    type=click.Choice(["human", "automation"]),
+    default="automation",
+    show_default=True,
+    help="Default actor kind (drives lease takeover precedence).",
 )
 def serve(
     bundle: str | None,
@@ -561,6 +776,9 @@ def serve(
     provider: str | None,
     mode: str | None,
     resume: str | None,
+    attach: str | None,
+    actor: str | None,
+    actor_kind: str,
 ) -> None:
     """Run an interactive session as a bidirectional line protocol on stdio.
 
@@ -569,17 +787,43 @@ def serve(
     ``approve`` / ``interrupt`` submissions arrive on stdin. This is the seam a
     Rust (or any external) UI drives; it wraps the same ``RealRuntime`` the TUI
     uses, so amplifier-core is untouched. See ``kernel/serve.py`` for the wire.
+
+    ``--resume``'s exit codes are the same deterministic S3 set as ``resume``
+    (2 not-found, 3 ambiguous, 4 corrupt) -- previously either case raised an
+    uncaught traceback here instead of a clean message.
+
+    ``--attach`` is the human-takeover path: hand a person the ref a paused
+    controller minted (``handoff.created``) and this boots on the SAME session,
+    claims the handoff, and hands them the write lease. ``--actor`` /
+    ``--actor-kind`` stamp the identity that ops without their own ``actor``
+    are attributed to (a ``human`` actor outranks an ``automation`` one when
+    taking the lease over).
     """
     _validate_overrides(model, provider, mode)
     resume_id: str | None = None
-    if resume is not None:
-        from .kernel import session_manager
+    if attach is not None:
+        from .kernel.session_control import parse_attach_ref
 
-        resume_id = session_manager.resolve(_session_store(), resume)
+        attached_session, _ = parse_attach_ref(attach)
+        if attached_session:
+            resume = attached_session
+    if resume is not None:
+        resume_id = _resolve_resume_target(_session_store(), resume)
     from .kernel.serve import serve as _serve
 
     raise SystemExit(
-        asyncio.run(_serve(bundle, mode=mode, model=model, provider=provider, resume_id=resume_id))
+        asyncio.run(
+            _serve(
+                bundle,
+                mode=mode,
+                model=model,
+                provider=provider,
+                resume_id=resume_id,
+                attach=attach,
+                actor=actor,
+                actor_kind=actor_kind,
+            )
+        )
     )
 
 
@@ -640,7 +884,7 @@ def _current_usernames() -> tuple[str, ...]:
 def _echo_cross_project_hint(partial: str) -> None:
     """After a per-project 'no session found', point to the session if it lives
     in another project. Sessions are stored per working directory, so a bare
-    ``resume <id>`` only sees the current dir's project — this makes the error
+    ``resume SESSION_ID`` only sees the current dir's project — this makes the error
     actionable instead of a dead end."""
     from .kernel import session_manager
 
@@ -655,10 +899,62 @@ def _echo_cross_project_hint(partial: str) -> None:
         click.echo(f"    …and {len(matches) - 3} more", err=True)
 
 
+def _print_ambiguous_candidates(partial_id: str, candidates: tuple[Any, ...]) -> None:
+    """Actionable ambiguous-prefix output (S3).
+
+    Every matching session as a real rich table (name/bundle/msgs/age --
+    the SAME renderer ``sessions``/``session list`` use) plus the exact
+    next command to run, instead of a 3-item truncated id preview. All on
+    stderr: the resume path failed, so stdout stays clean for scripts.
+    """
+    click.echo(
+        f"'{partial_id}' matches {len(candidates)} sessions \u2014 resume needs an "
+        "exact id or a longer prefix:",
+        err=True,
+    )
+    _print_session_table(list(candidates), title="Matching sessions", stderr=True)
+    from rich.console import Console
+
+    example = candidates[0].short_id
+    Console(stderr=True).print(
+        f"resume one directly, e.g. amplifier-tui resume {example}", style="dim"
+    )
+
+
+def _resolve_resume_target(store: Any, partial_id: str) -> str:
+    """Resolve *partial_id* to a full session id, or exit with a deterministic,
+    documented resume-path code (S3): 2 not-found, 3 ambiguous-prefix (with
+    an actionable candidates table), 4 corrupt-session -- never the
+    historical blanket 1. Shared by ``resume``, ``session resume``,
+    ``run --resume`` and ``serve --resume`` so all four commands agree.
+    """
+    from .kernel import session_manager
+
+    resolution = session_manager.resolve_for_resume(store, partial_id)
+    if resolution.status == "ok":
+        return resolution.session_id
+    if resolution.status == "ambiguous":
+        _print_ambiguous_candidates(partial_id, resolution.candidates)
+        raise SystemExit(RESUME_EXIT_AMBIGUOUS)
+    if resolution.status == "corrupt":
+        short = resolution.session_id[:8]
+        click.echo(
+            f"session '{short}' is corrupt \u2014 its stored metadata could not be "
+            "read (even from backup)",
+            err=True,
+        )
+        click.echo(f"  remove it: amplifier-tui session delete {short} --force", err=True)
+        raise SystemExit(RESUME_EXIT_CORRUPT)
+    # "not_found"
+    click.echo(f"no session found matching '{partial_id}'", err=True)
+    _echo_cross_project_hint(partial_id)
+    raise SystemExit(RESUME_EXIT_NOT_FOUND)
+
+
 def _pick_session_id(limit: int) -> str | None:
     """Print a numbered picker of recent sessions; return the chosen id.
 
-    The interactive counterpart to ``resume ID`` (amplifier-app-cli
+    The interactive counterpart to ``resume SESSION_ID`` (amplifier-app-cli
     ``resume`` with no argument): a single-session store auto-selects, an
     empty store returns ``None`` with a hint, and ``q`` cancels. Numbering
     is 1-based over the newest-first listing.
@@ -693,27 +989,28 @@ def _pick_session_id(limit: int) -> str | None:
 
 
 @main.command()
-@click.argument("session_id", required=False, default=None)
+@click.argument(
+    "session_id",
+    required=False,
+    default=None,
+    shell_complete=_complete_session_id,
+)
 @click.option("--bundle", default=None, help="Bundle name or URI.")
 @click.option("--limit", "-n", default=10, show_default=True, help="Sessions shown in the picker.")
 def resume(session_id: str | None, bundle: str | None, limit: int) -> None:
-    """Launch the TUI resuming a stored session (interactive picker if no id)."""
+    """Launch the TUI resuming a stored session (interactive picker if no id).
+
+    Exit codes are deterministic (S3): 0 success, 2 no session matches, 3 the
+    prefix is ambiguous (candidates are listed), 4 the match is corrupt
+    (unreadable metadata, even from backup) -- see USER-GUIDE.md's "Resume
+    exit codes" table.
+    """
     if session_id is None:
         resolved = _pick_session_id(limit)
         if resolved is None:
             raise SystemExit(0)
     else:
-        from .kernel import session_manager
-
-        try:
-            resolved = session_manager.resolve(_session_store(), session_id)
-        except FileNotFoundError:
-            click.echo(f"no session found matching '{session_id}'", err=True)
-            _echo_cross_project_hint(session_id)
-            raise SystemExit(1) from None
-        except ValueError as error:
-            click.echo(str(error), err=True)
-            raise SystemExit(1) from None
+        resolved = _resolve_resume_target(_session_store(), session_id)
     raise SystemExit(asyncio.run(_launch_tui(demo=False, bundle=bundle, resume_id=resolved)))
 
 
@@ -1200,8 +1497,8 @@ def session_import(file: str, new_name: str) -> None:
     click.echo(f"resume it: amplifier-tui resume {new_id[:8]}")
 
 
-# ``session resume <id>`` — alias to the top-level ``resume`` command, so both
-# amplifier-app-cli spellings work (``resume`` interactive + ``session resume
+# ``session resume SESSION_ID`` — alias to the top-level ``resume`` command, so
+# both amplifier-app-cli spellings work (``resume`` interactive + ``session resume
 # <id>``). Registering the same Command object reuses the one handler rather
 # than forking the logic (S4 / #148).
 session.add_command(resume, "resume")
@@ -1851,8 +2148,9 @@ async def _resolve_provider_schema(choice):  # noqa: ANN001, ANN202
     """
     from .kernel import setup
 
-    if not choice.installed and choice.source_uri:
-        click.echo(f"\n  fetching {choice.module_id} (not installed) …", nl=False)
+    if not choice.installed:
+        verb = "loading" if choice.cached else "fetching"
+        click.echo(f"\n  {verb} {choice.module_id} …", nl=False)
         availability = await setup.ensure_provider_available(choice.module_id, choice.source_uri)
         click.echo(" ok" if availability.available else f" {availability.reason}")
     schema = setup.load_provider_info(choice.module_id)
@@ -2159,7 +2457,7 @@ async def _init(
     for index, choice in enumerate(choices, start=1):
         mark = "✓" if choice.has_key else " "
         label = f"{choice.display} · {choice.module_id}" if choice.display else choice.module_id
-        suffix = "" if choice.installed else "  · not installed"
+        suffix = f"  · {choice.availability}" if choice.availability else ""
         click.echo(f"  {index}. [{mark}] {label}  → {choice.key_var}{suffix}")
 
     # Resolve the target provider.
@@ -3017,9 +3315,10 @@ def _notify_test() -> int:
     paths = bundle_admin.settings_paths(None, None)
     settings = load_merged_settings(paths)
     env = notify_admin.resolved_environ(settings)
-    # A deferred decision always qualifies and, when unfocused, opens the
-    # desktop rung -- so a test exercises the whole ladder the app would fire.
-    rungs = notifications.notification_rungs("decision_deferred", focused=False, environ=env)
+    # An awaiting-approval/clarification reason always qualifies and, when
+    # unfocused, opens the desktop rung -- so a test exercises the whole
+    # ladder the app would fire.
+    rungs = notifications.notification_rungs("awaiting_approval", focused=False, environ=env)
     fired: list[str] = []
     if "bell" in rungs:
         click.echo("\a", nl=False)

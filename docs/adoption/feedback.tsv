@@ -1,0 +1,19 @@
+# Adoption feedback ledger v1 - stage-3 daily-driver seats and their tracked dispositions.
+#
+# AC3 needs at least THREE additional daily-driver users beyond MJ (stage 1) and Brian
+# (stage 2). The brief defines the seats but does NOT name the people - they have not been
+# chosen yet. The three seats below are real and reserved; `TBD` is the only unknown.
+# Filling a name is a one-line edit, not a blocker.
+#
+# tested_commit is REQUIRED so a report can be reproduced against the exact build the
+# participant ran (short or full git sha).
+# disposition: untriaged | fixed | deferred | wont-fix | duplicate
+#   untriaged - feedback received, not yet dispositioned. Stage 3 cannot be promoted
+#               while any seat is untriaged.
+#   Release-blocking findings ALSO get a row in blockers.tsv - that is what gates.
+# disposition_ref: PR / issue / commit / doc recording the disposition, or `-`.
+#
+# seat	participant	stage	tested_commit	date	completion_evidence	friction	disposition	disposition_ref
+seat-1	TBD	3	-	-	-	-	untriaged	-
+seat-2	TBD	3	-	-	-	-	untriaged	-
+seat-3	TBD	3	-	-	-	-	untriaged	-

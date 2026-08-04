@@ -12,6 +12,7 @@ from amplifier_app_tui.ui.session_ops_view import (
     mcp_spans,
     model_listing_spans,
     names_spans,
+    session_detail_spans,
     sessions_spans,
     skill_loaded_spans,
     skills_spans,
@@ -201,3 +202,97 @@ def test_sessions_spans_untagged_row_has_no_chip() -> None:
     rows = (SessionSummary(session_id="abc12345ff", name="auth", bundle="tui", messages=6),)
     text = _text(sessions_spans(rows))
     assert "#" not in text
+
+
+def test_sessions_spans_labels_recovered_state() -> None:
+    """A recovered/corrupt session must show an explicit state chip -- never
+    rendered as if it were a normal, healthy row (S2 compliance gap 3)."""
+    rows = (SessionSummary(session_id="abc12345ff", name="", bundle="unknown", state="recovered"),)
+    spans = sessions_spans(rows)
+    text = _text(spans)
+    assert "recovered" in text
+    chip = next(sp for sp in spans if "recovered" in sp.text)
+    assert chip.style_token == "orange"
+    assert chip.bold is True
+
+
+def test_sessions_spans_labels_corrupt_state() -> None:
+    rows = (SessionSummary(session_id="deadbeef01", state="corrupt"),)
+    spans = sessions_spans(rows)
+    text = _text(spans)
+    assert "corrupt" in text
+    chip = next(sp for sp in spans if "corrupt" in sp.text)
+    assert chip.style_token == "red"
+    assert chip.bold is True
+
+
+def test_sessions_spans_ok_state_shows_no_chip() -> None:
+    """A healthy row must render exactly as before -- no stray state noise."""
+    rows = (SessionSummary(session_id="abc12345ff", name="auth", bundle="tui", messages=6),)
+    text = _text(sessions_spans(rows))
+    assert "\u26a0" not in text  # no warning glyph on a healthy row
+
+
+def test_sessions_spans_state_chip_and_tags_coexist() -> None:
+    rows = (
+        SessionSummary(
+            session_id="abc12345ff",
+            state="recovered",
+            tags=("urgent",),
+        ),
+    )
+    text = _text(sessions_spans(rows))
+    assert "#urgent" in text
+    assert "recovered" in text
+
+
+def test_session_detail_spans_shows_full_id_unambiguously() -> None:
+    """The detail surface must show the FULL id -- the table only ever
+    shows the truncated short_id (S2 compliance gap 1)."""
+    full_id = "abc123def456" + "0" * 20  # deliberately longer than short_id
+    summary = SessionSummary(session_id=full_id, name="auth", bundle="tui", messages=3)
+    spans = session_detail_spans(summary)
+    text = _text(spans)
+    assert full_id in text
+    assert summary.short_id in text  # header still shows the short form too
+    full_id_spans = [sp for sp in spans if sp.text.strip() == full_id]
+    assert full_id_spans, "full id must appear as its own unambiguous span"
+    assert full_id_spans[0].style_token == "bright"
+    assert full_id_spans[0].bold is True
+
+
+def test_session_detail_spans_explains_recovered_state() -> None:
+    summary = SessionSummary(session_id="deadbeef" * 4, state="recovered")
+    text = _text(session_detail_spans(summary))
+    assert "recovered" in text
+    assert "metadata.json could not be parsed" in text
+
+
+def test_session_detail_spans_explains_corrupt_state() -> None:
+    summary = SessionSummary(session_id="deadbeef" * 4, state="corrupt")
+    text = _text(session_detail_spans(summary))
+    assert "corrupt" in text
+    assert "could not be summarized" in text
+
+
+def test_session_detail_spans_ok_state_has_no_warning_glyph() -> None:
+    summary = SessionSummary(session_id="deadbeef" * 4, name="auth", bundle="tui")
+    text = _text(session_detail_spans(summary))
+    assert "\u26a0" not in text
+
+
+def test_session_detail_spans_includes_tags_and_metadata() -> None:
+    summary = SessionSummary(
+        session_id="deadbeef" * 4,
+        name="auth refactor",
+        bundle="tui",
+        messages=7,
+        turns=3,
+        tags=("frontend", "urgent"),
+    )
+    text = _text(session_detail_spans(summary))
+    assert "auth refactor" in text
+    assert "tui" in text
+    assert "7" in text
+    assert "3" in text
+    assert "#frontend #urgent" in text

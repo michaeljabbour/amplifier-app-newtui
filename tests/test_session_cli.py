@@ -239,12 +239,13 @@ def test_resume_direct_id_resolves_prefix(
 def test_resume_unknown_id_exits_nonzero(scratch: SessionStore) -> None:
     _seed(scratch, "cafef00d")
     result = CliRunner().invoke(main, ["resume", "zzz"])
-    assert result.exit_code == 1
+    assert result.exit_code == main_mod.RESUME_EXIT_NOT_FOUND
+    assert result.exit_code == 2
     assert "no session found" in result.output
 
 
 def test_resume_hints_at_cross_project_session(scratch: SessionStore, tmp_path: Path) -> None:
-    """A ``resume <id>`` that misses the current dir but exists in another
+    """A ``resume SESSION_ID`` that misses the current dir but exists in another
     project points the user at the dir it lives in (per-dir store confusion)."""
     other_dir = tmp_path / "elsewhere"
     other_dir.mkdir()
@@ -257,7 +258,7 @@ def test_resume_hints_at_cross_project_session(scratch: SessionStore, tmp_path: 
     # cwd (scratch) has a different, unrelated session — the id is not here.
     _seed(scratch, "cafef00d")
     result = CliRunner().invoke(main, ["resume", "beef"])
-    assert result.exit_code == 1
+    assert result.exit_code == main_mod.RESUME_EXIT_NOT_FOUND
     assert "no session found" in result.output
     assert "another project" in result.output
     assert f"cd {other_dir}" in result.output
@@ -270,7 +271,7 @@ def test_resume_hints_at_cross_project_session(scratch: SessionStore, tmp_path: 
 def test_session_resume_direct_id_matches_top_level(
     scratch: SessionStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``session resume <id>`` reuses the top-level ``resume`` handler."""
+    """``session resume SESSION_ID`` reuses the top-level ``resume`` handler."""
     seen: list[str | None] = []
 
     async def fake_launch(
@@ -294,7 +295,7 @@ def test_session_resume_direct_id_matches_top_level(
 def test_session_resume_unknown_id_exits_nonzero(scratch: SessionStore) -> None:
     _seed(scratch, "cafef00d")
     result = CliRunner().invoke(main, ["session", "resume", "zzz"])
-    assert result.exit_code == 1
+    assert result.exit_code == main_mod.RESUME_EXIT_NOT_FOUND
     assert "no session found" in result.output
 
 
@@ -307,9 +308,12 @@ def test_session_resume_is_the_same_command_object() -> None:
 
 
 def test_exit_hint_prints_resume_command(capsys: pytest.CaptureFixture[str]) -> None:
+    """Prints the SHORT (8-char) id -- the one canonical form every other
+    resume hint uses (S3); this was the one holdout printing the full id."""
     main_mod._print_resume_hint("cafef00d1234")
     printed = capsys.readouterr().out
-    assert "amplifier-tui resume cafef00d1234" in printed
+    assert "amplifier-tui resume cafef00d" in printed
+    assert "amplifier-tui resume cafef00d1234" not in printed
     assert "amplifier-tui sessions" in printed
 
 
@@ -360,6 +364,134 @@ def test_launch_tui_prints_hint_on_exit(monkeypatch: pytest.MonkeyPatch) -> None
 # -- continue (most-recent shortcut) ---------------------------------------
 
 
+def test_resume_ambiguous_prefix_exits_distinct_code(scratch: SessionStore) -> None:
+    _seed(scratch, "aaaa1111", name="one", messages=2)
+    _seed(scratch, "aaaa2222", name="two", messages=4)
+    result = CliRunner().invoke(main, ["resume", "aaaa"])
+    assert result.exit_code == main_mod.RESUME_EXIT_AMBIGUOUS
+    assert result.exit_code == 3
+    assert "matches 2 sessions" in result.output
+    # An actionable table, not a 3-item truncated id preview: both full short
+    # ids and their distinguishing names are visible.
+    assert "Matching sessions" in result.output
+    assert "aaaa1111" in result.output
+    assert "aaaa2222" in result.output
+    assert "one" in result.output
+    assert "two" in result.output
+    # A concrete next command using a REAL id, not just "try again" -- the
+    # example is whichever candidate the ambiguity resolver lists first
+    # (newest-first), so accept either rather than assuming save order.
+    assert any(f"amplifier-tui resume {sid}" in result.output for sid in ("aaaa1111", "aaaa2222"))
+
+
+def test_resume_ambiguous_prefix_via_alias_matches_top_level(scratch: SessionStore) -> None:
+    """``session resume`` is the same Command object, so it agrees for free."""
+    _seed(scratch, "aaaa1111", name="one")
+    _seed(scratch, "aaaa2222", name="two")
+    result = CliRunner().invoke(main, ["session", "resume", "aaaa"])
+    assert result.exit_code == main_mod.RESUME_EXIT_AMBIGUOUS
+
+
+def test_resume_corrupt_session_exits_distinct_code(scratch: SessionStore) -> None:
+    _seed(scratch, "deadbeef")
+    # Corrupt metadata.json with no .backup to recover from: SessionStore
+    # degrades this to a synthesized ``recovered`` stub rather than raising
+    # (persistence._load_metadata) -- the resume path probes for that stub.
+    (scratch.session_dir("deadbeef") / "metadata.json").write_text("{not json", encoding="utf-8")
+    result = CliRunner().invoke(main, ["resume", "deadbeef"])
+    assert result.exit_code == main_mod.RESUME_EXIT_CORRUPT
+    assert result.exit_code == 4
+    assert "corrupt" in result.output.lower()
+    assert "deadbeef" in result.output
+    assert "session delete deadbeef --force" in result.output
+
+
+def test_resume_success_exits_zero_and_is_distinct_from_errors(
+    scratch: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_launch(
+        *, demo: bool, bundle: str | None = None, resume_id: str | None = None
+    ) -> int:
+        return 0
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+    _seed(scratch, "cafef00d")
+    result = CliRunner().invoke(main, ["resume", "cafef00d"])
+    assert result.exit_code == 0
+    assert result.exit_code not in (
+        main_mod.RESUME_EXIT_NOT_FOUND,
+        main_mod.RESUME_EXIT_AMBIGUOUS,
+        main_mod.RESUME_EXIT_CORRUPT,
+    )
+
+
+# -- canonical syntax: help / completion / exit guidance must agree (S3) ----
+
+
+def test_ambiguity_and_exit_hint_use_the_same_short_id_form(
+    scratch: SessionStore, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ambiguous-prefix table and the TUI-exit hint print the exact same
+    8-char short-id form for a resumable id -- copy-pasting either hint
+    produces the identical command."""
+    _seed(scratch, "aaaa1111", name="one")
+    _seed(scratch, "aaaa2222", name="two")
+    ambiguous_output = CliRunner().invoke(main, ["resume", "aaaa"]).output
+    # The ambiguity resolver lists newest-first; either seeded id is a valid
+    # example -- what matters is the SAME one round-trips through the hint.
+    if "amplifier-tui resume aaaa1111" in ambiguous_output:
+        example_id = "aaaa1111"
+    else:
+        assert "amplifier-tui resume aaaa2222" in ambiguous_output
+        example_id = "aaaa2222"
+
+    main_mod._print_resume_hint(example_id)
+    hinted = capsys.readouterr().out
+    assert f"amplifier-tui resume {example_id}" in hinted
+
+
+def test_resume_help_shows_optional_bracketed_metavar() -> None:
+    """``--help`` still shows ``[SESSION_ID]`` (optional): the explicit
+    ``shell_complete`` wiring must not regress Click's own required/optional
+    usage rendering."""
+    result = CliRunner().invoke(main, ["resume", "--help"])
+    assert "[SESSION_ID]" in result.output
+
+
+def test_shell_completion_offers_the_same_short_ids(scratch: SessionStore) -> None:
+    """Tab-completion candidates are the SAME short-id form used everywhere
+    else (S3), sourced live from the store -- not a static/no-op stub."""
+    _seed(scratch, "cafef00d", name="auth work")
+    _seed(scratch, "beefcafe", name="ui polish")
+    ctx = main.make_context("amplifier-tui", ["resume"])
+    session_id_arg = main.commands["resume"].params[0]
+    assert session_id_arg.name == "session_id"
+
+    all_items = main_mod._complete_session_id(ctx, session_id_arg, "")
+    assert {item.value for item in all_items} == {"cafef00d", "beefcafe"}
+
+    prefixed = main_mod._complete_session_id(ctx, session_id_arg, "cafe")
+    assert {item.value for item in prefixed} == {"cafef00d"}
+
+
+def test_run_and_serve_resume_share_the_same_completion_function() -> None:
+    """``run --resume`` / ``serve --resume`` complete exactly like ``resume``
+    (S3): one function wired to all three params, so they cannot drift."""
+    run_option = next(p for p in main.commands["run"].params if p.name == "resume")
+    serve_option = next(p for p in main.commands["serve"].params if p.name == "resume")
+    resume_arg = main.commands["resume"].params[0]
+    # Click's own ``.shell_complete`` is a dispatcher METHOD on Parameter, not
+    # the callback we passed in -- the callback itself is stashed on the
+    # private ``_custom_shell_complete`` slot, which is what must be identical
+    # across all three params for them to be provably wired to one function.
+    assert run_option._custom_shell_complete is main_mod._complete_session_id
+    assert serve_option._custom_shell_complete is main_mod._complete_session_id
+    assert resume_arg._custom_shell_complete is main_mod._complete_session_id
+
+
+# -- continue (most-recent shortcut) -----------------------------------------
+
+
 def test_continue_empty_store(scratch: SessionStore) -> None:
     result = CliRunner().invoke(main, ["continue"])
     assert result.exit_code == 0
@@ -386,3 +518,56 @@ def test_continue_launches_most_recent(
     assert result.exit_code == 0
     assert launched["resume_id"] == "bbbb2222"
     assert "continuing bbbb2222" in result.output
+
+
+def test_sessions_healthy_roster_shows_no_state_column(scratch: SessionStore) -> None:
+    """The common (all-healthy) case renders exactly as before -- no blank
+    'State' column noise (S2 compliance: labeling is additive, not intrusive)."""
+    _seed(scratch, "abc12345", name="auth work", messages=3)
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "State" not in result.output
+
+
+def test_sessions_labels_a_recovered_session_with_a_state_column(
+    scratch: SessionStore,
+) -> None:
+    """A session whose metadata.json cannot be parsed must show an explicit
+    'recovered' state in the table -- never silently dropped or rendered
+    as a normal, healthy row (S2 compliance gap 3)."""
+    _seed(scratch, "healthyid", name="auth work", messages=3)
+    _seed(scratch, "brokenidx", name="will-be-lost", messages=1)
+    (scratch.session_dir("brokenidx") / "metadata.json").write_text("{not json", encoding="utf-8")
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "State" in result.output
+    assert "recovered" in result.output
+    # The healthy sibling is unaffected and still fully listed.
+    assert "auth work" in result.output
+    # The damaged session's id is still shown -- often the only handle a
+    # user has to go delete/inspect it.
+    assert "brokenid" in result.output
+
+
+def test_sessions_never_crashes_when_one_session_is_corrupt(
+    scratch: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One session raising past its own recovery must not crash the CLI
+    listing -- it becomes a bare 'corrupt' row (S2 compliance gap 3)."""
+    from amplifier_app_tui.kernel import session_manager as sm
+
+    _seed(scratch, "healthyid", name="auth work", messages=3)
+    _seed(scratch, "brokenidx", messages=1)
+
+    real_summary_for = sm.summary_for
+
+    def _boom(store: SessionStore, session_id: str):
+        if session_id == "brokenidx":
+            raise RuntimeError("simulated unexpected corruption")
+        return real_summary_for(store, session_id)
+
+    monkeypatch.setattr(sm, "summary_for", _boom)
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "corrupt" in result.output
+    assert "auth work" in result.output

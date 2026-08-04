@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import unicodedata
 from decimal import Decimal
 
 import pytest
 from textual.app import App, ComposeResult
 
 from amplifier_app_tui.model.lanes import LaneRecord, LaneState, lane_labels
+from amplifier_app_tui.ui.keymap import hint_label
 from amplifier_app_tui.ui.lanes_panel import (
+    EXPAND_HINT_TEXT,
     LANE_MOTION_INTERVAL_SECONDS,
     LANES_HEADER,
     LanesPanel,
+    _elide,
     format_lane_lines,
     lane_elapsed,
 )
@@ -423,3 +427,128 @@ async def test_lane_tail_mounts_under_focused_row_then_drops(monkeypatch) -> Non
         panel.clear_lane_tail()
         await pilot.pause()
         assert not panel.has_lane_tail
+
+
+# -- D5 AC3: boundary-safe truncation + explicit expand affordance -----------
+
+
+_LONG_ACTIVITY = "recovering from bash tool invocation error while retrying"
+
+
+@pytest.mark.parametrize("budget", list(range(6, 40)))
+def test_elide_never_clips_mid_word(budget: int) -> None:
+    """Across every plausible column budget, a truncated preview cuts on a
+    word boundary \u2014 never mid-word \u2014 and always ends with one ellipsis."""
+    result = _elide(_LONG_ACTIVITY, budget)
+    if result == _LONG_ACTIVITY:
+        return  # fit whole; nothing to check
+    assert result.endswith("\u2026")
+    prefix = result[:-1]  # strip the ellipsis
+    assert len(result) <= budget
+    if not prefix:
+        return  # budget so tight only the ellipsis itself survives
+    # The kept prefix must be a clean word-boundary slice of the original:
+    # either the whole original up to some space, or (single unbreakable
+    # token fallback) still a prefix of the original text.
+    assert _LONG_ACTIVITY.startswith(prefix)
+    next_char_index = len(prefix)
+    at_boundary = next_char_index >= len(_LONG_ACTIVITY) or _LONG_ACTIVITY[next_char_index] == " "
+    # Word-boundary cuts land exactly at a space; the single-long-token
+    # fallback (tested separately below) is the only exception.
+    assert at_boundary or " " not in _LONG_ACTIVITY[:next_char_index]
+
+
+def test_elide_fits_within_budget_returns_unchanged() -> None:
+    assert _elide("thinking", 20) == "thinking"
+    assert _elide("thinking", len("thinking")) == "thinking"
+
+
+def test_elide_prefers_word_boundary_over_raw_character_slice() -> None:
+    """The regression case: the old raw ``text[:n]`` slice cut through
+    ``bash`` (``recovering from ba\u2026``); the fix backs up to the space."""
+    result = _elide("recovering from bash error", 20)
+    assert result == "recovering from\u2026"
+    assert "ba\u2026" not in result
+    assert not any(word.endswith("\u2026") and word != "\u2026" for word in result.split(" ")[:-1])
+
+
+def test_elide_single_unbreakable_token_falls_back_to_hard_cut() -> None:
+    """No whitespace anywhere \u2014 there is no boundary to break on, so the
+    grapheme-safe hard cut is the documented, deliberate exception."""
+    token = "a" * 40
+    result = _elide(token, 10)
+    assert result == "a" * 9 + "\u2026"
+    assert len(result) == 10
+
+
+@pytest.mark.parametrize("budget", list(range(4, 20)))
+def test_elide_grapheme_safe_hard_cut_never_splits_combining_mark(budget: int) -> None:
+    """An unbreakable token (no whitespace to break on) whose naive
+    code-point cut would land between a base letter and its combining
+    accent instead backs up off the bare base — the accent is never
+    separated from the character it belongs to."""
+    # "e" + COMBINING ACUTE ACCENT, repeated — one token, no spaces, so
+    # every OTHER code-point boundary is a would-be split point.
+    token = "e\u0301" * 20
+    result = _elide(token, budget)
+    if result == token:
+        return  # fits whole at this budget; nothing to check
+    assert result.endswith("\u2026")
+    body = result[:-1]  # strip the ellipsis
+    if len(body) < len(token):
+        next_char = token[len(body)]
+        # The character immediately after the cut must not itself be a
+        # combining mark — otherwise the last kept character is a bare
+        # base that just lost its accent (a split grapheme cluster).
+        assert not unicodedata.combining(next_char)
+
+
+# A short first word + one long unbreakable blob: the word-boundary cut
+# lands right after "processing" regardless of width, leaving plenty of
+# slack for the trailing hint — unlike a natural multi-word sentence
+# (tested above), where each extra word consumes the slack as it grows.
+_BLOB_ACTIVITY = "processing " + ("x" * 80)
+
+
+def _lane(name: str, activity: str, **overrides: object) -> LaneState:
+    fields: dict[str, object] = {"elapsed": 41, "tokens": 100, "cost": Decimal("0.09")}
+    fields.update(overrides)
+    return LaneState.for_state(name=name, state="running", activity=activity, **fields)
+
+
+def test_format_lane_lines_expand_hint_appears_when_truncated_and_fits() -> None:
+    lines = format_lane_lines((_lane("researcher", _BLOB_ACTIVITY),), width=80)
+    assert "…" in lines[0]
+    assert EXPAND_HINT_TEXT in lines[0]
+    assert EXPAND_HINT_TEXT == f"{hint_label('focus_lane')} to expand"
+    assert len(lines[0]) <= 80
+
+
+def test_format_lane_lines_expand_hint_absent_when_activity_fits() -> None:
+    lines = format_lane_lines(_wide_lanes(), width=200)
+    assert EXPAND_HINT_TEXT not in lines[0]
+    assert EXPAND_HINT_TEXT not in lines[1]
+
+
+def test_format_lane_lines_expand_hint_never_pushes_past_width() -> None:
+    """Whether or not the hint fits, the row is never silently widened
+    past its budget — the header's ``enter focus`` hint is the
+    width-independent fallback (D5 AC3 design note). Exercised at the
+    golden width matrix (40/80/97/120, docs/DEVELOPMENT.md) plus a couple
+    of in-between values, over both a natural multi-word activity (where
+    the hint frequently has no room) and the slack-leaving blob activity
+    (where it usually does).
+    """
+    for activity in (_LONG_ACTIVITY, _BLOB_ACTIVITY):
+        lane = _lane("researcher", activity)
+        for width in (40, 45, 50, 58, 70, 80, 97, 120):
+            lines = format_lane_lines((lane,), width=width)
+            assert len(lines[0]) <= width
+            assert "…" in lines[0] or activity in lines[0]
+
+
+def test_format_lane_lines_expand_hint_sits_before_queued_badge() -> None:
+    lines = format_lane_lines((_lane("researcher", _BLOB_ACTIVITY),), width=80, queued_counts=[2])
+    assert EXPAND_HINT_TEXT in lines[0]
+    assert "▸ 2 queued" in lines[0]
+    assert lines[0].index(EXPAND_HINT_TEXT) < lines[0].index("▸ 2 queued")

@@ -14,6 +14,7 @@ are theme-variable references (``$dim`` …), never colors.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterable, Sequence
 
@@ -54,12 +55,15 @@ from ..model.blocks import (
     ToolLine,
     TranscriptBlock,
     TurnRule,
+    UnsupportedBlock,
     UserLine,
     WorkingStatus,
 )
 from ..model.modes import get_mode
 from .motion import shimmer_band
 from .segments import Line, lines_markup
+
+logger = logging.getLogger(__name__)
 
 TOOL_EXPAND_HINT = " · click to expand"
 """Exact collapsed-tool-line hint (DESIGN-SPEC §3)."""
@@ -915,6 +919,24 @@ def _render_delegate_summary(block: DelegateSummaryBlock, width: int) -> tuple[L
     return tuple(lines)
 
 
+def _render_unsupported(block: UnsupportedBlock, width: int) -> tuple[Line, ...]:
+    """A recoverable record/block this build could not parse or render (S5).
+
+    Same dim, labeled treatment as the collapsed ToolLine/Thinking rows —
+    but never expandable: there is deliberately no raw body behind this
+    placeholder that would be safe to reveal (see the type's docstring).
+    """
+    text = f"unsupported block · {block.type_name}"
+    if block.summary:
+        text += f" · {block.summary}"
+    return (
+        (
+            Segment(text="  ● ", style_token="dim"),
+            Segment(text=text, style_token="dim"),
+        ),
+    )
+
+
 _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "session_banner": _render_session_banner,
     "user_line": _render_user_line,
@@ -937,18 +959,35 @@ _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
     "improve": _render_improve,
     "brainstorm_idea": _render_brainstorm_idea,
     "delegate_summary": _render_delegate_summary,
+    "unsupported": _render_unsupported,
 }
 
 
 def render_block(block: TranscriptBlock, width: int) -> tuple[Line, ...]:
     """Render one block to lines of Segments — a pure function of (block, width).
 
-    Every block kind in the union is supported; unknown kinds fail loudly.
+    Every block kind in the union has a renderer. Isolation (S5): a
+    renderer bug — or a stale/future block kind this build predates — must
+    not crash the whole transcript, or the session. Failures are caught
+    per block and logged with block-type context only (``kind`` + the
+    block's own opaque id) — never the block's content, which may carry
+    secrets or arbitrary tool/user text. Either way the block degrades to
+    the same dim "unsupported block · <type>" placeholder
+    ``kernel.events.parse_event`` renders for a persisted record it could
+    not type, so one bad block never takes the rest of the transcript down.
     """
     renderer = _RENDERERS.get(block.kind)
-    if renderer is None:  # pragma: no cover - union is exhaustive
-        raise TypeError(f"unsupported transcript block kind: {block.kind!r}")
-    return renderer(block, width)
+    if renderer is None:  # pragma: no cover - union is exhaustive today
+        logger.warning("no renderer registered · kind=%s id=%s", block.kind, block.id)
+        return _render_unsupported(UnsupportedBlock(id=block.id, type_name=block.kind), width)
+    try:
+        return renderer(block, width)
+    except Exception:  # noqa: BLE001 — isolation boundary: one bad block must not crash the transcript
+        logger.warning("block render failed · kind=%s id=%s", block.kind, block.id, exc_info=True)
+        return _render_unsupported(
+            UnsupportedBlock(id=block.id, type_name=block.kind, summary="render failed"),
+            width,
+        )
 
 
 def render_block_markup(block: TranscriptBlock, width: int) -> str:

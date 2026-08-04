@@ -31,6 +31,7 @@ Context = Literal[
     "lanes",  # agent lanes panel open
     "lane_focus",  # a subagent lane is focused (child transcript shown)
     "rewind",  # rewind picker strip open
+    "sessions",  # sessions picker strip open (S2: interactive session table)
     "approval",  # approval bar replaces the composer
     "needs_you",  # needs-you block focused
     "evidence",  # evidence block open
@@ -45,6 +46,7 @@ ALL_CONTEXTS: frozenset[Context] = frozenset(
         "lanes",
         "lane_focus",
         "rewind",
+        "sessions",
         "approval",
         "needs_you",
         "evidence",
@@ -97,6 +99,7 @@ _MENTION: frozenset[Context] = frozenset({"mention"})
 _LANES: frozenset[Context] = frozenset({"lanes"})
 _LANE_FOCUS: frozenset[Context] = frozenset({"lane_focus"})
 _REWIND: frozenset[Context] = frozenset({"rewind"})
+_SESSIONS: frozenset[Context] = frozenset({"sessions"})
 _APPROVAL: frozenset[Context] = frozenset({"approval"})
 _EVIDENCE: frozenset[Context] = frozenset({"evidence"})
 _RUNNING: frozenset[Context] = frozenset({"running"})
@@ -163,6 +166,9 @@ KEYMAP: tuple[Binding, ...] = (
     _b("rewind_prev", ("left",), "‹ ›", _REWIND),
     _b("rewind_next", ("right",), "‹ ›", _REWIND),
     _b("rewind_fork", ("enter",), "enter fork", _REWIND),
+    _b("sessions_up", ("up",), "↑↓ select", _SESSIONS),
+    _b("sessions_down", ("down",), "↑↓ select", _SESSIONS),
+    _b("sessions_activate", ("enter",), "enter open", _SESSIONS),
     _b("evidence_prev", ("left",), "←/→", _EVIDENCE),
     _b("evidence_next", ("right",), "←/→", _EVIDENCE),
     _b("evidence_expand", ("enter",), "enter", _EVIDENCE),
@@ -184,6 +190,7 @@ KEYMAP: tuple[Binding, ...] = (
     _b("lane_unfocus", ("escape",), "esc", _LANE_FOCUS),
     _b("close_palette", ("escape",), "esc", _PALETTE),
     _b("close_rewind", ("escape",), "esc", _REWIND),
+    _b("close_sessions", ("escape",), "esc", _SESSIONS),
     _b("close_lanes", ("escape",), "esc", _LANES),
     _b("close_evidence", ("escape",), "esc", _EVIDENCE),
     _b("approval_deny", ("escape",), "esc", _APPROVAL),
@@ -198,11 +205,15 @@ ESC_CHAIN: tuple[tuple[Context, str], ...] = (
     ("lane_focus", "lane_unfocus"),
     ("palette", "close_palette"),
     ("rewind", "close_rewind"),
+    ("sessions", "close_sessions"),
     ("lanes", "close_lanes"),
     ("running", "interrupt_running"),
 )
-"""Esc priority order (DESIGN-SPEC §5): the first entry whose context is
-active consumes the Esc press. (Approval and evidence esc handling are
+"""Esc priority order (DESIGN-SPEC §5, extended by S2 for the sessions
+picker): the first entry whose context is active consumes the Esc press.
+``sessions`` sits right after ``rewind`` -- both are single-purpose picker
+strips opened by an explicit command, so they share precedence ahead of
+the more ambient ``lanes`` panel. (Approval and evidence esc handling are
 context-exclusive — the approval bar owns the keyboard, and evidence esc
 only fires while the evidence block has focus — so they sit outside the
 global chain.)"""
@@ -217,6 +228,7 @@ FOOTER_HINTS: dict[str, str] = {
     "lane_focus": "esc back to parent · transcript is the subagent's own",
     "palette": "↑↓ select · enter run · esc close",
     "mention": "↑↓ select · enter/tab insert · esc close",
+    "sessions": "↑↓ select · enter open · esc close",
     "running": "esc interrupt · enter steer · shift+enter queue",
     "idle": "↑ history · ctrl+j newline · ctrl-r rewind · / commands",
 }

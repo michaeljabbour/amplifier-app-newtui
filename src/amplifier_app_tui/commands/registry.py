@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from decimal import Decimal
+from difflib import get_close_matches
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -231,7 +232,9 @@ class CommandContext(Protocol):
         ...
 
     def clear_context(self) -> None:
-        """``/clear``: clear the conversation context."""
+        """``/clear``: clear the transcript view AND the conversation
+        context together (D3) — not persisted session history (resume
+        and ``/export`` are unaffected)."""
         ...
 
     def show_tools(self) -> None:
@@ -448,6 +451,21 @@ class CommandRegistry:
 
     def get(self, name: str) -> CommandSpec | None:
         return self._by_name.get(name.strip())
+
+    def suggest(self, name: str, *, limit: int = 3, cutoff: float = 0.5) -> tuple[str, ...]:
+        """Close-match registered command names for an unrecognized *name*.
+
+        Nearby-suggestion support for the unknown-command notice (AC3 of
+        the B2 alias-fixture compliance item): a typo'd slash command or
+        skill alias gets a "did you mean ...?" hint instead of a bare
+        rejection. Every registered trigger benefits — built-ins and
+        skill aliases alike, since both live in this one registry.
+
+        Deterministic: :func:`difflib.get_close_matches` ranks by
+        similarity ratio (ties keep :attr:`names` registration order,
+        since ``get_close_matches`` is a stable sort over its input).
+        """
+        return tuple(get_close_matches(name.strip(), self.names, n=limit, cutoff=cutoff))
 
     # --- palette -------------------------------------------------------
     def filter_rows(self, query: str) -> tuple[CommandSpec, ...]:

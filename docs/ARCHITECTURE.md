@@ -170,7 +170,7 @@ src/amplifier_app_tui/
 `main()` is a click group. With no subcommand it runs `asyncio.run(_launch_tui(...))` — one
 `asyncio.run` for the whole app. Flags: `--demo` (scripted offline runtime), `--bundle`
 (name or URI). Subcommands: `run [PROMPT]` (headless one-shot; stdin plus
-`text|json|json-trace|jsonl` output), `sessions`, `resume ID`, `doctor`, `init` (provider setup),
+`text|json|json-trace|jsonl` output), `sessions`, `resume SESSION_ID`, `doctor`, `init` (provider setup),
 `update` (bundle/module refresh), `allowed-dirs`, `denied-dirs`, and the `bundle` group
 (`list/show/use/clear/current/add/remove/update`). JSON modes redirect all runtime chatter
 to stderr. Document modes keep stdout to one parseable object; JSONL adds a versioned,

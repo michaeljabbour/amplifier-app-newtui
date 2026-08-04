@@ -319,11 +319,15 @@ def test_console_scope_toggle(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_provider_console_edit_preserves_unspecified_values(tmp_path: Path, monkeypatch) -> None:
-    """[e1] re-runs the field wizard with stored values as Enter-to-keep defaults."""
+    """[e1] re-runs the field wizard with stored values as Enter-to-keep defaults.
+
+    Ambient VLLM_BASE_URL / VLLM_API_KEY / VLLM_CONTEXT_WINDOW are already
+    cleared by the autouse ``_offline_provider_setup`` fixture (conftest.py)
+    so this test's Enter-to-keep assertions depend only on the stored
+    values seeded below, never on the developer's shell.
+    """
     path, _written = _stub(monkeypatch, tmp_path, schema=_VLLM_SCHEMA, choices=(_VLLM_CHOICE,))
     _models(monkeypatch, "m1", "m2")
-    for var in ("VLLM_BASE_URL", "VLLM_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
     setup.write_key(path, "VLLM_BASE_URL", "http://old:8000/v1", update_environ=False)
     setup.write_key(path, "VLLM_API_KEY", "sk-old", update_environ=False)
     _seed_providers(
