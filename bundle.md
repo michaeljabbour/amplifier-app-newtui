@@ -26,14 +26,21 @@ includes:
   # anchors' own internal includes/modules already float @main too, so this is
   # no less reproducible than before. Reproducible pinning is a foundation
   # follow-up (tag the anchors bundle in a release).
+  # Re-checked 2026-08-02 (compliance B9 pinning pass): the latest foundation
+  # tag (v2.1.2) still 404s on bundles/anchors (confirmed via the GitHub
+  # contents API) -- @main remains the only correct choice here. Every OTHER
+  # bundle.md dependency below IS pinned as part of this same pass.
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 
 providers:
   # anchors is provider-agnostic by design; this app hard-fails boot at zero
   # providers, so the wrapper keeps a default. Reconfigure or add providers
   # via settings `config.providers`.
+  # Pinned 2026-08-02 (compliance B9): no release tag exists upstream, so this
+  # is the repo's current @main HEAD SHA. Re-resolve via `git ls-remote` / `gh`
+  # and bump here + tui.md together.
   - module: provider-anthropic
-    source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
+    source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@94a435482a879a1c506b2ea9076a951875e89c9d
     config:
       priority: 1
 
@@ -41,14 +48,19 @@ tools:
   # MCP servers: tool-mcp reads ~/.amplifier/mcp.json (+ ./.amplifier/mcp.json)
   # and mounts each remote server's tools as mcp_<server>_<tool>. No mcp.json
   # ⇒ no-op. Managed in-app via /mcp.
+  # Pinned 2026-08-02 (compliance B9) to @main's current HEAD SHA (no release
+  # tag exists upstream).
   - module: tool-mcp
-    source: git+https://github.com/microsoft/amplifier-module-tool-mcp@main
+    source: git+https://github.com/microsoft/amplifier-module-tool-mcp@22f3d14cabc3789b3344661ab16e8d487431c4ac
   # team-pulse: read-only lens over a team corpus (all GET endpoints). url/key
   # are empty here by design — mount() resolves them from settings or the
   # AMPLIFIER_TEAM_PULSE_URL / _KEY env vars, and is skipped (degraded, not
   # fatal) when unconfigured, so a clean install without a corpus still boots.
+  # Pinned 2026-08-02 (compliance B9) to @main's current HEAD SHA (no release
+  # tag exists upstream; matches the team-pulse-lib rev already pinned in
+  # pyproject.toml's [tool.uv.sources]).
   - module: tool-team-pulse
-    source: git+https://github.com/microsoft/amplifier-bundle-team-pulse@main#subdirectory=modules/tool-team-pulse
+    source: git+https://github.com/microsoft/amplifier-bundle-team-pulse@e89574d2b90814a0c10a2164aa7d5c9cc43bd3ce#subdirectory=modules/tool-team-pulse
     config:
       url: ""
       key: ""
@@ -58,11 +70,18 @@ tools:
   # earlier ones) with the same foundation set PLUS the user dir, so skills
   # installed for other harnesses (Claude Code, Codex) are visible to
   # amplifier too. Missing local dirs are skipped, not fatal.
+  # Pinned 2026-08-02 (compliance B9): amplifier-bundle-skills has a release
+  # tag (v1.1.0, confirmed to still ship modules/tool-skills); the foundation
+  # skills/ scan below is pinned to foundation's latest tag (v2.1.2, confirmed
+  # to ship skills/) rather than @main -- consistent with the anchors policy
+  # above of never bare-SHA-pinning foundation. Trade-off: this misses any
+  # foundation skill added after v2.1.2 (currently: per-repo-conventions)
+  # until the pin is bumped.
   - module: tool-skills
-    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@v1.1.0#subdirectory=modules/tool-skills
     config:
       skills:
-        - "git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=skills"
+        - "git+https://github.com/microsoft/amplifier-foundation@v2.1.2#subdirectory=skills"
         - "~/.amplifier/skills"
 
 hooks:
@@ -73,8 +92,15 @@ hooks:
   # orchestrator:complete event because the default (notify:turn-complete)
   # is emitted by hooks-notify, which the app kernel suppresses at boot
   # (raw OSC-777/BEL stdout corrupts the full-screen Textual TUI).
+  # This push rung fires independently of the in-app AttentionRecord ladder
+  # (ui/notifications.py, B7/issue #47): it is driven straight off this raw
+  # kernel event, not the app's deduped/acknowledgeable record, and it has
+  # no acknowledgement channel back to the TUI (a different device's
+  # notification tray) — see docs/SETTINGS.md "Attention notifications".
+  # Pinned 2026-08-02 (compliance B9) to amplifier-bundle-notify's release tag
+  # v0.2.0 (confirmed to still ship modules/hooks-notify-push).
   - module: hooks-notify-push
-    source: git+https://github.com/microsoft/amplifier-bundle-notify@main#subdirectory=modules/hooks-notify-push
+    source: git+https://github.com/microsoft/amplifier-bundle-notify@v0.2.0#subdirectory=modules/hooks-notify-push
     config:
       listen_event: "orchestrator:complete"
   # Redaction allowlist extension (module-native config; the module unions
@@ -84,8 +110,10 @@ hooks:
   # module's DEFAULT_ALLOWLIST (session_id/parent_id are). Verified live:
   # without this, those ids arrive as "[REDACTED:PII]…" and child→lane
   # routing (telemetry, focus transcripts, banners) degrades or breaks.
+  # Pinned 2026-08-02 (compliance B9) to @main's current HEAD SHA (no release
+  # tag exists upstream).
   - module: hook-redaction
-    source: git+https://github.com/microsoft/amplifier-bundle-redaction@main#subdirectory=modules/hook-redaction
+    source: git+https://github.com/microsoft/amplifier-bundle-redaction@094d4948ab24414b574964d8398a8663b96cdd15#subdirectory=modules/hook-redaction
     config:
       allowlist:
         - sub_session_id

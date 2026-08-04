@@ -36,8 +36,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from time import monotonic
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
+from rich.style import Style
+from rich.text import Text
 from textual import events
 from textual.binding import Binding
 from textual.content import Content
@@ -85,6 +87,35 @@ HISTORY_WIDGET_LIMIT = 1_000
 
 HISTORY_COMPACT_TRIGGER = 1_200
 """Hysteresis avoids rebuilding the archive for every new durable block."""
+
+_MAIN_VIEW_ID = "__main__"
+"""Sentinel view id for the parent transcript in the anchor store below
+(never collides with a real lane session id, so the two never conflate)."""
+
+
+class ViewAnchor(NamedTuple):
+    """Scroll position + tail-follow snapshot for one transcript view.
+
+    This is the reusable capture/restore seam (compliance item S6):
+    :class:`TranscriptView` keys a small store of these by view id (the
+    parent, or a lane's session id) so swapping away from a view and
+    later back to it never forces the view to the tail — only a view
+    visited for the first time defaults to bottom-follow (today's
+    behavior, preserved). A later item (evidence side panel) is expected
+    to reuse this same seam for its own per-view anchor + selection
+    state — see :meth:`TranscriptView._capture_anchor` /
+    :meth:`TranscriptView._restore_anchor`.
+    """
+
+    scroll_y: float
+    follow: bool
+
+
+FOCUS_HEADER_TITLE = "‹ Back to parent"
+FOCUS_HEADER_HINT = "esc · click"
+FOCUS_HEADER = f"{FOCUS_HEADER_TITLE}  {FOCUS_HEADER_HINT}"
+"""Focus-header Back control text (S6 AC1): bright title + dim hint,
+styled like ``ui/lanes_panel.py``'s ``_LanesHeader`` (UX idiom parity)."""
 
 
 # --------------------------------------------------------------------------
@@ -170,6 +201,16 @@ class LaneFocusChanged(Message):
     def __init__(self, lane_id: str | None) -> None:
         super().__init__()
         self.lane_id = lane_id
+
+
+class BackToParent(Message):
+    """The focus-header Back control was activated (click or enter/space).
+
+    Handled the same way as Escape's ``lane_unfocus`` action
+    (``app_support.go_back_to_parent``): a navigation request back to the
+    parent view — never a turn interrupt/cancel (DESIGN-SPEC §5/§8: focus
+    is reversible view state, not a separate session lifecycle).
+    """
 
 
 # --------------------------------------------------------------------------
@@ -712,6 +753,51 @@ class HistoryArchive(Static):
             self.post_message(CloseEvidence(block.id))
 
 
+class FocusHeader(Static):
+    """Clickable + keyboard-activatable 'Back to parent' control mounted
+    above a focused lane's transcript (S6 AC1/AC5: the focus-header Back
+    control).
+
+    Mirrors ``ui/lanes_panel.py``'s ``_LanesHeader`` bright-title/dim-hint
+    styling (UX idiom parity). Click or enter/space posts
+    :class:`BackToParent`, which the app routes through the exact same
+    ``restore_main()`` seam as Escape's ``lane_unfocus`` action — this is
+    a navigation shortcut, never a second way to interrupt or cancel the
+    subagent's turn (DESIGN-SPEC §5/§8).
+    """
+
+    can_focus = True
+
+    DEFAULT_CSS = """
+    FocusHeader {
+        width: 100%;
+        height: 1;
+    }
+    FocusHeader:focus {
+        background: $bg-tab;
+    }
+    """
+
+    BINDINGS = [
+        Binding("enter", "activate", "back to parent", show=False),
+        Binding("space", "activate", "back to parent", show=False),
+    ]
+
+    def render(self) -> Text:
+        tokens = self.app.theme_variables
+        text = Text()
+        text.append(FOCUS_HEADER_TITLE, style=Style(color=tokens.get("bright"), bold=True))
+        text.append("  ")
+        text.append(FOCUS_HEADER_HINT, style=Style(color=tokens.get("dimmer")))
+        return text
+
+    def on_click(self) -> None:
+        self.post_message(BackToParent())
+
+    def action_activate(self) -> None:
+        self.post_message(BackToParent())
+
+
 class TranscriptView(VerticalScroll):
     """Scrollable durable history with a bounded interactive widget tail.
 
@@ -732,10 +818,15 @@ class TranscriptView(VerticalScroll):
       :meth:`remove_block` address blocks by stable id.
     - **Lane focus** (spec §8): :meth:`focus_lane` swaps the visible block
       list to a subagent's transcript; :meth:`restore_main` (the app's esc
-      handler) swaps back. While focused, append/replace/remove address
-      the *stashed parent* list (mockup: ``this.lines`` keeps accumulating
-      separately from ``focusLines``), so a turn that keeps running during
-      focus is fully up to date when esc restores the parent transcript.
+      handler, or the focus-header Back control) swaps back. While
+      focused, append/replace/remove address the *stashed parent* list
+      (mockup: ``this.lines`` keeps accumulating separately from
+      ``focusLines``), so a turn that keeps running during focus is fully
+      up to date when esc restores the parent transcript. Each swap
+      captures the outgoing view's scroll position and restores the
+      incoming view's own remembered position (:meth:`_capture_anchor` /
+      :meth:`_restore_anchor`, S6) instead of always snapping to the tail
+      — a view visited for the first time still defaults to bottom-follow.
     - **Resize reflow**: 75ms trailing debounce; deferred during streaming
       with one forced reflow at :meth:`set_streaming` (False).
     """
@@ -759,6 +850,7 @@ class TranscriptView(VerticalScroll):
         self._compaction_pending = False
         self._focused_lane: str | None = None
         self._main_stash: list[TranscriptBlock] | None = None
+        self._view_anchors: dict[str, ViewAnchor] = {}
         self._streaming = False
         self._reflow_hold = False
         self._reflow_deferred = False
@@ -1060,19 +1152,65 @@ class TranscriptView(VerticalScroll):
         """Swap the transcript to a subagent's own block list."""
         if self._focused_lane is None:
             self._main_stash = list(self.blocks)
+        self._capture_anchor()  # remember the outgoing view's position (S6)
         self._focused_lane = lane_id
         await self._swap(blocks)
+        self._restore_anchor()  # this lane's own remembered position, else tail (S6)
         self.post_message(LaneFocusChanged(lane_id))
 
     async def restore_main(self) -> None:
-        """Esc from a focused lane: restore the parent transcript."""
+        """Esc (or the focus-header Back control) from a focused lane:
+        restore the parent transcript — including its own scroll position
+        (S6), never forced back to the tail."""
         if self._focused_lane is None:
             return
         stash = self._main_stash or []
+        self._capture_anchor()  # remember the lane view's own position (S6)
         self._focused_lane = None
         self._main_stash = None
         await self._swap(stash)
+        self._restore_anchor()  # the parent's remembered position, else tail (S6)
         self.post_message(LaneFocusChanged(None))
+
+    # -- per-view scroll-anchor seam (S6) --------------------------------
+    #
+    # Reusable capture/restore pair: a later item (evidence side panel) is
+    # expected to reuse this same seam for its own per-view anchor state.
+
+    def _current_view_id(self) -> str:
+        """The view now on screen: a lane's session id, or the sentinel
+        for the parent."""
+        return self._focused_lane if self._focused_lane is not None else _MAIN_VIEW_ID
+
+    def _capture_anchor(self) -> None:
+        """Snapshot the outgoing view's scroll position + follow state.
+
+        Call this BEFORE mutating ``_focused_lane`` so it reads whichever
+        view is still on screen (the parent, or the lane being left).
+        """
+        self._view_anchors[self._current_view_id()] = ViewAnchor(
+            scroll_y=self.scroll_y, follow=self.follow
+        )
+
+    def _restore_anchor(self) -> None:
+        """Apply the incoming view's remembered anchor, or bottom-follow
+        for a view visited for the first time (today's default,
+        preserved). Call this AFTER ``_focused_lane`` already reflects
+        the destination view, once ``_swap`` has mounted its content.
+
+        ``immediate=True`` matters here: :meth:`~textual.widget.Widget.scroll_to`
+        defers its actual scroll until after the next refresh unless told
+        otherwise, and a deferred restore can be clobbered by a *later*
+        swap's own deferred call before it ever fires. ``anchor()``'s own
+        bottom-follow path already applies immediately (``scroll_end``
+        with ``immediate=True``); this mirrors that so both branches are
+        equally synchronous and swaps can never race each other.
+        """
+        anchor = self._view_anchors.get(self._current_view_id())
+        if anchor is None or anchor.follow:
+            self.anchor()
+            return
+        self.scroll_to(y=anchor.scroll_y, animate=False, immediate=True)
 
     async def _swap(self, blocks: Sequence[TranscriptBlock]) -> None:
         await self.remove_children()
@@ -1090,7 +1228,13 @@ class TranscriptView(VerticalScroll):
             if len(block_list) > HISTORY_COMPACT_TRIGGER
             else 0
         )
-        mounted: list[HistoryArchive | TranscriptWidget] = []
+        mounted: list[HistoryArchive | TranscriptWidget | FocusHeader] = []
+        if self._focused_lane is not None:
+            # The Back control rides alongside the lane's own blocks but is
+            # never tracked in _blocks/_widgets/_order above (S6): it is
+            # not durable transcript content, carries no block id, and
+            # never replays from ui-events.jsonl.
+            mounted.append(FocusHeader())
         if archive_count:
             archive = HistoryArchive(self)
             archive.update_blocks(block_list[:archive_count])
@@ -1105,7 +1249,8 @@ class TranscriptView(VerticalScroll):
         mounted.extend(widgets)
         if mounted:
             await self.mount(*mounted)
-        self.anchor()  # a lane swap always lands anchored at the bottom
+        # Anchor restore happens in the caller (focus_lane/restore_main)
+        # via _restore_anchor(), once _focused_lane reflects the destination.
 
     # -- resize reflow (75ms trailing debounce; streaming deferral) -----------
 
@@ -1175,16 +1320,21 @@ class TranscriptView(VerticalScroll):
 
 __all__ = [
     "FALLBACK_WIDTH",
+    "FOCUS_HEADER",
+    "FOCUS_HEADER_HINT",
+    "FOCUS_HEADER_TITLE",
     "HISTORY_COMPACT_TRIGGER",
     "HISTORY_WIDGET_LIMIT",
     "REFLOW_DEBOUNCE_SECONDS",
     "MOTION_INTERVAL_SECONDS",
     "SPINNER_INTERVAL_SECONDS",
+    "BackToParent",
     "BlockWidget",
     "CloseEvidence",
     "CopyCodeFence",
     "DelegateSummaryToggled",
     "ExpandEvidenceClaim",
+    "FocusHeader",
     "HistoryArchive",
     "LaneFocusChanged",
     "NeedsYouBlockWidget",
@@ -1193,6 +1343,7 @@ __all__ = [
     "ToolLineToggled",
     "TranscriptView",
     "TranscriptWidget",
+    "ViewAnchor",
     "build_block_widget",
     "fence_text_at_row",
     "render_block",

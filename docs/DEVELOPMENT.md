@@ -202,6 +202,23 @@ policy (issue #53):
   foundation ships tagged releases that carry `bundles/anchors`, switch to
   `scripts/bump_anchors_ref.py vX.Y.Z` for reproducible boots (issue #53 Option B).
 
+## Adoption gates (replacing amplifier-app-cli)
+
+amplifier-app-tui replaces amplifier-app-cli through five staged gates, not by
+declaration. The record lives in [adoption/](adoption/README.md): one row per stage with
+its owner, minimum usage window, tested commit, entry/exit evidence, and decision.
+
+```sh
+python3 scripts/adoption_gate.py status      # where the rollout stands
+python3 scripts/adoption_gate.py promote 1   # may stage 1 be promoted? exit 0 = yes
+scripts/adoption_smoke.sh                    # the compatibility smoke run at every gate
+```
+
+The smoke adds no new suite — it composes `ruff` + `pyright` + `pytest` + the forge tier
+above, then validates the ledger. Two rules worth knowing before you touch a stage row:
+an **open `release-blocking` defect blocks every promotion regardless of elapsed time**,
+and `promote 4` is the gate that authorizes retiring amplifier-app-cli.
+
 ## Before you open a PR
 
 - [ ] `uv run pytest -q` green, `ruff check .` clean, `pyright src/` clean

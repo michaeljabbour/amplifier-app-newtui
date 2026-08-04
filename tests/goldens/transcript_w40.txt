@@ -86,6 +86,9 @@
 === delegate_summary ===
 [$bright]● [/][$fg]Used 3 delegates[/][$dim] · Plan 3/3 · 1m 42s[/][$dimmer] ▸[/]
 
+=== unsupported ===
+[$dim]  ● [/][$dim]unsupported block · loop_started · fields: kind, session_id, ts[/]
+
 === delegate_summary (expanded) ===
 [$bright]● [/][$fg]Used 3 delegates[/][$dim] · Plan 3/3 · 1m 42s[/][$dimmer] ▾[/]
 [$dimmer]    ├─ [/][$green]✔ [/][$dim]researcher  [/][$dim]4s · "3 findings"[/]

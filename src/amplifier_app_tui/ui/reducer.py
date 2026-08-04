@@ -45,6 +45,7 @@ from ..model.blocks import (
     ToolLine,
     TranscriptBlock,
     TurnRule,
+    UnsupportedBlock,
     UserLine,
     WorkingStatus,
 )
@@ -55,6 +56,7 @@ from ..model.lanes import LaneRegistry, LaneStateName
 from ..model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
 from .lane_reducer import (
     LANE_TAIL_NOTIFY_SECONDS as LANE_TAIL_NOTIFY_SECONDS,
+    LaneNotifyKind,
     LaneReducer,
     _LANE_TRANSCRIPT_MAX_BLOCKS as _LANE_TRANSCRIPT_MAX_BLOCKS,
 )
@@ -787,6 +789,7 @@ class TranscriptReducer:
         evidence_lookup: Any = None,
         session_cost_start: Decimal = Decimal("0"),
         tail_clock: Any = None,
+        schedule_flush: Any = None,
     ) -> None:
         self._host = host
         self._ids = allocator
@@ -829,11 +832,18 @@ class TranscriptReducer:
         # Lane presentation state (per-lane live tail, focused-lane
         # transcripts, pending delegate briefs) lives in its own unit; the
         # turn reducer routes diverted child events onto lanes and drives it.
-        self._lane = LaneReducer(host, allocator=allocator, lanes=lanes, tail_clock=tail_clock)
+        self._lane = LaneReducer(
+            host,
+            allocator=allocator,
+            lanes=lanes,
+            tail_clock=tail_clock,
+            schedule_flush=schedule_flush,
+        )
         self._generation = 0
         """Clear-generation counter (D3): bumped by :meth:`bump_generation`
         when ``/clear`` runs; each ``_Turn`` stamps the value live at its
-        own start so :meth:`handle` can fence a pre-clear turn's tail."""
+        own start so :meth:`handle` can fence a pre-clear turn's tail.
+        """
 
     # -- public state -------------------------------------------------------
 
@@ -902,7 +912,7 @@ class TranscriptReducer:
 
     def replay(
         self,
-        events: Sequence[ev.UIEvent],
+        events: Sequence[ev.UIEvent | UnsupportedBlock],
         *,
         turn_base: int = 0,
         session_cost: Decimal = Decimal("0"),
@@ -915,6 +925,14 @@ class TranscriptReducer:
         focus transcripts, plan state, turn rules with real telemetry —
         instead of the prose-only fallback. Side effects are suppressed
         via :class:`_ReplayHost` + :data:`REPLAY_SKIPPED_KINDS`.
+
+        ``events`` may interleave :class:`UnsupportedBlock` placeholders
+        (S5) for persisted records ``kernel.events.parse_event`` could not
+        type — a foreign writer's line, an unknown/removed ``kind``, or
+        schema drift. Each one is appended directly, in its original log
+        position, with a freshly minted id; it never reaches :meth:`handle`
+        (it carries no turn semantics to dispatch), so one unrecognized
+        record can never drop the rest of a rich, mixed transcript.
 
         ``turn_base``/``session_cost`` are the transcript-derived turn
         count and the kernel-restored cost baseline; both stay the
@@ -935,6 +953,9 @@ class TranscriptReducer:
         self.session_cost = Decimal("0")
         try:
             for event in events:
+                if isinstance(event, UnsupportedBlock):
+                    self._host.append_block(event.model_copy(update={"id": self._ids.next_id()}))
+                    continue
                 if event.kind in REPLAY_SKIPPED_KINDS:
                     continue
                 self.handle(event)
@@ -1140,6 +1161,13 @@ class TranscriptReducer:
             return
         activity: str | None = None
         state: LaneStateName = "running"
+        # D5 AC5: classifies the repaint notification below. "error" is a
+        # discrete failure surfaced against a lane that keeps running (a
+        # tool errored, or came back denied/failed) — distinct from
+        # "final" (the lane itself completing, handled in
+        # ``_agent_completed``). Everything else here is ordinary
+        # narration churn and may be coalesced under high volume.
+        kind: LaneNotifyKind = "progress"
         match event:
             case ev.ToolPre():
                 if self._turn is not None:
@@ -1173,6 +1201,8 @@ class TranscriptReducer:
                     ),
                 )
                 activity = "reviewing tool result"
+                if not ok:
+                    kind = "error"
             case ev.ToolError():
                 self._lane.append_block(
                     record,
@@ -1185,6 +1215,7 @@ class TranscriptReducer:
                     ),
                 )
                 activity = f"recovering from {event.tool_name.replace('_', ' ')} error"
+                kind = "error"
             case ev.StreamBlockStart():
                 activity = "thinking" if event.block_type == "thinking" else "writing response"
             case ev.StreamBlockDelta():
@@ -1214,7 +1245,7 @@ class TranscriptReducer:
         updated = self.lanes.update(event.session_id, activity=activity, state=state)
         if updated is None:
             return
-        self._host.lanes_changed()
+        self._lane.notify_lanes_changed(kind=kind)
 
     # -- agent lanes: focus transcripts + live tail (LaneReducer) ------------
 
@@ -2006,7 +2037,9 @@ class TranscriptReducer:
                 tokens=lane.lane.tokens + event.output_tokens,
                 cost=lane.lane.cost + lane_cost,
             )
-            self._host.lanes_changed()
+            # D5 AC5: per-lane token/cost ticking is high-volume telemetry
+            # churn, not a privileged event — safe to coalesce.
+            self._lane.notify_lanes_changed(kind="progress")
 
     def _context_compacted(self, event: ev.ContextCompacted) -> None:
         """Persist a quiet but inspectable compaction boundary in history."""
@@ -2153,6 +2186,9 @@ class TranscriptReducer:
                 cost=seed.cost,
                 tokens=seed.tokens,
             )
+        # Peek the delegate brief BEFORE seeding pops it into the lane's
+        # focus transcript — the chat marker names the task in a few words.
+        brief = _lane_result_summary(self._lane.pending_brief(event.agent))
         self._lane.seed_transcript(event)
         now = event.ts
         if not self._delegate_rows:
@@ -2162,6 +2198,7 @@ class TranscriptReducer:
         # A known sub-session re-spawning is a replayed turn reusing its ids
         # (see lanes.register reopen above) — reset the row live either way.
         self._delegate_rows[event.sub_session_id] = _DelegateRow(agent=event.agent, spawned_ts=now)
+        self._lifecycle_marker(f"{event.agent} started" + (f" · {brief}" if brief else ""))
         self._render_delegate_summary()
         self._update_working()
         self._host.lanes_changed()
@@ -2190,6 +2227,12 @@ class TranscriptReducer:
                 ),
             )
         self.lanes.complete(event.sub_session_id, result=_lane_result_summary(result))
+        hint = _lane_result_summary(result)
+        if event.success:
+            marker = f"{event.agent} done" + (f" · {hint}" if hint else "")
+        else:
+            marker = f"{event.agent} failed" + (f" · {hint}" if hint and hint != "failed" else "")
+        self._lifecycle_marker(marker)
         row = self._delegate_rows.get(event.sub_session_id)
         if row is not None:
             end_ts = event.ts  # same clock domain as spawned_ts — no fallback
@@ -2200,7 +2243,25 @@ class TranscriptReducer:
                 self._fanout_duration_s = max(0.0, end_ts - self._fanout_start_ts)
             self._render_delegate_summary()
         self._update_working()
-        self._host.lanes_changed()
+        # D5 AC5: the lane's terminal lifecycle transition (success OR
+        # failure) is the "final" privileged class — it must never be
+        # coalesced away, however many progress frames preceded it.
+        self._lane.notify_lanes_changed(kind="final")
+
+    def _lifecycle_marker(self, text: str) -> None:
+        """One compact dim ✳ line in the chat for a delegate lifecycle beat
+        (started / done / failed) — the chat's view of cross-agent activity.
+
+        Child thinking, prose and tool chatter stay lanes-only (the
+        foreign-turn divert plus the lanes-panel tail); the root session's
+        own narration renders exactly as before. Real turns only: scripted
+        demo turns carry their own fan-out narration beats, and a straggler
+        completion landing after close-out would render below the turn rule
+        (the delegate summary already updates in place for those)."""
+        turn = self._turn
+        if turn is None or turn.spec is not None:
+            return
+        self._append_content(self._recap_line(text))
 
     def _render_delegate_summary(self) -> None:
         """Append-once / replace-in-place, keyed by ``_delegate_summary_id``.

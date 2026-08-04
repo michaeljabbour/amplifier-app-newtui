@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Protocol
+from collections.abc import Callable
+from typing import Any, Literal, Protocol
 
 from ..kernel import events as ev
 from ..model.blocks import (
@@ -37,6 +38,32 @@ LANE_TAIL_NOTIFY_SECONDS = 0.05
 """Lane-tail repaint floor — mirrors ``_DELTA_NOTIFY_SECONDS`` in
 ``kernel/trackers/stream_status.py``. The per-lane buffer accumulates
 between paints, so throttling drops paints — never text."""
+
+LANE_ROWS_NOTIFY_SECONDS = 0.05
+"""Lane-panel repaint floor for high-volume row updates (D5 AC5) — the
+same accumulate-then-notify cadence as :data:`LANE_TAIL_NOTIFY_SECONDS`,
+applied to the lane rows themselves (activity/state churn from rapid child
+tool/stream events) rather than the tail text.
+
+Only :data:`"progress"` notifications are ever subject to this window.
+``LaneRegistry`` is a last-write-wins snapshot store — every ``update()``/
+``complete()`` call already applied the latest state before ``notify_*``
+is even called — so coalescing a progress repaint never loses data, only
+repaint timing. The three privileged kinds (``final``/``error``/
+``attention``) and any kind that isn't literally ``"progress"`` always
+flush immediately: the throttle is an allow-list of exactly one kind, not
+a deny-list, so a new/forgotten kind fails open (flushes) rather than
+silently coalescing."""
+
+LaneNotifyKind = Literal["progress", "final", "error", "attention"]
+"""The lane-repaint privilege classes (D5 AC5).
+
+``"progress"`` is the only coalescable kind (narration churn: thinking /
+writing / reviewing / tool labels). ``"final"`` (a lane completing, success
+or failure), ``"error"`` (a discrete failure surfaced against a still-running
+lane: a tool error, or a failed tool result) and ``"attention"`` (a signal
+that needs the user's notice independent of ordinary progress) always
+bypass coalescing — see :meth:`LaneReducer.notify_lanes_changed`."""
 
 _LANE_TAIL_MAX_CHARS = 2_000
 """Per-lane tail buffer cap; the widget paints only the last 3 lines."""
@@ -74,6 +101,7 @@ class LaneTailHost(Protocol):
 
     def lane_tail_updated(self, text: str) -> None: ...
     def lane_tail_cleared(self) -> None: ...
+    def lanes_changed(self) -> None: ...
 
 
 class LaneReducer:
@@ -91,6 +119,7 @@ class LaneReducer:
         allocator: BlockIdAllocator,
         lanes: LaneRegistry,
         tail_clock: Any = None,
+        schedule_flush: Callable[[float, Callable[[], None]], object] | None = None,
     ) -> None:
         self._host = host
         self._ids = allocator
@@ -101,6 +130,20 @@ class LaneReducer:
         self._lane_tail_last = 0.0
         self._lane_tail_shown: str | None = None
         self.root_streaming = False
+        # -- lane-rows repaint coalescing (D5 AC5) ---------------------------
+        self._lanes_notify_last = 0.0
+        """Same accumulate-then-notify shape as the tail above, applied to
+        the lane rows themselves. Only ``kind="progress"`` respects the
+        window; ``final``/``error``/``attention`` always flush (see
+        :meth:`notify_lanes_changed`)."""
+        self._schedule_flush = schedule_flush
+        """Host-provided one-shot timer (``TuiApp.set_timer`` in production)
+        used ONLY to guarantee a coalesced progress repaint is never
+        stranded: without it, a lane that goes quiet right after a
+        coalesced update would show stale telemetry until its next event.
+        ``None`` (tests, or hosts that don't care) degrades safely to
+        "never coalesce" — see :meth:`notify_lanes_changed`."""
+        self._lanes_flush_pending = False
         """The root session is streaming right now — it always preempts the
         lane tail (D4). Set by the turn reducer at each root stream
         transition; read only by the tail paths here."""
@@ -120,6 +163,14 @@ class LaneReducer:
         transcript can open with the delegated brief (the normalized
         AgentSpawned event carries no instruction)."""
         self._pending_briefs[agent] = brief
+
+    def pending_brief(self, agent: str) -> str:
+        """Peek the stashed brief for *agent* without consuming it.
+
+        The turn reducer reads it at spawn for the chat's compact
+        ``started`` lifecycle marker; :meth:`seed_transcript` still pops
+        it into the lane's focus transcript."""
+        return self._pending_briefs.get(agent, "")
 
     # -- focused-lane transcripts (DESIGN-SPEC §8) ---------------------------
 
@@ -265,9 +316,75 @@ class LaneReducer:
         self._lane_tail_shown = focused.session_id
         self._host.lane_tail_updated(buffered)
 
+    # -- lane-rows repaint coalescing (D5 AC5) -------------------------------
+
+    def notify_lanes_changed(self, *, kind: LaneNotifyKind = "progress") -> None:
+        """Repaint the lane rows — throttled for high-volume progress churn,
+        but PROVABLY lossless for the three privileged classes.
+
+        ``LaneRegistry`` is a last-write-wins snapshot: every ``update()``/
+        ``complete()`` call the turn reducer makes already applied the
+        latest activity/state/telemetry before this is even called, so
+        coalescing a repaint never drops DATA — only its timing. Only
+        ``kind="progress"`` (narration churn: thinking / writing /
+        reviewing / tool labels, and per-lane token/cost ticking) respects
+        :data:`LANE_ROWS_NOTIFY_SECONDS`; a call within the window is
+        coalesced (skipped) exactly once the window reopens — AND a
+        trailing flush is scheduled (when the host wired ``schedule_flush``)
+        so a lane that goes quiet right after a coalesced update is never
+        stranded showing stale telemetry: the repaint still lands on its
+        own, it is just batched with whatever arrived in the same window.
+
+        ``kind="final"`` (a lane completed, success or failure),
+        ``kind="error"`` (a discrete failure surfaced against a still-running
+        lane: a tool error, or a failed tool result) and ``kind="attention"``
+        (a signal that needs the user's notice independent of ordinary
+        progress) — and any other kind, should one ever be added — always
+        call the host immediately, synchronously, unconditionally: the
+        throttle is a one-item allow-list (``kind == "progress"``), not a
+        deny-list, so an unrecognized or future kind fails open (flushes)
+        rather than silently coalescing. This is what makes the guarantee
+        provable rather than probabilistic — there is no code path by
+        which a privileged kind can be dropped, delayed, or merged away.
+        """
+        now = self._tail_clock()
+        if kind == "progress":
+            # 1e-9 slack: a clock landing exactly on the boundary must still
+            # paint (float subtraction alone under-reports elapsed time) —
+            # mirrors the tail's own throttle in :meth:`tail_delta`.
+            if now - self._lanes_notify_last < LANE_ROWS_NOTIFY_SECONDS - 1e-9:
+                self._schedule_trailing_flush()
+                return
+        self._lanes_notify_last = now
+        self._lanes_flush_pending = False
+        self._host.lanes_changed()
+
+    def _schedule_trailing_flush(self) -> None:
+        """Guarantee a coalesced progress update still lands on its own.
+
+        Without this, a lane whose LAST event before going quiet happened
+        to land inside the throttle window would show stale telemetry
+        forever (nothing else would ever call :meth:`notify_lanes_changed`
+        again to notice the window had reopened). One pending flush covers
+        arbitrarily many coalesced calls in the same window — it always
+        paints whatever is current when it actually fires, not whatever
+        was current when it was scheduled.
+        """
+        if self._schedule_flush is None or self._lanes_flush_pending:
+            return
+        self._lanes_flush_pending = True
+        self._schedule_flush(LANE_ROWS_NOTIFY_SECONDS, self._flush_pending_lanes)
+
+    def _flush_pending_lanes(self) -> None:
+        self._lanes_flush_pending = False
+        self._lanes_notify_last = self._tail_clock()
+        self._host.lanes_changed()
+
 
 __all__ = [
+    "LANE_ROWS_NOTIFY_SECONDS",
     "LANE_TAIL_NOTIFY_SECONDS",
+    "LaneNotifyKind",
     "LaneReducer",
     "LaneTailHost",
 ]

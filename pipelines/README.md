@@ -76,6 +76,69 @@ SelectIssue → BranchSetup → LocateDonor → PlanTransfer → Implement → U
 - Non-converging issues after 3 attempts are marked `acknowledged` and commented for a
   human; the loop moves on rather than stalling.
 
+## Owner-gated parity loop (continuous re-audit)
+
+The gene-transfer pipeline above answers *"port the next thing on the list."* It does not
+answer *"is the list still right, and who said we should build any of it?"* That is
+[`parity-loop.dot`](parity-loop.dot), driven by [`parity_loop.py`](parity_loop.py) — a
+**read-only** re-audit lane wrapped around an explicit product-owner gate.
+
+```
+ShouldContinue ──done──> exit          (3 consecutive clean passes | owner-ended)
+    │process
+ReAudit (READ-ONLY) → RecordPass ──clean──> ShouldContinue
+                          │gaps
+                     OwnerTriage → OwnerGate ──proceed──> EnqueueTransfer → gene-transfer.dot
+                                       └──hold──> ShouldContinue
+```
+
+**Two counters, deliberately not the same counter.** This is the whole point of the loop,
+so it is worth being blunt about:
+
+| | fix retries | consecutive clean passes |
+|---|---|---|
+| Bounds | one gap's fix converging | the whole run |
+| Lives in | `gene-transfer.dot` RetryGate, `ledger.tsv` | `parity_loop.py streak`, `parity-passes.tsv` |
+| Counts | code-changing attempts | read-only re-audits |
+| Limit | 3 attempts → `acknowledged` + human | 3 clean in a row → run complete |
+| Reset by | a new gap entering the transfer lane | any pass that discovers a gap |
+
+A fix retry never advances or resets the clean-pass streak, and a clean pass never refunds a
+fix-retry budget. `parity_loop.py` never reads or writes `ledger.tsv` (there is a test for
+that), and `ledger.py` never sees the pass record.
+
+**Artifacts** — both TSV, both hand-greppable, both rerunnable against a later release:
+
+- [`parity-passes.tsv`](parity-passes.tsv) — one row per read-only re-audit pass:
+  `pass · date · commit · outcome · gaps_found · gap_ids · note`, `outcome ∈ {clean, gaps,
+  owner-ended}`. Because each row names the **commit** it audited, re-running the three lanes
+  against a later release just appends a row — the record is the run's history, not a
+  snapshot.
+- [`parity-gates.tsv`](parity-gates.tsv) — one row per discovered gap:
+  `gap_id · slug · disposition · owner · date · note`, `disposition ∈ {pending, accepted,
+  rejected, deferred, already-covered}`.
+
+**The gate.** Parity is a *decision process*, not a mandate to copy every app-cli behavior —
+some capabilities belong below the harness or on another surface. So every newly-discovered
+gap is auto-registered `pending`, and **only `accepted` opens a code-changing route**:
+`parity_loop.py gate <id>` prints `PROCEED` (exit 0) or `BLOCKED` (exit 1), and a gap the
+owner has never ruled on reads `disposition=undecided` — which blocks. `rejected` and
+`already-covered` are first-class outcomes, not failures.
+
+```sh
+python3 pipelines/parity_loop.py record-pass <sha> 120:notify-cli,121   # read-only pass
+python3 pipelines/parity_loop.py record-pass <sha> -                    # clean pass
+python3 pipelines/parity_loop.py decide 120 rejected mjabbour "belongs below the harness"
+python3 pipelines/parity_loop.py gate 120        # PROCEED (exit 0) | BLOCKED (exit 1)
+python3 pipelines/parity_loop.py should-continue # CONTINUE clean_streak=1/3 | DONE reason=...
+python3 pipelines/parity_loop.py end-run mjabbour "remaining gaps deferred to 0.3"
+python3 pipelines/parity_loop.py stats           # passes=4 clean_streak=2/3 run=open
+```
+
+The streak is derived from the gap ids each row actually carries, not from the stored
+`outcome` word — you cannot hand-edit a clean streak into existence without also deleting
+the gaps that contradict it. Covered by `tests/test_parity_loop.py`.
+
 ## Prerequisites
 
 - The forge daemon reachable at `127.0.0.1:3141` — the pipeline runs `forge doctor` itself,
@@ -119,7 +182,9 @@ amplifier run --bundle gene-transfer-runner "go"
 ## Monitoring — "when is it done"
 
 **`pipelines/ledger.tsv` is the source of truth** (in-repo, launch-method-independent):
-done = no `new` rows remain. The attractor's own `checkpoint.json` is secondary and lands
+done = no `new` rows remain. For the parity loop the completion condition is different and
+lives elsewhere — `parity_loop.py should-continue` (three consecutive clean passes, or an
+owner-ended run); ledger exhaustion only means the *currently accepted* gaps are built. The attractor's own `checkpoint.json` is secondary and lands
 under `logs_root` — `./runs/` for the bundle-config path, or a temp dir
 (`$TMPDIR/attractor-pipeline/`) for `run_pipeline`. Poll with forge's `exec`, not the screen:
 
@@ -148,7 +213,11 @@ success/partial/fail); per-stage working artifacts the agents pass to each other
   works through a real terminal, not just if unit tests pass — this is the same lesson that
   the 2026-07-22 fan-out bugs taught (unit fixtures missed them; real terminals caught them),
   and formalizing this gate as a reusable tier is issue #49.
-- **Bounded.** 3 fix attempts per issue, then `acknowledged` + human handoff.
+- **Bounded.** 3 fix attempts per issue, then `acknowledged` + human handoff. The parity
+  loop's three-consecutive-clean-passes exit is a *separate* bound on a separate lane —
+  see the table above before touching either.
+- **No code change without an owner.** In the parity loop nothing reaches a code-changing
+  node without an `accepted` disposition in `parity-gates.tsv`; undecided blocks.
 - **Idempotent-ish.** Re-running resumes from the ledger: `implemented`/`acknowledged` rows
   are skipped, only `new` rows are attempted. `rm -rf runs .ai/gt_*` for a clean slate.
 - **Cost.** This is an autonomous multi-hour, multi-PR job. Review `ledger.tsv` scope and the
