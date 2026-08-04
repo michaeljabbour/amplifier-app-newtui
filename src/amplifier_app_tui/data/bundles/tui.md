@@ -102,11 +102,26 @@ hooks:
   # orchestrator:complete event because the default (notify:turn-complete)
   # is emitted by hooks-notify, which the app kernel suppresses at boot
   # (raw OSC-777/BEL stdout corrupts the full-screen Textual TUI).
-  # This push rung fires independently of the in-app AttentionRecord ladder
-  # (ui/notifications.py, B7/issue #47): it is driven straight off this raw
-  # kernel event, not the app's deduped/acknowledgeable record, and it has
-  # no acknowledgement channel back to the TUI (a different device's
-  # notification tray) — see docs/SETTINGS.md "Attention notifications".
+  #
+  # B7 gap-closure (issue #47): this rung still fires off the raw
+  # orchestrator:complete event above, not the in-app AttentionRecord
+  # ladder (ui/notifications.py) — it has no acknowledgement channel back
+  # to the TUI (a different device's notification tray) and cannot dedupe
+  # by the record's event_id. What changed on THIS side: the kernel now
+  # ALSO emits an additive "attention:recorded" hook event (session_id,
+  # reason, event_id, detail, created_at — ui.notifications.
+  # attention_push_payload / kernel.runtime.RealRuntime.publish_attention)
+  # on the same hooks bus every time a new record is minted, carrying
+  # exactly the dedupe key a push destination needs. listen_event stays
+  # pinned to orchestrator:complete rather than switching to it: the
+  # module below ships from a DIFFERENT repository
+  # (microsoft/amplifier-bundle-notify) and this side cannot verify how
+  # its shipped v0.2.0 code would behave against a changed listen_event or
+  # an unfamiliar payload shape, so flipping it here would be an
+  # unverifiable, potentially session-breaking guess. Fully routing push
+  # through the record — listen_event: "attention:recorded" plus
+  # event-id-based dedup and an acknowledgement channel — is upstream
+  # work in that repository; see docs/SETTINGS.md "Attention notifications".
   # Pinned 2026-08-02 (compliance B9) to amplifier-bundle-notify's release tag
   # v0.2.0 (confirmed to still ship modules/hooks-notify-push).
   - module: hooks-notify-push

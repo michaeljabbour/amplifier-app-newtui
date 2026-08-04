@@ -53,7 +53,10 @@ import time
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, cast
+
+from ..kernel.attention_store import AttentionRow, AttentionStore
 
 if TYPE_CHECKING:
     from textual.driver import Driver
@@ -70,6 +73,16 @@ AttentionReason = Literal[
 notes call out: a turn reached a successful close-out, a governance/tool
 decision is parked awaiting the human's approval, a question-tool style ask
 is parked awaiting clarification, or the session hit an error state."""
+
+_ATTENTION_REASONS: tuple[AttentionReason, ...] = (
+    "completion",
+    "awaiting_approval",
+    "awaiting_clarification",
+    "error",
+)
+"""The closed set above, as a runtime-checkable tuple -- used to validate
+rows read back from durable storage (:meth:`AttentionCenter._hydrate`),
+which only ever sees a plain ``str`` (kernel/ has no ``Literal`` view)."""
 
 _ALWAYS_QUALIFIES: frozenset[AttentionReason] = frozenset(
     {"awaiting_approval", "awaiting_clarification", "error"}
@@ -376,6 +389,41 @@ def attention_event_id(session_id: str, reason: AttentionReason, occasion: str) 
     return f"{session_id or 'local'}:{reason}:{occasion}"
 
 
+def attention_push_payload(record: AttentionRecord, *, title: str, body: str) -> dict[str, object]:
+    """The record-derived payload an off-machine push destination should send.
+
+    This is the B7 gap-2 contract: the ONE shape a push consumer reads
+    ``event_id`` from -- today's in-repo ``attention:recorded`` hook
+    emission (:meth:`amplifier_app_tui.kernel.runtime.RealRuntime.
+    publish_attention`), and eventually a dedup/acknowledgement-aware
+    ``hooks-notify-push`` release in the separate amplifier-bundle-notify
+    repository. Carrying ``event_id`` is the whole point (B8 depends on it
+    too): a push consumer that dedupes by this field -- instead of firing
+    on every raw kernel event the way today's ``orchestrator:complete``
+    listen_event does -- gets AC3's "one record per transition" guarantee
+    for free instead of reinventing it.
+
+    ``title``/``body`` are taken from the caller rather than re-derived
+    here so there is exactly one "default text per reason" table
+    (``ui/app.py``'s ``_NOTIFY_BODY``, already used for the desktop rung),
+    not a second one duplicated in this module. Both are sanitized and
+    bounded exactly like the desktop OSC 777 rung
+    (:func:`sanitize_notification_text`, the same 80/240 char caps) --
+    this payload is just as capable of leaving the machine as that escape
+    sequence is of hitting the terminal, so it gets the same treatment;
+    never include anything beyond what the caller already surfaced
+    on-screen (no secrets, no raw tool output).
+    """
+    return {
+        "event_id": record.event_id,
+        "session_id": record.session_id,
+        "reason": record.reason,
+        "created_at": record.created_at,
+        "title": sanitize_notification_text(title)[:_MAX_TITLE_CHARS].rstrip(),
+        "body": sanitize_notification_text(body)[:_MAX_BODY_CHARS].rstrip(),
+    }
+
+
 class AttentionCenter:
     """Owns the ladder's dedupe + acknowledgement bookkeeping (B7, issue #47).
 
@@ -402,11 +450,83 @@ class AttentionCenter:
     lifetime (every event id ever minted is retained, never evicted) -- a
     documented limitation, not a leak: a TUI session's turn/decision count
     is small enough that this never matters in practice.
+
+    -- Durability (B7 gap 1) ------------------------------------------------
+
+    In-memory only until :meth:`bind` attaches a session directory -- the
+    constructor deliberately takes no arguments, so every existing caller
+    (including every test in this repo) is unaffected. ``ui/app.py`` calls
+    :meth:`bind` once, right after boot (the session directory is not known
+    at construction time): it hydrates from a durable ``attention.json`` --
+    a restart, or a second process pointed at the same session directory,
+    observes whatever was last persisted -- and every subsequent
+    :meth:`note`/:meth:`acknowledge` that changes state persists the update
+    via :class:`~amplifier_app_tui.kernel.attention_store.AttentionStore`,
+    which follows the SAME atomic-write-under-a-lock idiom
+    ``kernel/session_control.py`` established for its own ``control.json``
+    -- not a second, independently-invented persistence mechanism. Every
+    persist/load is best-effort: a failure is logged and swallowed, never
+    raised, so a durability problem can never block or crash the session.
     """
 
     def __init__(self) -> None:
         self._by_id: dict[str, AttentionRecord] = {}
         self._current: dict[str, str] = {}  # session_id -> its latest event_id
+        self._store: AttentionStore | None = None
+
+    def bind(self, session_dir: Path | None) -> None:
+        """Attach durable storage rooted at *session_dir* and hydrate.
+
+        A no-op when *session_dir* is ``None`` (a demo run, or a real
+        runtime that never resolved a session directory) -- the center
+        then stays exactly as in-memory as it always has been. Safe to
+        call more than once (re-hydrates from the new location); real
+        callers bind exactly once, right after boot.
+        """
+        if session_dir is None:
+            return
+        self._store = AttentionStore(session_dir)
+        self._hydrate()
+
+    def _hydrate(self) -> None:
+        if self._store is None:
+            return
+        try:
+            rows, current = self._store.load()
+        except Exception:  # noqa: BLE001 -- a durability problem must never block boot
+            logger.warning("attention state failed to load", exc_info=True)
+            return
+        for event_id, row in rows.items():
+            if row.reason not in _ATTENTION_REASONS:
+                continue  # corrupted or foreign-version row -- drop, never misrepresent
+            self._by_id[event_id] = AttentionRecord(
+                session_id=row.session_id,
+                reason=cast(AttentionReason, row.reason),
+                event_id=row.event_id,
+                detail=row.detail,
+                created_at=row.created_at,
+                acknowledged=row.acknowledged,
+            )
+        self._current.update(current)
+
+    def _persist(self) -> None:
+        if self._store is None:
+            return
+        try:
+            rows = {
+                event_id: AttentionRow(
+                    session_id=record.session_id,
+                    reason=record.reason,
+                    event_id=record.event_id,
+                    detail=record.detail,
+                    created_at=record.created_at,
+                    acknowledged=record.acknowledged,
+                )
+                for event_id, record in self._by_id.items()
+            }
+            self._store.save(rows, self._current)
+        except Exception:  # noqa: BLE001 -- a persistence failure must never block the session
+            logger.warning("attention state failed to persist", exc_info=True)
 
     def note(
         self,
@@ -421,7 +541,9 @@ class AttentionCenter:
 
         Returns ``(record, is_new)``. ``is_new`` is ``False`` when this
         exact transition was already recorded -- the caller should only
-        fire the destination ladder when it is ``True``.
+        fire the destination ladder when it is ``True``. A genuinely new
+        transition is durably persisted (best-effort, never blocking) when
+        :meth:`bind` has attached a store.
         """
         event_id = attention_event_id(session_id, reason, occasion)
         existing = self._by_id.get(event_id)
@@ -436,6 +558,7 @@ class AttentionCenter:
         )
         self._by_id[event_id] = record
         self._current[session_id] = event_id
+        self._persist()
         return record, True
 
     def acknowledge(self, session_id: str) -> AttentionRecord | None:
@@ -445,7 +568,8 @@ class AttentionCenter:
         decide whether to clear destination indicators), or ``None`` when
         there was nothing open -- an idle acknowledge (e.g. a plain window
         refocus with no pending attention) is a deliberate no-op, not an
-        error.
+        error. The acknowledgement is durably persisted too (best-effort,
+        never blocking), so a second process or a restart observes it.
         """
         event_id = self._current.get(session_id)
         if event_id is None:
@@ -455,6 +579,7 @@ class AttentionCenter:
             return None
         acked = record.acknowledge()
         self._by_id[event_id] = acked
+        self._persist()
         return acked
 
     def current(self, session_id: str) -> AttentionRecord | None:
@@ -473,6 +598,7 @@ __all__ = [
     "Rung",
     "attention_event_id",
     "attention_needed",
+    "attention_push_payload",
     "clear_desktop_notification",
     "desktop_notifications_supported",
     "fire_attention_ladder",

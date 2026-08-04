@@ -451,3 +451,142 @@ def test_on_app_focus_with_nothing_open_is_a_safe_no_op() -> None:
     app = TuiApp(DemoRuntimeAdapter(instant=True))
     app.on_app_focus(events.AppFocus())  # must not raise
     assert app._attention.current(app.adapter.session_id) is None
+
+
+# -- B7 gap 1: durability (AttentionCenter.bind) ------------------------------
+
+
+def test_attention_center_bind_none_stays_pure_in_memory(tmp_path) -> None:
+    center = AttentionCenter()
+    center.bind(None)  # demo / no session dir yet -- must not raise, no file created
+    center.note("s1", "completion", "turn-1")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_attention_center_bind_hydrates_and_persists_across_restart(tmp_path) -> None:
+    first = AttentionCenter()
+    first.bind(tmp_path)
+    _, is_new = first.note("s1", "error", "occ-1", detail="boom")
+    assert is_new is True
+    assert (tmp_path / "attention.json").exists()
+
+    # A "restart": a brand new AttentionCenter bound to the SAME directory
+    # observes the prior state (durability) and its dedupe survives it (AC3).
+    second = AttentionCenter()
+    second.bind(tmp_path)
+    restored = second.current("s1")
+    assert restored is not None
+    assert restored.detail == "boom"
+    assert restored.acknowledged is False
+    _, is_new_again = second.note("s1", "error", "occ-1", detail="boom")
+    assert is_new_again is False
+
+    acked = second.acknowledge("s1")
+    assert acked is not None and acked.acknowledged is True
+
+    third = AttentionCenter()
+    third.bind(tmp_path)
+    assert third.current("s1").acknowledged is True  # type: ignore[union-attr]
+
+
+def test_attention_center_persist_failure_never_raises(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A persistence failure must never block or crash the session."""
+    center = AttentionCenter()
+    center.bind(tmp_path)
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk is full")
+
+    monkeypatch.setattr(center._store, "save", _boom)  # type: ignore[union-attr]
+    record, is_new = center.note("s1", "completion", "turn-1")  # must not raise
+    assert is_new is True
+    assert record.session_id == "s1"
+
+
+def test_attention_center_hydrate_drops_corrupted_reason(tmp_path) -> None:
+    """A row with a reason outside the closed set (corrupted file, or a
+    foreign app version) is dropped rather than misrepresented."""
+    import json
+
+    (tmp_path / "attention.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "by_id": {
+                    "s1:bogus:occ": {
+                        "session_id": "s1",
+                        "reason": "bogus-reason",
+                        "event_id": "s1:bogus:occ",
+                        "detail": "",
+                        "created_at": 1.0,
+                        "acknowledged": False,
+                    }
+                },
+                "current": {"s1": "s1:bogus:occ"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    center = AttentionCenter()
+    center.bind(tmp_path)
+    assert center.current("s1") is None
+
+
+# -- B7 gap 2: attention_push_payload (record-derived, event-id-carrying) ----
+
+
+def test_attention_push_payload_carries_event_id_and_sanitizes_bounds() -> None:
+    from amplifier_app_tui.ui.notifications import attention_push_payload
+
+    record, _ = AttentionCenter().note("sess-42", "error", "turn-9", detail="boom\x07\x1b")
+    payload = attention_push_payload(record, title="Amplifier", body="x" * 500)
+
+    assert payload["event_id"] == record.event_id
+    assert payload["session_id"] == "sess-42"
+    assert payload["reason"] == "error"
+    assert payload["created_at"] == record.created_at
+    assert payload["title"] == "Amplifier"
+    assert len(payload["body"]) <= 240  # same bound as the OSC 777 rung
+    assert "\x07" not in payload["body"] and "\x1b" not in payload["body"]
+
+
+def test_notify_attention_publishes_to_adapter_only_when_new(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AMPLIFIER_TERMINAL_NOTIFICATIONS", "force")
+    monkeypatch.delenv("AMPLIFIER_NOTIFY", raising=False)
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    monkeypatch.setattr(app, "bell", lambda: None)
+    published: list[dict[str, object]] = []
+    monkeypatch.setattr(app.adapter, "publish_attention", lambda payload: published.append(payload))
+
+    app._notify_attention("error", occasion="err-1", detail="boom")
+    assert len(published) == 1
+    assert published[0]["event_id"].endswith(":error:err-1")  # type: ignore[union-attr]
+
+    app._notify_attention("error", occasion="err-1", detail="boom")  # AC3: dedupe
+    assert len(published) == 1
+
+
+# -- B7 gap 3: production error transition #1 -- a failed turn ---------------
+
+
+@pytest.mark.asyncio
+async def test_submit_prompt_failure_mints_an_error_attention_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AMPLIFIER_NOTIFY", raising=False)
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+
+    async def _boom(text: str, attachments: tuple[object, ...] = ()) -> None:
+        raise RuntimeError("provider auth expired")
+
+    monkeypatch.setattr(app.adapter, "submit", _boom)
+    await app._submit_prompt("hello", ())
+
+    record = app._attention.current(app.adapter.session_id)
+    assert record is not None
+    assert record.reason == "error"
+    assert "provider auth expired" in record.detail

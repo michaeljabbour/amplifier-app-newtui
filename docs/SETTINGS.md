@@ -195,18 +195,40 @@ garbage — is kitty (via `TERM`/`KITTY_WINDOW_ID`) and ghostty / iTerm2 / WezTe
 **One normalized event per transition.** The bell and desktop rungs above are both driven
 by a single internal `AttentionRecord` (session id, reason, a stable event id, and an
 acknowledged flag) minted exactly once when the app transitions into needing you — a turn
-completes, or a decision is parked awaiting your approval or clarification. The record's
-`reason` contract also defines an `error` state, reserved for a session-level failure, but
-no production code path mints one today — nothing under `src/` calls `AttentionCenter.note`
-(or `TuiApp._notify_attention`) with `"error"` yet, so treat it as defined-but-not-yet-wired
-rather than a live trigger (only a unit test exercises the mechanism directly, against the
-reason literal). Repeated renders, a reconnect, or a second kernel-side ping for a decision
-that is already parked all resolve to the SAME record and do not notify again. Answering a
-deferred decision, or bringing the terminal window back into focus, acknowledges the
-record: the bell has nothing to retract, but the OSC 777 desktop indicator is best-effort
-cleared. Off-machine ntfy push (below) is a separate destination fired independently by the
-kernel's raw `orchestrator:complete` event — it does not go through this record and has no
-acknowledgement channel back to the TUI (a different device's notification tray).
+completes, a decision is parked awaiting your approval or clarification, or the session
+hits a session-level error. The `error` reason is wired to three real production
+transitions: a turn that raised out of `submit()` (provider auth expiry, a network drop
+mid-turn), a `provider:error` notice (retry/throttle notices do not qualify — only
+`error`), and a delegate that settles into the lane registry's terminal `error` state
+(never `cancelled`, which is a deliberate interrupt, not a failure). Repeated renders, a
+reconnect, or a second kernel-side ping for a decision that is already parked all resolve
+to the SAME record and do not notify again. Answering a deferred decision, or bringing the
+terminal window back into focus, acknowledges the record: the bell has nothing to retract,
+but the OSC 777 desktop indicator is best-effort cleared.
+
+**Durable across restarts and second processes.** The record above is no longer purely
+in-memory: once a real session's directory is known (after boot), `AttentionCenter` binds
+to a durable `attention.json` kept beside that session's `control.json` (the SAME
+atomic-write-under-a-lock idiom `kernel/session_control.py` uses for its own state — not a
+second mechanism). A restart, or a second process pointed at the same session directory
+(e.g. a `serve` controller), observes whatever was last persisted and its dedupe/ack state.
+Every persist/load is best-effort and non-blocking: a failure is logged and swallowed,
+never raised, so a durability problem can never affect the live session.
+
+**Off-machine push, and what's still cross-repo.** The mounted `hooks-notify-push` module
+(a separate repository, `amplifier-bundle-notify`) still fires today off the raw kernel
+`orchestrator:complete` event (`bundle.md`'s `listen_event` config) — it does not read
+`AttentionRecord` and has no acknowledgement channel back to the TUI (a different device's
+notification tray). This app additionally emits an `attention:recorded` hook event (session
+id, reason, the attention `event_id`, detail, created_at) on the SAME hooks bus every time a
+new record is minted — a record-derived payload carrying the dedupe key a push destination
+would need, built and tested on this side (`ui.notifications.attention_push_payload`,
+`kernel.runtime.RealRuntime.publish_attention`). `bundle.md`'s `hooks-notify-push` mount
+stays pointed at `orchestrator:complete` rather than switching to it, though: this repo
+cannot verify how the *other* repo's shipped module would behave against a changed
+`listen_event` or an unfamiliar payload shape, so flipping it here would be an unverifiable,
+potentially session-breaking guess. Fully routing push through the record — event-id-based
+dedup, an acknowledgement channel — remains upstream work in `amplifier-bundle-notify`.
 
 ### Configuring notifications (`config.notifications.*` + the `notify` CLI)
 

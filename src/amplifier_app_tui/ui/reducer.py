@@ -490,6 +490,7 @@ class ReducerHost(Protocol):
     def plan_changed(self, items: tuple[TodoItem, ...]) -> None: ...
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None: ...
     def decision_deferred(self, message: str, decision_id: str = "") -> None: ...
+    def attention_error(self, detail: str, *, occasion: str) -> None: ...
     def stream_opened(self, block_type: str) -> None: ...
     def stream_delta(self, text: str) -> None: ...
     def stream_closed(self) -> None: ...
@@ -589,6 +590,13 @@ class _ReplayHost:
     def decision_deferred(self, message: str) -> None:
         pass
 
+    def attention_error(self, detail: str, *, occasion: str) -> None:
+        # Resume replay reconstructs lane/transcript state (agent_completed
+        # is NOT in REPLAY_SKIPPED_KINDS -- lane state must rebuild), but a
+        # historical failure must never re-ring the bell on every resume;
+        # silenced here exactly like every other interactive side effect.
+        pass
+
     def stream_opened(self, block_type: str) -> None:
         pass
 
@@ -659,6 +667,9 @@ class _StaleTurnHost:
 
     def decision_deferred(self, message: str, decision_id: str = "") -> None:
         pass
+
+    def attention_error(self, detail: str, *, occasion: str) -> None:
+        pass  # a stale/pre-clear turn's error is not worth pulling the user back to
 
     def stream_opened(self, block_type: str) -> None:
         pass
@@ -1095,6 +1106,17 @@ class TranscriptReducer:
                 self._usage(event)
             case ev.ProviderNotice():
                 self._host.show_notice(f"provider {event.notice} · {event.message}".rstrip(" ·"))
+                if event.notice == "error":
+                    # B7 gap 3 (production error transition #2 -- a
+                    # provider/runtime error): retry/throttle notices are
+                    # transient noise, not attention-worthy; only "error"
+                    # qualifies. ``event_id`` is this envelope's own stable
+                    # per-instance id (never replayed -- provider_notice is
+                    # in REPLAY_SKIPPED_KINDS -- so a fresh id per real
+                    # occurrence is exactly right, not a dedup gap).
+                    self._host.attention_error(
+                        event.message, occasion=f"provider-error-{event.event_id}"
+                    )
             case ev.ApprovalRequired():
                 self._host.approval_opened(event.prompt, event.options)
             case ev.ApprovalDenied():
@@ -2283,11 +2305,24 @@ class TranscriptReducer:
         # chat's ✳ marker and the lane's own activity text, so neither
         # surface can independently regress the other (D5 AC1 reconciliation).
         meaningful_hint = hint if (event.success or hint != "failed") else ""
-        self.lanes.complete(
+        settled = self.lanes.complete(
             event.sub_session_id,
             result=meaningful_hint,
             state="done" if event.success else "error",
         )
+        if settled is not None and settled.lane.state == "error":
+            # B7 gap 3 (production error transition #3 -- a failed
+            # delegate): key off the SAME terminal lane-state signal
+            # TERMINAL_LANE_STATES/lanes_changed already reads (D5 AC1),
+            # not a second, independently-derived "was this a failure"
+            # check -- narrower than TERMINAL_LANE_STATES on purpose:
+            # "cancelled" is a deliberate user interrupt, never an error.
+            # sub_session_id is the occasion: a delegate settles into
+            # "error" exactly once (terminal), so a repeat delivery for
+            # the SAME delegate dedupes (AC3) rather than re-notifying.
+            self._host.attention_error(
+                meaningful_hint or f"{event.agent} failed", occasion=event.sub_session_id
+            )
         if event.success:
             marker = f"{event.agent} done" + (f" · {meaningful_hint}" if meaningful_hint else "")
         else:
