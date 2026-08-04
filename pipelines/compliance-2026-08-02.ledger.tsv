@@ -1,42 +1,63 @@
 # Ledger — Compliance finish-work (amplifier-app-tui)
-# Source: "Amplifier TUI Feedback — Consolidated Implementation Brief, Compliance Update 2026-08-02"
-# Outcome doc: "... — Compliance Update 2026-08-03.docx" (same outputs/ folder)
-# Scope: every item Partial or Open at 2026-08-02. COMPLETE — all 20 implemented.
-# Nothing merged: every row below is an OPEN PR awaiting merge approval.
+# Source brief: "Amplifier TUI Feedback — Consolidated Implementation Brief"
+# Doc revisions: Compliance Update 2026-08-02 -> 2026-08-03 -> 2026-08-04
 #
-# item	branch	pr	base	status
-B2	compliance/b2-alias-fixture	191	main	pr_ready
-D3	compliance/d3-clear-transcript	192	main	pr_ready
-S5	compliance/s5-unsupported-block	193	main	pr_ready
-D2	compliance/d2-composer-separation	194	main	pr_ready
-S6	compliance/s6-focus-back	195	main	pr_ready
-S7	compliance/s7-plan-expand	196	main	pr_ready
---	chore/hermetic-init-cli-test	197	main	pr_ready
-S4	compliance/s4-run-preflight	198	main	pr_ready
-S2	compliance/s2-session-table	199	main	pr_ready
-B3	compliance/b3-owner-gated-loop	200	main	pr_ready
-B9	compliance/b9-pinned-deps	201	main	pr_ready
-B7	compliance/b7-attention-record	202	main	pr_ready
-B6	compliance/b6-session-control	203	main	pr_ready
-S3	compliance/s3-resume-syntax	204	main	pr_ready
-D1	compliance/d1-executable-decision	208	main	pr_ready
-B5	compliance/b5-adoption-ledger	209	main	pr_ready
-D4	compliance/d4-footer-consolidation	205	compliance/d2-composer-separation	pr_ready_stacked
-D7	compliance/d7-evidence-panel	206	compliance/s6-focus-back	pr_ready_stacked
-B8	compliance/b8-voice-design	207	compliance/b6-session-control	pr_ready_stacked
-B1	compliance/b1-final-answer-anchor	211	fix/agent-lane-chat-dedup	pr_ready_stacked
-D5	compliance/d5-preview-expand	212	fix/agent-lane-chat-dedup	pr_ready_stacked
-D6	fix/agent-lane-chat-dedup	190	main	GATE: your merge approval
+# STATUS: ALL MERGED. Every row below landed on main. Nothing is awaiting merge.
+# Round 1 (#190-#214): the 2026-08-02 Partial/Open items, plus CI and audit fixes.
+# Round 2 (#215-#233): the 2026-08-04 review's outstanding per-item work.
 #
-# MERGE ORDER: #190 -> {#211,#212} | #194 -> #205 | #195 -> #206 | #203 -> #207
+# item	pr	round	status
+D6	190	1	merged
+B2	191	1	merged
+D3	192	1	merged
+S5	193	1	merged
+D2	194	1	merged
+S6	195	1	merged
+S7	196	1	merged
+--	197	1	merged	test hermeticity (ambient env leak)
+S4	198	1	merged
+S2	199	1	merged
+B3	200	1	merged
+B9	201	1	merged
+B7	202	1	merged
+B6	203	1	merged
+S3	204	1	merged
+D4	205	1	merged
+D7	206	1	merged
+B8	207	1	merged	design track only
+D1	208	1	merged	ADR-0008
+B5	209	1	merged
+B1	211	1	merged
+D5	212	1	merged
+--	213	1	merged	flaky rewind snapshot (blocked 4 PRs)
+--	214	1	merged	post-merge audit: S1 regression, D4 AC4, SETTINGS.md
+D3	215	2	merged	palette help states view+context+history scope
+B1	216	2	merged	selectable light theme + WCAG contrast floors
+D7	217	2	merged	evidence click == Enter, click-flow coverage
+S7	218	2	merged	keyboard-reachable overflow, narrow-width safe
+S1	219	2	merged	in-progress-turn behavior in static help
+S2	220	2	merged	Turns in row, keyboard resume, indexing states
+D5	221	2	merged	lane attention state, preview hardening
+D1	222	2	merged	version verification + PATH/platform/perm repair
+D4	223	2	merged	resolved bundle URI, viewport fitting, snapshots
+D6	224	2	merged	agent+turn stream labels, focus/reconnect tests
+B9	225	2	merged	anti-float test, CI action pins, resume parity
+B2	226	2	merged	real external CLI resolver parity
+S4	227	2	merged	real provider mount, credentials, model check
+S5	228	2	merged	safe recovery refs, session context, combined fixture
+B7	229	2	merged	durable attention, ntfy event-id, error transitions
+B6	230	2	merged	authorization, live attach, universal audit, 2-proc
+B8	231	2	merged	E2/E3/E6/E7 contracts + voice adapter
+B3	232	2	merged	placeholder-owner rejection, real pass 2
+B5	233	2	merged	placeholder rejection, rollback verify, runbook
 #
-# DECISIONS RESOLVED THIS ROUND (were human gates):
-#   D1  -> ADR-0008: keep amplifier-tui. `amplifier` is already owned by
-#          microsoft/amplifier AND amplifier-app-cli; collision measured live on
-#          uv 0.10.2. Upstream issue DRAFTED, NOT FILED — needs MJ.
-#   B5  -> five gates + owners + >=1d windows taken verbatim from Brian's Teams
-#          proposal. Stage-3 seats reserved but unnamed (TBD) — needs MJ.
-#   D7probe -> David's dead-Enter report is STALE (works since #157). Scope narrowed.
-#
-# OPEN FOLLOW-UPS: issue #210 (full light theme, from B1's explicit AC4 narrowing)
-#                  issue #187 (app-scoped settings namespace) — separable from D1
+# REMAINS HUMAN-OWNED (tooling ready, decisions are not an agent's to make):
+#   B3  19 gaps await real owner dispositions -> docs/audits/parity-decision-sheet.md
+#       clean_streak 0/3; pass 2 found 8 new gaps. A clean streak cannot be
+#       manufactured -- it is derived from the gap ids each row carries.
+#   B5  5 stages pending, 3 stage-3 seats unfilled. Executing the program needs
+#       real named people daily-driving -> docs/adoption/RUNBOOK.md
+#   D1  drafted-but-unfiled upstream issue: should microsoft/amplifier repoint
+#       its own `amplifier` console script? (ADR-0008 rejected doing it here)
+#   B8  E8 Teams/Outlook connectors are genuinely external (Graph credentials);
+#       the port ships with a local implementation, no connector is faked.
