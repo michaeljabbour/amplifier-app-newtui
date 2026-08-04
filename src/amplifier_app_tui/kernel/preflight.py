@@ -8,10 +8,12 @@ an error the user cannot read (main.py's ``_interactive_launch`` is the
 caller; see ``_run_preflight`` there).
 
 :func:`run_preflight` calls the SAME ``resolve_config`` the real boot calls
-(``kernel/runtime.py`` ``RealRuntime.start``) and stops there: it does not
-mount modules (``prepared.create_session()``), so a second, real resolution
-still happens for the actual launch. That mirrors the ``reset`` command's own
-``--dry-run`` shape, which always computes the plan via
+(``kernel/runtime.py`` ``RealRuntime.start``): it does not create a
+SESSION (``prepared.create_session()``) -- a second, real resolution still
+happens for the actual launch -- but it now goes one step further than the
+bare mount PLAN and proves the priority provider (the one that will
+actually serve the first turn) really works. That mirrors the ``reset``
+command's own ``--dry-run`` shape, which always computes the plan via
 ``run_reset(dry_run=True)`` before deciding whether to act on it.
 
 One deliberate difference from the real boot's call: ``install_deps=False``.
@@ -33,18 +35,24 @@ its default ``install_deps=True`` -- this preflight only skips redoing that
 specific (already redundant, since the previous boot most likely satisfied it)
 work a second time.
 
-Scope, deliberately: this catches a bundle/mount plan that fails to resolve
-at all (bad ``--bundle``, malformed bundle, an unknown ``--provider``
-override) and the "zero providers configured" hard-fail
-(``session_factory.MountReport.no_provider`` would raise
-``ProviderMountError`` for the exact same condition once mounting is
-attempted). It does NOT attempt to mount a provider module or verify a
-specific credential is valid -- that requires the heavier
-``create_initialized_session()`` step this preflight deliberately skips to
-stay fast, and provider/credential UX at configuration time is already
-covered by ``init`` (#180/#184/#186). A provider that is configured but
-whose module fails to mount, or whose credential is wrong, can still fail
-after this preflight passes -- rarer, and unchanged by this work.
+Scope: the PLAN half (bundle/mount-plan composition, the "zero providers
+configured" hard-fail) catches a bad ``--bundle``, an unreachable module
+source, or an unknown ``--provider`` override -- the same condition
+``session_factory.MountReport.no_provider`` would raise
+``ProviderMountError`` for once mounting is attempted for real.
+
+The REALITY half (``kernel/preflight_verify.py``, AC4's follow-up) closes
+the gap that scope note used to describe: a plan that *resolves* but whose
+priority provider cannot actually mount, whose credentials are missing, or
+whose selected model does not exist. It runs three checks against the
+priority provider -- real mounting, credential viability, and
+selected-model availability -- and is deliberately scoped to that ONE
+provider (the one that determines whether the first turn works at all);
+see ``preflight_verify``'s module docstring for what each check does, the
+offline/network boundary, and why an import failure can degrade instead of
+blocking. Provider/credential UX at CONFIGURATION time remains covered by
+``init`` (#180/#184/#186); this is the launch-time proof that what ``init``
+configured still actually works.
 """
 
 from __future__ import annotations
@@ -60,6 +68,7 @@ from .config import (
     resolve_config,
     routing_enabled,
 )
+from .preflight_verify import DEFAULT_LIVE_TIMEOUT, verify_provider
 
 
 @dataclass(frozen=True)
@@ -84,22 +93,61 @@ class PreflightReport:
     remediation: str | None = None
 
 
-def _priority_provider(mount_plan: dict[str, Any]) -> tuple[str, str]:
-    """The provider (and its model) that would actually serve the turn.
+def _priority_provider_entry(mount_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """The RAW mount-plan entry for the provider that would serve the turn.
 
     Same LOWEST-``config.priority`` rule as ``runtime._provider_and_model``
     (kept as a small local copy rather than a cross-module private import --
-    see that function for the full rationale); list position is not it.
+    see :func:`_priority_provider` for the full rationale); list position is
+    not it. Returns the entry dict itself (not display strings) so callers
+    can read its real ``module``/``config`` fields -- see
+    :func:`_priority_provider` for the derived-display-string version.
     """
     entries = [entry for entry in (mount_plan.get("providers") or []) if isinstance(entry, dict)]
     if not entries:
+        return None
+    return min(entries, key=provider_priority)
+
+
+def _priority_provider(mount_plan: dict[str, Any]) -> tuple[str, str]:
+    """The provider (and its model) that would actually serve the turn.
+
+    Display-string form of :func:`_priority_provider_entry` for the
+    ``--dry-run`` table / report fields.
+    """
+    entry = _priority_provider_entry(mount_plan)
+    if entry is None:
         return ("", "")
-    entry = min(entries, key=provider_priority)
     module_id = str(entry.get("id") or entry.get("module") or "")
     provider = module_id.replace("provider-", "").replace("amplifier-module-", "")
     config = entry.get("config") if isinstance(entry.get("config"), dict) else {}
     model = str((config or {}).get("default_model", ""))
     return (provider, model)
+
+
+def _preflight_settings(settings: dict[str, Any]) -> tuple[bool, bool]:
+    """``(verify_provider, verify_live)`` from the ``preflight`` settings block.
+
+    Both default to this feature's own defaults (fast checks on, live
+    models-list probe off) so an unconfigured app gets exactly the
+    behaviour described in ``preflight_verify``'s module docstring. Junk
+    shapes fall back to the defaults -- never raises, never blocks startup
+    on a settings typo. ``verify_provider`` is an escape hatch for the real-
+    mount/credential checks (both fast/offline by design, but a kill switch
+    costs nothing and this codebase already favours them, e.g.
+    ``routing.enabled``, ``hooks.suppress``); ``verify_live`` opts an
+    installation into the networked models-list probe on EVERY launch,
+    not just ``--dry-run``.
+    """
+    section = settings.get("preflight")
+    if not isinstance(section, dict):
+        return True, False
+    verify_provider_setting = section.get("verify_provider", True)
+    verify_live_setting = section.get("verify_live", False)
+    return (
+        verify_provider_setting if isinstance(verify_provider_setting, bool) else True,
+        verify_live_setting if isinstance(verify_live_setting, bool) else False,
+    )
 
 
 async def run_preflight(
@@ -108,12 +156,22 @@ async def run_preflight(
     project_dir: Path | None = None,
     provider_override: str | None = None,
     model_override: str | None = None,
+    verify_live: bool = False,
 ) -> PreflightReport:
-    """Resolve mounts/providers for *bundle* WITHOUT creating a session.
+    """Resolve mounts/providers for *bundle* and prove the priority provider works.
 
     Never raises: every failure mode ``resolve_config`` can hit today (and
     would otherwise surface mid- or post-takeover) comes back as a
     :class:`PreflightReport` with ``ok=False`` and an actionable remediation.
+    Does NOT create a session (``prepared.create_session()``); it mounts
+    only the ONE priority provider, into a disposable coordinator, purely to
+    prove it works (see ``preflight_verify``), and always cleans up after
+    itself.
+
+    ``verify_live`` opts into the networked models-list check (see
+    ``preflight_verify`` module docstring); the CLI wires this to ``True``
+    only for ``--dry-run`` (``main.py``). A ``preflight.verify_live: true``
+    setting has the same effect on every launch.
     """
     try:
         resolved = await resolve_config(
@@ -158,6 +216,33 @@ async def run_preflight(
         )
 
     provider_name, model_name = _priority_provider(resolved.mount_plan)
+
+    # AC4 follow-up: the PLAN resolving above proves the bundle/provider
+    # COULD mount; this proves the priority provider (the one that will
+    # actually serve the first turn) really does -- see
+    # preflight_verify's module docstring for what each check covers, the
+    # offline/network boundary, and the import-failure degrade rule.
+    settings_verify_provider, settings_verify_live = _preflight_settings(resolved.settings)
+    entry = _priority_provider_entry(resolved.mount_plan)
+    if entry is not None and settings_verify_provider:
+        module_id = str(entry.get("module") or "")
+        entry_config = entry.get("config") if isinstance(entry.get("config"), dict) else {}
+        verification = await verify_provider(
+            module_id=module_id,
+            config=dict(entry_config or {}),
+            model=model_name,
+            live_verify=verify_live or settings_verify_live,
+            live_timeout=DEFAULT_LIVE_TIMEOUT,
+        )
+        if not verification.ok:
+            return PreflightReport(
+                ok=False,
+                bundle_name=resolved.bundle_name,
+                bundle_uri=resolved.bundle_uri,
+                error=verification.error,
+                remediation=verification.remediation,
+            )
+
     return PreflightReport(
         ok=True,
         bundle_name=resolved.bundle_name,
