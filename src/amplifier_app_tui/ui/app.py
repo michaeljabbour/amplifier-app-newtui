@@ -102,9 +102,11 @@ _NOTIFY_TITLE = "Amplifier"
 """Notification title for every desktop rung (kept short: OSC 777 title
 field is bounded to 80 chars in ``ui/notifications``)."""
 
-_NOTIFY_BODY = {
-    "turn_finished": "Turn complete",
-    "decision_deferred": "A decision needs you",
+_NOTIFY_BODY: dict[notifications.AttentionReason, str] = {
+    "completion": "Turn complete",
+    "awaiting_approval": "A decision needs your approval",
+    "awaiting_clarification": "A decision needs your input",
+    "error": "The session hit an error",
 }
 """Default OSC 777 body per attention reason; a deferral passes its own
 message through instead (see :meth:`TuiApp._notify_attention`)."""
@@ -202,6 +204,11 @@ class TuiApp(App[None]):
         # the desktop rung of the notification ladder only escalates when
         # the user has demonstrably looked away (issue #47).
         self._terminal_focused = True
+        # Dedup + acknowledgement bookkeeping for the attention-notification
+        # ladder (B7, issue #47): mints one AttentionRecord per transition
+        # into an attention state, keyed for idempotent re-fire protection
+        # -- see _notify_attention / _acknowledge_attention.
+        self._attention = notifications.AttentionCenter()
         self.fork_pending = False  # a confirmed fork is in flight (interrupt-then-fork)
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
         self._splash: BootSplash | None = None  # boot splash overlay (wordmark)
@@ -301,7 +308,10 @@ class TuiApp(App[None]):
     def on_app_focus(self, event: events.AppFocus) -> None:
         # The terminal window regained focus: the user is watching, so the
         # ladder drops back to the audible bell alone (no desktop toast).
+        # Refocusing also counts as "resuming" (B7 AC5): clear whatever
+        # attention indicator is currently open.
         self._terminal_focused = True
+        self._acknowledge_attention()
 
     def on_app_blur(self, event: events.AppBlur) -> None:
         # The terminal window lost focus: a finished turn or deferred
@@ -311,28 +321,58 @@ class TuiApp(App[None]):
 
     def _notify_attention(
         self,
-        reason: notifications.Reason,
+        reason: notifications.AttentionReason,
         elapsed_s: float = 0.0,
         *,
+        occasion: str,
         detail: str = "",
     ) -> None:
-        """Fire the attention-notification ladder (issue #47).
+        """Emit ONE normalized ``AttentionRecord`` for a transition into
+        *reason* and fire its ladder (B7, issue #47 -- AC1/AC3).
 
         The suppressed hooks-notify wrote OSC-777 + BEL straight to the TTY
         (which corrupts the full-screen TUI); its signal is re-expressed
-        here as a ladder. Rung 1 is Textual's driver-safe ``App.bell``; rung
-        2 is an OSC 777 desktop notification written through the same
-        sanctioned driver path the terminal title uses, only when the window
-        is unfocused on a capable terminal. Rung 3 (off-machine push) is the
-        mounted ``hooks-notify-push`` module's job. ``AMPLIFIER_NOTIFY``
-        gates the whole ladder; ``notification_rungs`` owns the policy.
+        here as a ladder driven by the record rather than an ad-hoc call:
+        rung 1 is Textual's driver-safe ``App.bell``; rung 2 is an OSC 777
+        desktop notification written through the same sanctioned driver
+        path the terminal title uses, only when the window is unfocused on
+        a capable terminal. Rung 3 (off-machine push) is the mounted
+        ``hooks-notify-push`` module's job and is not routed through this
+        record (see ``ui/notifications.py`` module docstring).
+
+        ``occasion`` is *reason*'s stable idempotency handle -- the
+        finishing turn's id, or the parked decision's id -- so a re-render
+        or a repeated kernel-side ping for the SAME occasion dedupes (AC3)
+        instead of re-notifying. ``AMPLIFIER_NOTIFY`` gates the whole
+        ladder, including whether a record is minted at all;
+        ``notification_rungs`` owns the rung policy.
         """
+        if not notifications.attention_needed(reason, elapsed_s):
+            return
+        _, is_new = self._attention.note(self.adapter.session_id, reason, occasion, detail=detail)
+        if not is_new:
+            return  # AC3: same transition already notified (re-render/reconnect/re-ping)
         rungs = notifications.notification_rungs(reason, elapsed_s, focused=self._terminal_focused)
-        if "bell" in rungs:
-            self.bell()
-        if "desktop" in rungs:
-            body = detail.strip() or _NOTIFY_BODY[reason]
-            notifications.write_desktop_notification(self._driver, _NOTIFY_TITLE, body)
+        body = detail.strip() or _NOTIFY_BODY[reason]
+        notifications.fire_attention_ladder(
+            rungs, bell=self.bell, driver=self._driver, title=_NOTIFY_TITLE, body=body
+        )
+
+    def _acknowledge_attention(self) -> None:
+        """Clear the open attention record + its destination indicator
+        where the destination supports it (B7, issue #47 -- AC5).
+
+        OSC 777/desktop is ours to rewrite, so acknowledging best-effort
+        clears it; the bell already rang and has nothing to retract;
+        off-machine ntfy push has no acknowledgement channel here at all
+        (a different device's notification tray, fired by the mounted
+        ``hooks-notify-push`` module -- see ``ui/notifications.py`` module
+        docstring). A destination failure is logged, never raised, and
+        never blocks the session.
+        """
+        if self._attention.acknowledge(self.adapter.session_id) is None:
+            return  # nothing was open -- an idle resume/ack is a no-op
+        notifications.clear_desktop_notification(self._driver)
 
     def on_unmount(self) -> None:
         # A quit during a running turn must not leave a frozen spinner in the
@@ -861,10 +901,16 @@ class TuiApp(App[None]):
         self.rewind.sync_checkpoints(self.ledger.checkpoints)
         # Attention signal for the suppressed hooks-notify (raw OSC/BEL would
         # corrupt Textual): ring the driver-safe bell after long turns only —
-        # policy + rationale in app_support.attention_bell_needed.
+        # policy + rationale in app_support.attention_bell_needed. Occasion
+        # is the just-recorded turn's durable id (always present here — the
+        # reducer records the ledger turn before calling turn_finished), so
+        # a re-render for the SAME turn dedupes instead of re-notifying
+        # (B7 AC3).
         elapsed = 0.0 if self._turn_started_at is None else time.monotonic() - self._turn_started_at
         self._turn_started_at = None
-        self._notify_attention("turn_finished", elapsed)
+        turn_id = self.ledger.turns[-1].turn_id if self.ledger.turns else None
+        occasion = f"turn-{turn_id}" if turn_id is not None else f"turn-clock-{time.monotonic()}"
+        self._notify_attention("completion", elapsed, occasion=occasion)
         self.refresh_status()
 
     def lanes_changed(self) -> None:
@@ -912,18 +958,32 @@ class TuiApp(App[None]):
         # the shared queue — parking again would double the badge count.
         # Message-only deferrals (demo script, mounted-hook notices) still
         # derive the item through the adapter and park it here.
-        parked = decision_id and any(
-            item.decision_id == decision_id for item in self.adapter.needs_you.items
+        parked_item = (
+            next((i for i in self.adapter.needs_you.items if i.decision_id == decision_id), None)
+            if decision_id
+            else None
         )
-        if not parked:
+        if parked_item is not None:
+            item = parked_item
+        else:
             question, reason, choices, highlight, action = self.adapter.deferred_decision(
                 message, decision_id
             )
-            self.adapter.needs_you.defer(
+            item = self.adapter.needs_you.defer(
                 question, reason, choices=choices, highlight=highlight, action=action
             )
-        # A deferred decision blocks on the human: always worth notifying.
-        self._notify_attention("decision_deferred", detail=message)
+        # A deferred decision blocks on the human: always worth notifying,
+        # but only ONCE per decision -- a repeated kernel-side ping for an
+        # ALREADY-parked item (e.g. a second dependent tool call blocked on
+        # the same decision) dedupes by the decision's own stable id
+        # (B7 AC3) instead of re-ringing the bell. A governance/tool-action
+        # deferral carries a denied ``action`` key; a question-tool ask
+        # does not -- that distinguishes approval from clarification.
+        occasion = item.decision_id
+        reason_kind: notifications.AttentionReason = (
+            "awaiting_approval" if item.action else "awaiting_clarification"
+        )
+        self._notify_attention(reason_kind, occasion=occasion, detail=message)
         self._refresh_footer()
 
     def stream_opened(self, block_type: str) -> None:
