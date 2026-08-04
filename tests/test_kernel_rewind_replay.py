@@ -31,7 +31,7 @@ from amplifier_app_tui.kernel.runtime import (
     _kept_turns_for,
     restored_ui_events,
 )
-from amplifier_app_tui.model.blocks import BlockIdAllocator
+from amplifier_app_tui.model.blocks import BlockIdAllocator, UnsupportedBlock
 from amplifier_app_tui.model.lanes import LaneRegistry
 from amplifier_app_tui.model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
 from amplifier_app_tui.ui.reducer import TranscriptReducer
@@ -262,6 +262,44 @@ def test_cost_reseed_stays_consistent_with_a_marker_in_the_log(tmp_path: Path) -
     assert reducer.replay(restored_ui_events(store, sid), turn_base=3, session_cost=prior) is True
     # The kernel re-seed stays the single footer authority (spec §11).
     assert reducer.session_cost == prior
+
+
+def test_restored_ui_events_carry_a_safe_recovery_reference(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """S5 AC2: an ``UnsupportedBlock`` built by ``restored_ui_events`` from a
+    REAL persisted log carries a locator — the log path plus the record's
+    own 1-based line — accurate enough to dereference on disk, but never
+    the record's own content. The parse-failure log line (AC4) cites the
+    same locator, never the value."""
+    store = SessionStore(base_dir=tmp_path)
+    sid = SID
+    log: list[Any] = [ev.SessionStart(**_env(0.0)), *_turn("investigate the crash", ts=1.0)]
+    for event in log:
+        store.append_event(sid, event)
+    # A foreign record with a planted secret, landing at a known line.
+    store.append_event(
+        sid, {"kind": "loop_progress", "session_id": sid, "secret": "sk-do-not-leak"}
+    )
+    foreign_line = len(log) + 1  # 1-based: right after every prior record
+
+    with caplog.at_level("WARNING"):
+        restored = restored_ui_events(store, sid)
+
+    placeholder = next(e for e in restored if isinstance(e, UnsupportedBlock))
+    events_path = store.events_path(sid)
+    assert placeholder.source_path == str(events_path)
+    assert placeholder.source_line == foreign_line
+
+    # The reference is ACCURATE: dereferencing it finds the real record.
+    on_disk_line = events_path.read_text(encoding="utf-8").splitlines()[foreign_line - 1]
+    assert "loop_progress" in on_disk_line
+
+    # ...and it is a pure locator: the secret value leaks nowhere on the
+    # placeholder or the log line, which names the path/line instead.
+    assert "sk-do-not-leak" not in placeholder.model_dump_json()
+    assert f"source={events_path}:{foreign_line}" in caplog.text
+    assert "sk-do-not-leak" not in caplog.text
 
 
 # --------------------------------------------------------------------------

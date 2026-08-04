@@ -378,9 +378,28 @@ class SessionStore:
         without a string ``kind`` — e.g. hooks-logging's ISO-timestamped
         hook events sharing a legacy mixed file).
         """
+        for _path, _line_no, record in self.read_events_located(session_id):
+            yield record
+
+    def read_events_located(self, session_id: str) -> Iterator[tuple[Path, int, dict[str, Any]]]:
+        """Like :meth:`read_events`, but also yields each record's own location.
+
+        ``(path, line_no, record)`` — ``line_no`` is the record's 1-based
+        line number within ``path`` (the log is JSONL: one record per
+        line). This is the read-side half of the S5 AC2 safe-recovery-
+        reference contract: a location cheap to recompute on every read
+        (the log is append-only, so a record's line never moves), letting
+        :func:`~amplifier_app_tui.kernel.events.parse_event` build an
+        ``UnsupportedBlock`` placeholder that can point a user/support
+        engineer at the exact persisted line — without the placeholder
+        ever carrying the line's own content. Same skip rules as
+        :meth:`read_events` (blank/unparseable lines, foreign records
+        without a string ``kind``) — that method is now a thin projection
+        of this one, so the two can never drift apart.
+        """
         for path in self.events_read_paths(session_id):
             with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
+                for line_no, line in enumerate(handle, start=1):
                     line = line.strip()
                     if not line:
                         continue
@@ -389,7 +408,7 @@ class SessionStore:
                     except json.JSONDecodeError:
                         continue
                     if isinstance(record, dict) and isinstance(record.get("kind"), str):
-                        yield record
+                        yield path, line_no, record
 
     # -- listing / lookup ----------------------------------------------------
 
