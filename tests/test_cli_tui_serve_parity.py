@@ -17,8 +17,12 @@ doesn't exist): all three surfaces already read ``RealRuntime.bundle_name``
 / ``model_name`` verbatim off ONE ``_provider_and_model()`` resolution --
 see ``test_cli_tui_serve_identity_fixture.py``'s module docstring for the
 three exact call sites. This suite is the proof that they stay in
-lockstep; it is not a claim that CLI/TUI/serve share any *other* surface
-(command flags, session resolution, etc. remain single-surface today).
+lockstep; it is not a claim that CLI/TUI/serve share every surface (command
+flags, settings precedence, skill/tool availability, etc. remain
+single-surface or not-yet-proven today). One more axis IS now proven the
+same way: resume-target resolution and its deterministic exit codes --
+see ``test_cli_tui_serve_resume_fixture.py`` / ``test_cli_tui_serve_resume_
+parity.py`` (compliance B9 gap 2's second axis).
 """
 
 from __future__ import annotations

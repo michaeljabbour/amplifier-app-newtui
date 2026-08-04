@@ -181,6 +181,12 @@ policy (issue #53):
   (skipping): amplifier-foundation" and booted degraded (#96). Foundation's release **tags**
   (`v2.1.x`) do **not** ship `bundles/anchors` — only `@main` carries it — so `@main` is the
   only fetchable source today, and it matches how the shared registry resolves `anchors`.
+  **Re-verified 2026-08-04** (compliance B9 gap-closure pass): foundation has published no
+  tag since the prior 2026-08-02 check (`v2.1.0`/`v2.1.1`/`v2.1.2` via `git ls-remote --tags`);
+  the latest, `v2.1.2`, still 404s on the `bundles/anchors` contents-API path, `@main` still
+  200s. The constraint is unchanged and re-pinning a bare SHA was rejected again for the same
+  reason #96 reverted it the first time. Re-run `scripts/verify_anchors_constraint.py` to
+  redo this check against the live repo — do that before ever touching this include.
 - **How updates flow.** Tracking `@main` means composition changes (roster, behaviors) *and*
   anchors' internal module/behavior fixes all arrive on the next fetch. `amplifier-tui
   update` refreshes the runtime cache (`--force` runs `uv cache clean` for a true re-fetch).
@@ -201,6 +207,17 @@ policy (issue #53):
   (defaults to `main`; idempotent). It **refuses a bare SHA** without `--allow-sha`. When
   foundation ships tagged releases that carry `bundles/anchors`, switch to
   `scripts/bump_anchors_ref.py vX.Y.Z` for reproducible boots (issue #53 Option B).
+- **Re-checking whether a tag now ships anchors.** `uv run python
+  scripts/verify_anchors_constraint.py` re-runs the exact GitHub-API check above (latest
+  release tag vs. `bundles/anchors` contents-API 200/404) against the live repo and exits
+  non-zero if the answer has flipped, so this doesn't rely on a human remembering to
+  re-poke GitHub. It is a manual/maintenance check (network required), not part of the
+  default offline test gate.
+- **Guarding every OTHER dependency.** `tests/test_no_floating_dependencies.py` fails the
+  build if any git dependency in the packaged bundle, `pyproject.toml`'s `[tool.uv.sources]`,
+  or a CI workflow's `uses:` step ever floats a branch instead of a tag/commit SHA. The
+  anchors include above is the ONE allow-listed, justified exception (see that file's
+  `ALLOWED_FLOATING_REFS`) — every other dependency in this repo is pinned.
 
 ## Adoption gates (replacing amplifier-app-cli)
 
