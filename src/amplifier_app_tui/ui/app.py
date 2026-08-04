@@ -368,13 +368,22 @@ class TuiApp(App[None]):
         """
         if not notifications.attention_needed(reason, elapsed_s):
             return
-        _, is_new = self._attention.note(self.adapter.session_id, reason, occasion, detail=detail)
+        record, is_new = self._attention.note(
+            self.adapter.session_id, reason, occasion, detail=detail
+        )
         if not is_new:
             return  # AC3: same transition already notified (re-render/reconnect/re-ping)
         rungs = notifications.notification_rungs(reason, elapsed_s, focused=self._terminal_focused)
         body = detail.strip() or _NOTIFY_BODY[reason]
         notifications.fire_attention_ladder(
             rungs, bell=self.bell, driver=self._driver, title=_NOTIFY_TITLE, body=body
+        )
+        # B7 gap 2: route the SAME record-derived payload (carrying the
+        # attention event_id) onto the adapter's push seam, additive to the
+        # ladder above -- never blocking, never raising (see
+        # RuntimeAdapter.publish_attention / RealRuntimeAdapter's override).
+        self.adapter.publish_attention(
+            notifications.attention_push_payload(record, title=_NOTIFY_TITLE, body=body)
         )
 
     def _acknowledge_attention(self) -> None:
@@ -435,12 +444,29 @@ class TuiApp(App[None]):
         self.adapter.attach(self)
         try:
             await self.adapter.start(lambda: app_support.announce_ready(self))
+            # Both bindings below fire ONCE, right here, because this is the
+            # one boundary that owns session identity: RuntimeAdapter.start()
+            # has just resolved adapter.session_id / adapter.session_dir as
+            # plain attributes (set synchronously before start() returns), so
+            # neither call below can observe a half-initialized adapter, and
+            # their relative order is inconsequential -- each binds a
+            # DIFFERENT, independent piece of module/instance state and
+            # neither reads the other's output. A resume/second window is a
+            # fresh process (``amplifier-tui resume SESSION_ID``), so there is
+            # no in-place session switch that could leave either bound to a
+            # stale value.
+            #
             # Session identity is resolved by now (RuntimeAdapter.start()'s own
             # contract); bind it for transcript_render's render-failure log
             # lines (S5 AC4) here, at the ONE boundary that owns session
             # identity, rather than threading a session_id through every pure
             # renderer. Empty for demo sessions, matching adapter.session_id.
             transcript_render.bind_session_context(self.adapter.session_id)
+            # B7 gap 1: the session directory is only known once boot
+            # completes -- bind durability now so a restart/second-process
+            # observes prior attention state (no-op for the demo adapter,
+            # whose session_dir is always None).
+            self._attention.bind(self.adapter.session_dir)
             self.file_mentions.set_files(await self.adapter.workspace_files())
             self._register_skill_commands(await self.adapter.list_skills())
             # A resumed fork child carries a primed directive; run it as the
@@ -500,6 +526,22 @@ class TuiApp(App[None]):
             # uncaught so a real shutdown isn't misreported as a turn failure.)
             self.log.error(f"turn failed: {error}")
             self.show_notice(f"turn failed · {error}")
+            # B7 gap 3 (production error transition #1 -- a failed turn):
+            # the ``finally`` inside ``RealRuntime.submit`` always emits its
+            # close-out first (turn_finished() already fired above this
+            # except), so this exception is genuinely on top of that --
+            # error is the more specific, more urgent signal. Same occasion
+            # derivation as turn_finished() (the just-recorded turn's id, so
+            # a re-render of the SAME failure dedupes -- AC3) with its own
+            # prefix so it never collides with the "completion" reason's key
+            # (the composite event id already namespaces by reason too).
+            turn_id = self.ledger.turns[-1].turn_id if self.ledger.turns else None
+            occasion = (
+                f"submit-error-{turn_id}"
+                if turn_id is not None
+                else f"submit-error-{time.monotonic()}"
+            )
+            self._notify_attention("error", occasion=occasion, detail=str(error))
 
     # -- ReducerHost ---------------------------------------------------------------
 
@@ -1065,6 +1107,15 @@ class TuiApp(App[None]):
         )
         self._notify_attention(reason_kind, occasion=occasion, detail=message)
         self._refresh_footer()
+
+    def attention_error(self, detail: str, *, occasion: str) -> None:
+        """``ReducerHost`` hook for a session-level error transition detected
+        by the reducer (B7 gap 3): a provider/runtime notice, or a delegate
+        settling into the terminal ``error`` lane state. Just forwards to
+        the SAME normalized ladder as every other reason -- no parallel
+        notion of "attention-worthy error" lives here.
+        """
+        self._notify_attention("error", occasion=occasion, detail=detail)
 
     def stream_opened(self, block_type: str) -> None:
         self.transcript.set_streaming(True)

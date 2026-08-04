@@ -23,6 +23,7 @@ class FakeHost:
         self.notices: list[str] = []
         self.stream_events: list[tuple[str, str]] = []
         self.plan_changes: list[tuple[TodoItem, ...]] = []
+        self.attention_errors: list[tuple[str, str]] = []
 
     def append_block(self, block: TranscriptBlock) -> None:
         self.blocks.append(block)
@@ -59,6 +60,9 @@ class FakeHost:
 
     def decision_deferred(self, message: str, decision_id: str = "") -> None:
         pass
+
+    def attention_error(self, detail: str, *, occasion: str) -> None:
+        self.attention_errors.append((detail, occasion))
 
     def stream_opened(self, block_type: str) -> None:
         self.stream_events.append(("opened", block_type))
@@ -620,3 +624,77 @@ def test_cancelled_lane_settlement_is_not_coalesced_away() -> None:
     reducer.handle(ev.CancelCompleted(**_env(1.0)))
     reducer.handle(ev.PromptComplete(**_env(1.0)))
     assert host.lanes_changed_calls > before  # the cancellation ALWAYS repaints
+
+
+# -- B7 gap 3: production error transition #3 -- a failed delegate -----------
+
+
+def test_agent_completed_failure_notifies_attention_error() -> None:
+    """A delegate settling into the terminal ``error`` state (D5 AC1) must
+    notify attention_error exactly once, keyed by its own sub_session_id."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "scout", "s1", 1.0)
+    _complete(reducer, "scout", "s1", 2.0, success=False, result="tests failed")
+
+    assert host.attention_errors == [("tests failed", "s1")]
+
+
+def test_agent_completed_success_does_not_notify_attention_error() -> None:
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "scout", "s1", 1.0)
+    _complete(reducer, "scout", "s1", 2.0, success=True, result="done")
+
+    assert host.attention_errors == []
+
+
+def test_agent_completed_reasonless_failure_still_notifies_with_agent_name() -> None:
+    """A failure with no ``result`` text (bare "failed") still gets a
+    meaningful detail -- the agent name, not the literal word "failed"."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "scout", "s1", 1.0)
+    _complete(reducer, "scout", "s1", 2.0, success=False, result="")
+
+    assert host.attention_errors == [("scout failed", "s1")]
+
+
+def test_cancelled_delegate_does_not_notify_attention_error() -> None:
+    """Cancellation (a turn-level interrupt cascading onto still-running
+    delegates) is a deliberate user action, never an "error" -- B7 gap 3
+    keys off the SAME terminal-state signal TERMINAL_LANE_STATES defines,
+    but narrower than it: "cancelled" must not ring the error bell."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "scout", "s1", 1.0)
+    reducer.handle(ev.CancelCompleted(**_env(2.0)))
+    reducer.handle(ev.PromptComplete(**_env(2.0)))
+
+    assert reducer.lanes.get("s1").lane.state == "cancelled"
+    assert host.attention_errors == []
+
+
+# -- B7 gap 3: production error transition #2 -- a provider/runtime error ---
+
+
+def test_provider_error_notice_notifies_attention_error() -> None:
+    reducer, host = make_reducer()
+    _start(reducer)
+    reducer.handle(ev.ProviderNotice(**_env(1.0), notice="error", message="rate limited hard"))
+
+    assert host.notices == ["provider error · rate limited hard"]
+    assert len(host.attention_errors) == 1
+    detail, occasion = host.attention_errors[0]
+    assert detail == "rate limited hard"
+    assert occasion.startswith("provider-error-")
+
+
+def test_provider_retry_and_throttle_notices_do_not_notify_attention_error() -> None:
+    """Only "error" is attention-worthy -- retry/throttle are transient noise."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    reducer.handle(ev.ProviderNotice(**_env(1.0), notice="retry", message="retrying"))
+    reducer.handle(ev.ProviderNotice(**_env(2.0), notice="throttle", message="slow down"))
+
+    assert host.attention_errors == []

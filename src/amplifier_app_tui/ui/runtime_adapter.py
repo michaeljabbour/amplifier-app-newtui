@@ -220,6 +220,10 @@ class RuntimeAdapter:
         """Live ``/config`` state — shared by demo and real (invariant 4);
         real sessions reseed it from the mount plan at ``start()``."""
         self._config_project_dir: Path = Path.cwd()
+        self.session_dir: Path | None = None
+        """The live session's durable directory (B7 gap 1), once known --
+        ``None`` for the demo adapter and before a real session starts.
+        ``ui/app.py`` binds ``AttentionCenter`` to it right after boot."""
 
     def attach(self, app: Any) -> None:
         """Give the adapter its app handle (approval presentation etc.)."""
@@ -254,6 +258,18 @@ class RuntimeAdapter:
     def prompt_history(self) -> tuple[str, ...]:
         """Prompts submitted in this directory across sessions (oldest first)."""
         return ()
+
+    # -- off-machine push routing (B7 gap 2) ----------------------------------
+
+    def publish_attention(self, payload: Mapping[str, Any]) -> None:
+        """Best-effort: mirror a normalized attention transition (*payload*
+        from ``ui.notifications.attention_push_payload``) onto the runtime's
+        hooks bus as ``attention:recorded``.
+
+        Base/demo no-op: there is no real hooks bus without a live session.
+        Never raises and never blocks -- see ``RealRuntimeAdapter``'s
+        override for the fire-and-forget cross-thread contract.
+        """
 
     # -- in-session op dispatch (ONE seam; see :class:`SessionOp`) -----------
 
@@ -575,6 +591,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.compaction = runtime.compaction
         self.pending_directive = runtime.pending_directive
         self.mount_report = runtime.mount_report
+        self.session_dir = runtime.session_dir()
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
         self._config_state = runtime.config_state()
@@ -819,6 +836,31 @@ class RealRuntimeAdapter(RuntimeAdapter):
                 pass  # ticket already resolved / deferred / no queue
 
         self._runtime_loop.call_soon_threadsafe(_defer)
+
+    def publish_attention(self, payload: Mapping[str, Any]) -> None:
+        """Fire-and-forget onto the runtime loop -- never blocks the UI
+        thread, never raises (B7 gap 2).
+
+        Mirrors :meth:`answer_approval`/:meth:`defer_approval`'s own
+        cross-thread contract: a plain closure hops via
+        ``call_soon_threadsafe`` and does its own work once ON the runtime
+        loop. Scheduling the actual (async) hook emission as a task there
+        -- rather than awaiting it from here -- is what keeps this call
+        synchronous and instant from the caller's (UI thread's) point of
+        view; ``RealRuntime.publish_attention`` itself never raises.
+        """
+        if self._runtime is None or self._runtime_loop is None:
+            return
+        runtime = self._runtime
+        data = dict(payload)
+
+        def _publish() -> None:
+            try:
+                self._runtime_loop.create_task(runtime.publish_attention(data))  # type: ignore[union-attr]
+            except RuntimeError:
+                pass  # loop closing / closed between the check and the call
+
+        self._runtime_loop.call_soon_threadsafe(_publish)
 
     def shutdown(self) -> None:
         """Stop the runtime thread and WAIT for its cleanup (bounded).

@@ -186,6 +186,10 @@ class FakeRealRuntime:
         self.record("agent_brief", (agent_name,))
         return "fix the flaky test" if agent_name == "scout" else ""
 
+    def session_dir(self) -> Path | None:
+        self.record("session_dir", ())
+        return self.project_dir / "sessions" / self.session_id
+
     async def set_model(self, model: str) -> object:
         self.record("set_model", (model,))
         if self.next_model_name is not None:
