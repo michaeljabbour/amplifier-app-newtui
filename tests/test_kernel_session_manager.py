@@ -415,8 +415,119 @@ def test_message_count_survives_binary_transcript(store: SessionStore) -> None:
     (store.session_dir("s1") / TRANSCRIPT_FILENAME).write_bytes(b"\xff\xfe\x00garbage\n")
     summary = sm.summary_for(store, "s1")
     assert summary.messages == 0
-    # Metadata itself was fine -- only the transcript was corrupt, so the
-    # session is still "ok" (a transcript read hiccup alone isn't the same
-    # damage class as unreadable metadata).
-    assert summary.state == "ok"
+    # Metadata itself was fine, so name/bundle read cleanly -- but the
+    # transcript itself is unreadable, and that is now its own explicit
+    # state rather than being collapsed into "ok" (S2 gap 3: this exact
+    # scenario -- "metadata present but transcript truncated" -- is one of
+    # the reviewer's own examples of a state that must stop hiding behind
+    # a plain "ok").
+    assert summary.state == "transcript_lost"
     assert summary.name == "ok-name"
+
+
+# -- S2 compliance gap 3: explicit indexing states --------------------------
+#
+# Real fixture session directories in each damaged/partial shape, built the
+# same way the existing recovered/corrupt tests above do (via `store.save`
+# then hand-editing the files on disk) -- never mocked or asserted from a
+# bare SessionSummary() construction alone.
+
+
+def test_summary_for_marks_transcript_lost_when_metadata_ok_but_transcript_unreadable(
+    store: SessionStore,
+) -> None:
+    """Metadata parses cleanly (name/bundle/turns all trustworthy) but BOTH
+    transcript.jsonl and its .backup are unreadable -- the exact shape
+    ``kernel/runtime.py`` already resumes today (empty history + a loud
+    warning); the listing must say so up front instead of showing ``ok``."""
+    _seed(store, "s1", name="auth work", bundle="tui", messages=1, turns=1)
+    _seed(
+        store, "s1", name="auth work", bundle="tui", messages=2, turns=2
+    )  # creates a real .backup
+    session_dir = store.session_dir("s1")
+    (session_dir / TRANSCRIPT_FILENAME).write_bytes(b"\xff\xfe\x00garbage\n")
+    (session_dir / (TRANSCRIPT_FILENAME + ".backup")).write_bytes(b"\xff\xfe\x00garbage\n")
+
+    summary = sm.summary_for(store, "s1")
+
+    assert summary.state == "transcript_lost"
+    # Identity survives -- only the conversation history is gone.
+    assert summary.name == "auth work"
+    assert summary.bundle == "tui"
+    assert summary.turns == 2
+
+
+def test_summary_for_transcript_lost_requires_transcript_to_have_existed(
+    store: SessionStore,
+) -> None:
+    """A session with healthy metadata and NO transcript file at all (never
+    written) is a normal fresh session, not ``transcript_lost`` -- absence
+    and corruption are different states."""
+    store.save("s1", [], {"session_id": "s1", "bundle": "tui"})
+    assert sm.summary_for(store, "s1").state == "ok"
+
+
+def test_summary_for_marks_indexing_when_transcript_present_but_no_metadata(
+    store: SessionStore,
+) -> None:
+    """Real transcript content but metadata.json does not exist as a file
+    at all -- the fingerprint of a save interrupted between its transcript
+    write and its metadata write (every ``save()`` writes both together),
+    or a directory populated by something other than this app."""
+    _seed(store, "s1", name="will vanish", messages=3)
+    (store.session_dir("s1") / METADATA_FILENAME).unlink()
+
+    summary = sm.summary_for(store, "s1")
+
+    assert summary.state == "indexing"
+    assert summary.messages == 3
+    # Genuinely unknown, not merely unparsed -- degrades honestly.
+    assert summary.name == ""
+    assert summary.bundle == "unknown"
+
+
+def test_summary_for_ok_when_no_metadata_and_no_transcript(store: SessionStore) -> None:
+    """The pre-existing contract this state must NOT regress: a
+    still-being-written, message-less brand-new session dir lists as
+    ``"ok"``, never ``"indexing"`` -- there is nothing to index yet."""
+    store.session_dir("brand-new").mkdir(parents=True)
+    summary = sm.summary_for(store, "brand-new")
+    assert summary.state == "ok"
+    assert summary.messages == 0
+
+
+def test_resumable_states_contents() -> None:
+    """The exact, named contract :func:`resolve_for_resume` relies on."""
+    assert sm.RESUMABLE_STATES == frozenset({"ok", "transcript_lost"})
+
+
+def test_resolve_for_resume_transcript_lost_is_still_resumable(store: SessionStore) -> None:
+    """S2 gap 3: unlike ``recovered``/``corrupt``/``indexing``, a
+    ``transcript_lost`` session keeps its full, trustworthy metadata --
+    ``RealRuntime`` boots it exactly as before (empty restored history +
+    the pre-existing warning), so the resume path must not newly refuse
+    it just because :func:`summary_for` now labels it explicitly."""
+    _seed(store, "deadbeef", name="auth work", bundle="tui", messages=1)
+    _seed(store, "deadbeef", name="auth work", bundle="tui", messages=2)
+    session_dir = store.session_dir("deadbeef")
+    (session_dir / TRANSCRIPT_FILENAME).write_bytes(b"\xff\xfe\x00garbage\n")
+    (session_dir / (TRANSCRIPT_FILENAME + ".backup")).write_bytes(b"\xff\xfe\x00garbage\n")
+    assert sm.summary_for(store, "deadbeef").state == "transcript_lost"  # sanity
+
+    result = sm.resolve_for_resume(store, "dead")
+
+    assert result.status == "ok"
+    assert result.session_id == "deadbeef"
+
+
+def test_resolve_for_resume_refuses_indexing_state(store: SessionStore) -> None:
+    """An ``indexing`` session (real transcript, no metadata) has no
+    bundle/identity to relaunch into -- refused, like ``recovered``/
+    ``corrupt``, not silently treated as resumable."""
+    _seed(store, "nometa01", messages=2)
+    (store.session_dir("nometa01") / METADATA_FILENAME).unlink()
+    assert sm.summary_for(store, "nometa01").state == "indexing"  # sanity
+
+    result = sm.resolve_for_resume(store, "nometa01")
+
+    assert result.status == "corrupt"

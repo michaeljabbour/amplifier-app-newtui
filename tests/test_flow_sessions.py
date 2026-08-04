@@ -41,7 +41,7 @@ async def test_slash_sessions_opens_the_picker_not_a_transcript_post() -> None:
         assert app.footer_bar.state.context == "sessions"
         assert (
             footer_right_text(app.footer_bar.state)
-            == "\u2191\u2193 select \u00b7 enter open \u00b7 esc close"
+            == "\u2191\u2193 select \u00b7 enter open \u00b7 r resume \u00b7 esc close"
         )
 
 
