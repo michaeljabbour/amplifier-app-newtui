@@ -11,39 +11,47 @@ can be demonstrated in the real terminal app.
 
 ## 1. Themes & design tokens
 
-Three themes, switchable at runtime. Exact token values (from the mockup):
+Four themes, switchable at runtime: three dark (slate/graphite/carbon, from the mockup)
+plus one light (paper, added for AC4/#210 below). Exact token values:
 
-| Token | slate | graphite | carbon |
-|---|---|---|---|
-| bg-page | `#12151c` | `#131110` | `#0c0e12` |
-| bg-term | `#232937` | `#211e1a` | `#14171d` |
-| bg-chrome | `#191d27` | `#181512` | `#0f1116` |
-| bg-tab | `#2b3243` | `#2c2722` | `#1f242e` |
-| fg | `#c9d1e0` | `#d6cfc4` | `#cdd6e4` |
-| bright | `#eef2f8` | `#f2ede4` | `#f4f7fc` |
-| dim | `#6b7487` | `#8a8175` | `#65718a` |
-| dimmer | `#4a5163` | `#575047` | `#3d4657` |
-| green | `#7ec699` | `#98c28b` | `#6fd39c` |
-| orange | `#e0a458` | `#dba15c` | `#e9b14f` |
-| red | `#e06c75` | `#d97371` | `#ef6e7b` |
-| blue | `#7aa2f7` | `#90a4d8` | `#6f9df2` |
-| teal | `#6fc3c3` | `#80bcae` | `#57c8c8` |
-| rule | `#333b4d` | `#3a352e` | `#2a3140` |
+| Token | slate | graphite | carbon | paper |
+|---|---|---|---|---|
+| bg-page | `#12151c` | `#131110` | `#0c0e12` | `#e7e2d3` |
+| bg-term | `#232937` | `#211e1a` | `#14171d` | `#f7f5f0` |
+| bg-chrome | `#191d27` | `#181512` | `#0f1116` | `#efece3` |
+| bg-tab | `#2b3243` | `#2c2722` | `#1f242e` | `#dcd4bf` |
+| fg | `#c9d1e0` | `#d6cfc4` | `#cdd6e4` | `#3a352c` |
+| bright | `#eef2f8` | `#f2ede4` | `#f4f7fc` | `#1c1812` |
+| dim | `#6b7487` | `#8a8175` | `#65718a` | `#6e6656` |
+| dimmer | `#4a5163` | `#575047` | `#3d4657` | `#948c78` |
+| green | `#7ec699` | `#98c28b` | `#6fd39c` | `#146536` |
+| orange | `#e0a458` | `#dba15c` | `#e9b14f` | `#8a4d0a` |
+| red | `#e06c75` | `#d97371` | `#ef6e7b` | `#9c2f27` |
+| blue | `#7aa2f7` | `#90a4d8` | `#6f9df2` | `#1a45b8` |
+| teal | `#6fc3c3` | `#80bcae` | `#57c8c8` | `#0a5f58` |
+| rule | `#333b4d` | `#3a352e` | `#2a3140` | `#cfc6ae` |
 
 - [ ] All UI color comes from these named tokens only (no ad-hoc colors).
 - [ ] Theme switchable at runtime (settings/command), default `slate`.
 - [ ] Monospace rendering; JetBrains-Mono-flavored glyph choices (❯ ● ✳ ✦ ✧ ■ ✔ □ ⊘ ◐ ├─ └ ↳ ▲ ▹ ‹ ›).
+- [ ] Every token pair that renders text on a background meets a WCAG 2.1 contrast floor
+      (4.5:1 body text, 3:1 large-scale/highlighted text) in every theme, light and dark —
+      computed via relative luminance and asserted programmatically, not eyeballed
+      (`ui/themes.py`'s `contrast_ratio`; `tests/test_ui_theme_contrast.py`).
 
-**Scope note (compliance 2026-08-02, item B1):** all three themes above are dark token
-sets — there is no light theme. AC4 ("final-answer emphasis remains legible in light and
-dark themes and does not rely on color alone") is narrowed here to **the three dark
-themes above**. The final-answer start marker (§3 below; `model/blocks.py`'s
-`Answer.final`, rendered by `ui/transcript_render.py`'s `FINAL_ANSWER_MARKER`) is built
-from a label + bold weight, never color alone, so it is structurally ready for a light
-theme today — but no light theme has been built or golden-tested, so the claim is not
-made for one. A full light theme (new token set, every widget/golden/snapshot
-re-verified against it) is a large, separately-scoped surface tracked as its own
-follow-up (issue #210) rather than folded into a final-answer-emphasis item.
+**Resolution note (compliance 2026-08-04, item B1, AC4 — issue #210 closed):** a prior
+round narrowed AC4 ("final-answer emphasis remains legible in light and dark themes and
+does not rely on color alone") to the three dark themes above and tracked a full light
+theme as a separate follow-up (issue #210, see docs/BACKLOG.md). That narrowing is
+reverted here: `paper` (above) is a real, selectable fourth theme (`/theme paper`, or
+reachable by cycling bare `/theme`), and every token pair that renders text on a
+background — in `paper` and in the three dark themes alike — is contrast-tested against
+a WCAG 2.1 floor (`tests/test_ui_theme_contrast.py`), so a future token edit cannot
+silently regress legibility. The final-answer start marker (§3 below; `model/blocks.py`'s
+`Answer.final`, rendered by `ui/transcript_render.py`'s `FINAL_ANSWER_MARKER`) was already
+built from a label + bold weight, never color alone; it is now additionally verified
+against `paper`'s actual resolved colors (bright-on-bg-term, ~16.2:1) in the same test
+file. Issue #210 is closed by this change.
 
 ## 2. Screen layout (top → bottom)
 

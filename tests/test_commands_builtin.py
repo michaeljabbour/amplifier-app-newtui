@@ -94,7 +94,7 @@ MOCKUP_TABLE = [
     ("Repair", "/doctor", "setup checkup; reports, then fixes on confirm", "skill"),
     ("Repair", "/improve", "tune config from ledger + denial log", "skill"),
     # Beyond the mockup table: runtime theme switch (DESIGN-SPEC §1).
-    ("Repair", "/theme", "switch theme: slate, graphite, carbon", "built-in"),
+    ("Repair", "/theme", "switch theme: slate, graphite, carbon, paper", "built-in"),
     # Beyond the mockup table: keyboard-shortcut reference (compliance
     # 2026-08-02, item D4).
     ("Repair", "/keys", "list every keyboard shortcut and what it does", "built-in"),
