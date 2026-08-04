@@ -376,6 +376,14 @@ Rewind is **confirm-then-trim**: the session forks from that checkpoint first, a
 after that succeeds is the transcript trimmed. A failed fork changes nothing. Cost and
 ledger accounting roll back with it.
 
+Opening the picker never touches a running turn — browse checkpoints freely while one
+streams. Confirming a fork while a turn is still running is different: it interrupts that
+turn first (the same break esc requests) and waits for it to close out — which records its
+own · interrupted checkpoint — before forking, so nothing is orphaned mid-stream. A pending
+approval isn't answered for you; the fork just waits behind it until you decide. A message
+queued with shift+enter isn't dropped either — it runs right after the fork, against the
+now-rewound state.
+
 ## 11. Watching cost and yield
 
 - The **footer** shows running session cost.

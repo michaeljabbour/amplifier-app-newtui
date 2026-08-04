@@ -336,7 +336,7 @@ ACTION_HELP: dict[str, str] = {
     "toggle_thinking": "show/hide the live thinking box while a turn runs",
     "show_ledger": "print the session outcome ledger",
     "show_needs_you": "open deferred decisions",
-    "open_rewind": "open the rewind picker",
+    "open_rewind": "open the rewind picker to fork an earlier turn (forking mid-turn interrupts the turn first)",
     "return_to_answer": "jump back to the current/most-recent turn's final answer",
     "plan_drilldown": "cycle the plan panel's row window",
     "toggle_plan_overflow": "expand or collapse the plan panel's hidden rows",
