@@ -73,10 +73,15 @@ footer.
 
 **Plan panel.** When the agent keeps a live checklist (the `todo` tool), a compact
 **`Plan N/M`** panel appears in the bottom strip's right column: `✔` done, `▶` in
-progress, `○` pending — windowed around the in-progress item, with a `⋮ +N more` line
-when the plan is long. Once every item completes it collapses to the header line
-(done stays visible). On narrow terminals the panel hides and the footer carries the
-`Plan N/M` count instead — the count never shows in both places at once.
+progress, `○` pending — windowed around the in-progress item, with a `⋮ +N more`
+control when the plan is long. **`↑↓`/click** it (or **ctrl-n**, which instead widens
+the window default → +2 → +3 rows → back) to see more — the `+N more` control
+itself is focusable: **enter**, **space**, or a **click** expands the full list in
+place and flips the control to **`▾ Show less`** to collapse it again; at a short
+terminal height the expanded list scrolls inside the panel rather than covering the
+composer. Once every item completes it collapses to the header line (done stays
+visible). On narrow terminals the panel hides and the footer carries the `Plan N/M`
+count instead — the count never shows in both places at once.
 
 ## 3. Talking to Amplifier
 
