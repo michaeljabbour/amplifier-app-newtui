@@ -1,0 +1,16 @@
+# Adoption stage ledger v1 - amplifier-app-tui replacing amplifier-app-cli.
+#
+# Criteria PROSE (what each entry/exit id means) lives in README.md; this file is the
+# RECORD. Edit by hand in a reviewed PR, then run:
+#     python3 scripts/adoption_gate.py check
+#     python3 scripts/adoption_gate.py promote <stage>
+# `-` means "not yet recorded". Git history is the audit trail.
+#
+# decision: pending | promoted | held | rolled-back
+#
+# stage	owner	min_window_days	entry_criteria	exit_criteria	tested_commit	start_date	end_date	entry_evidence	exit_evidence	decision
+1	MJ Jabbour	1	S1-entry	S1-exit	-	-	-	-	-	pending
+2	Brian Krabach	1	S2-entry	S2-exit	-	-	-	-	-	pending
+3	stage-3 seats (see feedback.tsv)	1	S3-entry	S3-exit	-	-	-	-	-	pending
+4	MJ Jabbour	1	S4-entry	S4-exit	-	-	-	-	-	pending
+5	MJ Jabbour	0	S5-entry	S5-exit	-	-	-	-	-	pending

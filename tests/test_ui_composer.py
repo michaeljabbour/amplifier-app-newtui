@@ -17,7 +17,7 @@ from amplifier_app_tui.ui.composer import (
 )
 from amplifier_app_tui.ui.file_mentions import FileMentionIntent
 from amplifier_app_tui.ui.keymap import COMPOSER_PLACEHOLDER
-from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
+from amplifier_app_tui.ui.themes import DEFAULT_THEME, THEME_TOKENS, register_themes, theme_id
 
 
 class ComposerApp(App[None]):
@@ -674,3 +674,72 @@ async def test_set_draft_replaces_buffer_and_ends_history_nav() -> None:
         assert composer.text == "recalled stash text"
         assert not composer.history_browsing
         assert composer._input.cursor_location == (0, len("recalled stash text"))
+
+
+# -- D2 structural seam: composer/status boundary (compliance 2026-08-02) -----
+#
+# David Koleczek's UX review (2026-07-31) wanted the composer visually
+# distinct from persistent status in EVERY theme, focused or not (AC2),
+# without relying on color alone. ``Composer:focus-within`` lifts the whole
+# row onto the ``$bg-tab`` elevated-surface token; these tests pin that the
+# lift (a) actually fires on focus, (b) reverts on blur, and (c) is a real,
+# distinct per-theme background swap -- not a no-op that happens to share a
+# color in one theme by coincidence.
+
+
+@pytest.mark.asyncio
+async def test_composer_focus_within_lifts_background_in_every_theme() -> None:
+    for theme_name, tokens in THEME_TOKENS.items():
+        app = ComposerApp()
+        app.theme = theme_id(theme_name)
+        async with app.run_test() as pilot:
+            composer = app.query_one("#composer", Composer)
+            bg_chrome, bg_tab = tokens["bg-chrome"].lower(), tokens["bg-tab"].lower()
+            assert bg_chrome != bg_tab, "fixture sanity: the tokens must differ"
+
+            # Not yet focused (nothing has claimed the keyboard on mount here).
+            composer._input.blur()
+            await pilot.pause()
+            assert not composer.has_focus_within
+            assert composer.styles.background.hex.lower() == bg_chrome
+
+            composer.focus_input()
+            await pilot.pause()
+            assert composer.has_focus_within
+            assert composer.styles.background.hex.lower() == bg_tab
+
+            composer._input.blur()
+            await pilot.pause()
+            assert not composer.has_focus_within
+            assert composer.styles.background.hex.lower() == bg_chrome
+
+
+@pytest.mark.asyncio
+async def test_composer_and_footer_seam_holds_at_narrow_width_and_short_height() -> None:
+    """AC4: at a narrow width and a short height, the composer's prompt row
+    stays fully visible and never overlaps the footer's structural seam."""
+    from amplifier_app_tui.ui.footer import FooterBar, FooterState
+
+    class _BandApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            register_themes(self)
+            self.theme = theme_id(DEFAULT_THEME)
+
+        def compose(self) -> ComposeResult:
+            yield Composer(id="composer")
+            yield FooterBar(id="footer")
+
+    app = _BandApp()
+    async with app.run_test(size=(40, 10)) as pilot:
+        composer = app.query_one("#composer", Composer)
+        footer = app.query_one("#footer", FooterBar)
+        footer.update_state(FooterState(mode_id="chat", cost=__import__("decimal").Decimal("0.12")))
+        composer.focus_input()
+        await pilot.pause()
+
+        # The composer's own row (badge/prompt/input) is not clipped away...
+        assert composer.region.height >= 1
+        # ...and it never overlaps the footer's seam below it.
+        assert composer.region.y + composer.region.height <= footer.region.y
+        assert footer.styles.border_top[0] == "solid"

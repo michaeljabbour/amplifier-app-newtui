@@ -32,8 +32,8 @@
         font-family: arial;
     }
 
-    .terminal-SNAPSHOT-r1 { fill: #6b7487 }
-.terminal-SNAPSHOT-r2 { fill: #c5c8c6 }
+    .terminal-SNAPSHOT-r1 { fill: #c5c8c6 }
+.terminal-SNAPSHOT-r2 { fill: #6b7487 }
     </style>
 
     <defs>
@@ -71,15 +71,15 @@
             </g>
 
     <g transform="translate(9, 41)" clip-path="url(#terminal-SNAPSHOT-clip-terminal)">
-    <rect fill="#232937" x="0" y="1.5" width="829.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="829.6" y="1.5" width="268.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="25.9" width="817.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="817.4" y="25.9" width="280.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="50.3" width="634.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="634.4" y="50.3" width="463.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="74.7" width="1098" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="99.1" width="1098" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="123.5" width="1098" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="147.9" width="1098" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="172.3" width="1098" height="24.65" shape-rendering="crispEdges"/>
+    <rect fill="#232937" x="0" y="1.5" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="12.2" y="1.5" width="829.6" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="841.8" y="1.5" width="256.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="25.9" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="12.2" y="25.9" width="817.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="829.6" y="25.9" width="268.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="50.3" width="12.2" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="12.2" y="50.3" width="634.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="646.6" y="50.3" width="451.4" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="74.7" width="1098" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="99.1" width="1098" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="123.5" width="1098" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="147.9" width="1098" height="24.65" shape-rendering="crispEdges"/><rect fill="#232937" x="0" y="172.3" width="1098" height="24.65" shape-rendering="crispEdges"/>
     <g class="terminal-SNAPSHOT-matrix">
-    <text class="terminal-SNAPSHOT-r1" x="0" y="20" textLength="829.6" clip-path="url(#terminal-SNAPSHOT-line-0)">┆&#160;…the&#160;queue&#160;bridge&#160;normalizes&#160;delegate&#160;lifecycle&#160;events&#160;at&#160;a&#160;single</text><text class="terminal-SNAPSHOT-r2" x="1098" y="20" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-0)">
-</text><text class="terminal-SNAPSHOT-r1" x="0" y="44.4" textLength="817.4" clip-path="url(#terminal-SNAPSHOT-line-1)">┆&#160;boundary,&#160;so&#160;the&#160;lanes&#160;are&#160;fed&#160;from&#160;the&#160;same&#160;UIEvent&#160;union&#160;as&#160;the</text><text class="terminal-SNAPSHOT-r2" x="1098" y="44.4" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-1)">
-</text><text class="terminal-SNAPSHOT-r1" x="0" y="68.8" textLength="634.4" clip-path="url(#terminal-SNAPSHOT-line-2)">┆&#160;transcript&#160;—&#160;checking&#160;trackers/task_status.py&#160;next</text><text class="terminal-SNAPSHOT-r2" x="1098" y="68.8" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-2)">
-</text><text class="terminal-SNAPSHOT-r2" x="1098" y="93.2" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-3)">
-</text><text class="terminal-SNAPSHOT-r2" x="1098" y="117.6" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-4)">
-</text><text class="terminal-SNAPSHOT-r2" x="1098" y="142" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-5)">
-</text><text class="terminal-SNAPSHOT-r2" x="1098" y="166.4" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-6)">
+    <text class="terminal-SNAPSHOT-r2" x="12.2" y="20" textLength="829.6" clip-path="url(#terminal-SNAPSHOT-line-0)">┆&#160;…the&#160;queue&#160;bridge&#160;normalizes&#160;delegate&#160;lifecycle&#160;events&#160;at&#160;a&#160;single</text><text class="terminal-SNAPSHOT-r1" x="1098" y="20" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-0)">
+</text><text class="terminal-SNAPSHOT-r2" x="12.2" y="44.4" textLength="817.4" clip-path="url(#terminal-SNAPSHOT-line-1)">┆&#160;boundary,&#160;so&#160;the&#160;lanes&#160;are&#160;fed&#160;from&#160;the&#160;same&#160;UIEvent&#160;union&#160;as&#160;the</text><text class="terminal-SNAPSHOT-r1" x="1098" y="44.4" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-1)">
+</text><text class="terminal-SNAPSHOT-r2" x="12.2" y="68.8" textLength="634.4" clip-path="url(#terminal-SNAPSHOT-line-2)">┆&#160;transcript&#160;—&#160;checking&#160;trackers/task_status.py&#160;next</text><text class="terminal-SNAPSHOT-r1" x="1098" y="68.8" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-2)">
+</text><text class="terminal-SNAPSHOT-r1" x="1098" y="93.2" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-3)">
+</text><text class="terminal-SNAPSHOT-r1" x="1098" y="117.6" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-4)">
+</text><text class="terminal-SNAPSHOT-r1" x="1098" y="142" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-5)">
+</text><text class="terminal-SNAPSHOT-r1" x="1098" y="166.4" textLength="12.2" clip-path="url(#terminal-SNAPSHOT-line-6)">
 </text>
     </g>
     </g>

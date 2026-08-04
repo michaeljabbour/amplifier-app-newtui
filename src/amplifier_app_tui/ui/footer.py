@@ -21,6 +21,24 @@ the width, the badge drops to its own row too (separator hidden) so the
 
 All rendering is a pure function of :class:`FooterState` — the widget is
 a dumb painter, which is what the tests assert against.
+
+Structural seam (compliance 2026-08-02, item D2 — David Koleczek's UX
+review, July 31 2026). The composer and this persistent status band used
+to share the same ``$bg-chrome`` fill with nothing between them, reading
+as one tight visual band. ``FooterBar`` now owns a permanent
+``border-top: solid $rule`` hairline in ``DEFAULT_CSS`` — unconditional,
+so it survives every footer state (idle, ``running``, ``-wrapped``,
+``-badge-wrapped``) and every theme, and it is independent of whatever
+currently occupies the composer slot above it (the composer itself, or
+the :class:`~.approval_bar.ApprovalBar` that temporarily replaces it —
+see ``app_support.mount_approval``). It is a real border, not simulated
+with blank rows, so it reads as a boundary even with color off (a shape
+cue, not a hue cue).
+
+**This is the seam item D4 (footer hint + bundle-metadata consolidation)
+should build on.** New persistent footer content belongs INSIDE this same
+bordered box — add rows to ``compose()``/``_repaint`` — rather than
+re-deriving or relocating the boundary.
 """
 
 from __future__ import annotations
@@ -254,7 +272,12 @@ class _WaitingBadge(Static):
 
 
 class FooterBar(Horizontal):
-    """The bottom chrome strip. Call :meth:`update_state` to repaint."""
+    """The bottom chrome strip. Call :meth:`update_state` to repaint.
+
+    Owns the D2 composer/status seam: an unconditional ``border-top`` in
+    ``DEFAULT_CSS`` below (see the module docstring) that never depends on
+    ``FooterState`` or the ``-wrapped``/``-badge-wrapped`` classes.
+    """
 
     DEFAULT_CSS = """
     FooterBar {
@@ -264,6 +287,7 @@ class FooterBar(Horizontal):
         background: $bg-chrome;
         color: $dim;
         padding: 0 1;
+        border-top: solid $rule;
     }
     FooterBar > #footer-left-group { width: auto; height: 1; }
     #footer-left-group > #footer-left { width: auto; height: 1; }

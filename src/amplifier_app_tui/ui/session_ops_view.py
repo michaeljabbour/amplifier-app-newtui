@@ -14,12 +14,27 @@ from __future__ import annotations
 from decimal import Decimal
 
 from ..kernel.compaction import CompactionConfig
-from ..kernel.session_manager import SessionSummary
+from ..kernel.session_manager import SessionState, SessionSummary
 from ..kernel.session_ops import ModelListing, SkillInfo, StatusInfo
-from ..model.blocks import Segment
+from ..model.blocks import Segment, StyleToken
 from .live_tail import answer_spans
 
 _DIFF_MAX_LINES = 400
+
+STATE_LABELS: dict[SessionState, str] = {
+    "recovered": "recovered",
+    "corrupt": "corrupt",
+}
+"""Display label for a non-``"ok"`` :class:`SessionState` (S2 compliance:
+a damaged session is labeled explicitly, never dropped or shown as healthy)."""
+
+STATE_STYLE_TOKENS: dict[SessionState, StyleToken] = {
+    "recovered": "orange",
+    "corrupt": "red",
+}
+"""Theme token per non-``"ok"`` state -- orange (warning) for a session the
+store patched back together from a backup/synthetic shell, red (error) for
+one the listing itself could not summarize at all."""
 
 
 def _header(label: str, detail: str) -> list[Segment]:
@@ -144,15 +159,98 @@ def sessions_spans(
             f"{summary.name or '—'}  ·  {summary.bundle}  ·  "
             f"{summary.messages} msgs  ·  {summary.time_ago}"
         )
-        # Tags trail the row as dim ``#tag`` chips. The donor has no
-        # first-class session tags, so this follows the house dim-metadata
-        # convention rather than any donor widget.
+        # Trailing chips: dim ``#tag`` chips (the donor has no first-class
+        # session tags, so this follows the house dim-metadata convention
+        # rather than any donor widget) and, when the session is damaged, a
+        # bold state chip (S2 compliance) so a recovered/corrupt session is
+        # never rendered as if it were healthy.
+        trailer: list[Segment] = []
         if summary.tags:
-            spans.append(Segment(text=f"{detail}  ", style_token="dim"))
             chips = " ".join(f"#{tag}" for tag in summary.tags)
-            spans.append(Segment(text=f"{chips}\n", style_token="dimmer"))
+            trailer.append(Segment(text=chips, style_token="dimmer"))
+        if summary.state != "ok":
+            if trailer:
+                trailer.append(Segment(text="  ", style_token="dim"))
+            trailer.append(
+                Segment(
+                    text=f"⚠ {STATE_LABELS[summary.state]}",
+                    style_token=STATE_STYLE_TOKENS[summary.state],
+                    bold=True,
+                )
+            )
+        if trailer:
+            spans.append(Segment(text=f"{detail}  ", style_token="dim"))
+            spans.extend(trailer)
+            spans.append(Segment(text="\n", style_token="dim"))
         else:
             spans.append(Segment(text=f"{detail}\n", style_token="dim"))
+    return tuple(spans)
+
+
+STATE_EXPLANATIONS: dict[SessionState, str] = {
+    "recovered": "metadata.json could not be parsed; showing a recovered shell (name/bundle/tags may be missing)",
+    "corrupt": "this session's files could not be summarized at all; only the id below is trustworthy",
+}
+"""One-line, plain-language reason shown under a damaged session's state
+chip in :func:`session_detail_spans` (S2 compliance: explain, don't just
+label)."""
+
+
+def session_detail_spans(summary: SessionSummary) -> tuple[Segment, ...]:
+    """Full-id detail surface for one session (S2 compliance gap 1).
+
+    The table/roster shows only ``short_id`` (8 chars); this is the
+    "detail view" a row's Enter/click opens
+    (:class:`~amplifier_app_tui.ui.sessions_strip.SessionsStrip`). The full
+    id renders alone on its own dim-labelled line, in the bright/bold
+    token, so a terminal's own mouse-drag text selection always finds
+    exactly it and nothing else -- terminal clipboard access is
+    environment-dependent, so this display path is the reliable one; the
+    app additionally best-effort copies it via the existing clipboard
+    helper when this block is opened (see ``TuiApp.copy_to_clipboard``).
+
+    A damaged session (``state != "ok"``) still shows its full id -- often
+    the only handle a user has to go find/delete the directory by hand --
+    plus an explicit state chip and a plain-language explanation instead of
+    silently-empty or misleading metadata.
+    """
+    spans = [
+        Segment(text="· ", style_token="blue"),
+        Segment(text="Session detail", style_token="bright", bold=True),
+        Segment(text=f"  {summary.short_id}\n", style_token="dim"),
+        Segment(text="  full id  ", style_token="dim"),
+        Segment(text=f"{summary.session_id}\n", style_token="bright", bold=True),
+    ]
+    if summary.state != "ok":
+        spans.append(
+            Segment(
+                text=f"  ⚠ {STATE_LABELS[summary.state]}  ",
+                style_token=STATE_STYLE_TOKENS[summary.state],
+                bold=True,
+            )
+        )
+        spans.append(Segment(text=f"{STATE_EXPLANATIONS[summary.state]}\n", style_token="dim"))
+    rows: tuple[tuple[str, str], ...] = (
+        ("name", summary.name or "—"),
+        ("bundle", summary.bundle),
+        ("messages", str(summary.messages)),
+        ("turns", "—" if summary.turns is None else str(summary.turns)),
+        ("age", summary.time_ago),
+    )
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        spans.append(Segment(text=f"  {label.ljust(width)}  ", style_token="dim"))
+        spans.append(Segment(text=f"{value}\n", style_token="teal"))
+    if summary.tags:
+        chips = " ".join(f"#{tag}" for tag in summary.tags)
+        spans.append(Segment(text=f"  {'tags'.ljust(width)}  ", style_token="dim"))
+        spans.append(Segment(text=f"{chips}\n", style_token="dimmer"))
+    spans.append(
+        Segment(
+            text="  select the full id above to copy it · /copy re-copies this detail\n",
+            style_token="dimmer",
+        )
+    )
     return tuple(spans)
 
 
@@ -275,10 +373,14 @@ def diff_spans(patch: str | None, *, staged: bool) -> tuple[Segment, ...]:
 
 
 __all__ = [
+    "STATE_EXPLANATIONS",
+    "STATE_LABELS",
+    "STATE_STYLE_TOKENS",
     "diff_spans",
     "mcp_spans",
     "model_listing_spans",
     "names_spans",
+    "session_detail_spans",
     "sessions_spans",
     "skill_loaded_spans",
     "skills_spans",

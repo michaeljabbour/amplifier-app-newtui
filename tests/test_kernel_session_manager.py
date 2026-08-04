@@ -13,7 +13,11 @@ from pathlib import Path
 import pytest
 
 from amplifier_app_tui.kernel import session_manager as sm
-from amplifier_app_tui.kernel.persistence import METADATA_FILENAME, SessionStore
+from amplifier_app_tui.kernel.persistence import (
+    METADATA_FILENAME,
+    TRANSCRIPT_FILENAME,
+    SessionStore,
+)
 
 
 @pytest.fixture
@@ -277,3 +281,87 @@ def test_find_across_projects_degrades(tmp_path: Path) -> None:
     ]
     assert sm.find_across_projects("aaaa", amplifier_home=tmp_path / "nope") == []
     assert sm.find_across_projects("", amplifier_home=home) == []
+
+
+# -- S2 compliance: corrupted/recovered session state -----------------------
+
+
+def test_session_summary_state_defaults_ok() -> None:
+    assert sm.SessionSummary(session_id="abc").state == "ok"
+
+
+def test_summary_for_marks_recovered_when_metadata_unparseable(store: SessionStore) -> None:
+    """A metadata.json that exists but cannot be parsed must be labeled
+    ``"recovered"``, never rendered as a plain/healthy session (S2 gap 3).
+    ``_load_metadata`` substitutes its own synthetic ``recovered`` shell;
+    this proves ``summary_for`` actually surfaces that marker."""
+    _seed(store, "s1", name="will-be-lost", messages=2)
+    (store.session_dir("s1") / METADATA_FILENAME).write_text("{not json", encoding="utf-8")
+    summary = sm.summary_for(store, "s1")
+    assert summary.state == "recovered"
+    # The synthetic shell has no name/bundle -- degrades honestly, no stale data.
+    assert summary.name == ""
+    assert summary.bundle == "unknown"
+
+
+def test_summary_for_marks_recovered_on_binary_metadata(store: SessionStore) -> None:
+    """Invalid-UTF-8 bytes (not just invalid JSON) must ALSO be caught --
+    UnicodeDecodeError is a ValueError subclass, distinct from
+    json.JSONDecodeError, and both must land on ``"recovered"``."""
+    _seed(store, "s1", messages=1)
+    (store.session_dir("s1") / METADATA_FILENAME).write_bytes(b"\xff\xfe\x00bad-utf8")
+    summary = sm.summary_for(store, "s1")
+    assert summary.state == "recovered"
+
+
+def test_summary_for_ok_state_unaffected_by_healthy_metadata(store: SessionStore) -> None:
+    _seed(store, "s1", name="fine", messages=1)
+    assert sm.summary_for(store, "s1").state == "ok"
+
+
+def test_list_summaries_never_crashes_on_one_bad_session(
+    store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One session raising past its own recovery must not crash the whole
+    listing (S2 gap 3, and the module's own long-standing docstring
+    contract) -- it becomes a bare ``state="corrupt"`` row and every other
+    session still lists normally."""
+    _seed(store, "healthy-1", name="alpha", messages=3)
+    _seed(store, "broken", name="will-blow-up", messages=1)
+    _seed(store, "healthy-2", name="beta", messages=5)
+
+    real_summary_for = sm.summary_for
+
+    def _boom(store: SessionStore, session_id: str) -> sm.SessionSummary:
+        if session_id == "broken":
+            raise RuntimeError("simulated unexpected corruption")
+        return real_summary_for(store, session_id)
+
+    monkeypatch.setattr(sm, "summary_for", _boom)
+
+    summaries = sm.list_summaries(store)
+    by_id = {s.session_id: s for s in summaries}
+    assert set(by_id) == {"healthy-1", "broken", "healthy-2"}
+    assert by_id["broken"].state == "corrupt"
+    # The bad session degrades to a bare row -- no fabricated name/bundle.
+    assert by_id["broken"].name == ""
+    assert by_id["broken"].messages == 0
+    # Unaffected siblings still read normally.
+    assert by_id["healthy-1"].state == "ok"
+    assert by_id["healthy-1"].name == "alpha"
+    assert by_id["healthy-2"].state == "ok"
+    assert by_id["healthy-2"].name == "beta"
+
+
+def test_message_count_survives_binary_transcript(store: SessionStore) -> None:
+    """A transcript.jsonl with invalid UTF-8 bytes must not raise past
+    ``summary_for`` -- it degrades to a 0 message count (S2 gap 3)."""
+    _seed(store, "s1", name="ok-name", messages=0)
+    (store.session_dir("s1") / TRANSCRIPT_FILENAME).write_bytes(b"\xff\xfe\x00garbage\n")
+    summary = sm.summary_for(store, "s1")
+    assert summary.messages == 0
+    # Metadata itself was fine -- only the transcript was corrupt, so the
+    # session is still "ok" (a transcript read hiccup alone isn't the same
+    # damage class as unreadable metadata).
+    assert summary.state == "ok"
+    assert summary.name == "ok-name"
