@@ -304,13 +304,12 @@ class ResumeResolution:
     - ``"ambiguous"`` -- ``partial_id`` matches every session in ``candidates``
       (newest-first, full :class:`SessionSummary` rows -- enough to render an
       actionable table, not just a truncated id preview).
-    - ``"corrupt"`` -- ``session_id`` resolved to exactly one session, but its
-      metadata (and its ``.backup``) could not be read. ``SessionStore``
-      already degrades this to a synthesized ``recovered`` stub rather than
-      raising (:meth:`SessionStore._load_metadata`); this status is the
-      resume path's own probe of that stub so it can refuse to launch into a
-      session with no known bundle/identity instead of failing deeper and
-      less clearly inside the runtime.
+    - ``"corrupt"`` -- ``session_id`` resolved to exactly one session, but it
+      is not healthy: either :func:`summary_for` (S2's own per-session probe,
+      the SAME one :func:`list_summaries` uses) reports a :data:`SessionState`
+      other than ``"ok"``, or it has no ``metadata.json`` at all (see
+      :func:`resolve_for_resume` for why that extra case is resume-specific
+      rather than a second corruption probe).
     """
 
     status: Literal["ok", "not_found", "ambiguous", "corrupt"]
