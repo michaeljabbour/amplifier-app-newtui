@@ -808,6 +808,13 @@ def _print_session_table(
     show_default=True,
     help="Default actor kind (drives lease takeover precedence).",
 )
+@click.option(
+    "--attachable/--no-attachable",
+    "attachable",
+    default=False,
+    show_default=True,
+    help="Publish a live-attach endpoint so a second process can join THIS runtime.",
+)
 def serve(
     bundle: str | None,
     model: str | None,
@@ -817,6 +824,7 @@ def serve(
     attach: str | None,
     actor: str | None,
     actor_kind: str,
+    attachable: bool,
 ) -> None:
     """Run an interactive session as a bidirectional line protocol on stdio.
 
@@ -831,12 +839,19 @@ def serve(
     uncaught traceback here instead of a clean message.
 
     ``--attach`` is the human-takeover path: hand a person the ref a paused
-    controller minted (``handoff.created``) and this boots on the SAME session,
-    claims the handoff, and hands them the write lease. ``--actor`` /
-    ``--actor-kind`` stamp the identity that ops without their own ``actor``
-    are attributed to (a ``human`` actor outranks an ``automation`` one when
-    taking the lease over).
+    controller minted (``handoff.created``). If that session is still being
+    served by a live process, this JOINS it over its attach socket and drives
+    the same running runtime -- no second runtime, no second writer. If it is
+    not, this boots on the SAME session state, claims the handoff, and hands
+    them the write lease. ``--actor`` / ``--actor-kind`` stamp the identity
+    that ops without their own ``actor`` are attributed to (a ``human`` actor
+    outranks an ``automation`` one when taking the lease over).
+
+    ``--attachable`` publishes the attach endpoint up front, so a human can
+    join a long-running automated session that never opened the control plane
+    itself. Sessions that DO use the control plane advertise automatically.
     """
+
     _validate_overrides(model, provider, mode)
     resume_id: str | None = None
     if attach is not None:
@@ -860,9 +875,108 @@ def serve(
                 attach=attach,
                 actor=actor,
                 actor_kind=actor_kind,
+                attachable=attachable,
             )
         )
     )
+
+
+@main.group("control-token")
+def control_token() -> None:
+    """Issue and revoke session-control credentials (authorization for ``serve``).
+
+    Without a token, ``serve`` trusts whoever is on the other end of the pipe
+    -- fine for a local pipe the OS already vouched for, and exactly what any
+    non-local adapter must not do, because ``"kind": "human"`` is otherwise a
+    claim anyone can make and a human always outranks automation for the write
+    lease.
+
+    Issuing the FIRST token for a project switches that project's control plane
+    from "trust the peer" to "prove it": every control op must then present a
+    valid token, and each token carries its own verified kind and permission
+    set (``read`` / ``write`` / ``control``). Tokens are stored hashed --
+    the plaintext is printed once, here, and never written to disk.
+    """
+
+
+def _token_store():  # noqa: ANN202 -- TokenStore (lazy import keeps --demo offline)
+    from .kernel.session_authz import AUTHZ_FILENAME, TokenStore
+
+    return TokenStore(_session_store().base_dir / AUTHZ_FILENAME)
+
+
+@control_token.command("issue")
+@click.argument("principal")
+@click.option(
+    "--kind",
+    type=click.Choice(["human", "automation"]),
+    default="automation",
+    show_default=True,
+    help="The VERIFIED kind this token establishes; a bearer may not claim above it.",
+)
+@click.option(
+    "--permission",
+    "permissions",
+    multiple=True,
+    type=click.Choice(["read", "write", "control"]),
+    help="Repeatable. Default: all three.",
+)
+@click.option("--display", default="", help="Human-readable label for the audit trail.")
+@click.option(
+    "--ttl", type=float, default=None, help="Seconds until the token expires (default: never)."
+)
+def control_token_issue(
+    principal: str, kind: str, permissions: tuple[str, ...], display: str, ttl: float | None
+) -> None:
+    """Mint a control token for PRINCIPAL and print it ONCE.
+
+    Minting deliberately lives on this first-party surface. A channel that can
+    mint its own credential is not a credential, so a voice/mobile/chat client
+    may *request* one but can never create it.
+    """
+    plaintext, grant = _token_store().issue(
+        principal,
+        kind=kind,
+        permissions=list(permissions) or None,
+        display=display,
+        ttl=ttl,
+    )
+    click.echo(f"token id   : {grant.token_id}")
+    click.echo(f"principal  : {grant.principal_id} ({grant.kind})")
+    click.echo(f"permissions: {', '.join(sorted(grant.permissions)) or '(none)'}")
+    click.echo("")
+    click.echo(plaintext)
+    click.echo("")
+    click.echo('Shown once. Present it as {"auth": {"token": "..."}} on every control op.')
+
+
+@control_token.command("list")
+def control_token_list() -> None:
+    """List issued tokens (ids and grants only -- never the secrets)."""
+    import time as _time
+
+    grants = _token_store().grants()
+    if not grants:
+        click.echo("no control tokens issued (this project trusts the local pipe peer)")
+        return
+    now = _time.time()
+    for grant in grants:
+        state = "active" if grant.active(now) else "inactive"
+        perms = ",".join(sorted(grant.permissions)) or "none"
+        click.echo(
+            f"{grant.token_id}  {grant.principal_id:<16} {grant.kind:<10} {perms:<18} {state}"
+        )
+
+
+@control_token.command("revoke")
+@click.argument("token_id")
+def control_token_revoke(token_id: str) -> None:
+    """Revoke a token by id. Effective on the very next control op."""
+    revoked = _token_store().revoke(token_id)
+    if revoked is None:
+        click.echo(f"no active token {token_id!r}")
+        raise SystemExit(1)
+    click.echo(f"revoked {revoked.token_id} ({revoked.principal_id})")
 
 
 @main.command()
