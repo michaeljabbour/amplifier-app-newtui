@@ -103,7 +103,10 @@ def test_help_rows_labels_come_from_the_keymap_live() -> None:
     """Every label is exactly what :func:`hint_label` returns — never a
     hand-copied string that could drift from the bound chord."""
     rows = help_rows()
-    assert dict(rows)["ctrl-r"] == "open the rewind picker"
+    assert dict(rows)["ctrl-r"] == (
+        "open the rewind picker to fork an earlier turn "
+        "(forking mid-turn interrupts the turn first)"
+    )
     for action in HELP_ACTIONS:
         assert hint_label(action) in dict(rows)
 
@@ -141,6 +144,24 @@ def test_help_rows_omits_overlay_only_navigation() -> None:
 def test_action_help_has_an_entry_for_every_help_action() -> None:
     for action in HELP_ACTIONS:
         assert ACTION_HELP[action].strip()
+
+
+def test_open_rewind_help_states_mid_turn_interrupt_behavior() -> None:
+    """S1 AC4: the static /keys help for rewind must say what happens to
+    an in-progress turn, not just what rewind restores -- forking mid-turn
+    interrupts the turn first and waits for it to close out before the
+    fork itself runs (app_support.confirm_fork's interrupt-then-fork,
+    exercised end-to-end by test_flow_rewind.py's
+    test_fork_during_running_turn_interrupts_then_forks).
+
+    Guards content, not just presence -- mirrors D3 AC4's
+    test_clear_palette_desc_states_scope_per_d3_ac4 for /clear: a future
+    edit could leave the entry non-empty but drift back to an
+    under-described one-liner that silently re-opens the gap.
+    """
+    help_text = ACTION_HELP["open_rewind"]
+    assert "interrupt" in help_text, "must say forking mid-turn interrupts the turn"
+    assert "mid-turn" in help_text, "must call out the in-progress-turn case explicitly"
 
 
 def test_validate_rejects_conflicts() -> None:
