@@ -39,9 +39,37 @@ BUILTIN_SHADOW_FIXTURE: tuple[SkillInfo, ...] = (
 other AC4 collision shape (a discovered skill vs. a seeded built-in,
 not skill vs. skill)."""
 
+REPORTED_ALIAS_FIXTURE: tuple[SkillInfo, ...] = (
+    SkillInfo(
+        "cranky-old-sam",
+        "simplicity-obsessed design review lens",
+        shortcut="cosam",
+    ),
+    SkillInfo(
+        "restless-old-brian",
+        "momentum-driven engineering review lens",
+        shortcut="rob",
+    ),
+)
+"""The exact two alias spellings named in the ORIGINAL bug report ("/cosam,
+/rob ... did not work in the TUI"), used by
+``tests/test_skill_alias_external_cli_resolver.py`` to drive the REAL
+external ``amplifier-app-cli`` resolver (not just this repo's own two
+in-repo paths, which ``SKILL_ALIAS_FIXTURE`` above already covers).
+
+Unlike ``SKILL_ALIAS_FIXTURE`` (one real skill, one synthetic
+"release-notes" placeholder), BOTH entries here are real persona-advisor
+skills shipped in this ecosystem's skill catalog today — confirmed
+directly against each skill's own ``SKILL.md`` ``shortcut:`` frontmatter,
+not invented for the test. Kept as a separate tuple (rather than folded
+into ``SKILL_ALIAS_FIXTURE``) so this addition never perturbs the counts
+and parametrizations existing B2 tests already assert against that
+fixture."""
+
 
 __all__ = [
     "BUILTIN_SHADOW_FIXTURE",
     "COLLIDING_ALIAS_FIXTURE",
+    "REPORTED_ALIAS_FIXTURE",
     "SKILL_ALIAS_FIXTURE",
 ]

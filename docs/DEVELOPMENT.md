@@ -116,6 +116,7 @@ dot -Tsvg docs/diagrams/tui-amplifier-integration.dot -o docs/diagrams/tui-ampli
 | renderer | `tests/test_golden_widths.py` | golden width matrix |
 | performance | `tests/test_perf_spike.py` | renderer + live-tail budgets and the hybrid infinite-history 5k frame budget are enforced |
 | real-PTY capability (opt-in) | `tests/forge/test_capability_*.py` (`-m forge`) | drives the shipped binary through a real PTY via the forge daemon — demo lane always-on, real lane credential-gated (see below) |
+| cross-product parity (self-skipping) | `tests/test_skill_alias_external_cli_resolver.py` | drives the REAL external `amplifier-app-cli` alias resolver (loaded from a sibling checkout via `AMPLIFIER_APP_CLI_PATH` or `~/dev/amplifier-app-cli`) against this repo's own resolver over one shared fixture; runs for real when the sibling is present, skips cleanly (never fails) when it isn't — never a hard dependency of the default gate |
 
 Everything runs offline. If your test needs credentials or network, it's designed wrong —
 look at `test_runtime_offline.py` for how to fake the provider side.
