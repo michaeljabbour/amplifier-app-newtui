@@ -130,15 +130,18 @@ def test_fanout_appends_exactly_one_summary_block() -> None:
 
 
 def test_no_tree_line_answer_blocks_anymore() -> None:
+    """The old per-agent tree lines stay gone; the only agent-named answer
+    lines are the compact ✳ lifecycle markers (started / done / failed)."""
     reducer, host = make_reducer()
     _start(reducer)
     _spawn(reducer, "researcher", "s1", 1.0)
     _complete(reducer, "researcher", "s1", 3.0, result="3 findings")
-    assert not [
-        b
+    agent_lines = [
+        "".join(s.text for s in b.spans)
         for b in host.blocks
         if b.kind == "answer" and "researcher" in "".join(s.text for s in b.spans)
     ]
+    assert agent_lines == ["✳ researcher started", "✳ researcher done · 3 findings"]
 
 
 def test_completion_updates_in_place_with_elapsed_and_snippet() -> None:
@@ -305,3 +308,89 @@ def test_fanout_at_virtual_clock_zero_keeps_duration_and_elapsed() -> None:
     assert block.duration_s == 6.0
     assert block.entries[0].elapsed_s == 2.6
     assert block.entries[1].elapsed_s == 6.0
+
+
+# -- chat lifecycle markers (agent-lane chat dedup) ------------------------------
+# Child thinking/prose stream to lanes only (the foreign-turn divert); the
+# chat carries one compact dim ✳ marker per delegate lifecycle beat instead
+# of mirroring lane content.
+
+
+def _markers(host) -> list[str]:
+    return [
+        "".join(s.text for s in b.spans)
+        for b in host.blocks
+        if b.kind == "answer" and "".join(s.text for s in b.spans).startswith("✳ ")
+    ]
+
+
+def test_spawn_marker_names_the_agent_and_its_brief() -> None:
+    reducer, host = make_reducer()
+    _start(reducer)
+    reducer.handle(
+        ev.ToolPre(
+            **_env(0.5),
+            tool_name="delegate",
+            tool_call_id="d1",
+            tool_input={"agent": "researcher", "instruction": "scan provider docs"},
+        )
+    )
+    _spawn(reducer, "researcher", "s1", 1.0)
+    assert _markers(host) == ["✳ researcher started · scan provider docs"]
+
+
+def test_completion_markers_carry_result_hint_and_failure_reason() -> None:
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "researcher", "s1", 1.0)
+    _spawn(reducer, "coder", "s2", 1.0)
+    _spawn(reducer, "tester", "s3", 1.0)
+    _complete(reducer, "researcher", "s1", 2.0, result="## Findings\n3 flaky tests")
+    _complete(reducer, "coder", "s2", 3.0, success=False, result="migration blew up")
+    _complete(reducer, "tester", "s3", 4.0, success=False)  # reasonless failure
+    assert _markers(host) == [
+        "✳ researcher started",
+        "✳ coder started",
+        "✳ tester started",
+        "✳ researcher done · Findings",  # markdown distilled, not pasted raw
+        "✳ coder failed · migration blew up",
+        "✳ tester failed",  # never "failed · failed"
+    ]
+
+
+def test_child_thinking_and_prose_never_create_chat_blocks() -> None:
+    """The routing pin: child thinking (both channels) and child prose stay
+    out of the chat; the root's own Thinking block renders untouched."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    reducer.handle(ev.ContentBlockStart(**_env(0.2), block_type="thinking"))
+    reducer.handle(
+        ev.ContentBlockEnd(**_env(0.3), block_type="thinking", block={"thinking": "root plan"})
+    )
+    _spawn(reducer, "researcher", "s1", 1.0)
+    child = {"event_id": "c1", "session_id": "s1", "parent_id": SID, "ts": 2.0}
+    reducer.handle(ev.StreamBlockDelta(**child, block_type="thinking", text="child secret"))
+    reducer.handle(ev.ContentBlockStart(**child, block_type="thinking"))
+    reducer.handle(
+        ev.ContentBlockEnd(**child, block_type="thinking", block={"thinking": "child secret"})
+    )
+    reducer.handle(ev.ContentBlockEnd(**child, block_type="text", block={"text": "child prose"}))
+    thinking = [b.text for b in host.blocks if b.kind == "thinking"]
+    assert thinking == ["root plan"]
+    chat_text = " ".join(
+        "".join(s.text for s in b.spans) for b in host.blocks if b.kind == "answer"
+    )
+    assert "child secret" not in chat_text and "child prose" not in chat_text
+
+
+def test_straggler_completion_after_turn_end_adds_no_marker() -> None:
+    """Post-close-out completions still update the durable summary in place,
+    but never append a marker below the turn rule."""
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "coder", "s1", 1.0)
+    reducer.handle(ev.PromptComplete(**_env(3.0)))
+    before = _markers(host)
+    _complete(reducer, "coder", "s1", 4.0, result="late result")
+    assert _markers(host) == before
+    assert _summaries(host)[0].entries[0].state == "done"  # summary still settles

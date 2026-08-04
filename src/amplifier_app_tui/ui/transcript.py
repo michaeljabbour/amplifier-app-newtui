@@ -36,8 +36,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from time import monotonic
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
+from rich.style import Style
+from rich.text import Text
 from textual import events
 from textual.binding import Binding
 from textual.content import Content
@@ -85,6 +87,51 @@ HISTORY_WIDGET_LIMIT = 1_000
 
 HISTORY_COMPACT_TRIGGER = 1_200
 """Hysteresis avoids rebuilding the archive for every new durable block."""
+
+_MAIN_VIEW_ID = "__main__"
+"""Sentinel view id for the parent transcript in the anchor store below
+(never collides with a real lane session id, so the two never conflate)."""
+
+
+class ViewAnchor(NamedTuple):
+    """Scroll position + tail-follow snapshot for one transcript view.
+
+    This is the reusable capture/restore seam (compliance item S6):
+    :class:`TranscriptView` keys a small store of these by view id (the
+    parent, or a lane's session id) so swapping away from a view and
+    later back to it never forces the view to the tail — only a view
+    visited for the first time defaults to bottom-follow (today's
+    behavior, preserved). A later item (evidence side panel) is expected
+    to reuse this same seam for its own per-view anchor + selection
+    state — see :meth:`TranscriptView._capture_anchor` /
+    :meth:`TranscriptView._restore_anchor`.
+    """
+
+    scroll_y: float
+    follow: bool
+
+
+class EvidenceFocusAnchor(NamedTuple):
+    """Focused evidence row + scroll snapshot, captured when its detail
+    panel opened (compliance item D7, AC3).
+
+    Reuses the :class:`ViewAnchor` seam (S6): a small store of these is
+    kept per view id (:meth:`TranscriptView._current_view_id`) so a
+    detail panel opened in one view (the parent, or a lane) never
+    clobbers another view's remembered evidence focus. See
+    :meth:`TranscriptView.capture_evidence_focus` /
+    :meth:`TranscriptView.restore_evidence_focus`.
+    """
+
+    block_id: str
+    anchor: ViewAnchor
+
+
+FOCUS_HEADER_TITLE = "‹ Back to parent"
+FOCUS_HEADER_HINT = "esc · click"
+FOCUS_HEADER = f"{FOCUS_HEADER_TITLE}  {FOCUS_HEADER_HINT}"
+"""Focus-header Back control text (S6 AC1): bright title + dim hint,
+styled like ``ui/lanes_panel.py``'s ``_LanesHeader`` (UX idiom parity)."""
 
 
 # --------------------------------------------------------------------------
@@ -156,6 +203,17 @@ class ExpandEvidenceClaim(Message):
         self.link = link
 
 
+class OpenEvidenceDetail(Message):
+    """``d`` on a focused evidence block (compliance item D7, AC4) — open
+    (or refresh, or toggle-close) the side panel's detail for the
+    currently-selected claim."""
+
+    def __init__(self, block_id: str, link: EvidenceLink) -> None:
+        super().__init__()
+        self.block_id = block_id
+        self.link = link
+
+
 class CloseEvidence(Message):
     """Esc on a focused evidence block (spec §10 ``esc close``)."""
 
@@ -170,6 +228,16 @@ class LaneFocusChanged(Message):
     def __init__(self, lane_id: str | None) -> None:
         super().__init__()
         self.lane_id = lane_id
+
+
+class BackToParent(Message):
+    """The focus-header Back control was activated (click or enter/space).
+
+    Handled the same way as Escape's ``lane_unfocus`` action
+    (``app_support.go_back_to_parent``): a navigation request back to the
+    parent view — never a turn interrupt/cancel (DESIGN-SPEC §5/§8: focus
+    is reversible view state, not a separate session lifecycle).
+    """
 
 
 # --------------------------------------------------------------------------
@@ -400,6 +468,11 @@ class BlockWidget(Static):
         block = self._block
         if block.kind == "evidence" and block.links:
             self.post_message(ExpandEvidenceClaim(block.id, block.links[block.selected]))
+
+    def action_evidence_detail(self) -> None:
+        block = self._block
+        if block.kind == "evidence" and block.links:
+            self.post_message(OpenEvidenceDetail(block.id, block.links[block.selected]))
 
     def action_close_evidence(self) -> None:
         if self._block.kind == "evidence":
@@ -706,10 +779,60 @@ class HistoryArchive(Static):
         if block is not None and block.links:
             self.post_message(ExpandEvidenceClaim(block.id, block.links[block.selected]))
 
+    def action_evidence_detail(self) -> None:
+        block = self._active_evidence()
+        if block is not None and block.links:
+            self.post_message(OpenEvidenceDetail(block.id, block.links[block.selected]))
+
     def action_close_evidence(self) -> None:
         block = self._active_evidence()
         if block is not None:
             self.post_message(CloseEvidence(block.id))
+
+
+class FocusHeader(Static):
+    """Clickable + keyboard-activatable 'Back to parent' control mounted
+    above a focused lane's transcript (S6 AC1/AC5: the focus-header Back
+    control).
+
+    Mirrors ``ui/lanes_panel.py``'s ``_LanesHeader`` bright-title/dim-hint
+    styling (UX idiom parity). Click or enter/space posts
+    :class:`BackToParent`, which the app routes through the exact same
+    ``restore_main()`` seam as Escape's ``lane_unfocus`` action — this is
+    a navigation shortcut, never a second way to interrupt or cancel the
+    subagent's turn (DESIGN-SPEC §5/§8).
+    """
+
+    can_focus = True
+
+    DEFAULT_CSS = """
+    FocusHeader {
+        width: 100%;
+        height: 1;
+    }
+    FocusHeader:focus {
+        background: $bg-tab;
+    }
+    """
+
+    BINDINGS = [
+        Binding("enter", "activate", "back to parent", show=False),
+        Binding("space", "activate", "back to parent", show=False),
+    ]
+
+    def render(self) -> Text:
+        tokens = self.app.theme_variables
+        text = Text()
+        text.append(FOCUS_HEADER_TITLE, style=Style(color=tokens.get("bright"), bold=True))
+        text.append("  ")
+        text.append(FOCUS_HEADER_HINT, style=Style(color=tokens.get("dimmer")))
+        return text
+
+    def on_click(self) -> None:
+        self.post_message(BackToParent())
+
+    def action_activate(self) -> None:
+        self.post_message(BackToParent())
 
 
 class TranscriptView(VerticalScroll):
@@ -732,10 +855,15 @@ class TranscriptView(VerticalScroll):
       :meth:`remove_block` address blocks by stable id.
     - **Lane focus** (spec §8): :meth:`focus_lane` swaps the visible block
       list to a subagent's transcript; :meth:`restore_main` (the app's esc
-      handler) swaps back. While focused, append/replace/remove address
-      the *stashed parent* list (mockup: ``this.lines`` keeps accumulating
-      separately from ``focusLines``), so a turn that keeps running during
-      focus is fully up to date when esc restores the parent transcript.
+      handler, or the focus-header Back control) swaps back. While
+      focused, append/replace/remove address the *stashed parent* list
+      (mockup: ``this.lines`` keeps accumulating separately from
+      ``focusLines``), so a turn that keeps running during focus is fully
+      up to date when esc restores the parent transcript. Each swap
+      captures the outgoing view's scroll position and restores the
+      incoming view's own remembered position (:meth:`_capture_anchor` /
+      :meth:`_restore_anchor`, S6) instead of always snapping to the tail
+      — a view visited for the first time still defaults to bottom-follow.
     - **Resize reflow**: 75ms trailing debounce; deferred during streaming
       with one forced reflow at :meth:`set_streaming` (False).
     """
@@ -759,6 +887,8 @@ class TranscriptView(VerticalScroll):
         self._compaction_pending = False
         self._focused_lane: str | None = None
         self._main_stash: list[TranscriptBlock] | None = None
+        self._view_anchors: dict[str, ViewAnchor] = {}
+        self._evidence_focus: dict[str, EvidenceFocusAnchor] = {}
         self._streaming = False
         self._reflow_hold = False
         self._reflow_deferred = False
@@ -908,6 +1038,37 @@ class TranscriptView(VerticalScroll):
                     self._archive.remove()
                     self._archive = None
 
+    def clear_view(self) -> None:
+        """Unmount every rendered row and reset to an empty view (``/clear``).
+
+        View-only: the caller clears model-level conversation context
+        separately (:class:`~amplifier_app_tui.ui.session_ops_controller.
+        SessionOpsController`), and the reducer fences any already-queued
+        event from before the clear (:meth:`~amplifier_app_tui.ui.reducer.
+        TranscriptReducer.bump_generation`) so a delayed delta or tool
+        result cannot re-append a row here after this runs.
+
+        Operates on whatever is currently displayed -- the main history,
+        or a focused lane's snapshot -- so it is safe regardless of lane
+        focus. Idempotent: calling it again on an already-empty view (a
+        repeated ``/clear``) is a no-op past the anchor re-assert.
+        """
+        for widget in self._widgets.values():
+            widget.remove()
+        if self._archive is not None:
+            self._archive.remove()
+            self._archive = None
+        self._blocks.clear()
+        self._widgets.clear()
+        self._order.clear()
+        self._archive_ids.clear()
+        self._compaction_pending = False
+        # Re-assert the tail-follow anchor so whatever appends next (the
+        # brief confirmation notice, then new turns) lands at the bottom
+        # exactly like a freshly mounted transcript -- never stranded
+        # mid-scroll from before the clear (mirrors _swap's landing state).
+        self.anchor()
+
     def _schedule_compaction(self) -> None:
         if (
             len(self._widgets) <= HISTORY_COMPACT_TRIGGER
@@ -951,11 +1112,21 @@ class TranscriptView(VerticalScroll):
         finally:
             self._compaction_pending = False
 
-    def scroll_block_visible(self, block_id: str) -> None:
-        """Reveal a mounted or archived block without rehydrating history."""
+    def scroll_block_visible(self, block_id: str, *, top: bool = False) -> None:
+        """Reveal a mounted or archived block without rehydrating history.
+
+        ``top=True`` forces the block's own top edge to the viewport's top
+        (Textual's ``scroll_visible(top=...)``) instead of the minimal
+        nudge needed to bring any part of it on screen -- the archived
+        branch already targets the block's start (a few rows above its
+        ``virtual_region`` offset) so it needs no extra flag there. The
+        return-to-answer action (AC2, compliance 2026-08-02 B1) passes
+        ``top=True`` so a long final answer's START comes back into view,
+        not wherever its tail happened to land.
+        """
 
         if widget := self._widgets.get(block_id):
-            widget.scroll_visible(animate=False)
+            widget.scroll_visible(animate=False, top=top)
             return
         if self._archive is None:
             return
@@ -1029,19 +1200,109 @@ class TranscriptView(VerticalScroll):
         """Swap the transcript to a subagent's own block list."""
         if self._focused_lane is None:
             self._main_stash = list(self.blocks)
+        self._capture_anchor()  # remember the outgoing view's position (S6)
         self._focused_lane = lane_id
         await self._swap(blocks)
+        self._restore_anchor()  # this lane's own remembered position, else tail (S6)
         self.post_message(LaneFocusChanged(lane_id))
 
     async def restore_main(self) -> None:
-        """Esc from a focused lane: restore the parent transcript."""
+        """Esc (or the focus-header Back control) from a focused lane:
+        restore the parent transcript — including its own scroll position
+        (S6), never forced back to the tail."""
         if self._focused_lane is None:
             return
         stash = self._main_stash or []
+        self._capture_anchor()  # remember the lane view's own position (S6)
         self._focused_lane = None
         self._main_stash = None
         await self._swap(stash)
+        self._restore_anchor()  # the parent's remembered position, else tail (S6)
         self.post_message(LaneFocusChanged(None))
+
+    # -- per-view scroll-anchor seam (S6) --------------------------------
+    #
+    # Reusable capture/restore pair: a later item (evidence side panel) is
+    # expected to reuse this same seam for its own per-view anchor state.
+
+    def _current_view_id(self) -> str:
+        """The view now on screen: a lane's session id, or the sentinel
+        for the parent."""
+        return self._focused_lane if self._focused_lane is not None else _MAIN_VIEW_ID
+
+    def _capture_anchor(self) -> None:
+        """Snapshot the outgoing view's scroll position + follow state.
+
+        Call this BEFORE mutating ``_focused_lane`` so it reads whichever
+        view is still on screen (the parent, or the lane being left).
+        """
+        self._view_anchors[self._current_view_id()] = ViewAnchor(
+            scroll_y=self.scroll_y, follow=self.follow
+        )
+
+    def _restore_anchor(self) -> None:
+        """Apply the incoming view's remembered anchor, or bottom-follow
+        for a view visited for the first time (today's default,
+        preserved). Call this AFTER ``_focused_lane`` already reflects
+        the destination view, once ``_swap`` has mounted its content.
+
+        ``immediate=True`` matters here: :meth:`~textual.widget.Widget.scroll_to`
+        defers its actual scroll until after the next refresh unless told
+        otherwise, and a deferred restore can be clobbered by a *later*
+        swap's own deferred call before it ever fires. ``anchor()``'s own
+        bottom-follow path already applies immediately (``scroll_end``
+        with ``immediate=True``); this mirrors that so both branches are
+        equally synchronous and swaps can never race each other.
+        """
+        anchor = self._view_anchors.get(self._current_view_id())
+        if anchor is None or anchor.follow:
+            self.anchor()
+            return
+        self.scroll_to(y=anchor.scroll_y, animate=False, immediate=True)
+
+    # -- evidence-panel focus/scroll seam (D7 AC3) ------------------------
+    #
+    # Reuses the ViewAnchor seam above (S6), exactly as its docstring
+    # anticipated: keyed by _current_view_id() so a detail panel opened
+    # while a lane is focused restores independently of one opened in the
+    # parent transcript.
+
+    def capture_evidence_focus(self, block_id: str) -> None:
+        """Snapshot the evidence row + scroll position before its detail
+        panel opens, so closing the panel can restore both (AC3)."""
+        self._evidence_focus[self._current_view_id()] = EvidenceFocusAnchor(
+            block_id=block_id,
+            anchor=ViewAnchor(scroll_y=self.scroll_y, follow=self.follow),
+        )
+
+    def restore_evidence_focus(self) -> None:
+        """Closing the detail panel: restore the transcript's scroll
+        position and give keyboard focus back to the evidence row exactly
+        as it was before the panel opened (AC3).
+
+        ``immediate=True`` for the same reason as :meth:`_restore_anchor`
+        (S6 hit this bug): a deferred ``scroll_to`` can be silently
+        clobbered by a later deferred call before it ever fires.
+        """
+        remembered = self._evidence_focus.pop(self._current_view_id(), None)
+        if remembered is None:
+            return
+        widget = self._widgets.get(remembered.block_id)
+        # scroll_visible=False: Widget.focus() schedules its own
+        # scroll-into-view via app.call_later — a DEFERRED callback that
+        # would otherwise resolve after our own immediate=True scroll_to
+        # below and silently clobber it, no matter which of the two we
+        # call first (the exact S6 lesson: immediate=True must be the
+        # last word — here that means disabling the competing scroll
+        # entirely, since it can never be synchronously "before").
+        if widget is not None:
+            widget.focus(scroll_visible=False)
+        if remembered.anchor.follow:
+            self.anchor()
+        else:
+            self.scroll_to(y=remembered.anchor.scroll_y, animate=False, immediate=True)
+        if widget is None:
+            self.scroll_block_visible(remembered.block_id)
 
     async def _swap(self, blocks: Sequence[TranscriptBlock]) -> None:
         await self.remove_children()
@@ -1059,7 +1320,13 @@ class TranscriptView(VerticalScroll):
             if len(block_list) > HISTORY_COMPACT_TRIGGER
             else 0
         )
-        mounted: list[HistoryArchive | TranscriptWidget] = []
+        mounted: list[HistoryArchive | TranscriptWidget | FocusHeader] = []
+        if self._focused_lane is not None:
+            # The Back control rides alongside the lane's own blocks but is
+            # never tracked in _blocks/_widgets/_order above (S6): it is
+            # not durable transcript content, carries no block id, and
+            # never replays from ui-events.jsonl.
+            mounted.append(FocusHeader())
         if archive_count:
             archive = HistoryArchive(self)
             archive.update_blocks(block_list[:archive_count])
@@ -1074,7 +1341,8 @@ class TranscriptView(VerticalScroll):
         mounted.extend(widgets)
         if mounted:
             await self.mount(*mounted)
-        self.anchor()  # a lane swap always lands anchored at the bottom
+        # Anchor restore happens in the caller (focus_lane/restore_main)
+        # via _restore_anchor(), once _focused_lane reflects the destination.
 
     # -- resize reflow (75ms trailing debounce; streaming deferral) -----------
 
@@ -1144,24 +1412,32 @@ class TranscriptView(VerticalScroll):
 
 __all__ = [
     "FALLBACK_WIDTH",
+    "FOCUS_HEADER",
+    "FOCUS_HEADER_HINT",
+    "FOCUS_HEADER_TITLE",
     "HISTORY_COMPACT_TRIGGER",
     "HISTORY_WIDGET_LIMIT",
     "REFLOW_DEBOUNCE_SECONDS",
     "MOTION_INTERVAL_SECONDS",
     "SPINNER_INTERVAL_SECONDS",
+    "BackToParent",
     "BlockWidget",
     "CloseEvidence",
     "CopyCodeFence",
     "DelegateSummaryToggled",
+    "EvidenceFocusAnchor",
     "ExpandEvidenceClaim",
+    "FocusHeader",
     "HistoryArchive",
     "LaneFocusChanged",
     "NeedsYouBlockWidget",
+    "OpenEvidenceDetail",
     "OpenRewind",
     "ShowEvidence",
     "ToolLineToggled",
     "TranscriptView",
     "TranscriptWidget",
+    "ViewAnchor",
     "build_block_widget",
     "fence_text_at_row",
     "render_block",

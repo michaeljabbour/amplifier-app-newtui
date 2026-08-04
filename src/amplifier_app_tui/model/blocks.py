@@ -388,6 +388,20 @@ class Answer(_FrozenModel):
     clickable: bool = True
     compact: bool = False
     """Suppress paragraph spacing for structural rows such as agent trees."""
+    final: bool = False
+    """True marks this Answer as the turn's one authoritative final-response
+    anchor (AC2, compliance 2026-08-02 item B1): the reducer stamps it
+    exactly once per turn, either when ``PromptComplete.response`` promotes
+    a provisional candidate (or, lacking one, appends the close-out
+    fallback -- ``ui/reducer.py:_finalize_response``) or when a scripted
+    demo turn's single ``demo_role="answer"`` block lands. The renderer
+    prepends a stable start marker driven by label + weight, never color
+    alone (AC4), so the turn's final-response START stays identifiable
+    after scrolling away and back, resume replay, or history navigation; a
+    return-to-answer action targets this block's id. Deliberately a
+    separate field from ``clickable`` (today the two happen to coincide)
+    so "this is the anchor" stays an explicit semantic decision rather
+    than an inferred side effect of the evidence-click affordance."""
 
 
 class SteerEcho(_FrozenModel):
@@ -556,6 +570,38 @@ class BrainstormIdea(_FrozenModel):
     number: int = 0
 
 
+class UnsupportedBlock(_FrozenModel):
+    """Recoverable placeholder for content this build could not render (S5).
+
+    Two independent failure modes degrade to this SAME shape rather than
+    losing the line or crashing:
+
+    - ``kernel.events.parse_event`` cannot type a persisted ``ui-events.jsonl``
+      record \u2014 a foreign writer sharing the log, an unknown/removed
+      ``kind``, or schema drift (extra fields the frozen envelope forbids).
+    - ``ui.transcript_render.render_block`` cannot render an otherwise-valid
+      block \u2014 a renderer bug, or a future block kind this build predates.
+
+    ``type_name`` is the record/block's own type label when one was
+    recoverable (``kind`` \u2014 either schema's discriminator field \u2014 or a raw
+    hook's ``event`` name), else ``"unknown"``: never guessed. ``summary`` is
+    a short, already-redacted description (bounded length, field NAMES only
+    for parse failures) \u2014 NEVER the raw payload/block content, which may
+    carry secrets or arbitrary tool/user text. There is deliberately no
+    expand affordance: unlike :class:`ToolLine`/:class:`Thinking`, there is
+    no raw body behind this block that would be safe to reveal.
+    """
+
+    id: str = ""
+    """Empty until minted (:class:`BlockIdAllocator`) at the point this block
+    is actually attached to a transcript \u2014 ``parse_event`` builds this
+    before any allocator is in scope, unlike every other kind, which is
+    always constructed at insertion time with a real id already in hand."""
+    kind: Literal["unsupported"] = "unsupported"
+    type_name: str = "unknown"
+    summary: str = ""
+
+
 TranscriptBlock = Annotated[
     SessionBanner
     | UserLine
@@ -577,7 +623,8 @@ TranscriptBlock = Annotated[
     | DoctorBlock
     | ImproveBlock
     | BrainstormIdea
-    | DelegateSummaryBlock,
+    | DelegateSummaryBlock
+    | UnsupportedBlock,
     Field(discriminator="kind"),
 ]
 """Discriminated union of every transcript block (discriminates on ``kind``)."""

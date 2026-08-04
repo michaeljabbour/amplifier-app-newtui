@@ -52,7 +52,7 @@
 [$dimmer]6.1s · 83.9k tok, 91% cached · $0.17 · answer[/]
 
 === evidence ===
-[$teal]· [/][bold $teal]Evidence[/][$dimmer]  1/2 · ←/→ select · enter expand · esc close[/]
+[$teal]· [/][bold $teal]Evidence[/][$dimmer]  1/2 · ←/→ select · enter expand · d detail · esc close[/]
 [$teal]  ¹ [/][$fg]"dashboard and steering wheel"[/][$dim] → [/][$dim]Ran 2 shell commands (pyproject entry points)[/]
 [$teal]  ² [/][$fg]"loads bundles"[/][$dim] → [/][$dim]grep amplifier_core bundle loader[/]
 
@@ -86,12 +86,24 @@
 === delegate_summary ===
 [$bright]● [/][$fg]Used 3 delegates[/][$dim] · Plan 3/3 · 1m 42s[/][$dimmer] ▸[/]
 
+=== unsupported ===
+[$dim]  ● [/][$dim]unsupported block · loop_started · fields: kind, session_id, ts[/]
+
 === delegate_summary (expanded) ===
 [$bright]● [/][$fg]Used 3 delegates[/][$dim] · Plan 3/3 · 1m 42s[/][$dimmer] ▾[/]
 [$dimmer]    ├─ [/][$green]✔ [/][$dim]researcher  [/][$dim]4s · "3 findings"[/]
 [$dimmer]    ├─ [/][$green]✔ [/][$dim]coder       [/][$dim]6s · "2 files"[/]
 [$dimmer]    └─ [/][$green]✔ [/][$dim]tester      [/][$dim]2s · "tests ✔"[/]
 [$dim]    Plan  [/][$green]✔ [/][$dim]Audit persistence paths …[/]
+
+=== answer (final) ===
+[bold $bright]● [/][bold $bright]Final answer[/]
+[$fg]This repo is the [/][bold $bright]command-line app for[/]
+[bold $bright]Amplifier[/][$fg]. If amplifier-core is the[/]
+[$fg]engine, this is the dashboard and[/]
+[$fg]steering wheel: the [/][$teal]amplifier[/][$fg] command[/]
+[$fg]starts sessions, configures providers,[/]
+[$fg]loads bundles, and renders this UI.[/]
 
 === answer (insight callout) ===
 [$fg]Trimmed the retry wrapper.[/]
@@ -144,3 +156,48 @@
 [$dimmer]      result[/]
 [$dimmer]        import is not available in code mode[/]
 [$dimmer]        call the supplied tools instead of importing[/]
+
+=== long turn (multi-tool regression, AC5) ===
+[bold $green]❯ [/][$green]\[build] [/][$bright]Track down why the golden width matrix started drifting and add the anchor marker to the final answer everywhere it belongs.[/]
+[$dim]  ● [/][$dim]Read 3 files · searched 2× · ran 2 shell commands[/][$dimmer] · click to expand[/]
+[$dimmer]      read src/amplifier_app_tui/ui/reducer.py[/]
+[$dimmer]      read src/amplifier_app_tui/ui/transcript_render.py[/]
+[$dimmer]      read tests/test_golden_widths.py[/]
+[$dimmer]      grep final_answer[/]
+[$dimmer]      grep return_to_answer[/]
+[$dimmer]      $ uv run pytest -q tests/test_ui_reducer_outcomes.py[/]
+[$dimmer]      $ uv run ruff check .[/]
+[$dim]  ● [/][$dim]Wrote 1 file · edited 4 files[/][$dimmer] · click to expand[/]
+[$dimmer]      edit src/amplifier_app_tui/model/blocks.py[/]
+[$dimmer]      edit src/amplifier_app_tui/ui/reducer.py[/]
+[$dimmer]      edit src/amplifier_app_tui/ui/transcript_render.py[/]
+[$dimmer]      edit tests/goldens/regen.py[/]
+[$dimmer]      write tests/test_ui_reducer_outcomes.py[/]
+[bold $bright]● [/][bold $bright]Final answer[/]
+[bold $bright]Summary[/]
+
+[$fg]Six tool calls across two bursts,[/]
+[$fg]touching [/][$teal]reducer.py[/][$fg],[/]
+[$teal]transcript_render.py[/][$fg] and the golden[/]
+[$fg]fixtures. The regression traced back to[/]
+[$teal]_finalize_response[/][$fg] never distinguishing[/]
+[$fg]a promoted answer from a[/]
+[$fg]merely-provisional one, so nothing[/]
+[$fg]marked the turn's real final-response[/]
+[$fg]start -- this line is deliberately long[/]
+[$fg]so a wide terminal wraps it at the[/]
+[$fg]reading measure instead of stretching[/]
+[$fg]the paragraph across the whole width,[/]
+[$fg]the same way a genuinely long turn's[/]
+[$fg]answer would.[/]
+
+[$green]✓ [/][$fg]stamp [/][$teal]Answer.final[/][$fg] at both promotion[/]
+[$fg]  sites and the demo path[/]
+[$green]✓ [/][$fg]render the [/][$teal]● Final answer[/][$fg] start marker[/]
+[$fg]  (label + weight, not color)[/]
+[$dim]☐ [/][$fg]a fourth (light) theme — tracked[/]
+[$fg]  separately, not this turn[/]
+
+[$teal]  assert promoted.final and not provisional.final[/]
+[$rule]────────────────────────────────────────[/]
+[$dim]6.1s · 83.9k tok, 91% cached · $0.17 · answer[/]

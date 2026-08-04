@@ -14,7 +14,7 @@ uv run amplifier-tui              # full-screen TUI, real session
 uv run amplifier-tui --demo       # scripted demo — no credentials needed
 uv run amplifier-tui --bundle B   # pick a bundle by name or URI
 uv run amplifier-tui sessions     # list stored sessions for this project
-uv run amplifier-tui resume ID    # resume a stored session
+uv run amplifier-tui resume SESSION_ID    # resume a stored session
 uv run amplifier-tui run "PROMPT" # headless one-shot, prints the answer
 printf 'PROMPT\n' | uv run amplifier-tui run # stdin one-shot
 uv run amplifier-tui run --output-format json "PROMPT" # machine-readable stdout
@@ -36,6 +36,21 @@ adds the normalized runtime event trace to one document. `jsonl` is live: every 
 `schema_version`, monotonic `sequence`, `timestamp`, and a discriminating `type` of
 `session.started`, `runtime.event`, `turn.completed`, or `error`. Runtime records contain
 the same typed event payload consumed by the TUI.
+
+`serve` is the interactive counterpart: a bidirectional JSON-line protocol on stdio that
+an out-of-process front-end (or an automated controller) drives. On top of it sits the
+**session control contract** — a durable session handle, a single-writer lease so a human
+and an automation can share one session without clobbering each other, deterministic
+takeover, pause-and-hand-off to a person, and reattach after a dropped connection:
+
+```sh
+uv run amplifier-tui serve                       # protocol on stdio
+uv run amplifier-tui serve --actor mj --actor-kind human   # stamp the default actor
+uv run amplifier-tui serve --attach amplifier-session:SESSION_ID#ho-9a2  # claim a handoff
+```
+
+`--attach` takes the reference a paused controller minted: it opens the SAME session and
+hands you the write lease. Full contract: [SESSION-CONTROL.md](SESSION-CONTROL.md).
 
 **First run:** follow the [README's Install section](../README.md#install) — it deploys
 [Amplifier](https://github.com/microsoft/amplifier) first (`amplifier init` sets up your
@@ -75,10 +90,15 @@ shortcut list any time, run **/keys**.
 
 **Plan panel.** When the agent keeps a live checklist (the `todo` tool), a compact
 **`Plan N/M`** panel appears in the bottom strip's right column: `✔` done, `▶` in
-progress, `○` pending — windowed around the in-progress item, with a `⋮ +N more` line
-when the plan is long. Once every item completes it collapses to the header line
-(done stays visible). On narrow terminals the panel hides and the footer carries the
-`Plan N/M` count instead — the count never shows in both places at once.
+progress, `○` pending — windowed around the in-progress item, with a `⋮ +N more`
+control when the plan is long. **`↑↓`/click** it (or **ctrl-n**, which instead widens
+the window default → +2 → +3 rows → back) to see more — the `+N more` control
+itself is focusable: **enter**, **space**, or a **click** expands the full list in
+place and flips the control to **`▾ Show less`** to collapse it again; at a short
+terminal height the expanded list scrolls inside the panel rather than covering the
+composer. Once every item completes it collapses to the header line (done stays
+visible). On narrow terminals the panel hides and the footer carries the `Plan N/M`
+count instead — the count never shows in both places at once.
 
 ## 3. Talking to Amplifier
 
@@ -107,6 +127,10 @@ Things worth knowing:
   you "edit" it; there's no cancel).
 - **Tool digests** in the transcript (`Read 4 files · ran 6 shell commands · click to
   expand`) expand on click to show the individual calls; click again to collapse.
+- **Final answer marker.** The turn's one authoritative answer opens with a bright/bold
+  `● Final answer` heading (never a color-only cue, so it stays legible in any theme) so
+  its start is always identifiable, even after you've scrolled away to reread earlier
+  context — press **ctrl+f** to jump straight back to it.
 - **Big pastes** (>10 lines or >800 chars) collapse to a `[Pasted #N · …]` stub so the
   composer stays readable; the full text is sent verbatim on submit. Deleting the stub
   removes the paste.
@@ -192,7 +216,7 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | | `/model [name]` | list the provider's models, or switch the live model |
 | | `/effort [none…max]` | show or set reasoning effort |
 | | `/compact [focus]` | compact the conversation context, optionally focused |
-| | `/clear` | clear the conversation context |
+| | `/clear` | clear the transcript view + conversation context (not persisted history) |
 | | `/tools` | list the mounted tools |
 | | `/agents` | list the delegatable agents |
 | | `/skills` | list available skills |
@@ -218,7 +242,11 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 **Model, effort, compact, clear, status, tools, agents, diff** act on the live
 Amplifier session through the coordinator (the same calls the reference CLI
 makes). **`/model`** switches the mounted provider's model in place;
-**`/compact`** and **`/clear`** drive the context module directly.
+**`/compact`** and **`/clear`** drive the context module directly. **`/clear`**
+additionally empties the visible transcript in the same action — both the
+rendered rows and the live context reset together, immediately, with a brief
+confirmation. Neither touches the persisted session log on disk: resume and
+`/export` still see every prior turn.
 The packaged tui bundle also compacts automatically at 80% of its 300k
 window. Override `context.auto_compact`, `context.compact_threshold`, or
 `context.max_tokens` in settings; `/status` shows the effective policy and
@@ -232,7 +260,12 @@ each configured server's tools mount as `mcp_<server>_<tool>` at session start, 
 drive the mounted skills tool — the agent also loads skills on its own when relevant.
 Discovered skills additionally register as first-class commands: `/cranky-old-sam`
 (and its declared `shortcut:` alias, e.g. `/cosam`) resolves exactly like a built-in —
-in the palette, in the help listing, and at the prompt — and loads that skill.
+in the palette, in the help listing, and at the prompt — and loads that skill. Text
+after the name or alias forwards to the skill exactly like `/skill <name> <rest>` does.
+A shortcut that collides — shared with another skill, or shadowing a built-in — is
+reported in the transcript at boot instead of silently dropped, and an unrecognized
+`/command` offers the nearest registered match (“did you mean …?”) rather than a bare
+rejection.
 
 **Directory capabilities.** The project root is always an implicit allowed write path.
 Top-level `amplifier-tui allowed-dirs` / `denied-dirs` commands persist global, project,
@@ -270,9 +303,11 @@ sandbox around arbitrary interpreter code.
 | ctrl+l | outcome ledger | any time |
 | ctrl+y | needs-you queue | any time |
 | ctrl+r | rewind picker | any time |
+| ctrl+f | jump back to the current turn's final-answer start | any time |
 | esc esc | interrupt, then open rewind | running turn |
 | ↑ ↓ | select in palette/lanes (lanes from an empty composer) | panels |
 | ‹ › (← →) | navigate checkpoints · evidence refs | rewind · evidence |
+| d | open/refresh/close evidence detail panel | evidence |
 | ctrl+c | copy mouse-selected transcript text | after selecting |
 | ctrl+d | quit | any time |
 | esc | one step "out" | see below |
@@ -313,9 +348,14 @@ tailing — also shown in the panel header hint). The moment the root model spea
 switches back to it. Tail text is a live preview only: the agent's full prose lives in its
 own transcript (focus the lane to read it), and nothing from the tail lands in yours.
 
-Select a lane with ↑↓ and press **enter** to *focus* it: the transcript switches to that
-subagent's own work. **esc** steps back out — first unfocusing the lane, then closing the
-panel; with nothing left open, esc interrupts the whole agent tree.
+Select a lane with ↑↓ and press **enter** (or click its row) to *focus* it: the transcript
+switches to that subagent's own work, with a **‹ Back to parent** control at the top — click it,
+or press **esc**, to return; nothing left open, esc interrupts the whole agent tree instead.
+Focusing is pure navigation: it never ends the subagent's turn or the session, the parent
+transcript keeps accumulating underneath, and returning — to the same lane or a different one —
+restores exactly where you left off (scroll position included) rather than snapping to the
+latest line. The first time you ever focus a lane, a one-off notice calls out the esc/Back exit
+path; it does not repeat and never sits onscreen as a permanent overlay.
 
 The transcript itself keeps one **delegate summary** line per fan-out: `● 2 delegates
 running…` while work is in flight, then `● Used 2 delegates · Plan 3/4 · 1m 12s ▸` when
@@ -349,8 +389,20 @@ ledger accounting roll back with it.
 
 **Click any answer** to reveal its evidence: a block opens (and takes the keyboard)
 listing each claim and the tool call that backs it — `· Evidence 1/N · ←/→ select ·
-enter expand · esc close`. **enter** jumps to and expands the tool line grounding the
-selected claim. Answers with no recorded evidence say so in a notice.
+enter expand · d detail · esc close`. **enter** jumps to and expands the tool line
+grounding the selected claim in the transcript itself. Answers with no recorded
+evidence say so in a notice.
+
+**Press d** to open the **evidence detail panel**, docked beside the transcript, for
+the currently-selected claim: the producing tool call and its input/query summary,
+when it ran, its source/output, and the originating agent. **←/→** while the panel is
+open re-targets it to a different claim; **d** again on the same claim closes it and
+restores your scroll position and keyboard focus to that evidence row. On a narrow
+terminal (under 80 columns) `d` shows a notice instead of squeezing the transcript
+unreadably thin, and an already-open panel collapses (without losing its content) if
+you resize below that width, reappearing when you widen back out. If a claim's
+grounding tool call has no correlation id, is no longer resolvable, or its output is
+too large to show inline, the panel says so explicitly — never a blank or dead panel.
 
 ## 13. Copying and exporting
 
@@ -369,8 +421,28 @@ terminal's native selection.
 
 Sessions persist under `~/.amplifier/projects/<project>/sessions/` — transcript, metadata,
 and a full event log. Saving is incremental (after every tool call), so even a crash loses
-almost nothing. `sessions` lists them; `resume ID` picks one back up with history, cost,
-and checkpoints intact.
+almost nothing. `sessions` lists them; `resume SESSION_ID` picks one back up with history,
+cost, and checkpoints intact. A prefix works too (`resume abc123`); an ambiguous prefix lists
+every match instead of guessing, and `resume`/`session resume`/`run --resume`/`serve --resume`
+all use distinct, stable exit codes (0 ok, 2 no match, 3 ambiguous, 4 corrupt) instead of a
+blanket 1 — see the table below.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Resumed (or launched) fine; the session's own exit status then applies |
+| `2` | No stored session matches the given id/prefix |
+| `3` | The prefix matches more than one stored session (candidates are listed) |
+| `4` | The match is unambiguous but its metadata is corrupt, even from backup |
+
+In-session, `/sessions` opens an interactive picker over this project's stored roster
+(never just a wall of ids): **↑/↓** or click a row to select it, **enter** or click to open
+it — keyboard and mouse both work everywhere. Opening a row shows its full id on its own
+line (the table itself only shows a short 8-char id) plus name, bundle, message/turn counts
+and age; the full id is copied to the clipboard automatically where the terminal allows it,
+and is always safely mouse-selectable from that detail view even when it isn't. A session
+whose stored metadata could not be read is never dropped or shown as if it were healthy — it
+lists with an explicit **recovered** (patched from a backup) or **corrupt** (unreadable)
+state chip instead.
 
 ## 15. When something's off
 

@@ -246,10 +246,18 @@ def test_child_events_stream_compact_activity_into_lane_and_tree() -> None:
     assert lane is not None
     assert lane.lane.state == "working"
     assert lane.lane.activity == "reading README.md"
+
     # The in-transcript agent-tree activity ticker is retired
     # (ambient-progress D5) — live child activity now lives only on the
-    # lane (asserted above); the LanesPanel is the activity surface.
-    assert not [block for block in host.blocks if block.kind == "answer"]
+    # lane (asserted above); the LanesPanel is the activity surface. The
+    # chat keeps exactly one compact ✳ lifecycle marker from the spawn —
+    # per-tool child chatter never adds chat lines.
+    def _chat_answers() -> list[str]:
+        return [
+            "".join(s.text for s in block.spans) for block in host.blocks if block.kind == "answer"
+        ]
+
+    assert _chat_answers() == ["✳ foundation:explorer started"]
 
     reducer.handle(
         ev.ToolPre(

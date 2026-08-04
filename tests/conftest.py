@@ -242,6 +242,10 @@ def _offline_provider_setup(monkeypatch):
 
     The provider credential vars are also cleared: with schema-aware ``--yes``,
     a developer's real ``ANTHROPIC_API_KEY`` would otherwise change outcomes.
+    This also covers non-credential ``config_fields`` that the field wizard
+    (``_prompt_config_field``) reads as an ambient-env fallback default —
+    e.g. ``VLLM_CONTEXT_WINDOW`` — so a developer's shell can never change
+    what an edit/add flow persists.
     """
     from amplifier_app_tui.kernel import setup
 
@@ -269,6 +273,7 @@ def _offline_provider_setup(monkeypatch):
         "GITHUB_TOKEN",
         "VLLM_API_KEY",
         "VLLM_BASE_URL",
+        "VLLM_CONTEXT_WINDOW",
     ):
         monkeypatch.delenv(var, raising=False)
     setup.reset_provider_info_cache()

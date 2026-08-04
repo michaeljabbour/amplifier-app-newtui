@@ -1,0 +1,71 @@
+// Owner-gated parity loop: continuously audit CLI->TUI capability parity.
+//
+// Model: attractor loop-pipeline (Graphviz DOT). Each `box` is an LLM agent; each
+// `parallelogram` is a deterministic tool node whose LAST printed line drives edge
+// routing (context.tool.last_line). Companion to gene-transfer.dot, which owns the
+// code-changing lane; this graph owns the READ-ONLY re-audit lane and the gate
+// between them.
+//
+// TWO COUNTERS, DELIBERATELY SEPARATE:
+//   * fix retries          — gene-transfer.dot's RetryGate, 3 attempts for ONE gap's
+//                            fix to converge, then `acknowledged` in ledger.tsv.
+//   * consecutive clean    — this graph's ShouldContinue, 3 read-only re-audits IN A
+//     passes                 ROW that find no new relevant gap end the whole run.
+//   Neither counter can advance, reset, or refund the other. ReAudit never edits code;
+//   RecordPass never touches ledger.tsv.
+//
+// See pipelines/README.md ("Owner-gated parity loop") for the runbook.
+
+digraph parity_loop {
+    graph [
+        goal="Continuously audit whether amplifier-app-tui still reaches capability parity with amplifier-app-cli. Each pass is READ-ONLY: re-run the three audit lanes (docs/audits/) against the current HEAD, record the pass, and hand every newly-discovered gap to the product owner for an explicit disposition. Parity is a DECISION PROCESS, not a mandate to copy every app-cli behavior — a gap may be accepted, rejected, deferred, or already-covered, and some capabilities belong below the harness or on another surface. No code-changing step may run for a gap without an `accepted` disposition. The run ends after THREE CONSECUTIVE CLEAN PASSES or when the owner ends it.",
+        default_fidelity="truncate",
+        default_thread_id="parity-loop",
+        default_max_retry="3"
+    ]
+
+    start [shape=Mdiamond]
+
+    // --- loop head: has the run met its exit condition? (deterministic, read-only) ---
+    // three consecutive clean passes, or an owner-ended run => done
+    ShouldContinue [shape=parallelogram,
+        tool_command="cd $tui_path && python3 pipelines/parity_loop.py should-continue | grep -q '^DONE' && printf done || printf process"]
+
+    // --- READ-ONLY re-audit of the three lanes against current HEAD ---
+    ReAudit [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="READ-ONLY PASS — you may not edit, create, or delete a single source file. Re-run the three-lane parity audit described in docs/audits/README.md (lane1 commands, lane2 safeguards, lane3 runtime) against $tui_path at current HEAD, using $donor_path as the reference. Compare against the gaps already on record: `python3 pipelines/parity_loop.py gaps`. Report ONLY NEW relevant gaps — a gap already carrying any disposition (pending/accepted/rejected/deferred/already-covered) is NOT new, and a divergence that is correct by design is not a gap. Write $tui_path/.ai/parity_pass.env with exactly two lines: `COMMIT=<short sha>` and `GAPS=<comma list of id[:slug], or - if none>`. Allocate new ids by continuing the docs/audits/README.md gap tracker. $goal"]
+
+    // --- append the pass to the versioned record; auto-register gaps as `pending` ---
+    RecordPass [shape=parallelogram,
+        tool_command="cd $tui_path && set -a && . .ai/parity_pass.env && set +a && python3 pipelines/parity_loop.py record-pass \"$COMMIT\" \"$GAPS\" | grep -q 'outcome=clean' && printf clean || printf gaps"]
+
+    // --- the product-owner gate: one explicit disposition per NEW gap (AC3) ---
+    OwnerTriage [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
+        prompt="For each gap listed in .ai/parity_pass.env's GAPS, present the product owner with: the capability, the user-visible consequence of NOT having it, the audit lane + severity, and your recommendation. Then record THEIR decision verbatim — never your own — with `python3 pipelines/parity_loop.py decide <gap_id> <accepted|rejected|deferred|already-covered> <owner> <one-line rationale>`. Treat parity as a decision process: rejected and already-covered are first-class outcomes, and a capability that belongs below the harness or on another surface should be rejected with that reason. If the owner is unavailable, leave the gap `pending` — pending BLOCKS, which is the safe default. Write the accepted ids, one per line, to .ai/parity_accepted.txt (empty file if none)."]
+
+    // --- hard gate: only an `accepted` disposition opens the code-changing route ---
+    OwnerGate [shape=parallelogram,
+        tool_command="cd $tui_path && ok=1; while read -r g; do [ -n \"$g\" ] && python3 pipelines/parity_loop.py gate \"$g\" || ok=0; done < .ai/parity_accepted.txt; [ $ok -eq 1 ] && [ -s .ai/parity_accepted.txt ] && printf proceed || printf hold"]
+
+    // --- hand accepted gaps to the code-changing pipeline (where fix retries live) ---
+    EnqueueTransfer [shape=parallelogram,
+        tool_command="cd $tui_path && while read -r g; do [ -n \"$g\" ] && python3 pipelines/ledger.py add \"$g\" \"$(python3 pipelines/parity_loop.py gaps accepted | awk -v g=\"$g\" '$1==g {print $2}')\"; done < .ai/parity_accepted.txt && printf enqueued"]
+
+    // gene-transfer.dot runs from here on ledger.tsv rows; its RetryGate (3 fix
+    // attempts per gap) is the OTHER counter and never touches the pass record.
+    Transfer [shape=doubleoctagon, label="gene-transfer.dot\n(fix retries: 3/gap)"]
+
+    exit [shape=Msquare, label="run complete\n(3 clean passes | owner-ended)"]
+
+    start -> ShouldContinue
+    ShouldContinue -> exit [label="done"]
+    ShouldContinue -> ReAudit [label="process"]
+    ReAudit -> RecordPass
+    RecordPass -> ShouldContinue [label="clean"]
+    RecordPass -> OwnerTriage [label="gaps"]
+    OwnerTriage -> OwnerGate
+    OwnerGate -> EnqueueTransfer [label="proceed"]
+    OwnerGate -> ShouldContinue [label="hold"]
+    EnqueueTransfer -> Transfer
+    Transfer -> ShouldContinue [label="loop_restart"]
+}

@@ -39,6 +39,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from ..model.blocks import UnsupportedBlock
+
 _event_counter = count(1)
 
 
@@ -498,24 +500,74 @@ _EVENT_ADAPTER: TypeAdapter[UIEvent] = TypeAdapter(UIEvent)
 """Built once — TypeAdapter construction over the full union is costly."""
 
 
-def parse_event(record: Mapping[str, Any]) -> UIEvent | None:
+_UNSUPPORTED_TYPE_MAX = 60
+"""Bounded length for an :class:`UnsupportedBlock` ``type_name`` — a
+hostile/oversized ``kind``/``event`` value must not blow out the row."""
+
+_UNSUPPORTED_SUMMARY_MAX_KEYS = 8
+_UNSUPPORTED_SUMMARY_MAX_LEN = 160
+
+
+def _unsupported_type_name(record: Mapping[str, Any]) -> str:
+    """The record's own type label when recoverable, else ``"unknown"``.
+
+    Tries this schema's discriminator (``kind``) first, then the raw hook
+    event name (``event``) a foreign writer would carry — never a guess,
+    and bounded so a hostile/oversized value cannot blow out the row.
+    """
+    name = _str(record, "kind", "event") or "unknown"
+    return name[:_UNSUPPORTED_TYPE_MAX]
+
+
+def _unsupported_summary(record: Mapping[str, Any]) -> str:
+    """A short, SAFE description of *record*'s shape for support/debugging.
+
+    Field NAMES only, sorted and bounded — NEVER values. Values are
+    exactly what this must not keep: prompt/tool/thinking text, tokens,
+    paths, or anything else a foreign writer or a future schema might
+    carry that this build cannot classify as safe to display.
+    """
+    keys = sorted(str(key) for key in record.keys())
+    shown = keys[:_UNSUPPORTED_SUMMARY_MAX_KEYS]
+    extra = len(keys) - len(shown)
+    body = ", ".join(shown) if shown else "no fields"
+    if extra > 0:
+        body += f", +{extra} more"
+    return f"fields: {body}"[:_UNSUPPORTED_SUMMARY_MAX_LEN]
+
+
+ParsedEvent = UIEvent | UnsupportedBlock
+"""Either a successfully typed event, or a redacted
+:class:`~amplifier_app_tui.model.blocks.UnsupportedBlock` placeholder for a
+record :func:`parse_event` could not type — see there."""
+
+
+def parse_event(record: Mapping[str, Any]) -> ParsedEvent:
     """Round-trip one stored event record back into a typed :class:`UIEvent`.
 
     The inverse of ``event.model_dump(mode="json")`` as persisted by
     ``SessionStore.append_event`` — powers resume transcript replay
     (DESIGN-SPEC §3/§11: digests, delegate summaries and turn rules are
-    "reconstructed from events.jsonl on resume"). Returns ``None`` for
-    foreign records: the event log can carry other writers' lines today,
-    and the frozen ``extra="forbid"`` envelope makes any raw hook payload
-    or unknown ``kind`` fail validation rather than half-parse.
+    "reconstructed from events.jsonl on resume"). Returns a redacted
+    :class:`~amplifier_app_tui.model.blocks.UnsupportedBlock` placeholder —
+    never ``None`` — for foreign records: the event log can carry other
+    writers' lines today, and the frozen ``extra="forbid"`` envelope makes
+    any raw hook payload or unknown ``kind`` fail validation rather than
+    half-parse. The placeholder keeps the record's TYPE NAME and a redacted,
+    field-names-only summary — never the raw payload, which may carry
+    secrets or arbitrary tool/user content — so a resumed session stays
+    visible and usable instead of silently losing the line (S5).
     """
     try:
         return _EVENT_ADAPTER.validate_python(dict(record))
     except ValidationError:
-        return None
+        return UnsupportedBlock(
+            type_name=_unsupported_type_name(record),
+            summary=_unsupported_summary(record),
+        )
 
 
-def drop_rewound_events(events: Sequence[UIEvent]) -> list[UIEvent]:
+def drop_rewound_events(events: Sequence[ParsedEvent]) -> list[ParsedEvent]:
     """Filter post-rewind ghost turns out of a persisted event stream.
 
     The ui-events log is append-only, so a confirmed rewind leaves the
@@ -532,10 +584,12 @@ def drop_rewound_events(events: Sequence[UIEvent]) -> list[UIEvent]:
     already survived earlier markers, exactly as the live ledger counted
     them when the marker was written. Events before the first prompt
     (session-start preamble) are always kept; the markers themselves are
-    dropped from the result.
+    dropped from the result. :class:`UnsupportedBlock` placeholders carry
+    no turn semantics of their own — they simply ride along inside
+    whichever turn (or the preamble) they were interleaved with.
     """
-    preamble: list[UIEvent] = []
-    turns: list[list[UIEvent]] = []
+    preamble: list[ParsedEvent] = []
+    turns: list[list[ParsedEvent]] = []
     current = preamble
     for event in events:
         if isinstance(event, RewindMarker):
@@ -971,6 +1025,7 @@ __all__ = [
     "ExecutionStart",
     "Notification",
     "OrchestratorComplete",
+    "ParsedEvent",
     "PromptComplete",
     "PromptSubmit",
     "ProviderNotice",

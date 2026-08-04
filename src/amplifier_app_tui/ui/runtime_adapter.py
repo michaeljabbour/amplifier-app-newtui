@@ -22,7 +22,7 @@ from pathlib import Path
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from ..kernel.events import UIEvent
+from ..kernel.events import ParsedEvent, UIEvent
 
 from ..kernel.compaction import CompactionConfig
 from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
@@ -36,7 +36,7 @@ from ..model.config import (
     SessionConfigState,
     default_config_state,
 )
-from ..model.evidence import EvidenceLink
+from ..model.evidence import EvidenceLink, ToolCallRecord
 from ..model.queues import LaneSteeringQueue, NeedsYouQueue, SteeringQueue
 from ..model.terminal import TerminalSurface
 from ..model.trust import (
@@ -183,7 +183,7 @@ class RuntimeAdapter:
         self.session_short: str = ""
         self.session_id: str = ""
         """Full stored-session id, surfaced on exit so the CLI can print the
-        exact ``amplifier-tui resume <id>`` command (S4). Empty for demo
+        exact ``amplifier-tui resume SESSION_ID`` command (S4). Empty for demo
         sessions, which have no resumable store entry."""
         self.banner: tuple[str, str] = ("", "")
         self.session_cost_start: Decimal = Decimal("0")
@@ -192,7 +192,7 @@ class RuntimeAdapter:
         ids offset past it — DESIGN-SPEC §9); 0 for fresh/demo sessions."""
         self.restored_history: tuple[tuple[str, str], ...] = ()
         """(role, text) pairs replayed into the transcript on resume."""
-        self.restored_events: tuple[UIEvent, ...] = ()
+        self.restored_events: tuple[ParsedEvent, ...] = ()
         """The resumed session's stored UIEvents, replayed through the
         reducer to rebuild the full transcript (digests, delegate
         summaries, turn rules — DESIGN-SPEC §3/§11); empty means the
@@ -450,6 +450,12 @@ class RuntimeAdapter:
     def evidence_links(self, answer_text: str) -> tuple[EvidenceLink, ...]:
         """Evidence links grounding the final answer *answer_text* (spec §10)."""
         return ()
+
+    def evidence_tool_call(self, tool_call_id: str) -> ToolCallRecord | None:
+        """Durable provenance for *tool_call_id* (compliance item D7, AC2),
+        or ``None`` when it cannot be resolved (AC5: the caller then shows
+        an explicit "expired" fallback rather than a dead control)."""
+        return None
 
     def deferred_decision(
         self, message: str, decision_id: str = ""
@@ -836,6 +842,14 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is None:
             return ()
         return self._runtime.evidence.links_for(answer_text)
+
+    def evidence_tool_call(self, tool_call_id: str) -> ToolCallRecord | None:
+        """The provenance record the same collector persisted for
+        *tool_call_id* (D7) — independent of ``evidence_links`` above and
+        of how the transcript currently renders ToolLine blocks."""
+        if self._runtime is None:
+            return None
+        return self._runtime.evidence.record_for(tool_call_id)
 
     def lane_seed(self, agent_name: str) -> LaneSeed | None:
         """Seed a real lane with the delegate brief as its activity line.

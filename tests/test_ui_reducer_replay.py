@@ -19,6 +19,7 @@ from amplifier_app_tui.model.blocks import (
     DelegateSummaryBlock,
     TodoItem,
     TranscriptBlock,
+    UnsupportedBlock,
 )
 from amplifier_app_tui.model.lanes import LaneRegistry
 from amplifier_app_tui.model.turn import OutcomeLedger
@@ -297,3 +298,112 @@ def test_live_turn_prefers_event_mode_over_host_posture() -> None:
     reducer.handle(ev.PromptSubmit(**_env(0.0), prompt="build it", mode="build"))
     user_line = next(b for b in host.blocks if b.kind == "user_line")
     assert user_line.mode == "build"
+
+
+# -- S5: unsupported/foreign persisted records replay as placeholders --------
+
+
+def test_replay_renders_unsupported_placeholder_for_unknown_event_kinds() -> None:
+    """A persisted record this build cannot type (foreign writer, or an
+    unknown/removed ``kind``) degrades to a redacted ``unsupported`` block
+    in its original log position instead of vanishing — the rest of the
+    turn replays exactly as it would without it, and replay never raises."""
+    reducer, host = make_reducer()
+    turn_events = _one_turn_events()
+    events: list[ev.UIEvent | UnsupportedBlock] = [
+        *turn_events[:3],  # prompt_submit, tool_pre, tool_post
+        ev.parse_event({"kind": "loop_started", "session_id": SID, "step": 1}),
+        *turn_events[3:],  # provider usage, content_block_end, prompt_complete
+    ]
+
+    assert reducer.replay(events, turn_base=1) is True
+
+    kinds = _kinds(host.blocks)
+    placeholders = [b for b in host.blocks if b.kind == "unsupported"]
+    assert len(placeholders) == 1
+    placeholder = placeholders[0]
+    assert placeholder.type_name == "loop_started"
+    assert placeholder.id  # minted on attach — never the parse-time "" id
+    assert "unsupported" not in placeholder.summary  # summary is field names, not a label
+    assert "kind" in placeholder.summary and "step" in placeholder.summary
+
+    # The rest of the turn is untouched by the interleaved foreign record.
+    assert "tool_line" in kinds
+    assert "answer" in kinds
+    rule = next(b for b in host.blocks if b.kind == "turn_rule")
+    assert rule.shipped is True
+
+
+def test_replay_renders_placeholders_for_the_mixed_rich_transcript_fixture() -> None:
+    """S5 regression fixture: a resumed session mixing thinking, tool
+    activity and a delegate fan-out (rich content) with foreign ``loop``
+    and ``attachment`` records a donor/future writer left in the shared
+    event log. Replay must render a placeholder for each unknown record,
+    keep every real block, and never crash — a bad/foreign line must not
+    cost the session the rest of its rich transcript."""
+    reducer, host = make_reducer()
+    child = {"event_id": "rc1", "session_id": "sub-rich", "parent_id": SID, "ts": 3.2}
+    events: list[ev.UIEvent | UnsupportedBlock] = [
+        ev.PromptSubmit(**_env(0.0), prompt="investigate and delegate"),
+        ev.ToolPre(**_env(0.5), tool_name="bash", tool_call_id="c1", tool_input={"command": "ls"}),
+        ev.parse_event({"kind": "loop_progress", "session_id": SID, "iteration": 2}),
+        ev.ToolPost(
+            **_env(1.0),
+            tool_name="bash",
+            tool_call_id="c1",
+            tool_input={"command": "ls"},
+            result={"success": True, "output": "README.md"},
+        ),
+        ev.ContentBlockStart(**_env(1.2), block_type="thinking", block_index=0),
+        ev.ContentBlockEnd(
+            **_env(1.5),
+            block_type="thinking",
+            block_index=0,
+            block={"type": "thinking", "text": "check the delegate result before answering"},
+        ),
+        ev.parse_event(
+            {
+                "kind": "attachment_added",
+                "session_id": SID,
+                "path": "diagram.png",
+                "mime": "image/png",
+            }
+        ),
+        ev.AgentSpawned(
+            **_env(2.0), agent="researcher", sub_session_id="sub-rich", parent_session_id=SID
+        ),
+        ev.ContentBlockEnd(**child, block_type="text", block={"type": "text", "text": "found it"}),
+        ev.AgentCompleted(
+            **_env(4.0),
+            agent="researcher",
+            sub_session_id="sub-rich",
+            parent_session_id=SID,
+            success=True,
+            result="1 finding",
+        ),
+        ev.ContentBlockEnd(
+            **_env(4.5), block_type="text", block={"type": "text", "text": "Delegated work done."}
+        ),
+        ev.PromptComplete(
+            **_env(5.0),
+            response="Delegated work done.",
+            files_changed=3,
+            diffstat="+18/-4",
+            tests_ok=True,
+        ),
+    ]
+
+    assert reducer.replay(events, turn_base=1) is True
+
+    kinds = _kinds(host.blocks)
+    placeholders = [b for b in host.blocks if b.kind == "unsupported"]
+    assert {p.type_name for p in placeholders} == {"loop_progress", "attachment_added"}
+    assert all(p.id for p in placeholders)  # every placeholder got a real minted id
+    assert len({p.id for p in placeholders}) == len(placeholders)  # distinct, never aliased
+
+    # The rich content interleaved with the foreign records survived intact.
+    assert "thinking" in kinds
+    assert "tool_line" in kinds
+    assert any(isinstance(b, DelegateSummaryBlock) for b in host.blocks)
+    rule = next(b for b in host.blocks if b.kind == "turn_rule")
+    assert rule.shipped is True

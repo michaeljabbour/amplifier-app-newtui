@@ -34,6 +34,7 @@ from amplifier_app_tui.kernel.events import (
     ToolPre,
     normalize,
 )
+from amplifier_app_tui.model.blocks import UnsupportedBlock
 
 SID = {"session_id": "sess-1", "parent_id": None}
 ROOT = "root-session"
@@ -552,15 +553,37 @@ class TestParseEvent:
         parsed = parse_event(event.model_dump(mode="json"))
         assert parsed == event
 
-    def test_rejects_foreign_and_malformed_records(self) -> None:
+    def test_degrades_foreign_and_malformed_records_to_a_placeholder(self) -> None:
+        """S5: records this build cannot type degrade to a redacted
+        UnsupportedBlock placeholder — never None — so a resumed session
+        never silently loses the line. The placeholder keeps the record's
+        own TYPE NAME and a field-NAMES-only summary; raw VALUES (which may
+        carry secrets or arbitrary tool/user content) never survive.
+        """
         from amplifier_app_tui.kernel.events import parse_event
 
         # Raw hook payloads from other writers sharing the file.
-        assert parse_event({"event": "tool:pre", "tool_name": "bash"}) is None
+        foreign = parse_event({"event": "tool:pre", "tool_name": "bash"})
+        assert isinstance(foreign, UnsupportedBlock)
+        assert foreign.type_name == "tool:pre"
+        assert "event" in foreign.summary
+        assert "tool_name" in foreign.summary
+        assert "bash" not in foreign.summary  # the VALUE never leaks
+
         # Unknown discriminator.
-        assert parse_event({"kind": "mystery_kind"}) is None
+        mystery = parse_event({"kind": "mystery_kind"})
+        assert isinstance(mystery, UnsupportedBlock)
+        assert mystery.type_name == "mystery_kind"
+
         # Extra keys fail the frozen extra="forbid" envelope — a foreign
-        # record can never half-parse into one of ours.
-        record = PromptSubmit(prompt="hi").model_dump(mode="json")
+        # record can never half-parse into one of ours — but it still
+        # degrades to a placeholder naming its OWN kind plus the redacted
+        # field list (including the offending extra field's NAME), never
+        # the persisted prompt text itself.
+        record = PromptSubmit(prompt="a secret prompt").model_dump(mode="json")
         record["foreign_field"] = True
-        assert parse_event(record) is None
+        drifted = parse_event(record)
+        assert isinstance(drifted, UnsupportedBlock)
+        assert drifted.type_name == "prompt_submit"
+        assert "foreign_field" in drifted.summary
+        assert "a secret prompt" not in drifted.summary

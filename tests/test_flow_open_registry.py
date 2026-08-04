@@ -73,10 +73,14 @@ async def test_unregistered_verb_is_unknown_again() -> None:
         await type_text(pilot, "/pipeline-status")
         assert not app.palette.filtered_commands  # palette dropped the row too
         await pilot.press("enter")
+        # B2 compliance AC3: the unknown-command notice now offers the
+        # nearest registered trigger — "/status" is a legitimately close
+        # match for the just-unregistered "/pipeline-status".
         assert await wait_for(
             pilot,
             lambda: (
-                app.notice_slot.current == "unknown command: /pipeline-status · / lists commands"
+                app.notice_slot.current
+                == "unknown command: /pipeline-status · did you mean /status? · / lists commands"
             ),
         )
         assert not app.turn_active

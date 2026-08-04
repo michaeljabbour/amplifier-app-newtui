@@ -88,6 +88,15 @@ class SessionOpsHost(Protocol):
         """Show a transient right-aligned dim notice."""
         ...
 
+    def clear_transcript_view(self) -> None:
+        """Unmount every transcript row and fence stale pre-clear events.
+
+        The view-only half of ``/clear`` (D3): pairs with the adapter's
+        ``clear_context()`` model-level clear so the rendered transcript
+        and the live conversation context empty together.
+        """
+        ...
+
     def refresh_status(self) -> None:
         """Repaint the title/footer after adapter-derived state changes."""
         ...
@@ -196,8 +205,14 @@ class SessionOpsController:
 
     async def _clear_context(self) -> None:
         ok, count = await self._host.adapter.clear_context()
+        if ok:
+            # View-only reset happens ONLY on a confirmed context clear --
+            # a failed/unavailable clear must leave the transcript exactly
+            # as it was (D3: make the visible result primary, but never
+            # wipe the view for a no-op).
+            self._host.clear_transcript_view()
         self._host.show_notice(
-            f"context cleared · {count} messages dropped"
+            f"view cleared · {count} messages dropped"
             if ok
             else "clear unavailable in this session"
         )

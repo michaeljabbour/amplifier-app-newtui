@@ -426,3 +426,90 @@ async def test_kernel_parked_deferral_flows_rich_through_needs_you(monkeypatch) 
         assert narration.text == f"Applying decision: Allow once · {push}"
         rows = app.journal.overrides(adapter.denial_log)
         assert [(row.action, row.overridden) for row in rows] == [(push, 1)]
+
+
+@pytest.mark.asyncio
+async def test_repeated_kernel_notification_for_same_decision_does_not_rering(monkeypatch) -> None:
+    """B7 AC3: a SECOND kernel-side Notification for an ALREADY-parked
+    decision (e.g. a dependent tool call blocked on the same pending
+    decision) must not double the badge or re-ring the bell -- dedup keys
+    off the decision's own stable id, not off call count."""
+    from amplifier_app_tui.kernel.approval import STANDARD_OPTIONS
+    from amplifier_app_tui.kernel.events import Notification
+    from amplifier_app_tui.ui.runtime_adapter import RealRuntimeAdapter, RuntimeAdapter
+
+    push = "git push origin main"
+    monkeypatch.delenv("AMPLIFIER_NOTIFY", raising=False)
+    monkeypatch.setattr(RealRuntimeAdapter, "start", RuntimeAdapter.start)
+    adapter = RealRuntimeAdapter(bundle="x")
+    app = TuiApp(adapter)
+    rings: list[str] = []
+    monkeypatch.setattr(app, "bell", lambda: rings.append("bell"))
+    async with app.run_test(size=SIZE) as pilot:
+        item = adapter.needs_you.defer(
+            f"Allow {push}?",
+            "not authorized",
+            choices=STANDARD_OPTIONS,
+            highlight=push,
+            action=push,
+        )
+
+        def _repeat_notification() -> Notification:
+            return Notification(
+                session_id="root",
+                message=f"decision deferred to queue · {item.question}",
+                level="decision",
+                source="needs_you",
+                decision_id=item.decision_id,
+            )
+
+        adapter.queue.put_nowait(_repeat_notification())
+        assert await wait_for(pilot, lambda: app.footer_bar.state.waiting == 1)
+        assert rings == ["bell"]
+        record = app._attention.current(adapter.session_id)
+        assert record is not None
+        assert record.reason == "awaiting_approval"  # carries a denied action
+        assert not record.acknowledged
+
+        # A dependent tool call blocked on the SAME decision re-emits an
+        # identical Notification (kernel-side re-ping). Give the (undesired)
+        # re-ring every chance to happen before asserting it didn't -- a
+        # single blind pause risks a false pass.
+        adapter.queue.put_nowait(_repeat_notification())
+        for _ in range(10):
+            await pilot.pause(0.02)
+            if len(rings) > 1:
+                break
+        assert rings == ["bell"]  # NOT re-rung
+        assert adapter.needs_you.pending_count == 1  # still no duplicate park
+        assert app.footer_bar.state.waiting == 1
+
+
+@pytest.mark.asyncio
+async def test_acting_on_a_deferred_decision_acknowledges_its_attention_record() -> None:
+    """B7 AC5: acting on a deferred decision (row/chip click) acknowledges
+    the normalized attention record -- not just the needs-you queue item."""
+    adapter = DemoRuntimeAdapter(instant=True)
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await _reach_pytest_approval(pilot, app)
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+        await type_text(pilot, "hi")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: rules(app) >= 3 and not app.turn_active)
+        assert adapter.needs_you.pending_count == 1
+
+        record = app._attention.current(adapter.session_id)
+        assert record is not None
+        assert not record.acknowledged
+
+        await pilot.press("ctrl+y")
+        await pilot.pause()
+        entry = blocks_of(app, "needs_you")[-1].items[0]
+        await pilot.click(f"#needs-you-row-{entry.decision_id}")
+        await pilot.pause()
+
+        acked = app._attention.current(adapter.session_id)
+        assert acked is not None
+        assert acked.acknowledged

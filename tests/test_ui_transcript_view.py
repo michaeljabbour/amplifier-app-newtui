@@ -18,6 +18,8 @@ from textual.selection import SELECT_ALL
 
 from amplifier_app_tui.model.blocks import (
     Answer,
+    DelegateEntry,
+    DelegateSummaryBlock,
     EvidenceBlock,
     Narration,
     NeedsYouBlock,
@@ -35,18 +37,25 @@ from amplifier_app_tui.ui.live_tail import answer_spans
 from amplifier_app_tui.ui.needs_you import NeedsYouList
 from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 from amplifier_app_tui.ui.transcript import (
+    BackToParent,
     BlockWidget,
     CloseEvidence,
     CopyCodeFence,
+    EvidenceFocusAnchor,
     ExpandEvidenceClaim,
+    FOCUS_HEADER_HINT,
+    FOCUS_HEADER_TITLE,
+    FocusHeader,
     HISTORY_COMPACT_TRIGGER,
     HISTORY_WIDGET_LIMIT,
     HistoryArchive,
     LaneFocusChanged,
+    OpenEvidenceDetail,
     OpenRewind,
     ShowEvidence,
     ToolLineToggled,
     TranscriptView,
+    ViewAnchor,
     fence_text_at_row,
     render_block,
 )
@@ -63,9 +72,11 @@ class Harness(App[None]):
         self.toggles: list[ToolLineToggled] = []
         self.lane_changes: list[LaneFocusChanged] = []
         self.expanded_claims: list[ExpandEvidenceClaim] = []
+        self.opened_details: list[OpenEvidenceDetail] = []
         self.closed_evidence: list[CloseEvidence] = []
         self.decisions: list[NeedsYouList.DecisionTaken] = []
         self.fence_copies: list[CopyCodeFence] = []
+        self.back_to_parent: list[BackToParent] = []
 
     def on_mount(self) -> None:
         self.theme = theme_id(DEFAULT_THEME)
@@ -91,11 +102,17 @@ class Harness(App[None]):
     def on_expand_evidence_claim(self, message: ExpandEvidenceClaim) -> None:
         self.expanded_claims.append(message)
 
+    def on_open_evidence_detail(self, message: OpenEvidenceDetail) -> None:
+        self.opened_details.append(message)
+
     def on_close_evidence(self, message: CloseEvidence) -> None:
         self.closed_evidence.append(message)
 
     def on_needs_you_list_decision_taken(self, message: NeedsYouList.DecisionTaken) -> None:
         self.decisions.append(message)
+
+    def on_back_to_parent(self, message: BackToParent) -> None:
+        self.back_to_parent.append(message)
 
 
 def _view(app: Harness) -> TranscriptView:
@@ -315,6 +332,193 @@ async def test_lane_focus_swaps_block_list_and_restore_brings_main_back() -> Non
         assert app.lane_changes[-1].lane_id is None
 
 
+def _lane_blocks(prefix: str, count: int, focus_note: str) -> list[TranscriptBlock]:
+    blocks: list[TranscriptBlock] = [
+        SessionBanner(id=f"{prefix}-banner", headline="", focus_note=focus_note)
+    ]
+    blocks.extend(Narration(id=f"{prefix}{i}", text=f"{prefix} line {i}") for i in range(count))
+    return blocks
+
+
+_CHILD_BANNER = SessionBanner(
+    id="c1",
+    headline="",
+    focus_note=(
+        "focused: test-writer \u00b7 subagent of a1b2c3 \u00b7 own context window"
+        " \u00b7 results report back to parent \u00b7 esc back"
+    ),
+)
+
+
+@pytest.mark.asyncio
+async def test_focus_header_back_control_click_and_keyboard() -> None:
+    """S6 AC1/AC5: a visible 'Back to parent' control mounts only while a
+    lane is focused, and both click (mouse) and enter/space (keyboard)
+    post the same BackToParent message the app routes through
+    restore_main() \u2014 the same seam Escape uses."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(UserLine(id="b1", text="parent turn", mode="build"))
+        await pilot.pause()
+        assert list(view.query(FocusHeader)) == []  # not focused yet: no Back control
+
+        await view.focus_lane(
+            "lane-1", [_CHILD_BANNER, UserLine(id="c2", text="hi", mode="delegated")]
+        )
+        await pilot.pause()
+        headers = list(view.query(FocusHeader))
+        assert len(headers) == 1
+        header = headers[0]
+        rendered = header.render().plain
+        assert "Back to parent" in rendered  # AC1: the visible action
+        assert "esc" in rendered  # AC1: its keyboard shortcut, shown alongside it
+        assert FOCUS_HEADER_TITLE.endswith("Back to parent")
+        assert "esc" in FOCUS_HEADER_HINT
+
+        # Mouse: a click posts BackToParent.
+        await pilot.click(header)
+        await pilot.pause()
+        assert len(app.back_to_parent) == 1
+
+        # Keyboard: enter AND space also activate it once it holds focus.
+        header.focus()
+        await pilot.press("enter")
+        assert len(app.back_to_parent) == 2
+        await pilot.press("space")
+        assert len(app.back_to_parent) == 3
+
+        # It never rides along with the parent view.
+        await view.restore_main()
+        await pilot.pause()
+        assert list(view.query(FocusHeader)) == []
+
+
+@pytest.mark.asyncio
+async def test_scroll_anchor_restores_each_views_own_position() -> None:
+    """S6 AC3: leaving a view remembers its scroll position; returning
+    (or re-entering) restores THAT view's own position instead of always
+    snapping to the tail. A view visited for the first time still
+    defaults to bottom-follow (today's behavior, unchanged)."""
+    app = Harness()
+    async with app.run_test(size=(60, 8)) as pilot:
+        view = _view(app)
+        for index in range(30):
+            view.append(Narration(id=f"m{index}", text=f"main line {index}"))
+        await pilot.pause()
+        assert view.follow is True
+
+        # The user reads partway up the parent before ever focusing a lane.
+        view.scroll_to(y=0, animate=False)
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
+        await pilot.pause()
+        assert view.follow is False
+        main_scroll_y = view.scroll_y
+
+        lane_a = _lane_blocks("a", 30, "focused: a")
+        await view.focus_lane("lane-a", lane_a)
+        await pilot.pause()
+        assert view.follow is True  # lane-a is a first-ever visit: bottom-follow
+
+        # The user scrolls up inside lane-a's own transcript too.
+        view.scroll_to(y=1, animate=False)
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
+        await pilot.pause()
+        assert view.follow is False
+        lane_a_scroll_y = view.scroll_y
+        assert lane_a_scroll_y != main_scroll_y  # a meaningfully distinct anchor
+
+        await view.restore_main()
+        await pilot.pause()
+        # The parent comes back exactly where it was left, not the tail.
+        assert view.follow is False
+        assert view.scroll_y == pytest.approx(main_scroll_y)
+
+        # Re-focusing the SAME lane (repeated enter/exit cycles) restores
+        # ITS OWN remembered position too, not main's and not the tail.
+        await view.focus_lane("lane-a", lane_a)
+        await pilot.pause()
+        assert view.follow is False
+        assert view.scroll_y == pytest.approx(lane_a_scroll_y)
+
+
+@pytest.mark.asyncio
+async def test_scroll_anchor_independent_across_a_direct_lane_to_lane_hop() -> None:
+    """S6 AC3 (nested panel transitions): the lanes panel stays open
+    while focused, so the user can jump straight from one lane to
+    another without returning to main first. Each view's own anchor
+    stays independent across that hop, and the parent's anchor \u2014
+    captured once, before either lane was ever entered \u2014 is untouched
+    by whatever happens between lanes."""
+    app = Harness()
+    async with app.run_test(size=(60, 8)) as pilot:
+        view = _view(app)
+        for index in range(30):
+            view.append(Narration(id=f"m{index}", text=f"main line {index}"))
+        await pilot.pause()
+
+        view.scroll_to(y=0, animate=False)
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
+        await pilot.pause()
+        main_scroll_y = view.scroll_y
+
+        lane_a = _lane_blocks("a", 30, "focused: a")
+        lane_b = _lane_blocks("b", 30, "focused: b")
+        await view.focus_lane("lane-a", lane_a)
+        await pilot.pause()
+        view.scroll_to(y=2, animate=False)
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
+        await pilot.pause()
+        lane_a_scroll_y = view.scroll_y
+
+        # Jump straight to lane-b \u2014 no return to main in between (the
+        # lanes panel permits this: it never touches lanesOpen on focus).
+        await view.focus_lane("lane-b", lane_b)
+        await pilot.pause()
+        assert view.follow is True  # lane-b is a first-ever visit
+
+        await view.restore_main()
+        await pilot.pause()
+        # Main is restored to where it was BEFORE ever entering lane-a \u2014
+        # untouched by the a -> b hop in between.
+        assert view.follow is False
+        assert view.scroll_y == pytest.approx(main_scroll_y)
+
+        # And lane-a's own remembered position survived the round trip.
+        await view.focus_lane("lane-a", lane_a)
+        await pilot.pause()
+        assert view.follow is False
+        assert view.scroll_y == pytest.approx(lane_a_scroll_y)
+
+
+@pytest.mark.asyncio
+async def test_expanded_delegate_summary_survives_a_focus_round_trip() -> None:
+    """S6 AC3 ('relevant panel state'): a block the user expanded in the
+    parent (a nested, click-to-expand panel) stays expanded across a
+    focus/return cycle \u2014 the stashed parent list is the live block
+    state, not a stale copy frozen at focus time."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        summary = DelegateSummaryBlock(
+            id="s1",
+            entries=(DelegateEntry(agent="researcher", state="done", snippet="ok"),),
+            duration_s=1.0,
+        )
+        widget = view.append(summary)
+        await pilot.pause()
+        assert isinstance(widget, BlockWidget)
+        await pilot.click(widget)  # expand it
+        await pilot.pause()
+        assert _block(view, "s1", DelegateSummaryBlock).expanded is True
+
+        await view.focus_lane("lane-1", [_CHILD_BANNER])
+        await pilot.pause()
+        await view.restore_main()
+        await pilot.pause()
+        assert _block(view, "s1", DelegateSummaryBlock).expanded is True
+
+
 @pytest.mark.asyncio
 async def test_tail_follow_sticks_to_bottom_until_user_scrolls_up() -> None:
     app = Harness()
@@ -506,3 +710,252 @@ async def test_archived_history_retains_answer_rewind_evidence_and_decisions() -
         assert app.closed_evidence[-1].block_id == "old-evidence"
         assert app.decisions[-1].item_id == "decision-1"
         assert app.decisions[-1].choice == "apply it"
+
+
+# ---------------------------------------------------------------------------
+# Evidence detail panel seam (compliance item D7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flat_evidence_widget_action_detail_posts_open_evidence_detail() -> None:
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        link = EvidenceLink(claim_quote="tests pass", tool_ref="pytest run", tool_call_id="c1")
+        widget = view.append(EvidenceBlock(id="e1", links=(link,)))
+        assert isinstance(widget, BlockWidget)
+        widget.action_evidence_detail()
+        await pilot.pause()
+        assert len(app.opened_details) == 1
+        assert app.opened_details[0].block_id == "e1"
+        assert app.opened_details[0].link == link
+
+
+@pytest.mark.asyncio
+async def test_flat_evidence_widget_action_detail_is_a_noop_without_links() -> None:
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        widget = view.append(EvidenceBlock(id="e-empty", links=()))
+        assert isinstance(widget, BlockWidget)
+        widget.action_evidence_detail()
+        await pilot.pause()
+        assert app.opened_details == []
+
+
+@pytest.mark.asyncio
+async def test_archived_evidence_action_detail_posts_open_evidence_detail() -> None:
+    """The consolidated HistoryArchive path mirrors the flat-widget one
+    (same dual-path pattern as action_evidence_expand/action_close_evidence)."""
+    app = Harness()
+    async with app.run_test(size=(100, 30)) as pilot:
+        view = _view(app)
+        link = EvidenceLink(
+            claim_quote="the claim", tool_ref="read_file · source.py", tool_call_id="c9"
+        )
+        for i in range(HISTORY_COMPACT_TRIGGER + 5):
+            view.append(UserLine(id=f"filler-{i}", text=f"line {i}"))
+        view.append(EvidenceBlock(id="old-evidence", links=(link,)))
+        await pilot.pause()
+
+        archive = view.query_one(HistoryArchive)
+        archive.action_archive_activate("old-evidence")  # focuses the archived block
+        archive.action_evidence_detail()
+        await pilot.pause()
+
+        assert len(app.opened_details) == 1
+        assert app.opened_details[0].block_id == "old-evidence"
+        assert app.opened_details[0].link == link
+
+
+# ---------------------------------------------------------------------------
+# Evidence focus/scroll restore seam (compliance item D7 AC3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_capture_and_restore_evidence_focus_returns_scroll_and_widget_focus() -> None:
+    """AC3: closing detail restores BOTH scroll position and keyboard
+    focus to the evidence row -- reuses the S6 ViewAnchor seam."""
+    app = Harness()
+    async with app.run_test(size=(80, 10)) as pilot:
+        view = _view(app)
+        view.release_anchor()  # a fixed scroll position, not tail-follow
+        for i in range(60):
+            view.append(Narration(id=f"n{i}", text=f"narration line number {i}"))
+        link = EvidenceLink(claim_quote="c", tool_ref="r", tool_call_id="c1")
+        view.append(EvidenceBlock(id="ev-row", links=(link,)))
+        await pilot.pause()
+
+        widget = view.get_widget("ev-row")
+        assert widget is not None
+        view.scroll_to(y=12, animate=False, immediate=True)
+        await pilot.pause()
+        captured_scroll = view.scroll_y
+        assert captured_scroll == 12
+
+        # Opening detail captures the anchor (mimics on_open_evidence_detail).
+        view.capture_evidence_focus("ev-row")
+
+        # Something else steals scroll + focus (mimics the docked panel's
+        # width reflow moving the viewport, and the panel never focusing).
+        view.scroll_to(y=0, animate=False, immediate=True)
+        app.set_focus(None)
+        await pilot.pause()
+        assert view.scroll_y == 0
+        assert not widget.has_focus
+
+        # Closing detail restores both (mimics close_evidence_panel).
+        view.restore_evidence_focus()
+        await pilot.pause()
+        assert view.scroll_y == captured_scroll
+        restored_widget = view.get_widget("ev-row")
+        assert restored_widget is not None
+        assert restored_widget.has_focus
+
+
+@pytest.mark.asyncio
+async def test_restore_evidence_focus_is_a_noop_when_nothing_was_captured() -> None:
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(Narration(id="n1", text="hello"))
+        await pilot.pause()
+        view.restore_evidence_focus()  # nothing captured -- must not raise
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_evidence_focus_is_keyed_per_view_like_view_anchor() -> None:
+    """Mirrors ViewAnchor's per-view keying (S6): a lane's own evidence
+    focus must not clobber the parent's, and vice versa."""
+    app = Harness()
+    async with app.run_test(size=(80, 10)) as pilot:
+        view = _view(app)
+        view.release_anchor()
+        for i in range(40):
+            view.append(Narration(id=f"main-{i}", text=f"main {i}"))
+        view.append(
+            EvidenceBlock(id="main-ev", links=(EvidenceLink(claim_quote="c", tool_ref="r"),))
+        )
+        await pilot.pause()
+        view.scroll_to(y=8, animate=False, immediate=True)
+        await pilot.pause()
+        view.capture_evidence_focus("main-ev")
+        main_anchor = view._evidence_focus[view._current_view_id()]
+        assert isinstance(main_anchor, EvidenceFocusAnchor)
+        assert main_anchor.block_id == "main-ev"
+        assert isinstance(main_anchor.anchor, ViewAnchor)
+
+        await view.focus_lane("lane-1", [Narration(id="lane-n", text="lane content")])
+        await pilot.pause()
+        # The lane's own view has no captured evidence focus of its own yet.
+        assert "lane-1" not in view._evidence_focus
+
+        await view.restore_main()
+        await pilot.pause()
+        # The parent's remembered evidence focus survived the round trip.
+        assert view._evidence_focus[view._current_view_id()].block_id == "main-ev"
+
+
+# ---------------------------------------------------------------------------
+# clear_view() -- D3: /clear must visibly empty the transcript, not just
+# clear the conversation context (Compliance 2026-08-02).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clear_view_removes_every_mounted_block() -> None:
+    """AC1: clear_view() removes ALL rendered rows, mounted or not."""
+
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(UserLine(id="u1", text="hello", mode="chat"))
+        view.append(Answer(id="a1", spans=(Segment(text="hi there"),)))
+        view.append(ToolLine(id="t1", summary="ran a command", status="completed"))
+        await pilot.pause()
+        assert view.blocks  # sanity: something is actually there first
+
+        view.clear_view()
+        await pilot.pause()
+
+        assert view.blocks == ()
+        assert view.block_ids == ()
+        assert view.get_block("u1") is None
+        assert len(view.query(BlockWidget)) == 0
+
+
+@pytest.mark.asyncio
+async def test_clear_view_also_drops_the_history_archive() -> None:
+    """AC1: consolidated (archived) older history is removed too, not just
+    the recent widget-backed tail."""
+
+    app = Harness()
+    async with app.run_test(size=(100, 30)) as pilot:
+        view = _view(app)
+        for index in range(HISTORY_COMPACT_TRIGGER + 20):
+            view.append(Narration(id=f"clear-archive-{index}", text=f"line {index}"))
+        await pilot.pause(0.2)
+        assert view.query(HistoryArchive)  # sanity: compaction actually ran
+
+        view.clear_view()
+        await pilot.pause()
+
+        assert len(view.query(HistoryArchive)) == 0
+        assert view.blocks == ()
+
+
+@pytest.mark.asyncio
+async def test_clear_view_resets_the_tail_follow_anchor() -> None:
+    """AC2: a cleared view re-anchors to the bottom so it reads as an
+    unmistakably empty, freshly-following page -- never stranded mid-scroll
+    from wherever the user had scrolled before the clear."""
+
+    app = Harness()
+    async with app.run_test(size=(60, 10)) as pilot:
+        view = _view(app)
+        for index in range(40):
+            view.append(Narration(id=f"n{index}", text=f"line {index}"))
+        await pilot.pause()
+        view.release_anchor()  # user scrolled up before clearing
+        assert not view.follow
+
+        view.clear_view()
+        await pilot.pause()
+
+        assert view.follow
+
+
+@pytest.mark.asyncio
+async def test_clear_view_is_idempotent_on_an_already_empty_view() -> None:
+    """AC5 repeated clear: clearing an already-empty view is a safe no-op."""
+
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.clear_view()
+        await pilot.pause()
+        view.clear_view()  # a second /clear back-to-back
+        await pilot.pause()
+        assert view.blocks == ()
+
+
+@pytest.mark.asyncio
+async def test_clear_view_then_append_renders_fresh_content() -> None:
+    """AC3: new output appears normally in the cleared view -- clearing
+    never leaves the widget unable to mount anything afterward."""
+
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(Narration(id="pre-clear", text="before"))
+        view.clear_view()
+        await pilot.pause()
+
+        widget = _mounted(view, Narration(id="post-clear", text="after the clear"))
+        await pilot.pause()
+
+        assert view.blocks == (Narration(id="post-clear", text="after the clear"),)
+        assert widget.is_mounted

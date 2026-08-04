@@ -62,7 +62,9 @@ async def test_clicking_final_answer_prints_evidence_block() -> None:
         evidence = blocks_of(app, "evidence")[-1]
         assert len(evidence.links) == len(DEMO_EVIDENCE) == 2
         # Exact header + first numbered claim (spec §10).
-        assert _line(evidence, 0) == ("· Evidence  1/2 · ←/→ select · enter expand · esc close")
+        assert _line(evidence, 0) == (
+            "· Evidence  1/2 · ←/→ select · enter expand · d detail · esc close"
+        )
         assert _line(evidence, 1) == (
             '  ¹ "dashboard and steering wheel" → Ran 2 shell commands (pyproject entry points)'
         )
