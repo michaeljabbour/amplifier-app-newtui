@@ -1,22 +1,69 @@
 # Design — Voice-first, ambient delegation (architecture track)
 
 **Compliance item:** B8 — "Design for voice-first, ambient delegation"
-**Status:** 📐 design direction — **proposed, review-gated. Not a confirmed implementation
-commitment.** The document *is* the deliverable; no code lands with it, and nothing here
-authorizes building a voice client, a mobile client, or a Teams/Outlook connector.
+**Status:** 🔨 **partially implemented.** The contracts this document specified are now built
+(`kernel/ambient/`), together with the thin voice adapter it deliberately sequenced last. Two
+items remain genuinely out of reach here and are marked as such rather than faked: a **real
+Teams/Outlook connector** (E8 — needs Microsoft Graph credentials, tenant consent and network)
+and a **network listener** for the reply channel (E7 — the security core is built and tested;
+no reachable service ships). Speech capture and synthesis are device capabilities and are
+likewise not built. See **"Implementation status"** below for the per-extension verdict.
 **Built on:** B6 session-control contract (PR #203 — merged to `main`) · B7 attention
-contract (PR #202 — open, not yet merged)
-**Author:** compliance worker · **Date:** 2026-08-03 · **Slug:** `voice-first-ambient-delegation`
+contract (PR #229 — merged to `main`) · E1 authorization (PR #230 — open; consumed, not owned)
+**Author:** compliance worker · **Date:** 2026-08-03 · **Updated:** 2026-08-04
+**Slug:** `voice-first-ambient-delegation`
 
 > **Citation honesty.** Every `file:line` cite into `kernel/session_control.py`,
 > `kernel/persistence.py`, `ui/notifications.py`, `docs/SESSION-CONTROL.md` and
 > `docs/SETTINGS.md` was verified at `55c8f48`; B6 has since landed on **`main`**
-> (PR #203, squash-merged byte-identically), so those cites carry over unchanged. B7's
-> `AttentionRecord` / `AttentionCenter` are **still not on `main`** — `ui/notifications.py`
-> there is still the pre-B7 bell → OSC 777 ladder. B7 is cited from **PR #202's stated
-> contract** (open, unmerged as of this writing), and every claim that depends on B7's
-> *internals* (rather than its published shape) is marked as such. Re-verify both before
-> building anything below.
+> (PR #203, squash-merged byte-identically), so those cites carry over unchanged.
+>
+> **Re-verified 2026-08-04, before building.** B7 has since landed on `main` (PR #229):
+> `AttentionRecord` / `AttentionCenter` / `attention_push_payload` are real, and
+> `kernel/attention_store.py` provides the durable cross-process store — so **E4 and E5 were
+> already delivered** and collapsed to "verify and consume", exactly as this document
+> predicted for E5. E1 is being delivered by PR #230 (`kernel/session_authz.py`), which is
+> **open, unmerged**, so the implementation *consumes* it optionally and degrades cleanly in
+> its absence. Every other cite below was re-checked against the tree at `332ee11`.
+
+---
+
+## Implementation status (2026-08-04)
+
+Everything below was **re-verified against the tree** before building; three of the eight
+extensions had changed state since this document was written, and one was reassigned.
+
+| ID | Verdict | Where |
+|---|---|---|
+| **E1** — authenticated principal → `Actor` | **Owned elsewhere; consumed here.** `kernel/session_authz.py` (PR #230, open) is the policy home; it deliberately chose the `session:<sid>` + `read`/`write`/`control` vocabulary this document specifies, so a grant minted by §1 maps across with no translation. This track does **not** build or edit it. | `kernel/ambient/principal.py` — consumes it if importable, degrades to an explicitly *unverified* `LocalPrincipal` if not, and enforces the security rule that matters: **an unverified `human` claim arriving over a non-local method is downgraded to `unknown`**, so it cannot outrank anything. The downgrade is recorded in the audit provenance rather than being silent. |
+| **E2** — grant store + `source.*`/`grant.*` audit | **Built.** | `kernel/ambient/grants.py`. Deny-by-default; **consulted at use, never cached** (`GrantStore` holds no in-memory grants — a revoke written by another process lands on the very next call); no wildcards (a selector-less `source:*` grant is rejected at creation); `read` never implies `send`; minting restricted to first-party surfaces. Additive audit actions land in the **same** `control-audit.jsonl` via the new `SessionControl.note_ambient`, whose vocabulary is closed and separate from the control actions — an ambient caller can add to the account, never forge a `lease.granted`. |
+| **E3** — structured, editable interpretation payload | **Built.** | `kernel/ambient/interpretation.py`. Typed record keyed by the B6 handoff id, with `propose`/`amend`/`confirm`/`cancel`. Gating reuses B6 **unchanged** (`pause` → `authorize()` denies every write → `claim_handoff`). `amend` mints a new id and never mutates; expiry is `cancel` **and resumes**, so a forgotten voice request cannot wedge a session; `cancel` and expiry are audited alongside `confirm`. The handoff's `note` field is left empty — the doc's "do not JSON-stuff `note`" rule is asserted by a test. |
+| **E4** — push payload carries `event_id` | **Already delivered** by B7 (PR #229): `attention_push_payload()` in `ui/notifications.py`, emitted as an `attention:recorded` hook event. Nothing to build. | The ambient layer adds a **stricter** payload on top (`ambient_push_payload`): pointer-only, built from a literal allowlist, no `body` at all. |
+| **E5** — durable cross-process attention records | **Already delivered** by B7 (PR #229): `kernel/attention_store.py` + `AttentionCenter.bind()`. As this document predicted, E5 collapsed to "verify, then consume". | Consumed by `kernel/ambient/reply.py`, which acknowledges an answered record cross-process. |
+| **E6** — cross-project session discovery | **Built, as a read-side scan** — the cheap option this document recommended, and the recommendation holds. | `kernel/ambient/discovery.py`. See "Why a scan and not an index" in that module: the projection cannot drift because it *is* the truth re-read, an index would be a second write contract to keep in sync, and the failure mode of a stale index is the worst one available (a fleet view that confidently reports a stuck session as running). `SessionDiscovery` caches each row on its session directory's mtime, so steady-state re-reads collapse to O(changed). An unreadable session degrades to a **partial row, never an exception**. |
+| **E7** — authenticated inbound reply channel | **Split, honestly.** The **security core is built and tested**; **no network listener ships, and none can be verified here.** | `kernel/ambient/reply.py`. Built: HMAC-SHA256 envelope authentication over a canonical string with constant-time compare, replay rejection (nonce + freshness window), device enrollment with `0600` secrets that never reach a log or an audit entry, correlation `event_id` → session → handoff, re-entry via `handoff.claim`, and attention acknowledgement. `accept()` is transport-agnostic on purpose, so a future HTTPS handler adds a transport without moving the security core. **v1 default is reply-on-open** (`pending_for_open`) — one-tap-to-the-right-place, zero new network surface — exactly as §3 option (c) proposed. **The ntfy reply-topic option (a) remains rejected**: a world-readable channel must never be a write path. |
+| **E8** — Teams/Outlook connectors | **Genuinely external. Not built, and deliberately not faked.** | `kernel/ambient/sources.py` ships the **port** a real connector must implement, plus a **working local implementation** (`LocalFileSource`, real files on disk) and the enforcement wrapper (`GrantedSource`) that consults E2 at use and attributes every read/send. A real connector needs a Graph app registration, tenant-granted delegated scopes, an interactive consent flow, and live network access — none of which exist offline, and every one of which is a place a guess would be silently wrong. When it is built, the work is the Graph client and its consent flow; the permission check, the audit trail, the confirmation echo and the redaction policy are already done and do not move. |
+
+**The voice adapter itself** (`kernel/ambient/voice.py`) is built, and is thin by
+construction: every field on it is a collaborator, never a cache. It classifies consequence
+(the five rules of §2, as one pure function), echoes an interpretation for anything
+consequential, parses only the closed response vocabulary (`confirm` / `amend(field, value)` /
+`cancel`, anything else re-asks rather than guessing), **refuses a spoken confirmation on an
+irreversible action** and routes it to a visual surface, speaks the fleet report off E6, and
+sequences follow-ons across sessions (`FollowOnPlan`) stopping on the first `control.conflict`.
+
+**Also not built, and not buildable here:** speech capture, wake-word detection, ASR and TTS
+are device capabilities. The adapter's boundary is therefore **already-transcribed text in,
+speakable text out**; a real voice client owns the microphone and the speaker. There is no
+mobile client either — E7's reply-on-open path and the pointer-only push payload are the seams
+one would attach to.
+
+**Open questions now answered by the implementation:** Q2 (where the ambient layer runs) — it
+runs **in-process, over the filesystem**, like every other kernel contract, so a daemon remains
+possible without a rewrite. Q3 (is reply-on-open acceptable for v1) — **yes, shipped as the
+default**, with the authenticated core built behind it. Q4 (grant scope) — **per-user for
+`source:*`**, as proposed. Q1 (Teams/Outlook API specifics) and Q5 (unattended voice mode)
+remain **open and unverified**.
 
 ---
 
@@ -511,16 +558,18 @@ consequential and requires the echo to name **every** target session before the 
 Nothing below is assumed to exist. Each is a real gap between what B6/B7 provide today and what
 this design needs.
 
-| ID | Gap | Owner | Blocking |
-|---|---|---|---|
-| **E1** | Authenticated principal → `Actor`, plus an additive `actor.auth` provenance field. B6 records `kind` as an unverified claim and names B8 as the mapper (`kernel/session_control.py:108-118`; `docs/SESSION-CONTROL.md:155-158`). | new adapter boundary + additive B6 field | **Hard blocker for any networked adapter.** Without it `kind:"human"` is spoofable and B6's human>automation takeover becomes a privilege-escalation path. |
-| **E2** | Permission-grant store + `source.*` / `grant.*` audit actions. B6's action vocabulary is closed at thirteen session-control actions (`docs/SESSION-CONTROL.md:147-150`). | new ambient store; additive to B6's vocabulary | AC4 |
-| **E3** | Structured, editable interpretation record + `interpretation.propose/amend/confirm/cancel`. B6's handoff payload is free-text `reason`/`note` (`kernel/session_control.py:868-875`). | ambient layer (gating reuses B6 pause/claim unchanged) | AC1 |
-| **E4** | Push payload must carry B7's `event_id` + attach ref. Today ntfy fires from an external hook off the raw kernel event, outside the record (PR #202). | `hooks-notify-push` wiring / B7 routing | AC3 — **nothing in §3 works without it** |
-| **E5** | Durable, cross-process attention records (`attention.jsonl` beside `control.json`). As published, `AttentionCenter` is a UI-layer object; another process cannot read it. **Verify against B7 before building** — may collapse to a documentation fix. | B7 (mirrors B6's proven durability pattern) | AC3 |
-| **E6** | Cross-project session discovery. `SessionStore` enumerates one project (`kernel/persistence.py:345`). Cheap fix: read-side scan, no new write contract. | read-side projection | AC2/AC5 *breadth* (single-project already works) |
-| **E7** | An authenticated inbound reply channel. ntfy is publish-only; its topic is a shared secret and world-readable when public (`docs/SETTINGS.md:215`). | new service — largest new surface, **explicitly out of v1** | *quick* reply only; reply-on-open needs nothing |
-| **E8** | Teams/Outlook connectors. Shape and permission requirements are specified in §1; **concrete API surfaces, delegated permission scopes and consent flows are deliberately unverified and OPEN** — Open question 1. | new source modules | AC4's Teams/Outlook instance |
+*(Status column added 2026-08-04 — see "Implementation status" above for detail.)*
+
+| ID | Gap | Owner | Blocking | Status |
+|---|---|---|---|---|
+| **E1** | Authenticated principal → `Actor`, plus an additive `actor.auth` provenance field. B6 records `kind` as an unverified claim and names B8 as the mapper (`kernel/session_control.py:108-118`; `docs/SESSION-CONTROL.md:155-158`). | new adapter boundary + additive B6 field | **Hard blocker for any networked adapter.** Without it `kind:"human"` is spoofable and B6's human>automation takeover becomes a privilege-escalation path. | **consumed, not owned** (PR #230) |
+| **E2** | Permission-grant store + `source.*` / `grant.*` audit actions. B6's action vocabulary is closed at thirteen session-control actions (`docs/SESSION-CONTROL.md:147-150`). | new ambient store; additive to B6's vocabulary | AC4 | **built** |
+| **E3** | Structured, editable interpretation record + `interpretation.propose/amend/confirm/cancel`. B6's handoff payload is free-text `reason`/`note` (`kernel/session_control.py:868-875`). | ambient layer (gating reuses B6 pause/claim unchanged) | AC1 | **built** |
+| **E4** | Push payload must carry B7's `event_id` + attach ref. Today ntfy fires from an external hook off the raw kernel event, outside the record (PR #202). | `hooks-notify-push` wiring / B7 routing | AC3 — **nothing in §3 works without it** | **delivered by B7** |
+| **E5** | Durable, cross-process attention records (`attention.jsonl` beside `control.json`). As published, `AttentionCenter` is a UI-layer object; another process cannot read it. **Verify against B7 before building** — may collapse to a documentation fix. | B7 (mirrors B6's proven durability pattern) | AC3 | **delivered by B7** |
+| **E6** | Cross-project session discovery. `SessionStore` enumerates one project (`kernel/persistence.py:345`). Cheap fix: read-side scan, no new write contract. | read-side projection | AC2/AC5 *breadth* (single-project already works) | **built** (scan, as recommended) |
+| **E7** | An authenticated inbound reply channel. ntfy is publish-only; its topic is a shared secret and world-readable when public (`docs/SETTINGS.md:215`). | new service — largest new surface, **explicitly out of v1** | *quick* reply only; reply-on-open needs nothing | **security core built; no listener ships** |
+| **E8** | Teams/Outlook connectors. Shape and permission requirements are specified in §1; **concrete API surfaces, delegated permission scopes and consent flows are deliberately unverified and OPEN** — Open question 1. | new source modules | AC4's Teams/Outlook instance | **port + local impl only — real connector genuinely external** |
 
 ### What needs **no** extension (the thin-adapter proof)
 

@@ -149,6 +149,18 @@ Actions: `lease.granted` · `lease.renewed` · `lease.released` · `lease.revoke
 `session.resumed` · `handoff.created` · `handoff.claimed` · `write.accepted` ·
 `write.rejected`.
 
+The ambient delegation layer (item B8, `kernel/ambient/`) appends to the **same**
+trail through `SessionControl.note_ambient()`, using a separate, closed
+vocabulary: `source.read` · `source.send` · `source.denied` · `grant.created` ·
+`grant.revoked` · `grant.expired` · `interpretation.proposed` ·
+`interpretation.amended` · `interpretation.confirmed` ·
+`interpretation.cancelled` · `interpretation.expired` · `reply.accepted` ·
+`reply.rejected`. One trail is the point — "which grant authorized this read"
+and "who answered the notification" are answerable in `seq` order alongside the
+lease decisions they interleave with. The split is the guard: an ambient caller
+can add to the account of what happened, but **cannot forge a control action**
+(`note_ambient` rejects anything outside its own set).
+
 `{"op":"audit.query","limit":50}` reads the trail back over the protocol, so a
 human client and an automated one can inspect the same history.
 

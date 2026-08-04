@@ -108,6 +108,7 @@ dot -Tsvg docs/diagrams/tui-amplifier-integration.dot -o docs/diagrams/tui-ampli
 | Area | Where | Pattern |
 |---|---|---|
 | kernel logic | `tests/test_*` (events, approval, governance, cost, persistence, rewind, steering, spawner…) | pure-logic, events consumed directly |
+| ambient delegation (B8) | `tests/test_ambient_*.py` | pure-logic over a `tmp_path` session tree with an injected clock — grants, interpretation state machine, cross-project discovery, reply authentication, source port, voice adapter |
 | model | `tests/test_model_*.py` | pure dataclass/enum tests |
 | commands | `tests/test_commands_*.py` | `FakeCommandContext` protocol fake — no Textual |
 | widgets & reducer | `tests/test_ui_*.py` | per-widget + Textual Pilot headless driving |

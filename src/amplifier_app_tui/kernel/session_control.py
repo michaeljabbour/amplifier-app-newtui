@@ -99,6 +99,31 @@ REASON_SESSION_PAUSED = "session_paused"
 REASON_UNKNOWN_HANDOFF = "unknown_handoff"
 REASON_HANDOFF_CLAIMED = "handoff_claimed"
 
+# Additive audit vocabulary for the ambient delegation layer (item B8, E2/E3/E7).
+# B6's own action list is closed at thirteen session-control actions; cross-context
+# access, the interpretation loop and the authenticated reply channel each need to
+# land in the SAME trail (so "which grant authorized this" and "who answered this"
+# are answerable from one file), but they must not be able to forge a control
+# action. Hence a separate, explicitly enumerated set, writable only through
+# :meth:`SessionControl.note_ambient`.
+AMBIENT_ACTIONS: frozenset[str] = frozenset(
+    {
+        "source.read",
+        "source.send",
+        "source.denied",
+        "grant.created",
+        "grant.revoked",
+        "grant.expired",
+        "interpretation.proposed",
+        "interpretation.amended",
+        "interpretation.confirmed",
+        "interpretation.cancelled",
+        "interpretation.expired",
+        "reply.accepted",
+        "reply.rejected",
+    }
+)
+
 
 # -- actors ------------------------------------------------------------------
 
@@ -792,6 +817,30 @@ class SessionControl:
         return records
 
     # -- pause / handoff ---------------------------------------------------
+
+    def note_ambient(self, action: str, actor: Actor | None, **detail: Any) -> dict[str, Any]:
+        """Append one **ambient-layer** attribution entry (item B8).
+
+        The ambient delegation layer records cross-context access
+        (``source.*`` / ``grant.*``), the interpretation loop
+        (``interpretation.*``) and authenticated replies (``reply.*``) into
+        this session's existing ``control-audit.jsonl``, rather than starting
+        a second trail. One trail is the point: "which grant authorized this
+        read", "which interpretation the human agreed to", and "who answered
+        the notification" are all answerable in the same place, in ``seq``
+        order, as the lease decisions they interleave with.
+
+        *action* MUST be one of :data:`AMBIENT_ACTIONS`. The vocabulary is
+        closed and separate from the control actions on purpose: an ambient
+        caller can add to the account of what happened, but cannot forge a
+        ``lease.granted`` or a ``handoff.claimed``.
+        """
+        if action not in AMBIENT_ACTIONS:
+            raise ValueError(
+                f"{action!r} is not an ambient audit action (known: {sorted(AMBIENT_ACTIONS)})"
+            )
+        with self._transaction() as state:
+            return self._audit(state, action, actor or self.default_actor, **detail)
 
     def pause(
         self, actor: Actor | None, *, reason: str = "", note: str = "", lease_id: str = ""
