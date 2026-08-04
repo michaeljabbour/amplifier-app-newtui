@@ -972,6 +972,41 @@ class RealRuntime:
     def session_id(self) -> str:
         return self._initialized.session_id if self._initialized is not None else ""
 
+    def session_dir(self) -> Path | None:
+        """The live session's durable directory, once started (else ``None``).
+
+        The SAME directory ``kernel/session_control.py`` keys its
+        ``control.json`` off (``store.session_dir(session_id)``) -- attention
+        durability (B7 gap 1) is deliberately kept beside it, not in a new
+        location, so a controller or a resume already knows where to look.
+        """
+        if self._store is None or self._initialized is None:
+            return None
+        return self._store.session_dir(self._initialized.session_id)
+
+    async def publish_attention(self, payload: dict[str, Any]) -> None:
+        """Best-effort: mirror a normalized attention transition onto the
+        hooks bus as ``attention:recorded`` (B7 gap 2).
+
+        *payload* is the record-derived shape from ``ui.notifications.
+        attention_push_payload`` -- carrying the attention ``event_id`` so a
+        listener can dedupe by it instead of firing on every raw kernel
+        event. This is additive: it does not replace or reconfigure the
+        mounted ``hooks-notify-push`` module's own ``orchestrator:complete``
+        subscription (bundle.md), since that module lives in a different
+        repository and this side cannot verify how it would react to a
+        changed ``listen_event`` -- see bundle.md's ``hooks-notify-push``
+        comment for the honest cross-repo scope. Never raises: a hooks-bus
+        problem must never block or crash the session.
+        """
+        initialized = self._initialized
+        if initialized is None:
+            return
+        try:
+            await initialized.coordinator.hooks.emit("attention:recorded", payload)
+        except Exception:  # noqa: BLE001 -- a destination failure must never block the session
+            logger.debug("attention:recorded hook emission failed", exc_info=True)
+
     def _spawn_result(self, sub_session_id: str) -> str:
         """Child final-output summary for AgentCompleted.result synthesis."""
         return self._spawner.result_for(sub_session_id) if self._spawner is not None else ""

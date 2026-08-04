@@ -49,10 +49,12 @@ import os
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+from .file_lock import locked as _file_lock
 
 CONTROL_FILENAME = "control.json"
 """Durable control state (handle, lease, pause flag, handoffs, idem keys)."""
@@ -355,50 +357,6 @@ class WriteDecision:
     actor: Actor
     records: list[dict[str, Any]]
     reason: str = ""
-
-
-@contextmanager
-def _file_lock(target: Path, *, timeout: float = 5.0, stale_after: float = 30.0) -> Iterator[None]:
-    """Best-effort inter-process critical section around *target*.
-
-    An ``O_EXCL`` create IS the lock; a lock file older than *stale_after* is
-    broken (a crashed holder must never wedge a session -- the same spirit as
-    lease expiry). If the lock cannot be taken within *timeout* we proceed
-    anyway: a control op hanging forever is a worse failure than a rare
-    last-writer-wins on the state file, and the lease's own epoch/id check
-    still rejects any writer acting on a superseded grant.
-    """
-    lock = target.with_name(target.name + ".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + timeout
-    acquired = False
-    while True:
-        try:
-            handle = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            try:
-                age = time.time() - lock.stat().st_mtime
-            except OSError:
-                continue
-            if age > stale_after:
-                with suppress(OSError):
-                    lock.unlink()
-                continue
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(0.005)
-            continue
-        except OSError:
-            break
-        os.close(handle)
-        acquired = True
-        break
-    try:
-        yield
-    finally:
-        if acquired:
-            with suppress(OSError):
-                lock.unlink()
 
 
 class SessionControl:

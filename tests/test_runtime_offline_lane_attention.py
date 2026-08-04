@@ -98,6 +98,9 @@ class _FakeHost:
     def decision_deferred(self, message: str, decision_id: str = "") -> None:
         pass
 
+    def attention_error(self, detail: str, *, occasion: str) -> None:
+        pass
+
     def stream_opened(self, block_type: str) -> None:
         pass
 
@@ -282,3 +285,52 @@ async def test_lane_seed_reads_the_real_agent_brief_off_a_real_runtime(
         assert seed.state == "running"  # LaneSeed's own default -- booting is derived downstream
     finally:
         await runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_publish_attention_emits_attention_recorded_on_the_real_hooks_bus(
+    offline_env,  # noqa: F811 -- pytest fixture param, shadowing the re-export import above
+) -> None:
+    """B7 gap 2: RealRuntime.publish_attention actually emits the
+    record-derived, event-id-carrying payload on the REAL hooks bus (not a
+    hand-waved claim) -- proven the same way this file already proves
+    delegate/tool-error events: register a real listener on the real
+    coordinator, drive the method, observe what actually arrives."""
+    runtime = await _started_runtime(offline_env["project"], mode="auto")
+    received: list[dict] = []
+    try:
+        hooks = runtime._initialized.coordinator.hooks
+        hooks.register(
+            "attention:recorded",
+            lambda _event, data: received.append(dict(data)) or None,
+            priority=500,
+            name="test-attention-recorded-listener",
+        )
+        payload = {
+            "event_id": "sess-1:error:occ-1",
+            "session_id": "sess-1",
+            "reason": "error",
+            "created_at": 123.0,
+            "title": "Amplifier",
+            "body": "The session hit an error",
+        }
+        await runtime.publish_attention(payload)
+
+        # The hooks bus enriches every emission with its own envelope
+        # fields (parent_id, timestamp) -- assert OUR payload arrived
+        # intact as a subset, not byte-exact equality with the envelope.
+        assert len(received) == 1
+        assert payload.items() <= received[0].items()
+    finally:
+        await runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_publish_attention_before_start_is_a_safe_no_op() -> None:
+    """Never raises even with no live session -- a destination problem must
+    never block or crash the session."""
+    from amplifier_app_tui.kernel.runtime import RealRuntime
+
+    runtime = RealRuntime(bundle=None, resume_id=None, provider_override=None, model_override=None)
+    await runtime.publish_attention({"event_id": "x"})  # must not raise
+    assert runtime.session_dir() is None
