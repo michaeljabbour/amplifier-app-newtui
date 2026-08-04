@@ -37,6 +37,21 @@ adds the normalized runtime event trace to one document. `jsonl` is live: every 
 `session.started`, `runtime.event`, `turn.completed`, or `error`. Runtime records contain
 the same typed event payload consumed by the TUI.
 
+`serve` is the interactive counterpart: a bidirectional JSON-line protocol on stdio that
+an out-of-process front-end (or an automated controller) drives. On top of it sits the
+**session control contract** — a durable session handle, a single-writer lease so a human
+and an automation can share one session without clobbering each other, deterministic
+takeover, pause-and-hand-off to a person, and reattach after a dropped connection:
+
+```sh
+uv run amplifier-tui serve                       # protocol on stdio
+uv run amplifier-tui serve --actor mj --actor-kind human   # stamp the default actor
+uv run amplifier-tui serve --attach amplifier-session:SESSION_ID#ho-9a2  # claim a handoff
+```
+
+`--attach` takes the reference a paused controller minted: it opens the SAME session and
+hands you the write lease. Full contract: [SESSION-CONTROL.md](SESSION-CONTROL.md).
+
 **First run:** follow the [README's Install section](../README.md#install) — it deploys
 [Amplifier](https://github.com/microsoft/amplifier) first (`amplifier init` sets up your
 provider and credentials in `~/.amplifier/`, which this app shares), then this app. If
