@@ -5,15 +5,18 @@ from __future__ import annotations
 import pytest
 
 from amplifier_app_tui.ui.keymap import (
+    ACTION_HELP,
     ALL_CONTEXTS,
     COMPOSER_PLACEHOLDER,
     ESC_BACKTRACK_WINDOW_SECONDS,
     ESC_CHAIN,
     FOOTER_HINTS,
+    HELP_ACTIONS,
     KEYMAP,
     NO_APPROVAL,
     Binding,
     bindings_for,
+    help_rows,
     hint_label,
     validate,
 )
@@ -77,13 +80,67 @@ def test_footer_hints_exact_spec_strings() -> None:
     assert FOOTER_HINTS["palette"] == "↑↓ select · enter run · esc close"
     assert FOOTER_HINTS["mention"] == "↑↓ select · enter/tab insert · esc close"
     assert FOOTER_HINTS["running"] == "esc interrupt · enter steer · shift+enter queue"
-    assert FOOTER_HINTS["idle"] == "↑ history · ctrl+j newline · ctrl-r rewind · / commands"
+
+
+def test_footer_idle_hint_is_empty() -> None:
+    """Item D4 (AC2/AC3): the generic idle reminder no longer occupies the
+    footer every frame — it moved to :data:`COMPOSER_PLACEHOLDER` and the
+    ``/keys`` command (:func:`help_rows`)."""
+    assert FOOTER_HINTS["idle"] == ""
 
 
 def test_composer_placeholder_exact() -> None:
     assert COMPOSER_PLACEHOLDER == (
         "Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )"
     )
+
+
+# -- /keys reference (item D4: shortcut definitions render from ONE shared
+# source, so trimming the footer's idle hint never costs discoverability) ----
+
+
+def test_help_rows_labels_come_from_the_keymap_live() -> None:
+    """Every label is exactly what :func:`hint_label` returns — never a
+    hand-copied string that could drift from the bound chord."""
+    rows = help_rows()
+    assert dict(rows)["ctrl-r"] == "open the rewind picker"
+    for action in HELP_ACTIONS:
+        assert hint_label(action) in dict(rows)
+
+
+def test_help_rows_covers_the_actions_the_old_idle_hint_taught() -> None:
+    """The chords the removed generic hint advertised (history, newline,
+    rewind, the palette) are still discoverable — just moved, not dropped."""
+    labels = {label for label, _ in help_rows()}
+    assert {"enter", "ctrl+j", "↑", "ctrl-r", "/"} <= labels
+
+
+def test_help_rows_omits_overlay_only_navigation() -> None:
+    """Chords that only mean something while an overlay owns the keyboard
+    (palette/mention/lane/rewind/approval/evidence navigation) are left to
+    that overlay's own context-sensitive footer hint — not duplicated here."""
+    actions = set(HELP_ACTIONS)
+    assert actions.isdisjoint(
+        {
+            "palette_up",
+            "palette_down",
+            "mention_up",
+            "mention_down",
+            "lane_up",
+            "lane_down",
+            "rewind_prev",
+            "rewind_next",
+            "approval_prev",
+            "approval_next",
+            "evidence_prev",
+            "evidence_next",
+        }
+    )
+
+
+def test_action_help_has_an_entry_for_every_help_action() -> None:
+    for action in HELP_ACTIONS:
+        assert ACTION_HELP[action].strip()
 
 
 def test_validate_rejects_conflicts() -> None:

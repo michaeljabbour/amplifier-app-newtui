@@ -69,22 +69,24 @@ wired? `--demo` always works and exercises the whole UI offline.
 ├─ overlay strips appear here (palette / lanes / rewind / queued) ────┤
 │ [mode] ❯ composer — type here            (swaps to approval bar)    │
 ├─────────────────────────────────────────────────────────────────────┤
-│ mode · trust · bundle · model · session · $cost   contextual hints  │
+│ mode · trust · model · session · $cost         contextual hints     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 While Amplifier is working, the title bar pulses in-app and an unmistakable
 braille spinner is mirrored into your terminal window or tab title. Both use
 the same active-turn timer, so they stop immediately when the turn finishes and
-consume no idle redraw loop.
+consume no idle redraw loop. The title bar is also the one place the
+active **bundle** shows — it never repeats in the footer below.
 
-The footer's left side always shows your current mode, trust posture, bundle, model,
-session id, and session cost (`~$…` when any usage couldn't be priced — the total is a
-floor). A green `▲` appears after a turn that shipped, and an orange `q1` badge while a
-next-turn message is queued. On narrow terminals the decorations drop one by one (trust,
-then session, then bundle, then model) — mode and cost never drop. The right side shows
-the keys that work *right now*. The hints change with context — when in doubt, read the
-footer.
+The footer's left side always shows your current mode, trust posture, model, session id,
+and session cost (`~$…` when any usage couldn't be priced — the total is a floor). A green
+`▲` appears after a turn that shipped, and an orange `q1` badge while a next-turn message is
+queued. On narrow terminals the decorations drop one by one (trust, then session, then
+model) — mode and cost never drop. The right side is empty at rest — it isn't trying to
+teach you the whole keyboard on every frame — and only fills in with the keys that work
+*right now* once something needs them (a running turn, an open overlay). For the full
+shortcut list any time, run **/keys**.
 
 **Plan panel.** When the agent keeps a live checklist (the `todo` tool), a compact
 **`Plan N/M`** panel appears in the bottom strip's right column: `✔` done, `▶` in
@@ -113,6 +115,9 @@ count instead — the count never shows in both places at once.
 
 Things worth knowing:
 
+- **The full shortcut list** is one command away: run **/keys** any time. The footer's
+  right side stays empty at rest on purpose (item D4) — it only fills in with hints once
+  something needs them (a running turn, an open overlay).
 - **Steer vs. queue.** A steer (`↳` in the transcript) nudges the *current* turn mid-flight;
   a queued message becomes the *next* turn. Steers that the turn never consumes are
   discarded — they won't fire later as a message you didn't mean to send.
@@ -232,6 +237,7 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | | `/doctor` | setup checkup — reports findings and the fixes to make; changes nothing itself |
 | | `/improve` | suggests allowlist/trust tweaks from your approval history — never applies silently |
 | | `/theme [name]` | switch or cycle theme: slate · graphite · carbon (session-only — resets to slate on restart) |
+| | `/keys` | list every keyboard shortcut and what it does |
 
 **Model, effort, compact, clear, status, tools, agents, diff** act on the live
 Amplifier session through the coordinator (the same calls the reference CLI

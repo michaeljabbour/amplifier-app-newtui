@@ -823,7 +823,9 @@ def footer_state(app: TuiApp) -> FooterState:
         mode_id=app.mode_id,  # type: ignore[arg-type]
         gated_auto=app.adapter.gated_auto,
         native_modes=app.native_modes,
-        bundle=app.adapter.bundle_name,
+        # No bundle here (item D4): the TitleBar (chrome.py) is the one
+        # persistent place the active bundle renders — see footer.py's
+        # module docstring for the consolidation this seam landed.
         # The adapter may carry a provider-qualified id ("anthropic/x");
         # the footer speaks human and shows the bare model name (story #4).
         model=app.adapter.model_name.rpartition("/")[2],

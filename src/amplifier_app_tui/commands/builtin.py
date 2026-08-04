@@ -52,6 +52,12 @@ def _cmd_modes(ctx: CommandContext, args: str) -> None:
     ctx.show_modes()
 
 
+def _cmd_keys(ctx: CommandContext, args: str) -> None:
+    """``/keys`` — list every keyboard shortcut (item D4 discoverability)."""
+    del args
+    ctx.show_keys()
+
+
 def _cmd_plan(ctx: CommandContext, args: str) -> None:
     del args
     ctx.set_mode("plan")
@@ -601,6 +607,17 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="switch theme: slate, graphite, carbon",
         tag="built-in",
         handler=_cmd_theme,
+    ),
+    # Beyond the mockup table: keyboard-shortcut reference (compliance
+    # 2026-08-02, item D4). Renders straight from ui.keymap.help_rows —
+    # the footer's generic idle hint moved here so removing it from every
+    # frame never costs discoverability.
+    CommandSpec(
+        group="Repair",
+        name="/keys",
+        desc="list every keyboard shortcut and what it does",
+        tag="built-in",
+        handler=_cmd_keys,
     ),
 )
 

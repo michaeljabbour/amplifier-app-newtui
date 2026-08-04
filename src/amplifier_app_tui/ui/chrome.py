@@ -70,6 +70,13 @@ class TitleBar(Static):
     - ``state_text``: the ``<state>`` fragment (``ready``, a plan step, …).
     - ``bundle`` / ``session_short``: identity fragments (skipped when empty).
     - ``running``: True while a turn executes — starts the spinner timer.
+
+    ``bundle`` is also the ONE persistent place the active bundle renders
+    anywhere in the UI (compliance 2026-08-02, item D4 — David Koleczek's
+    UX review, July 31 2026, preferred it kept here at the top since "the
+    footer is already crowded"). ``ui/footer.py`` used to paint a second,
+    always-identical copy in its left segment; that duplication is gone —
+    see the footer module's docstring for the consolidation.
     """
 
     DEFAULT_CSS = """

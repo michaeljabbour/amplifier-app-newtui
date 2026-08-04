@@ -65,6 +65,7 @@ ALL_COMMANDS = (
     "/doctor",
     "/improve",
     "/theme",
+    "/keys",
 )
 
 

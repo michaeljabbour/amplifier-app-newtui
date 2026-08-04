@@ -1,7 +1,7 @@
 """Footer status bar (DESIGN-SPEC §2 item 6).
 
-Left segment: ``mode <mode>`` (mode color) ``· <trust> · bundle <bundle> ·
-<model> · <session-short> · $<cost>`` — segment text dim, the inline ``·``
+Left segment: ``mode <mode>`` (mode color) ``· <trust> · <model> ·
+<session-short> · $<cost>`` — segment text dim, the inline ``·``
 separators dimmer (mockup: each is its own ``--dimmer`` span) — plus
 the green ``▲`` yield glyph when the
 last turn shipped and an orange ``· q1`` when a next-turn message is
@@ -11,7 +11,9 @@ badge preceded by a dimmer ``·`` separator.
 Right segment: context-sensitive hints — the EXACT strings from
 ``keymap.FOOTER_HINTS``, except the running hint which is composed live
 from :func:`keymap.hint_label` so the advertised queue chord swaps to
-``alt+enter`` on terminals without the kitty keyboard protocol.
+``alt+enter`` on terminals without the kitty keyboard protocol. ``idle``
+is deliberately empty (item D4 below) — the resting state needs no
+action, so it reserves no persistent space.
 
 Like the mockup's ``flex-wrap: wrap`` footer, when both segments do not
 fit on one row the hints drop to their own full-width second row instead
@@ -35,10 +37,19 @@ see ``app_support.mount_approval``). It is a real border, not simulated
 with blank rows, so it reads as a boundary even with color off (a shape
 cue, not a hue cue).
 
-**This is the seam item D4 (footer hint + bundle-metadata consolidation)
-should build on.** New persistent footer content belongs INSIDE this same
-bordered box — add rows to ``compose()``/``_repaint`` — rather than
-re-deriving or relocating the boundary.
+Item D4 (footer hint + bundle-metadata consolidation, same review) landed
+INSIDE this seam rather than widening it — it removes content, it does
+not add a row. The footer no longer paints a ``bundle`` part at all:
+:class:`~.chrome.TitleBar` is now the ONE persistent place the active
+bundle renders (AC1 — David preferred it kept at the top, "the footer is
+already crowded"). ``FooterState`` accordingly carries no ``bundle``
+field — one view model, one region, never two copies of the same fact to
+keep in sync. The generic ``idle`` hint (history/newline/rewind/commands,
+previously shown on literally every idle frame) also moved out, to
+:data:`keymap.COMPOSER_PLACEHOLDER` and the new ``/keys`` command
+(:func:`keymap.help_rows`) — see ``keymap.FOOTER_HINTS`` for the
+reasoning. This box now carries only transient status, attention,
+model/mode and immediately-available actions (AC3).
 """
 
 from __future__ import annotations
@@ -80,9 +91,6 @@ class FooterState(BaseModel):
     ``◆ <primary> +<others>`` badge next to the posture so activation is
     visible and sticky. A single active mode renders exactly as the old
     single-slot badge did (backward compatible)."""
-    bundle: str = ""
-    """Bundle name — painted with a ``bundle `` label (story #4: the footer
-    speaks human; a bare ``tui`` reads as noise)."""
     model: str = ""
     """Primary model id, already bare (``claude-fable-5``, no provider
     prefix) — its own dim part between the bundle and the session."""
@@ -145,7 +153,6 @@ def _left_parts(
     state: FooterState,
     *,
     trust: bool = True,
-    bundle: bool = True,
     model: bool = True,
     session: bool = True,
 ) -> list[str]:
@@ -157,8 +164,6 @@ def _left_parts(
         parts.append(badge)
     if trust:
         parts.append(effective_trust_str(mode, gated_auto=state.gated_auto))
-    if bundle and state.bundle:
-        parts.append(f"bundle {state.bundle}")
     if model and state.model:
         parts.append(state.model)
     if session and state.session_short:
@@ -187,13 +192,14 @@ def footer_left_text(state: FooterState) -> str:
 _FIT_LADDER: tuple[dict[str, bool], ...] = (
     {"trust": False},
     {"trust": False, "session": False},
-    {"trust": False, "session": False, "bundle": False},
-    {"trust": False, "session": False, "bundle": False, "model": False},
+    {"trust": False, "session": False, "model": False},
 )
 """Decorations in drop order: trust posture (the mode chip keeps the id),
-then session id, then bundle, then the model — the model is the identity
-users actually ask about, so it outlives the other decorations (story #4).
-Mode, cost, queue and ``Plan n/m`` never drop — design D2's footer
+then session id, then the model — the model is the identity users
+actually ask about, so it outlives the other decorations (story #4). The
+bundle is no longer part of this ladder (item D4): it doesn't ride the
+footer's left segment at all any more, so there is nothing left here to
+drop. Mode, cost, queue and ``Plan n/m`` never drop — design D2's footer
 fallback only works if the plan count survives."""
 
 
@@ -368,8 +374,6 @@ class FooterBar(Horizontal):
         rest_parts: list[str] = []
         if drops.get("trust", True):
             rest_parts.append(effective_trust_str(mode, gated_auto=state.gated_auto))
-        if drops.get("bundle", True) and state.bundle:
-            rest_parts.append(f"bundle {state.bundle}")
         if drops.get("model", True) and state.model:
             rest_parts.append(state.model)
         if drops.get("session", True) and state.session_short:

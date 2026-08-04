@@ -654,6 +654,34 @@ class TuiApp(App[None]):
             )
         self.append_block(Answer(id=self.allocator.next_id(), spans=tuple(spans)))
 
+    def show_keys(self) -> None:
+        """``/keys``: the keyboard-shortcut reference (item D4).
+
+        Renders straight from :func:`keymap.help_rows` — the same table
+        that drives key bindings and the footer's context-sensitive
+        hints — so this listing can never drift from what's actually
+        bound. The footer's old generic ``idle`` hint moved here; overlay
+        chords (palette/mentions/lanes/rewind/approval/evidence) are
+        deliberately left off since those already teach themselves live
+        in the footer the moment that overlay is open.
+        """
+        rows = keymap.help_rows()
+        label_width = max(len(label) for label, _ in rows)
+        spans: list[Segment] = [
+            Segment(text="· ", style_token="blue"),
+            Segment(text="Keys", style_token="bright", bold=True),
+            Segment(
+                text="  shortcuts that work any time \u2014 overlays (palette, "
+                "mentions, lanes, rewind, approval) teach their own keys "
+                "live in the footer while they're open\n",
+                style_token="dim",
+            ),
+        ]
+        for label, description in rows:
+            spans.append(Segment(text=f"  {label.ljust(label_width)}  ", style_token="teal"))
+            spans.append(Segment(text=f"{description}\n", style_token="dim"))
+        self.append_block(Answer(id=self.allocator.next_id(), spans=tuple(spans)))
+
     def activate_native_mode(self, name: str | None) -> None:
         """``/mode <bundle-mode>`` ADDs to the active set; ``/mode off`` clears all."""
         self.run_worker(self._activate_native_mode(name), exclusive=False)

@@ -236,14 +236,102 @@ FOOTER_HINTS: dict[str, str] = {
     "mention": "↑↓ select · enter/tab insert · esc close",
     "sessions": "↑↓ select · enter open · esc close",
     "running": "esc interrupt · enter steer · shift+enter queue",
-    "idle": "↑ history · ctrl+j newline · ctrl-r rewind · / commands",
+    "idle": "",
 }
+"""Compliance 2026-08-02, item D4 (David Koleczek's UX review, July 31):
+``idle`` used to carry a generic, always-on reminder (history/newline/
+rewind/commands) that occupied the footer's right segment on literally
+every frame the composer wasn't running or overlaid -- the majority of a
+session. That text never changed, so it wasn't a *hint* so much as
+permanent teaching copy squatting on status real estate (AC2/AC3: the
+footer reserves its space for transient status, attention, and the
+actions actually available *right now*). It is empty on purpose -- not
+replaced with a shorter reminder -- because the same shortcuts are taught
+progressively elsewhere: :data:`COMPOSER_PLACEHOLDER` (shown exactly when
+there is empty space to teach in) and the ``/keys`` command
+(:func:`help_rows`, reachable any time via the palette). The other
+entries stay: they are genuinely context-sensitive -- tied to a live
+overlay or a running turn, not shown "every frame".
+"""
 
 
 COMPOSER_PLACEHOLDER = (
     "Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )"
 )
 """Composer placeholder — exact string per DESIGN-SPEC §2."""
+
+
+HELP_ACTIONS: tuple[str, ...] = (
+    "submit",
+    "insert_newline",
+    "history_prev",
+    "queue_message",
+    "cycle_mode",
+    "cycle_permission",
+    "cycle_effort",
+    "toggle_lanes",
+    "cycle_tail",
+    "open_external_editor",
+    "toggle_thinking",
+    "show_ledger",
+    "show_needs_you",
+    "open_rewind",
+    "return_to_answer",
+    "plan_drilldown",
+    "stash_prompt",
+    "open_palette",
+)
+"""Actions worth teaching once, in ``/keys`` listing order (item D4).
+
+These are the "anytime" chords -- stable across a session, not tied to one
+overlay -- that used to ride the footer's generic ``idle`` hint. Chords
+that are only meaningful while a specific overlay owns the keyboard
+(palette/mention/lanes/rewind/approval/evidence navigation) are left out
+on purpose: those stay taught live by that overlay's own
+:data:`FOOTER_HINTS` entry the moment it's relevant, which is the more
+honest "context-sensitive prompt" (AC2) than repeating them in a static
+reference.
+"""
+
+ACTION_HELP: dict[str, str] = {
+    "submit": "send your message (steers the current turn instead, if one is running)",
+    "insert_newline": "add a newline without sending",
+    "history_prev": "recall an earlier prompt (↓ for newer / your current draft)",
+    "queue_message": "queue a full next turn while one runs (alt+enter on legacy terminals)",
+    "cycle_mode": "cycle posture: chat → plan → brainstorm → build → auto",
+    "cycle_permission": "show the current trust posture",
+    "cycle_effort": "cycle reasoning-effort tier (none…xhigh)",
+    "toggle_lanes": "toggle the agent lanes panel",
+    "cycle_tail": "cycle live-tail focus while agents run",
+    "open_external_editor": "compose the draft in $VISUAL/$EDITOR",
+    "toggle_thinking": "show/hide the live thinking box while a turn runs",
+    "show_ledger": "print the session outcome ledger",
+    "show_needs_you": "open deferred decisions",
+    "open_rewind": "open the rewind picker",
+    "return_to_answer": "jump back to the current/most-recent turn's final answer",
+    "plan_drilldown": "cycle the plan panel's row window",
+    "stash_prompt": "stash the in-progress draft; /unstash restores it",
+    "open_palette": "open the command palette",
+}
+"""One-line descriptions for :func:`help_rows`, keyed by keymap action id.
+
+Keying by action (not by literal key text) means the text can never drift
+from the bound chord -- a keymap edit changes the label :func:`hint_label`
+returns and this description rides along unchanged (DEVELOPMENT.md:
+"Keymap is data").
+"""
+
+
+def help_rows(actions: tuple[str, ...] = HELP_ACTIONS) -> tuple[tuple[str, str], ...]:
+    """``(label, description)`` pairs for the ``/keys`` reference, in order.
+
+    Labels are read live from :func:`hint_label` -- the same lookup the
+    footer hints use -- so this listing is rendered FROM the keymap table,
+    never hand-copied alongside it (single shared source, item D4: "move
+    shortcut definitions into a shared keymap/help source so removing
+    hints does not reduce discoverability").
+    """
+    return tuple((hint_label(action), ACTION_HELP[action]) for action in actions)
 
 
 def validate(keymap: tuple[Binding, ...] = KEYMAP) -> None:

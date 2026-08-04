@@ -143,6 +143,9 @@ class AppCommandContext:
     def show_modes(self) -> None:
         self._app.show_native_modes()
 
+    def show_keys(self) -> None:
+        self._app.show_keys()
+
     def set_native_mode(self, name: str | None) -> None:
         self._app.activate_native_mode(name)
 
