@@ -266,6 +266,50 @@ def test_read_events_skips_foreign_hooks_logging_records(store: SessionStore) ->
     assert [record["kind"] for record in records] == ["tool_pre"]
 
 
+def test_read_events_located_pairs_each_record_with_its_path_and_line(
+    store: SessionStore,
+) -> None:
+    """S5 AC2 (safe recovery reference): ``read_events_located`` yields the
+    exact (path, 1-based line) each record was read from. ``read_events``
+    is now a thin projection of this method, so the two can never drift."""
+    store.append_event("s1", {"kind": "session_start"})
+    store.append_event("s1", {"kind": "tool_pre", "tool_call_id": "c1"})
+    store.append_event("s1", {"kind": "tool_post", "tool_call_id": "c1"})
+
+    located = list(store.read_events_located("s1"))
+    assert [record["kind"] for _, _, record in located] == [
+        "session_start",
+        "tool_pre",
+        "tool_post",
+    ]
+    assert [line_no for _, line_no, _ in located] == [1, 2, 3]
+    assert all(path == store.events_path("s1") for path, _, _ in located)
+    # read_events is exactly the record projection of read_events_located.
+    assert list(store.read_events("s1")) == [record for _, _, record in located]
+
+
+def test_read_events_located_line_numbers_reset_per_file(store: SessionStore) -> None:
+    """A rename-straddling session numbers each file's lines independently:
+    ``line_no`` is relative to ITS OWN file, never a combined offset across
+    the legacy + current pair — otherwise a recovery reference built from
+    it would point at the wrong line once dereferenced against the file."""
+    store.session_dir("s1").mkdir(parents=True)
+    (store.session_dir("s1") / LEGACY_EVENTS_FILENAME).write_text(
+        '{"kind": "session_start", "session_id": "s1"}\n'
+        '{"kind": "tool_pre", "tool_call_id": "legacy2"}\n',
+        encoding="utf-8",
+    )
+    store.append_event("s1", {"kind": "tool_post", "tool_call_id": "current1"})
+
+    located = list(store.read_events_located("s1"))
+    assert len({path for path, _, _ in located}) == 2  # legacy + current
+    assert [(line_no, record["kind"]) for _, line_no, record in located] == [
+        (1, "session_start"),
+        (2, "tool_pre"),
+        (1, "tool_post"),  # resets to 1 in the current file, not 3
+    ]
+
+
 # --------------------------------------------------------------------------
 # listing / lookup
 # --------------------------------------------------------------------------

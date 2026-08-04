@@ -587,3 +587,36 @@ class TestParseEvent:
         assert drifted.type_name == "prompt_submit"
         assert "foreign_field" in drifted.summary
         assert "a secret prompt" not in drifted.summary
+
+    def test_recovery_reference_locates_without_leaking_content(self) -> None:
+        """S5 AC2 (safe recovery reference): parse_event's optional
+        ``source_path``/``source_line`` carry a LOCATOR onto the
+        placeholder — never content. Keyword-only and defaulted, so every
+        caller that omits them (including every other test in this class)
+        gets back the exact pre-AC2 shape, unchanged."""
+        from amplifier_app_tui.kernel.events import parse_event
+
+        secret_record = {
+            "kind": "loop_progress",
+            "session_id": "sess-1",
+            "secret": "sk-do-not-leak",
+        }
+        placeholder = parse_event(
+            secret_record,
+            source_path="/home/alice/.amplifier/projects/demo/sessions/sess-1/ui-events.jsonl",
+            source_line=42,
+        )
+        assert isinstance(placeholder, UnsupportedBlock)
+        assert placeholder.source_path.endswith("ui-events.jsonl")
+        assert placeholder.source_line == 42
+        # The reference is a pure locator: the secret VALUE never rides
+        # along on any field the placeholder carries — old or new.
+        dumped = placeholder.model_dump_json()
+        assert "sk-do-not-leak" not in dumped
+
+        # Omitting the kwargs is still the plain, pre-AC2 shape — every
+        # existing caller of parse_event(record) alone keeps working
+        # unchanged (backward compatible).
+        bare = parse_event(secret_record)
+        assert bare.source_path == ""
+        assert bare.source_line is None

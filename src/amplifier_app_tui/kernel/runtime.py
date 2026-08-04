@@ -285,8 +285,12 @@ def restored_ui_events(store: SessionStore, session_id: str) -> tuple[ParsedEven
     cannot type — a foreign writer's line, an unknown/removed ``kind``, or
     schema drift — degrade to a redacted
     :class:`~amplifier_app_tui.model.blocks.UnsupportedBlock` placeholder
-    (S5) rather than being dropped; each one is logged with a redacted
-    (6-char) session id and the record's own type name — never the raw
+    (S5) rather than being dropped. Each placeholder carries a safe
+    RECOVERY REFERENCE (S5 AC2) — the log path plus its own 1-based line,
+    read via :meth:`~amplifier_app_tui.kernel.persistence.SessionStore.read_events_located`
+    — so a user/support engineer can find the exact persisted line later;
+    it is also logged immediately with a redacted (6-char) session id, the
+    record's own type name, and that same path/line — never the raw
     payload — so a resumed session stays visible and diagnosable instead of
     silently losing the line.
 
@@ -299,15 +303,17 @@ def restored_ui_events(store: SessionStore, session_id: str) -> tuple[ParsedEven
     contract.
     """
     events: list[ParsedEvent] = []
-    for record in store.read_events(session_id):
+    for path, line_no, record in store.read_events_located(session_id):
         if record.get("kind") in _REPLAY_STREAM_KINDS:
             continue
-        event = parse_event(record)
+        event = parse_event(record, source_path=str(path), source_line=line_no)
         if isinstance(event, UnsupportedBlock):
             logger.warning(
-                "resume: unsupported persisted record · session=%s type=%s",
+                "resume: unsupported persisted record · session=%s type=%s source=%s:%s",
                 session_id[:6],
                 event.type_name,
+                path,
+                line_no,
             )
         events.append(event)
     return tuple(drop_rewound_events(events))

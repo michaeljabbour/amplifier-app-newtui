@@ -966,6 +966,37 @@ _RENDERERS: dict[str, Callable[..., tuple[Line, ...]]] = {
 }
 
 
+_session_ref: str = ""
+"""Redacted (6-char) id of the session whose transcript is currently being
+painted — diagnostic context ONLY for the render-failure log lines below,
+never for rendering itself. Bound by :func:`bind_session_context`."""
+
+
+def bind_session_context(session_id: str) -> None:
+    """Bind the session id that render-failure log lines should cite (S5 AC4).
+
+    ``render_block``/the 21 pure ``_render_*`` functions stay exactly
+    ``(block, width)`` — the golden-width matrix and every existing render
+    test call them that way, and threading a ``session_id`` parameter
+    through all of them (and every call site) would ripple far past what
+    one log line needs. Instead this module keeps one small piece of
+    ambient state, and the boundary that actually OWNS session identity —
+    ``ui/app.py``'s composition root, right after ``RuntimeAdapter.start()``
+    resolves it — calls this once to bind it, the same way
+    ``kernel.runtime.restored_ui_events`` already redacts a session id for
+    its own parse-failure log. Purity is preserved in the sense that
+    matters here: no renderer's OUTPUT ever depends on this value, only
+    the text of a WARNING log line emitted when isolation kicks in.
+
+    Stores only a redacted 6-char prefix (matching the kernel-side
+    convention) — never the full id, and never anything from a block's own
+    content. Unbound (the default, ``""``) is exactly today's behavior:
+    every existing test that never calls this keeps passing unchanged.
+    """
+    global _session_ref
+    _session_ref = session_id[:6] if session_id else ""
+
+
 def render_block(block: TranscriptBlock, width: int) -> tuple[Line, ...]:
     """Render one block to lines of Segments — a pure function of (block, width).
 
@@ -973,20 +1004,32 @@ def render_block(block: TranscriptBlock, width: int) -> tuple[Line, ...]:
     renderer bug — or a stale/future block kind this build predates — must
     not crash the whole transcript, or the session. Failures are caught
     per block and logged with block-type context only (``kind`` + the
-    block's own opaque id) — never the block's content, which may carry
-    secrets or arbitrary tool/user text. Either way the block degrades to
-    the same dim "unsupported block · <type>" placeholder
+    block's own opaque id) plus the redacted session bound via
+    :func:`bind_session_context` (S5 AC4) — never the block's content,
+    which may carry secrets or arbitrary tool/user text. Either way the
+    block degrades to the same dim "unsupported block · <type>" placeholder
     ``kernel.events.parse_event`` renders for a persisted record it could
     not type, so one bad block never takes the rest of the transcript down.
     """
     renderer = _RENDERERS.get(block.kind)
     if renderer is None:  # pragma: no cover - union is exhaustive today
-        logger.warning("no renderer registered · kind=%s id=%s", block.kind, block.id)
+        logger.warning(
+            "no renderer registered · kind=%s id=%s session=%s",
+            block.kind,
+            block.id,
+            _session_ref or "-",
+        )
         return _render_unsupported(UnsupportedBlock(id=block.id, type_name=block.kind), width)
     try:
         return renderer(block, width)
     except Exception:  # noqa: BLE001 — isolation boundary: one bad block must not crash the transcript
-        logger.warning("block render failed · kind=%s id=%s", block.kind, block.id, exc_info=True)
+        logger.warning(
+            "block render failed · kind=%s id=%s session=%s",
+            block.kind,
+            block.id,
+            _session_ref or "-",
+            exc_info=True,
+        )
         return _render_unsupported(
             UnsupportedBlock(id=block.id, type_name=block.kind, summary="render failed"),
             width,

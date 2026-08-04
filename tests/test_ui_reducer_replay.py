@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from amplifier_app_tui.kernel import events as ev
 from amplifier_app_tui.model.blocks import (
+    GLYPH_QUOTE_GUTTER,
     BlockIdAllocator,
     DelegateSummaryBlock,
     TodoItem,
@@ -24,6 +25,7 @@ from amplifier_app_tui.model.blocks import (
 from amplifier_app_tui.model.lanes import LaneRegistry
 from amplifier_app_tui.model.turn import OutcomeLedger
 from amplifier_app_tui.ui.reducer import TranscriptReducer
+from amplifier_app_tui.ui.transcript_render import render_block
 
 from .test_ui_reducer_delegates import SID, FakeHost, _env
 
@@ -419,3 +421,182 @@ def test_replay_renders_placeholders_for_the_mixed_rich_transcript_fixture() -> 
     assert any(isinstance(b, DelegateSummaryBlock) for b in host.blocks)
     rule = next(b for b in host.blocks if b.kind == "turn_rule")
     assert rule.shipped is True
+
+
+# -- S5 gap-closure: the ORIGINAL combined rich-content fixture --------------
+
+_COMBINED_RICH_TEXT = (
+    "Investigated the resume crash and delegated the follow-up.\n"
+    "\n"
+    "> Original report: [incident-482](https://example.com/incidents/482) covers the full repro.\n"
+    "\n"
+    "| Symptom | Cause |\n"
+    "| --- | --- |\n"
+    "| resume crash | foreign `loop` record |\n"
+    "| missing image | foreign `attachment` record |\n"
+    "\n"
+    "```\n"
+    "$ uv run pytest -q tests/test_ui_reducer_replay.py\n"
+    "```\n"
+    "Delegated work done."
+)
+"""The brief's ORIGINAL reported failure, reproduced: Loop output,
+attachments and mixed rich content — quoted-link markup, a table, a fenced
+code block, tool output — all combined in ONE final answer, not spread
+thin across separate fixtures like the narrower mixed-rich fixture above."""
+
+
+def _combined_rich_content_events() -> list[ev.UIEvent | UnsupportedBlock]:
+    """One turn combining every ingredient the S5 brief names: a tool run,
+    a foreign ``loop`` record, a foreign ``attachment`` record, a thinking
+    block, a delegate fan-out, and a final answer whose OWN markdown mixes
+    quoted-link markup, a table and a fenced code block."""
+    child = {"event_id": "orig1", "session_id": "sub-original", "parent_id": SID, "ts": 3.2}
+    return [
+        ev.PromptSubmit(**_env(0.0), prompt="investigate and delegate the combined crash report"),
+        ev.ToolPre(**_env(0.5), tool_name="bash", tool_call_id="c1", tool_input={"command": "ls"}),
+        # Loop output: a foreign writer's record this build cannot type.
+        ev.parse_event({"kind": "loop_progress", "session_id": SID, "iteration": 2}),
+        ev.ToolPost(
+            **_env(1.0),
+            tool_name="bash",
+            tool_call_id="c1",
+            tool_input={"command": "ls"},
+            result={"success": True, "output": "README.md"},
+        ),
+        ev.ContentBlockStart(**_env(1.2), block_type="thinking", block_index=0),
+        ev.ContentBlockEnd(
+            **_env(1.5),
+            block_type="thinking",
+            block_index=0,
+            block={"type": "thinking", "text": "check the delegate result before answering"},
+        ),
+        # Attachments: another foreign record, sharing the same log.
+        ev.parse_event(
+            {
+                "kind": "attachment_added",
+                "session_id": SID,
+                "path": "diagram.png",
+                "mime": "image/png",
+            }
+        ),
+        ev.AgentSpawned(
+            **_env(2.0), agent="researcher", sub_session_id="sub-original", parent_session_id=SID
+        ),
+        ev.ContentBlockEnd(**child, block_type="text", block={"type": "text", "text": "found it"}),
+        ev.AgentCompleted(
+            **_env(4.0),
+            agent="researcher",
+            sub_session_id="sub-original",
+            parent_session_id=SID,
+            success=True,
+            result="1 finding",
+        ),
+        # The final answer: quoted-link markup + a table + a fenced block,
+        # combined in ONE piece of rich content (not spread across turns).
+        ev.ContentBlockEnd(
+            **_env(4.5), block_type="text", block={"type": "text", "text": _COMBINED_RICH_TEXT}
+        ),
+        ev.PromptComplete(
+            **_env(5.0),
+            response=_COMBINED_RICH_TEXT,
+            files_changed=3,
+            diffstat="+18/-4",
+            tests_ok=True,
+        ),
+    ]
+
+
+def test_replay_reproduces_the_original_combined_rich_content_fixture() -> None:
+    """S5 gap-closure: the brief's ORIGINAL reported failure combined Loop
+    output, attachments and mixed rich content (quoted-link markup, a
+    table, a fenced code block, tool output) in one transcript that
+    crashed resume. This reproduces all of it TOGETHER — not spread across
+    separate fixtures — and asserts replay never raises, preserves the
+    log's order, and degrades to a placeholder ONLY for the two genuinely
+    unsupported records (never for anything this build can actually
+    render).
+    """
+    reducer, host = make_reducer()
+    events = _combined_rich_content_events()
+
+    # 1. Replays without exception. (An unhandled exception here fails the
+    #    test outright; ``is True`` also matches the return-value contract
+    #    every other replay test in this module asserts.)
+    assert reducer.replay(events, turn_base=1) is True
+
+    kinds = _kinds(host.blocks)
+    placeholders = [b for b in host.blocks if b.kind == "unsupported"]
+
+    # 2. Placeholders land ONLY where genuinely unsupported.
+    assert {p.type_name for p in placeholders} == {"loop_progress", "attachment_added"}
+    assert len(placeholders) == 2
+    assert all(p.id for p in placeholders)  # minted on attach, never aliased
+    assert len({p.id for p in placeholders}) == 2
+
+    # 3. Order is preserved: the log's interleaving survives replay — the
+    #    Loop placeholder rides where it was recorded (before the tool
+    #    burst flushes), and the attachment placeholder rides after
+    #    thinking and before the delegate fan-out settles, exactly where
+    #    each was interleaved in the original log.
+    assert kinds[0] == "user_line"
+    assert kinds[-1] == "turn_rule"  # the turn still ships cleanly, last
+    loop_index = next(
+        i
+        for i, b in enumerate(host.blocks)
+        if b.kind == "unsupported" and b.type_name == "loop_progress"
+    )
+    attachment_index = next(
+        i
+        for i, b in enumerate(host.blocks)
+        if b.kind == "unsupported" and b.type_name == "attachment_added"
+    )
+    tool_index = kinds.index("tool_line")
+    thinking_index = kinds.index("thinking")
+    delegate_index = next(
+        i for i, b in enumerate(host.blocks) if isinstance(b, DelegateSummaryBlock)
+    )
+    final_answer_index = next(
+        i for i, b in enumerate(host.blocks) if b.kind == "answer" and b.final
+    )
+    assert loop_index < tool_index < thinking_index
+    assert thinking_index < attachment_index < delegate_index < final_answer_index
+
+    # 4. Every block RENDERS, and only the two foreign records render as
+    #    the "unsupported" placeholder — every genuinely-supported block
+    #    (including the rich final answer) renders its real content.
+    unsupported_ids = {p.id for p in placeholders}
+    for block in host.blocks:
+        rendered = "\n".join("".join(seg.text for seg in line) for line in render_block(block, 100))
+        if block.id in unsupported_ids:
+            assert "unsupported block ·" in rendered
+        else:
+            assert "unsupported block ·" not in rendered
+
+    # 5. The final answer's OWN rich content actually rendered — not just
+    #    "didn't crash": quoted-link markup, a table and a fenced block,
+    #    combined, exactly as the brief's original report described.
+    final_answer = host.blocks[final_answer_index]
+    final_lines = render_block(final_answer, 100)
+    rendered_answer = "\n".join("".join(seg.text for seg in line) for line in final_lines)
+    # Quoted-link markup: a blockquote gutter framing a real hyperlink.
+    assert GLYPH_QUOTE_GUTTER in rendered_answer
+    link_segments = [
+        seg
+        for line in final_lines
+        for seg in line
+        if seg.link == "https://example.com/incidents/482"
+    ]
+    assert link_segments  # the link survived markdown parsing, clickable
+    # Table: rendered as aligned columns, never the raw pipe syntax.
+    assert "Symptom" in rendered_answer and "Cause" in rendered_answer
+    assert "foreign loop record" in rendered_answer
+    assert "foreign attachment record" in rendered_answer
+    assert "| Symptom | Cause |" not in rendered_answer
+    assert "---" not in rendered_answer
+    # Fenced code: the command text survives, the fence markers don't.
+    assert "uv run pytest -q tests/test_ui_reducer_replay.py" in rendered_answer
+    assert "```" not in rendered_answer
+    # Prose and tool output both still land correctly in the same turn.
+    assert "Delegated work done." in rendered_answer
+    assert any(b.kind == "tool_line" and b.summary == "Ran 1 shell command" for b in host.blocks)
