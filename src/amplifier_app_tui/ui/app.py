@@ -20,8 +20,9 @@ outside the chain:
     1             lane_focus             restore the parent transcript
     2             palette                close the command palette
     3             rewind                 close the rewind picker strip
-    4             lanes                  close the agent-lanes panel
-    5             running                interrupt the running turn
+    4             sessions               close the sessions picker strip
+    5             lanes                  close the agent-lanes panel
+    6             running                interrupt the running turn
     ============  =====================  ==============================
 """
 
@@ -58,6 +59,7 @@ from ..model.turn import OutcomeLedger
 from . import app_support, keymap, notifications
 from .approval_bar import ApprovalBar
 from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
+from .sessions_strip import SessionsStrip
 from .command_context import AppCommandContext
 from .composer import Composer
 from .footer import FooterBar
@@ -79,7 +81,7 @@ from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
 from .runtime_adapter import RuntimeAdapter
 from .session_ops_controller import SessionOpsController
-from .session_ops_view import sessions_spans
+from .session_ops_view import session_detail_spans, sessions_spans
 from .splash import BootSplash
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
@@ -231,6 +233,7 @@ class TuiApp(App[None]):
         self.lanes_panel = LanesPanel(id="lanes-panel")
         self.plan_panel = PlanPanel(id="plan-panel")
         self.rewind = RewindStrip(id="rewind-strip")
+        self.sessions_strip = SessionsStrip(id="sessions-strip")
         self.queued_strip = QueuedStrip(id="queued-strip")
         self.file_mentions = FileMentionStrip(id="file-mentions")
         self.history_recall = HistoryRecallStrip(id="history-recall")
@@ -248,6 +251,7 @@ class TuiApp(App[None]):
             yield self.lanes_panel
             yield self.plan_panel
         yield self.rewind
+        yield self.sessions_strip
         yield self.queued_strip
         yield self.file_mentions
         yield self.history_recall
@@ -633,13 +637,20 @@ class TuiApp(App[None]):
         self.run_worker(self._show_sessions(), exclusive=False)
 
     async def _show_sessions(self) -> None:
+        """``/sessions``: open the interactive picker (S2 compliance gap 2).
+
+        An empty roster shows a notice instead of an empty strip (mirrors
+        ``open_rewind_strip`` on zero checkpoints). Selecting a row does
+        NOT resume in-place (the stored-session roster has always been
+        read-only here) -- it opens that session's full-id detail via
+        :meth:`on_sessions_strip_session_activated`.
+        """
         summaries = await self.adapter.session_summaries()
-        self.append_block(
-            Answer(
-                id=self.allocator.next_id(),
-                spans=sessions_spans(summaries, current=self.adapter.session_short),
-            )
-        )
+        if not summaries:
+            self.show_notice("no stored sessions \u00b7 this project has no history yet")
+            return
+        self.sessions_strip.show_sessions(summaries, current=self.adapter.session_short)
+        self._refresh_footer()
 
     # -- prompt-stash (HGT from opencode) -----------------------------------
 
@@ -1362,6 +1373,32 @@ class TuiApp(App[None]):
         self._restore_keyboard()
         self._refresh_footer()
 
+    def on_sessions_strip_session_activated(self, message: SessionsStrip.SessionActivated) -> None:
+        """A session row was activated (Enter or click) -- S2 gap 1 + 2:
+        show its full-id detail rather than an in-place resume (the
+        stored-session roster has always been read-only here), and
+        best-effort copy the full id via the app's existing clipboard
+        helper (OSC 52 + OS tool where available; the detail block below
+        is the reliable fallback -- terminal clipboard access is
+        environment-dependent)."""
+        message.stop()
+        summary = next(
+            (s for s in self.sessions_strip.summaries if s.session_id == message.session_id),
+            None,
+        )
+        self.sessions_strip.close_strip()
+        self._restore_keyboard()
+        self._refresh_footer()
+        if summary is None:
+            return
+        self.copy_to_clipboard(summary.session_id)
+        self.append_block(Answer(id=self.allocator.next_id(), spans=session_detail_spans(summary)))
+
+    def on_sessions_strip_closed(self, message: SessionsStrip.Closed) -> None:
+        message.stop()
+        self._restore_keyboard()
+        self._refresh_footer()
+
     def on_open_rewind(self, message: OpenRewind) -> None:
         index = next(
             (i for i, c in enumerate(self.ledger.checkpoints) if c.id == message.checkpoint_id),
@@ -1684,6 +1721,8 @@ class TuiApp(App[None]):
             return "lane_focus"
         if self.palette.is_open:
             return "palette"
+        if self.sessions_strip.is_open:
+            return "sessions"
         if self.turn_active:
             return "running"
         return "idle"

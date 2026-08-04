@@ -261,7 +261,11 @@ class SessionStore:
                 if from_backup:
                     logger.info("Loaded transcript from backup")
                 return transcript
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):
+                # ValueError also covers json.JSONDecodeError (a subclass)
+                # AND UnicodeDecodeError from a non-UTF-8-corrupted file --
+                # same "never silently pass corruption through" reasoning
+                # as _load_metadata above.
                 logger.warning("Failed to load %s", path, exc_info=True)
         if main.exists() or backup.exists():
             # Both main and .backup existed but neither parsed: a resumed
@@ -286,7 +290,12 @@ class SessionStore:
                 if from_backup:
                     logger.info("Loaded metadata from backup")
                 return metadata
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError):
+                # ValueError also covers json.JSONDecodeError (a subclass)
+                # AND UnicodeDecodeError from a non-UTF-8-corrupted file --
+                # either way this candidate is unusable; try the next one
+                # (S2: every parse-failure shape must reach the "recovered"
+                # marker below, not just the JSON-specific one).
                 logger.warning("Failed to load %s", path, exc_info=True)
         if main.exists() or backup.exists():
             return {

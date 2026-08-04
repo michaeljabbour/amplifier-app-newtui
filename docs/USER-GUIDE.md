@@ -371,6 +371,16 @@ and a full event log. Saving is incremental (after every tool call), so even a c
 almost nothing. `sessions` lists them; `resume ID` picks one back up with history, cost,
 and checkpoints intact.
 
+In-session, `/sessions` opens an interactive picker over this project's stored roster
+(never just a wall of ids): **↑/↓** or click a row to select it, **enter** or click to open
+it — keyboard and mouse both work everywhere. Opening a row shows its full id on its own
+line (the table itself only shows a short 8-char id) plus name, bundle, message/turn counts
+and age; the full id is copied to the clipboard automatically where the terminal allows it,
+and is always safely mouse-selectable from that detail view even when it isn't. A session
+whose stored metadata could not be read is never dropped or shown as if it were healthy — it
+lists with an explicit **recovered** (patched from a backup) or **corrupt** (unreadable)
+state chip instead.
+
 ## 15. When something's off
 
 | Symptom | Try |

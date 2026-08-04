@@ -53,11 +53,13 @@ def test_shift_enter_with_alt_enter_fallback() -> None:
 
 
 def test_esc_chain_priority_order_per_spec() -> None:
-    """DESIGN-SPEC §5: lane-focus → palette → rewind → lanes → interrupt."""
+    """DESIGN-SPEC §5 (extended by S2): lane-focus → palette → rewind →
+    sessions → lanes → interrupt."""
     assert [context for context, _ in ESC_CHAIN] == [
         "lane_focus",
         "palette",
         "rewind",
+        "sessions",
         "lanes",
         "running",
     ]

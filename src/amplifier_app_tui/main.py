@@ -650,10 +650,17 @@ def _print_session_table(summaries: list[Any]) -> None:
     Turns column reflects the ``turn_count`` the incremental saver records in
     ``metadata.json``; sessions whose stored metadata predates that field show
     ``—`` rather than a fabricated ``0``.
+
+    A trailing dim ``State`` column appears only when at least one session
+    is damaged (S2 compliance): ``recovered`` (metadata could not be parsed;
+    a synthetic shell was substituted) or ``corrupt`` (the row itself could
+    not be summarized). A healthy roster renders byte-for-byte as before --
+    no blank column noise for the common case.
     """
     from rich.console import Console
     from rich.table import Table
 
+    show_state = any(summary.state != "ok" for summary in summaries)
     table = Table(title="Sessions", title_justify="center", header_style="bold cyan")
     table.add_column("Name", style="cyan", overflow="fold")
     table.add_column("Session", style="green", no_wrap=True)
@@ -661,15 +668,21 @@ def _print_session_table(summaries: list[Any]) -> None:
     table.add_column("Msgs", justify="right")
     table.add_column("Turns", justify="right")
     table.add_column("Age", style="dim", no_wrap=True)
+    if show_state:
+        table.add_column("State", style="dim", no_wrap=True)
     for summary in summaries:
-        table.add_row(
+        row = [
             summary.name or "—",
             summary.short_id,
             summary.bundle,
             str(summary.messages),
             "—" if summary.turns is None else str(summary.turns),
             summary.time_ago,
-        )
+        ]
+        if show_state:
+            state_style = "yellow" if summary.state == "recovered" else "red"
+            row.append("—" if summary.state == "ok" else f"[{state_style}]{summary.state}[/]")
+        table.add_row(*row)
     Console().print(table)
 
 
