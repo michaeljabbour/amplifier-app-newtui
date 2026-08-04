@@ -388,11 +388,18 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         group="During",
         name="/clear",
-        # Mockup-verbatim palette copy (tests/test_commands_builtin.py pins
-        # this table to the design mockup) -- the fuller D3 explanation
-        # (view + context together, persisted history untouched) lives in
-        # _cmd_clear's docstring and docs/USER-GUIDE.md instead.
-        desc="clear the conversation context",
+        # Compliance 2026-08-02, item D3 AC4: the palette line is a user's
+        # PRIMARY discovery surface for this command -- registry.py's
+        # grouped_rows() also serves the help listing off this same desc,
+        # so there is no separate hover/detail surface to carry a fuller
+        # explanation. It must say what /clear touches on its own: view +
+        # context together, not persisted history. tests/test_commands_
+        # builtin.py's MOCKUP_TABLE is updated in lockstep -- that table
+        # pins this registry to a recorded parity snapshot (see its own
+        # history of "Beyond the mockup table" additions), not to
+        # design-v3-cohesive.html's original COMMANDS array, which never
+        # had a /clear entry to freeze in the first place.
+        desc="clear transcript view + context (not persisted history)",
         tag="built-in",
         handler=_cmd_clear,
     ),
