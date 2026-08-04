@@ -37,7 +37,15 @@ MOCKUP_TABLE = [
     ("During", "/model", "list models; /model <name> switches the live model", "built-in"),
     ("During", "/effort", "reasoning effort; /effort <none…max> sets it", "built-in"),
     ("During", "/compact", "compact context; /compact <focus> to steer it", "built-in"),
-    ("During", "/clear", "clear the conversation context", "built-in"),
+    # Compliance 2026-08-02, item D3 AC4: corrected in lockstep with
+    # builtin.py -- the palette one-liner must itself say /clear resets
+    # the view + context together and leaves persisted history alone.
+    # This table pins the registry to a recorded parity snapshot (see
+    # the "Beyond the mockup table" comments throughout this list), not
+    # to design-v3-cohesive.html's original COMMANDS array, which never
+    # had a /clear row to freeze -- so updating this row when the text
+    # is deliberately corrected is exactly what this fixture is for.
+    ("During", "/clear", "clear transcript view + context (not persisted history)", "built-in"),
     ("During", "/tools", "list the mounted tools", "built-in"),
     ("During", "/agents", "list the delegatable agents", "built-in"),
     ("During", "/skills", "list available skills", "skill"),
@@ -104,6 +112,26 @@ MOCKUP_TABLE = [
 def test_table_matches_mockup_exactly() -> None:
     actual = [(s.group, s.name, s.desc, s.tag) for s in BUILTIN_COMMANDS]
     assert actual == MOCKUP_TABLE
+
+
+def test_clear_palette_desc_states_scope_per_d3_ac4() -> None:
+    """D3 AC4: /clear's palette line is its primary discovery surface --
+    registry.py's ``grouped_rows()`` doubles as the help listing off this
+    same ``desc`` (no separate hover/detail view exists), so it has to
+    state the scope on its own, not rely on the docstring or USER-GUIDE.md.
+
+    Guards the *content*, not just the byte-parity ``MOCKUP_TABLE`` pin
+    above: a future edit could keep both sides of that parity check in
+    sync while drifting back to an under-described one-liner. This test
+    fails if that happens even when the parity check would not.
+    """
+    registry = build_registry()
+    spec = registry.get("/clear")
+    assert spec is not None
+    desc = spec.desc
+    assert "view" in desc, "must name the transcript view"
+    assert "context" in desc, "must name the conversation context"
+    assert "not" in desc and "persisted" in desc, "must state persisted history is unaffected"
 
 
 def test_registry_holds_all_commands() -> None:
