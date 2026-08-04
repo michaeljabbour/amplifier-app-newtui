@@ -30,6 +30,16 @@ includes:
   # tag (v2.1.2) still 404s on bundles/anchors (confirmed via the GitHub
   # contents API) -- @main remains the only correct choice here. Every OTHER
   # bundle.md dependency below IS pinned as part of this same pass.
+  # Re-re-checked 2026-08-04 (compliance B9 gap-closure pass): foundation has
+  # published no new tag since the 2026-08-02 check (still v2.1.0/v2.1.1/
+  # v2.1.2 -- `git ls-remote --tags`); v2.1.2 still 404s on bundles/anchors
+  # via the contents API, main still 200s. Constraint unchanged; a bare-SHA
+  # re-pin was considered and rejected again -- it is exactly what #96
+  # reverted. Mitigated instead by tests/test_no_floating_dependencies.py
+  # (fails the build if any OTHER dependency starts floating; this include
+  # is the one justified, allow-listed exception) and
+  # scripts/verify_anchors_constraint.py (re-run that before ever touching
+  # this line -- it re-checks this exact constraint against the live repo).
   - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
 
 providers:
