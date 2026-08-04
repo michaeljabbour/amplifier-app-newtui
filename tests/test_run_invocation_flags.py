@@ -22,7 +22,12 @@ from amplifier_app_tui.kernel.config import (
     apply_run_overrides,
 )
 from amplifier_app_tui.kernel.persistence import SessionStore
-from amplifier_app_tui.main import main
+from amplifier_app_tui.main import (
+    RESUME_EXIT_AMBIGUOUS,
+    RESUME_EXIT_CORRUPT,
+    RESUME_EXIT_NOT_FOUND,
+    main,
+)
 
 # ---------------------------------------------------------------------------
 # kernel seam: apply_run_overrides is ephemeral (no settings persistence)
@@ -231,19 +236,45 @@ def test_unknown_resume_session_errors(capture, tmp_path, monkeypatch) -> None:
     store = SessionStore(base_dir=tmp_path / "sessions")
     monkeypatch.setattr("amplifier_app_tui.main._session_store", lambda: store)
     result = CliRunner().invoke(main, ["run", "--resume", "deadbeef", "hello"])
-    assert result.exit_code == 1
+    assert result.exit_code == RESUME_EXIT_NOT_FOUND
     assert "no session found" in result.stderr
     assert capture.instances == []
 
 
-def test_ambiguous_resume_prefix_errors(capture, tmp_path, monkeypatch) -> None:
+def test_corrupt_resume_session_errors(capture, tmp_path, monkeypatch) -> None:
+    """``run --resume`` refuses a corrupt match (S3) instead of booting a
+    runtime with no known bundle/identity."""
     store = SessionStore(base_dir=tmp_path / "sessions")
+    store.save("deadbeef" + "0" * 24, [], {"bundle": "tui"})
+    (store.session_dir("deadbeef" + "0" * 24) / "metadata.json").write_text(
+        "{not json", encoding="utf-8"
+    )
+    monkeypatch.setattr("amplifier_app_tui.main._session_store", lambda: store)
+    result = CliRunner().invoke(main, ["run", "--resume", "deadbeef", "hello"])
+    assert result.exit_code == RESUME_EXIT_CORRUPT
+    assert "corrupt" in result.stderr.lower()
+    assert capture.instances == []
+
+
+def test_ambiguous_resume_prefix_errors(capture, tmp_path, monkeypatch) -> None:
+    """``run --resume`` refuses an ambiguous prefix (S3) with the SAME distinct
+    exit code and actionable candidates table as ``resume``/``serve --resume``
+    -- never the historical blanket 1."""
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    ids = []
     for suffix in ("1", "2"):
         sid = "aaaa" + suffix + "0" * 27
+        ids.append(sid)
         store.save(sid, [{"role": "user", "content": "x"}], {"bundle": "tui"})
     monkeypatch.setattr("amplifier_app_tui.main._session_store", lambda: store)
     result = CliRunner().invoke(main, ["run", "--resume", "aaaa", "hello"])
-    assert result.exit_code == 1
+    assert result.exit_code == RESUME_EXIT_AMBIGUOUS
+    assert "matches 2 sessions" in result.stderr
+    for sid in ids:
+        assert sid[:8] in result.stderr
+    # The example command uses whichever candidate sorts first (newest-first);
+    # accept either short id rather than assuming save order.
+    assert any(f"amplifier-tui resume {sid[:8]}" in result.stderr for sid in ids)
     assert capture.instances == []
 
 

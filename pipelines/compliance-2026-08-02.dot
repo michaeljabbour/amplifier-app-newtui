@@ -1,0 +1,112 @@
+// Attractor pipeline — Compliance 2026-08-02 finish-work for amplifier-app-tui.
+//
+// Source of truth: "Amplifier TUI Feedback — Consolidated Implementation Brief
+// (Compliance Update 2026-08-02)". Scope = every item whose Compliance line reads
+// Partial or Open, EXCLUDING D6 (PR #190, implemented + verified live, awaiting
+// user merge approval). Each item's dated compliance note IS its remaining scope.
+//
+// Node shapes (attractor convention):
+//   box          = LLM implement node (internally: BranchSetup -> Implement -> Gate -> Commit -> OpenPR)
+//   parallelogram= deterministic gate (re-verified by orchestrator before any PR)
+//   diamond      = HUMAN GATE — blocks until the user decides; the only hard gates
+//
+// Every item lands on its own `compliance/<slug>` branch off main, conventional
+// commit, full gate green (uv run pytest -q with FORCE_COLOR unset, ruff check .,
+// pyright src/) before a PR opens. Nothing merges without user approval.
+//
+// Legend / edges:
+//   ->           dependency (implement A before B)
+//   [label=...]  why the edge exists (verbatim from the brief where stated)
+
+digraph compliance_2026_08_02 {
+  rankdir=LR;
+  compound=true;
+  node [fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=9, color="#555555"];
+
+  // ───────────────────────── HUMAN GATES (diamonds) ─────────────────────────
+  gate_190 [shape=diamond, style=filled, fillcolor="#FDECEC", color="#9F1F1F",
+    label="GATE\nMerge PR #190 (D6)\nchild-agent stream dedup\n— awaiting your approval"];
+  gate_D1  [shape=diamond, style=filled, fillcolor="#FFF6E5", color="#8A5700",
+    label="GATE — D1 decision\nexecutable rename:\namplifier  vs  amplifier-tui\n(adjacent to #187)"];
+  gate_B5  [shape=diamond, style=filled, fillcolor="#FFF6E5", color="#8A5700",
+    label="GATE — B5 decision\nadoption stage owners\n+ usage windows"];
+
+  start [shape=point, width=0.18, color="#246B35"];
+  done  [shape=point, width=0.18, color="#246B35"];
+
+  // ───────────────────── LANE 1 — daily-driver reliability ─────────────────
+  subgraph cluster_l1 {
+    label="Lane 1 · daily-driver reliability";
+    style=filled; fillcolor="#F4F8FB"; color="#2E74B5";
+    B2  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="B2\nshared CLI/TUI alias fixture\ncollision + fuzzy suggestions"];
+    S4  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="S4\nrun-path pre-takeover\nmount/provider preflight (--dry-run)"];
+    S5  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="S5\ntyped UnsupportedBlock fallback\n+ Loop/attachment rich fixture"];
+    D3  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="D3\n/clear visibly clears transcript\nfence stale pre-clear events"];
+    B1  [shape=box, style="rounded,filled", fillcolor="#FFF6E5", label="B1\nfinal-answer anchor +\nreturn-to-answer action; light theme"];
+  }
+
+  // ───────────────────── LANE 2 — navigation & clarity ─────────────────────
+  subgraph cluster_l2 {
+    label="Lane 2 · navigation & clarity";
+    style=filled; fillcolor="#F4F8FB"; color="#2E74B5";
+    S2  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="S2\nsession table full-id\ncopy/select + recovered states"];
+    S3  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="S3\ncanonical resume syntax\n+ deterministic exit codes"];
+    S7  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="S7\n+N more -> expand/collapse\nfocusable control + Show less"];
+    D2  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="D2\nseparate composer from\nlive status (structural boundary)"];
+    D4  [shape=box, style="rounded,filled", fillcolor="#FFF6E5", label="D4\nconsolidate footer hints +\nbundle metadata (path once, top)"];
+    D1  [shape=box, style="rounded,filled", fillcolor="#FFF6E5", label="D1\nrename: alias/deprecation path\n+ docs/completion alignment"];
+  }
+
+  // ───────────────── LANE 3 — agent visibility & evidence ──────────────────
+  subgraph cluster_l3 {
+    label="Lane 3 · agent visibility & evidence";
+    style=filled; fillcolor="#F4F8FB"; color="#2E74B5";
+    B7    [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="B7\nnormalized attention record\ndedup + ack/clear lifecycle"];
+    S6    [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="S6\nfocus-header Back button\n+ scroll/selection restore"];
+    D7probe [shape=parallelogram, style=filled, fillcolor="#EAF6EE", label="D7-probe\nre-verify dead Enter-to-expand\nLIVE before any code (may be stale)"];
+    D7    [shape=box, style="rounded,filled", fillcolor="#FFF6E5", label="D7\nevidence side panel +\noversized/unavailable fallback\n+ focus/scroll restore"];
+    D5    [shape=box, style="rounded,filled", fillcolor="#FFF6E5", label="D5\npreview expand affordance\n+ high-volume coalescing"];
+  }
+
+  // ─────────── LANE 4 — orchestration, parity & adoption ───────────────────
+  subgraph cluster_l4 {
+    label="Lane 4 · orchestration, platform parity & adoption";
+    style=filled; fillcolor="#F4F8FB"; color="#2E74B5";
+    B3  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="B3\nowner-gated parity loop\n+ consecutive-clean-pass counter"];
+    B6  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="B6\nsession handle + single-writer\nlease/takeover/reconnect/attribution"];
+    B9  [shape=box, style="rounded,filled", fillcolor="#EAF6EE", label="B9\npin bundle.md deps (off @main)\n+ CLI/TUI/serve compat fixtures"];
+    B5  [shape=box, style="rounded,filled", fillcolor="#FFF6E5", label="B5\nversioned adoption stage ledger\n+ compat smoke + rollback path"];
+    B8  [shape=box, style="rounded,filled", fillcolor="#FDECEC", label="B8\nvoice-first/ambient design doc\n(architecture track, review-gated)"];
+  }
+
+  // ─────────────────────────── DEPENDENCIES ────────────────────────────────
+  start -> {B2 S4 S5 D3 S2 S3 S7 D2 B7 S6 D7probe B3 B6 B9} [color="#246B35"];
+
+  // #190 merge gate blocks the two items that build on the authoritative-stream work
+  gate_190 -> B1 [label="D6 note: B1 emphasis lives in\nthe authoritative region (#190)"];
+  gate_190 -> D5 [label="D5 is PARTIAL·PENDING #190;\nrest of D5 = preview expand + coalesce"];
+
+  // D1 rename is blocked on the executable-name decision
+  gate_D1 -> D1 [label="AC4: rename needs a\ndocumented deprecation/alias path"];
+
+  // B5 adoption ledger is blocked on owner/window decisions
+  gate_B5 -> B5 [label="AC1: each stage needs named\nowner + min 1-day window"];
+
+  // Footer/composer surface is shared — sequence D2 before D4
+  D2 -> D4 [label="D4 dev-note: coordinate with\nfooter/composer boundary (D4 also cites B4=done)"];
+
+  // Agent-lane/focus surface is shared — S6 lays the scroll-restore foundation
+  S6 -> D7 [label="both implement focus/scroll\nrestore on the lane surface"];
+  S6 -> D5 [label="both touch lanes_panel preview"];
+
+  // D7: live re-verify the dead-control report BEFORE writing code
+  D7probe -> D7 [label="if dead-control is STALE (already works)\n-> D7 narrows to side panel + fallbacks only"];
+
+  // B8 is an architecture track explicitly built on B6 + B7 contracts
+  B6 -> B8 [label="B8 inspect-target: built on\ncompleted B6 control/lease contract"];
+  B7 -> B8 [label="B8 inspect-target: built on\ncompleted B7 attention-event contract"];
+
+  // terminals
+  {B2 S4 S5 D3 B1 S2 S3 S7 D2 D4 D1 B7 S6 D7 D5 B3 B6 B9 B5 B8} -> done [color="#246B35"];
+}

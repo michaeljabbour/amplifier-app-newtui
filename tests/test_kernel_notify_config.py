@@ -140,7 +140,7 @@ def test_ladder_env_suppress_silences_via_amplifier_notify() -> None:
     apply_notification_ladder_env({"config": {"notifications": {"suppress": True}}}, env)
     assert env["AMPLIFIER_NOTIFY"] == "off"
     # And the pure ladder then fires nothing, even for a deferred decision.
-    assert notifications.notification_rungs("decision_deferred", focused=False, environ=env) == ()
+    assert notifications.notification_rungs("awaiting_approval", focused=False, environ=env) == ()
 
 
 def test_ladder_env_desktop_disabled_drops_desktop_rung_keeps_bell() -> None:
@@ -149,7 +149,7 @@ def test_ladder_env_desktop_disabled_drops_desktop_rung_keeps_bell() -> None:
         {"config": {"notifications": {"desktop": {"enabled": False}}}}, env
     )
     assert env["AMPLIFIER_TERMINAL_NOTIFICATIONS"] == "off"
-    rungs = notifications.notification_rungs("decision_deferred", focused=False, environ=env)
+    rungs = notifications.notification_rungs("awaiting_approval", focused=False, environ=env)
     assert rungs == ("bell",)  # bell survives, desktop suppressed
 
 
@@ -159,7 +159,7 @@ def test_ladder_env_desktop_enabled_true_forces_any_terminal() -> None:
         {"config": {"notifications": {"desktop": {"enabled": True}}}}, env
     )
     assert env["AMPLIFIER_TERMINAL_NOTIFICATIONS"] == "force"
-    rungs = notifications.notification_rungs("decision_deferred", focused=False, environ=env)
+    rungs = notifications.notification_rungs("awaiting_approval", focused=False, environ=env)
     assert rungs == ("bell", "desktop")
 
 

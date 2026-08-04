@@ -20,8 +20,9 @@ outside the chain:
     1             lane_focus             restore the parent transcript
     2             palette                close the command palette
     3             rewind                 close the rewind picker strip
-    4             lanes                  close the agent-lanes panel
-    5             running                interrupt the running turn
+    4             sessions               close the sessions picker strip
+    5             lanes                  close the agent-lanes panel
+    6             running                interrupt the running turn
     ============  =====================  ==============================
 """
 
@@ -51,7 +52,7 @@ from ..model.blocks import (
     UserLine,
 )
 from ..model.evidence import EvidenceLink, build_evidence_detail
-from ..model.lanes import LaneRegistry, lane_labels
+from ..model.lanes import LaneRegistry
 from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
 from ..model.prompt_stash import PromptStash, stash_list_spans
@@ -59,6 +60,7 @@ from ..model.turn import OutcomeLedger
 from . import app_support, keymap, notifications
 from .approval_bar import ApprovalBar
 from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
+from .sessions_strip import SessionsStrip
 from .command_context import AppCommandContext
 from .composer import Composer
 from .evidence_panel import EvidencePanel
@@ -81,7 +83,7 @@ from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
 from .runtime_adapter import RuntimeAdapter
 from .session_ops_controller import SessionOpsController
-from .session_ops_view import sessions_spans
+from .session_ops_view import session_detail_spans, sessions_spans
 from .splash import BootSplash
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
@@ -103,9 +105,11 @@ _NOTIFY_TITLE = "Amplifier"
 """Notification title for every desktop rung (kept short: OSC 777 title
 field is bounded to 80 chars in ``ui/notifications``)."""
 
-_NOTIFY_BODY = {
-    "turn_finished": "Turn complete",
-    "decision_deferred": "A decision needs you",
+_NOTIFY_BODY: dict[notifications.AttentionReason, str] = {
+    "completion": "Turn complete",
+    "awaiting_approval": "A decision needs your approval",
+    "awaiting_clarification": "A decision needs your input",
+    "error": "The session hit an error",
 }
 """Default OSC 777 body per attention reason; a deferral passes its own
 message through instead (see :meth:`TuiApp._notify_attention`)."""
@@ -198,6 +202,9 @@ class TuiApp(App[None]):
             lane_seed_lookup=adapter.lane_seed,
             evidence_lookup=adapter.evidence_links,
             session_cost_start=adapter.session_cost_start,
+            # D5 AC5: guarantees a coalesced lane-rows repaint is never
+            # stranded — see LaneReducer._schedule_trailing_flush.
+            schedule_flush=self.set_timer,
         )
         self.turn_active = False
         # Current reasoning-effort tier for the footer indicator (HGT effort
@@ -209,6 +216,11 @@ class TuiApp(App[None]):
         # the desktop rung of the notification ladder only escalates when
         # the user has demonstrably looked away (issue #47).
         self._terminal_focused = True
+        # Dedup + acknowledgement bookkeeping for the attention-notification
+        # ladder (B7, issue #47): mints one AttentionRecord per transition
+        # into an attention state, keyed for idempotent re-fire protection
+        # -- see _notify_attention / _acknowledge_attention.
+        self._attention = notifications.AttentionCenter()
         self.fork_pending = False  # a confirmed fork is in flight (interrupt-then-fork)
         self._working_timer: Any = None  # 1s working-line heartbeat (Timer)
         self._splash: BootSplash | None = None  # boot splash overlay (wordmark)
@@ -249,6 +261,7 @@ class TuiApp(App[None]):
         self.lanes_panel = LanesPanel(id="lanes-panel")
         self.plan_panel = PlanPanel(id="plan-panel")
         self.rewind = RewindStrip(id="rewind-strip")
+        self.sessions_strip = SessionsStrip(id="sessions-strip")
         self.queued_strip = QueuedStrip(id="queued-strip")
         self.file_mentions = FileMentionStrip(id="file-mentions")
         self.history_recall = HistoryRecallStrip(id="history-recall")
@@ -268,6 +281,7 @@ class TuiApp(App[None]):
             yield self.lanes_panel
             yield self.plan_panel
         yield self.rewind
+        yield self.sessions_strip
         yield self.queued_strip
         yield self.file_mentions
         yield self.history_recall
@@ -313,7 +327,10 @@ class TuiApp(App[None]):
     def on_app_focus(self, event: events.AppFocus) -> None:
         # The terminal window regained focus: the user is watching, so the
         # ladder drops back to the audible bell alone (no desktop toast).
+        # Refocusing also counts as "resuming" (B7 AC5): clear whatever
+        # attention indicator is currently open.
         self._terminal_focused = True
+        self._acknowledge_attention()
 
     def on_app_blur(self, event: events.AppBlur) -> None:
         # The terminal window lost focus: a finished turn or deferred
@@ -323,28 +340,58 @@ class TuiApp(App[None]):
 
     def _notify_attention(
         self,
-        reason: notifications.Reason,
+        reason: notifications.AttentionReason,
         elapsed_s: float = 0.0,
         *,
+        occasion: str,
         detail: str = "",
     ) -> None:
-        """Fire the attention-notification ladder (issue #47).
+        """Emit ONE normalized ``AttentionRecord`` for a transition into
+        *reason* and fire its ladder (B7, issue #47 -- AC1/AC3).
 
         The suppressed hooks-notify wrote OSC-777 + BEL straight to the TTY
         (which corrupts the full-screen TUI); its signal is re-expressed
-        here as a ladder. Rung 1 is Textual's driver-safe ``App.bell``; rung
-        2 is an OSC 777 desktop notification written through the same
-        sanctioned driver path the terminal title uses, only when the window
-        is unfocused on a capable terminal. Rung 3 (off-machine push) is the
-        mounted ``hooks-notify-push`` module's job. ``AMPLIFIER_NOTIFY``
-        gates the whole ladder; ``notification_rungs`` owns the policy.
+        here as a ladder driven by the record rather than an ad-hoc call:
+        rung 1 is Textual's driver-safe ``App.bell``; rung 2 is an OSC 777
+        desktop notification written through the same sanctioned driver
+        path the terminal title uses, only when the window is unfocused on
+        a capable terminal. Rung 3 (off-machine push) is the mounted
+        ``hooks-notify-push`` module's job and is not routed through this
+        record (see ``ui/notifications.py`` module docstring).
+
+        ``occasion`` is *reason*'s stable idempotency handle -- the
+        finishing turn's id, or the parked decision's id -- so a re-render
+        or a repeated kernel-side ping for the SAME occasion dedupes (AC3)
+        instead of re-notifying. ``AMPLIFIER_NOTIFY`` gates the whole
+        ladder, including whether a record is minted at all;
+        ``notification_rungs`` owns the rung policy.
         """
+        if not notifications.attention_needed(reason, elapsed_s):
+            return
+        _, is_new = self._attention.note(self.adapter.session_id, reason, occasion, detail=detail)
+        if not is_new:
+            return  # AC3: same transition already notified (re-render/reconnect/re-ping)
         rungs = notifications.notification_rungs(reason, elapsed_s, focused=self._terminal_focused)
-        if "bell" in rungs:
-            self.bell()
-        if "desktop" in rungs:
-            body = detail.strip() or _NOTIFY_BODY[reason]
-            notifications.write_desktop_notification(self._driver, _NOTIFY_TITLE, body)
+        body = detail.strip() or _NOTIFY_BODY[reason]
+        notifications.fire_attention_ladder(
+            rungs, bell=self.bell, driver=self._driver, title=_NOTIFY_TITLE, body=body
+        )
+
+    def _acknowledge_attention(self) -> None:
+        """Clear the open attention record + its destination indicator
+        where the destination supports it (B7, issue #47 -- AC5).
+
+        OSC 777/desktop is ours to rewrite, so acknowledging best-effort
+        clears it; the bell already rang and has nothing to retract;
+        off-machine ntfy push has no acknowledgement channel here at all
+        (a different device's notification tray, fired by the mounted
+        ``hooks-notify-push`` module -- see ``ui/notifications.py`` module
+        docstring). A destination failure is logged, never raised, and
+        never blocks the session.
+        """
+        if self._attention.acknowledge(self.adapter.session_id) is None:
+            return  # nothing was open -- an idle resume/ack is a no-op
+        notifications.clear_desktop_notification(self._driver)
 
     def on_unmount(self) -> None:
         # A quit during a running turn must not leave a frozen spinner in the
@@ -498,6 +545,31 @@ class TuiApp(App[None]):
             self.transcript.remove_block(block_id)
         except KeyError:
             pass
+
+    def clear_transcript_view(self) -> None:
+        """View-only reset for ``/clear`` (D3): SessionOpsHost surface.
+
+        Unmounts every rendered row and starts a new clear-generation so
+        the reducer fences any already-queued event from the pre-clear
+        generation (a delayed delta/tool-result/notice can no longer
+        append, replace or remove a row here). The composer keeps focus
+        either way, but a removed widget can steal it first, so re-assert
+        explicitly rather than rely on nothing else having grabbed it.
+
+        D7: the evidence detail panel is keyed to a specific block that
+        ``clear_view()`` is about to unmount unconditionally, along with
+        everything else. Direct close here -- the same "whole block gone"
+        shape as ``on_close_evidence`` -- rather than ``close_evidence_panel()``:
+        there is no row left to restore focus/scroll to, and replaying a
+        remembered scroll position would fight the fresh bottom-follow
+        anchor ``clear_view()`` itself asserts below.
+        """
+        if self.evidence_panel.is_open:
+            self.evidence_panel.close()
+            self._evidence_panel_target = None
+        self.transcript.clear_view()
+        self.reducer.bump_generation()
+        self.composer.focus_input()
 
     def show_notice(self, text: str, duration: float | None = None) -> None:
         # The approval bar owns both input and its explanatory notice. A late
@@ -653,13 +725,20 @@ class TuiApp(App[None]):
         self.run_worker(self._show_sessions(), exclusive=False)
 
     async def _show_sessions(self) -> None:
+        """``/sessions``: open the interactive picker (S2 compliance gap 2).
+
+        An empty roster shows a notice instead of an empty strip (mirrors
+        ``open_rewind_strip`` on zero checkpoints). Selecting a row does
+        NOT resume in-place (the stored-session roster has always been
+        read-only here) -- it opens that session's full-id detail via
+        :meth:`on_sessions_strip_session_activated`.
+        """
         summaries = await self.adapter.session_summaries()
-        self.append_block(
-            Answer(
-                id=self.allocator.next_id(),
-                spans=sessions_spans(summaries, current=self.adapter.session_short),
-            )
-        )
+        if not summaries:
+            self.show_notice("no stored sessions \u00b7 this project has no history yet")
+            return
+        self.sessions_strip.show_sessions(summaries, current=self.adapter.session_short)
+        self._refresh_footer()
 
     # -- prompt-stash (HGT from opencode) -----------------------------------
 
@@ -809,10 +888,26 @@ class TuiApp(App[None]):
         """Discovered skills (+ ``shortcut:`` aliases) become
         ``skill``-sourced registry contributions, so ``/cosam`` resolves
         in dispatch before the unknown-command notice (story #1); the
-        palette follows via the registry subscription."""
-        from ..commands.skills import register_skill_commands
+        palette follows via the registry subscription.
 
-        register_skill_commands(self._commands, skills)
+        Alias collisions — a skill name or shortcut a built-in or an
+        earlier skill already holds — are surfaced here rather than
+        skipped silently (compliance B2 AC4: collision detection is
+        deterministic; "configuration load" IS this boot-time discovery
+        pass). A rich listing goes to the transcript, a short dim notice
+        points at it (the same split ``/ledger`` and ``/doctor`` use:
+        block for the listing, notice for the pointer).
+        """
+        from ..commands.skills import alias_collision_spans, register_skill_commands_reporting
+
+        plan = register_skill_commands_reporting(self._commands, skills)
+        if plan.collisions:
+            self.append_block(
+                Answer(id=self.allocator.next_id(), spans=alias_collision_spans(plan.collisions))
+            )
+            count = len(plan.collisions)
+            noun = "collision" if count == 1 else "collisions"
+            self.show_notice(f"{count} skill alias {noun} · printed to scrollback")
 
     def manage_directories(self, kind: str, args: str) -> None:
         from .directory_admin import manage
@@ -850,10 +945,16 @@ class TuiApp(App[None]):
         self.rewind.sync_checkpoints(self.ledger.checkpoints)
         # Attention signal for the suppressed hooks-notify (raw OSC/BEL would
         # corrupt Textual): ring the driver-safe bell after long turns only —
-        # policy + rationale in app_support.attention_bell_needed.
+        # policy + rationale in app_support.attention_bell_needed. Occasion
+        # is the just-recorded turn's durable id (always present here — the
+        # reducer records the ledger turn before calling turn_finished), so
+        # a re-render for the SAME turn dedupes instead of re-notifying
+        # (B7 AC3).
         elapsed = 0.0 if self._turn_started_at is None else time.monotonic() - self._turn_started_at
         self._turn_started_at = None
-        self._notify_attention("turn_finished", elapsed)
+        turn_id = self.ledger.turns[-1].turn_id if self.ledger.turns else None
+        occasion = f"turn-{turn_id}" if turn_id is not None else f"turn-clock-{time.monotonic()}"
+        self._notify_attention("completion", elapsed, occasion=occasion)
         self.refresh_status()
 
     def lanes_changed(self) -> None:
@@ -902,18 +1003,32 @@ class TuiApp(App[None]):
         # the shared queue — parking again would double the badge count.
         # Message-only deferrals (demo script, mounted-hook notices) still
         # derive the item through the adapter and park it here.
-        parked = decision_id and any(
-            item.decision_id == decision_id for item in self.adapter.needs_you.items
+        parked_item = (
+            next((i for i in self.adapter.needs_you.items if i.decision_id == decision_id), None)
+            if decision_id
+            else None
         )
-        if not parked:
+        if parked_item is not None:
+            item = parked_item
+        else:
             question, reason, choices, highlight, action = self.adapter.deferred_decision(
                 message, decision_id
             )
-            self.adapter.needs_you.defer(
+            item = self.adapter.needs_you.defer(
                 question, reason, choices=choices, highlight=highlight, action=action
             )
-        # A deferred decision blocks on the human: always worth notifying.
-        self._notify_attention("decision_deferred", detail=message)
+        # A deferred decision blocks on the human: always worth notifying,
+        # but only ONCE per decision -- a repeated kernel-side ping for an
+        # ALREADY-parked item (e.g. a second dependent tool call blocked on
+        # the same decision) dedupes by the decision's own stable id
+        # (B7 AC3) instead of re-ringing the bell. A governance/tool-action
+        # deferral carries a denied ``action`` key; a question-tool ask
+        # does not -- that distinguishes approval from clarification.
+        occasion = item.decision_id
+        reason_kind: notifications.AttentionReason = (
+            "awaiting_approval" if item.action else "awaiting_clarification"
+        )
+        self._notify_attention(reason_kind, occasion=occasion, detail=message)
         self._refresh_footer()
 
     def stream_opened(self, block_type: str) -> None:
@@ -936,33 +1051,24 @@ class TuiApp(App[None]):
         # Throttle + focus policy live in the reducer (design doc D4); this
         # just paints. The tail renders under its lane's row in the lanes
         # panel (issue #90) — co-located with the agent it streams for, not a
-        # detached strip.
+        # detached strip. Child streams (thinking/narration) render in the
+        # lanes panel ONLY: the old main-chat delegate tail mirrored the
+        # same text under the working line, duplicating lane content into
+        # the chat transcript — the chat now carries compact lifecycle
+        # markers instead (reducer._agent_spawned/_agent_completed).
+        #
+        # D5 AC5: resync the panel's tailed-row pointer from the
+        # authoritative registry FIRST. This callback's own D4 throttle is
+        # independent of (and can now run ahead of) the coalesced
+        # lanes_changed() repaint, so ``show_lane_tail`` must not depend on
+        # that repaint having already landed to find its row.
+        tailed = self.lanes.tail_lane
+        if tailed is not None:
+            self.lanes_panel.sync_tailed(tailed.session_id)
         self.lanes_panel.show_lane_tail(text)
-        # Main-chat delegate tail (joint enhancement with the Rust client):
-        # the same throttled text also renders under the working line via
-        # LiveTail's lane mode, labeled with the tailed lane's short name —
-        # unless the lanes panel holds the keyboard or a focused lane
-        # already fills the screen with its own transcript. Root streams
-        # keep preempting inside show_lane_tail.
-        if self.lanes_panel.has_focus or self.transcript.focused_lane is not None:
-            return
-        self.live_tail.show_lane_tail(text, label=self._tail_lane_label())
 
     def lane_tail_cleared(self) -> None:
         self.lanes_panel.clear_lane_tail()
-        self.live_tail.clear_lane_tail()
-
-    def _tail_lane_label(self) -> str:
-        """The tailed lane's short label — the exact disambiguated name its
-        panel row shows (``lane_labels``), so the two surfaces always agree."""
-        tailed = self.lanes.tail_lane
-        if tailed is None:
-            return ""
-        records = self.lanes.lanes
-        for record, label in zip(records, lane_labels(records), strict=True):
-            if record.session_id == tailed.session_id:
-                return label
-        return tailed.lane.name
 
     # -- approvals -------------------------------------------------------------------
 
@@ -1087,7 +1193,11 @@ class TuiApp(App[None]):
             # notice, never a silent provider turn. Skills + shortcuts
             # registered at boot resolve above via parse_and_run.
             name = text.split(maxsplit=1)[0]
-            self.show_notice(f"unknown command: {name} · / lists commands")
+            # AC3: a typo'd command/alias gets nearby suggestions instead
+            # of a bare rejection — never a silent fall-through to chat.
+            suggestions = self._commands.suggest(name, limit=1)
+            hint = f" · did you mean {' or '.join(suggestions)}?" if suggestions else ""
+            self.show_notice(f"unknown command: {name}{hint} · / lists commands")
             self._refresh_footer()
             return
         self.submit_prompt(text, message.attachments)
@@ -1345,9 +1455,6 @@ class TuiApp(App[None]):
         # The panel stays open while a lane is focused (mockup focusLane
         # never touches lanesOpen); its row snaps to the focused lane.
         self.lanes_panel.set_focused(message.name)
-        # The focused lane's transcript fills the screen — drop the
-        # main-chat delegate tail (the lane's own stream is now on show).
-        self.live_tail.clear_lane_tail()
         # Esc must resolve via ESC_CHAIN (lane_focus first, lanes later),
         # so the keyboard returns to the composer, not the panel.
         self.composer.focus_input()
@@ -1413,6 +1520,32 @@ class TuiApp(App[None]):
         self.composer.insert_text(message.character)
 
     def on_rewind_strip_closed(self, message: RewindStrip.Closed) -> None:
+        message.stop()
+        self._restore_keyboard()
+        self._refresh_footer()
+
+    def on_sessions_strip_session_activated(self, message: SessionsStrip.SessionActivated) -> None:
+        """A session row was activated (Enter or click) -- S2 gap 1 + 2:
+        show its full-id detail rather than an in-place resume (the
+        stored-session roster has always been read-only here), and
+        best-effort copy the full id via the app's existing clipboard
+        helper (OSC 52 + OS tool where available; the detail block below
+        is the reliable fallback -- terminal clipboard access is
+        environment-dependent)."""
+        message.stop()
+        summary = next(
+            (s for s in self.sessions_strip.summaries if s.session_id == message.session_id),
+            None,
+        )
+        self.sessions_strip.close_strip()
+        self._restore_keyboard()
+        self._refresh_footer()
+        if summary is None:
+            return
+        self.copy_to_clipboard(summary.session_id)
+        self.append_block(Answer(id=self.allocator.next_id(), spans=session_detail_spans(summary)))
+
+    def on_sessions_strip_closed(self, message: SessionsStrip.Closed) -> None:
         message.stop()
         self._restore_keyboard()
         self._refresh_footer()
@@ -1617,9 +1750,6 @@ class TuiApp(App[None]):
                 queued_counts=self.adapter.lane_steering.counts(),
             )
             self.lanes_panel.show_panel()
-            # The panel takes the keyboard: its own ┆ tail is on show under
-            # the tailed lane's row — retire the main-chat delegate tail.
-            self.live_tail.clear_lane_tail()
             if self.approval_bar is not None:
                 self.approval_bar.focus()  # approval owns the keyboard (spec §7)
         self._refresh_footer()
@@ -1680,6 +1810,24 @@ class TuiApp(App[None]):
 
     def action_open_rewind(self) -> None:
         self.open_rewind_strip(None)
+
+    def action_return_to_answer(self) -> None:
+        """ctrl+f: jump back to the current/most-recent turn's final-answer
+        start anchor (AC2, compliance 2026-08-02 B1).
+
+        Scans the visible transcript (main, or a focused lane's own list --
+        whichever ``self.transcript.blocks`` currently holds) for the most
+        recent ``Answer`` the reducer stamped ``final`` and scrolls its
+        START into view, same block-id targeting as toggle_thinking. A
+        long answer's start survives scrolling away and back, resume
+        replay, and history navigation because it rides the block's own
+        persisted state, not a transient scroll position."""
+        for block in reversed(self.transcript.blocks):
+            if block.kind == "answer" and block.final:
+                self.transcript.scroll_block_visible(block.id, top=True)
+                self.show_notice("back to the final answer")
+                return
+        self.show_notice("no final answer yet")
 
     def action_plan_drilldown(self) -> None:
         """ctrl+n: cycle the plan panel's row window (default → +2 → +3).
@@ -1789,6 +1937,8 @@ class TuiApp(App[None]):
             return "lane_focus"
         if self.palette.is_open:
             return "palette"
+        if self.sessions_strip.is_open:
+            return "sessions"
         if self.turn_active:
             return "running"
         return "idle"

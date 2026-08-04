@@ -414,33 +414,11 @@ def test_lane_tail_markup_escapes_and_handles_empty() -> None:
     assert "┆ \\[red]not markup" in markup  # escaped — content is never interpreted
 
 
-def test_labeled_lane_tail_markup_prefixes_first_line_only() -> None:
-    """Rust: test_labeled_lane_tail_markup_prefixes_first_line_only — the
-    main transcript's delegate tail leads its first rendered line with the
-    lane's short label; the panel shape (empty label) stays byte-identical."""
-    markup = lane_tail_markup("one\ntwo\nthree\nfour\n", label="explorer")
-    assert markup == "[$dim]┆ explorer › two\n┆ three\n┆ four[/]"
-    # Empty label degrades to the panel tail verbatim.
-    assert lane_tail_markup("one\ntwo", label="") == lane_tail_markup("one\ntwo")
-    assert lane_tail_markup("", label="explorer") == ""
-    # Label content is escaped, never interpreted.
-    assert "┆ \\[red]agent › hi" in lane_tail_markup("hi", label="[red]agent")
-
-
-@pytest.mark.asyncio
-async def test_lane_mode_yields_to_root_stream_and_clears() -> None:
-    app = TailHarness()
-    async with app.run_test():
-        tail = _tail(app)
-        tail.show_lane_tail("agent prose")
-        assert tail.lane_mode
-        tail.open_stream("text")  # root preempts instantly
-        assert not tail.lane_mode
-        tail.show_lane_tail("ignored while root streams")
-        assert not tail.lane_mode  # refused: root owns the tail
-        tail.feed("root text")
-        tail.consolidate("blk-1")  # root stream closed
-        tail.show_lane_tail("agent prose again")
-        assert tail.lane_mode  # lanes may resume after the root goes idle
-        tail.clear_lane_tail()
-        assert not tail.lane_mode
+def test_live_tail_carries_no_lane_mode_surface() -> None:
+    """Child lane streams must never paint through the main-chat LiveTail:
+    the old lane-mode mirror (``show_lane_tail`` / ``lane_markup``)
+    duplicated child thinking/narration into the chat transcript. The lane
+    tail now renders ONLY under its row in the lanes panel; the chat gets
+    compact delegate lifecycle markers from the reducer instead."""
+    for removed in ("show_lane_tail", "clear_lane_tail", "lane_mode", "lane_markup"):
+        assert not hasattr(LiveTail, removed)

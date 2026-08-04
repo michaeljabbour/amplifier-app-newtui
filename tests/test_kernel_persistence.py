@@ -17,6 +17,7 @@ from amplifier_app_tui.kernel.persistence import (
     LEGACY_EVENTS_FILENAME,
     METADATA_FILENAME,
     TRANSCRIPT_FILENAME,
+    AmbiguousSessionError,
     IncrementalSaver,
     SessionStore,
     is_top_level_session,
@@ -291,6 +292,21 @@ def test_list_and_find_sessions_top_level_filter(store: SessionStore) -> None:
         store.find_session("zzzz")
 
 
+def test_find_session_ambiguous_error_carries_full_match_list(store: SessionStore) -> None:
+    """AmbiguousSessionError subclasses ValueError (every EXISTING
+    ``except ValueError`` call site keeps working unchanged, S3) but also
+    carries the full, untruncated ``matches`` list so a resume-path caller
+    can render every candidate instead of a 3-item text preview."""
+    store.save("aaaa-1111", [], {})
+    store.save("aaaa-2222", [], {})
+    with pytest.raises(AmbiguousSessionError) as exc_info:
+        store.find_session("aaaa")
+    error = exc_info.value
+    assert set(error.matches) == {"aaaa-1111", "aaaa-2222"}
+    assert error.partial_id == "aaaa"
+    assert "Ambiguous session ID 'aaaa' matches 2 sessions" in str(error)
+
+
 # --------------------------------------------------------------------------
 # IncrementalSaver — debounced save on tool:post
 # --------------------------------------------------------------------------
@@ -421,3 +437,38 @@ def test_cleanup_old_sessions_skips_subsessions(store: SessionStore) -> None:
 def test_cleanup_old_sessions_rejects_negative_days(store: SessionStore) -> None:
     with pytest.raises(ValueError):
         store.cleanup_old_sessions(days=-1)
+
+
+# -- S2 compliance: every corruption shape reaches the "recovered" marker ----
+
+
+def test_load_metadata_recovers_on_binary_bytes(store: SessionStore) -> None:
+    """Invalid-UTF-8 metadata.json (not just invalid JSON) must ALSO land on
+    the synthetic ``recovered`` shell -- UnicodeDecodeError is a ValueError
+    subclass distinct from json.JSONDecodeError, and both must be caught."""
+    store.save("s1", [], {"session_id": "s1", "name": "will-be-lost"})
+    (store.session_dir("s1") / METADATA_FILENAME).write_bytes(b"\xff\xfe\x00not-utf8")
+    metadata = store.get_metadata("s1")
+    assert metadata["recovered"] is True
+    assert metadata["session_id"] == "s1"
+    assert "name" not in metadata
+
+
+def test_load_metadata_recovers_on_invalid_json(store: SessionStore) -> None:
+    store.save("s1", [], {"session_id": "s1"})
+    (store.session_dir("s1") / METADATA_FILENAME).write_text("{not json", encoding="utf-8")
+    metadata = store.get_metadata("s1")
+    assert metadata["recovered"] is True
+
+
+def test_load_transcript_marks_recovery_failed_on_binary_bytes(store: SessionStore) -> None:
+    """The transcript-side twin of the metadata test above: binary bytes in
+    BOTH transcript.jsonl and its .backup must set
+    ``transcript_recovery_failed`` rather than raising past ``load()``."""
+    store.save("s1", [{"role": "user", "content": "hi"}], {"session_id": "s1"})
+    session_dir = store.session_dir("s1")
+    (session_dir / TRANSCRIPT_FILENAME).write_bytes(b"\xff\xfe\x00not-utf8\n")
+    (session_dir / (TRANSCRIPT_FILENAME + ".backup")).write_bytes(b"\xff\xfe\x00not-utf8\n")
+    transcript, _metadata = store.load("s1")
+    assert transcript == []
+    assert store.transcript_recovery_failed is True

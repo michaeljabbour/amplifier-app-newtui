@@ -1,15 +1,20 @@
-"""Flow tests — the main-chat delegate tail (joint enhancement with the
-Rust client's ``test_main_chat_tail_*`` cases in ``src/main.rs``).
+"""Flow tests — delegate streams route to lanes ONLY; the chat carries
+compact lifecycle markers.
 
-While a child lane streams, the MOST recently streaming lane's live tail
-— the same ``┆``-guttered, throttled text the lanes panel paints under
-the tailed lane's row — also renders in the main transcript under the
-working line, prefixed with the lane's short label
-(``┆ explorer › I have the big picture…``). It rides LiveTail's lane
-mode, so root streams keep preempting it and it clears on lane
-completion / turn end exactly like the panel tail. It stays dark while
-the lanes panel holds the keyboard or a focused lane fills the screen
-with its own transcript.
+The old main-chat delegate tail mirrored the tailed lane's live stream
+under the working line, so a child agent's thinking/narration painted
+BOTH in the lanes panel and in the main transcript (user report: child
+reasoning duplicated into the chat). Routing now:
+
+- child stream deltas feed the lanes panel's ┆ tail only — the main
+  transcript's LiveTail never enters a lane mode;
+- child thinking / prose / tool chatter never become chat blocks (the
+  foreign-turn divert, unchanged);
+- the chat instead gets one dim ✳ marker per delegate lifecycle beat —
+  ``<agent> started · <brief>`` / ``<agent> done · <hint>`` /
+  ``<agent> failed · <reason>`` — the orchestrator's view of cross-agent
+  activity, without duplicating lane content;
+- root-session streaming/thinking renders exactly as before.
 
 Driven over the real app (host fan-out included) by feeding normalized
 events straight into ``app.reducer`` — the same seam the runtime uses —
@@ -21,6 +26,7 @@ from __future__ import annotations
 import pytest
 
 from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import Answer, Thinking
 from amplifier_app_tui.ui.app import TuiApp
 from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 
@@ -47,22 +53,27 @@ def _spawn(app: TuiApp, sub: str, name: str) -> None:
     )
 
 
-def _delta(app: TuiApp, sub: str, text: str) -> None:
+def _delta(app: TuiApp, sub: str, text: str, block_type: str = "text") -> None:
     app.reducer.handle(
         ev.StreamBlockDelta(
             session_id=sub,
             request_id=f"req-{sub}",
             block_index=0,
-            block_type="text",
+            block_type=block_type,
             sequence=0,
             text=text,
         )
     )
 
 
+def _answer_texts(app: TuiApp) -> list[str]:
+    return ["".join(s.text for s in block.spans) for block in blocks_of(app, "answer")]
+
+
 @pytest.mark.asyncio
-async def test_main_chat_tail_appears_under_working_line_while_child_streams() -> None:
-    """Rust: test_main_chat_tail_appears_under_working_line_while_child_streams."""
+async def test_child_stream_paints_lane_tail_only_never_the_main_chat() -> None:
+    """A streaming child feeds the lanes panel's ┆ tail; the main
+    transcript's LiveTail stays untouched (no lane mode to mirror into)."""
     app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
@@ -71,48 +82,124 @@ async def test_main_chat_tail_appears_under_working_line_while_child_streams() -
         _delta(app, CHILD_A, "I have the big picture from the README")
         await pilot.pause()
 
-        # The working pulse is up; the delegate tail paints under it via
-        # LiveTail's lane mode — exact ┆ + label + text.
+        # The working pulse is up; the lanes panel tail carries the stream.
         assert blocks_of(app, "working_status")
-        assert app.live_tail.lane_mode
-        assert (
-            app.live_tail.lane_markup
-            == "[$dim]┆ researcher › I have the big picture from the README[/]"
-        )
-        # The bottom-panel tail keeps its unlabeled byte-identical shape.
         assert app.lanes_panel.has_lane_tail
+        # The main-chat LiveTail never mirrors lane content (API removed).
+        assert not hasattr(app.live_tail, "lane_mode")
+        assert not app.live_tail.source
+        # The streamed prose never became a chat block either.
+        assert all("big picture" not in text for text in _answer_texts(app))
 
 
 @pytest.mark.asyncio
-async def test_main_chat_tail_switches_to_most_recent_streamer() -> None:
-    """Rust: test_main_chat_tail_switches_to_most_recent_streamer."""
+async def test_child_thinking_never_creates_chat_blocks_root_thinking_still_does() -> None:
+    """Child thinking (deltas AND durable content blocks) stays out of the
+    chat transcript; the root session's Thinking block renders as before."""
     app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         _start_turn(app)
+        # Root thinking → one durable collapsed Thinking block (issue #129).
+        app.reducer.handle(ev.ContentBlockStart(session_id=ROOT, block_type="thinking", ts=1.1))
+        app.reducer.handle(
+            ev.ContentBlockEnd(
+                session_id=ROOT,
+                block_type="thinking",
+                block={"thinking": "root reasoning"},
+                ts=1.2,
+            )
+        )
+        _spawn(app, CHILD_A, "researcher")
+        # Child thinking arrives via BOTH channels in real sessions.
+        _delta(app, CHILD_A, "child secret reasoning", block_type="thinking")
+        app.reducer.handle(ev.ContentBlockStart(session_id=CHILD_A, block_type="thinking", ts=1.3))
+        app.reducer.handle(
+            ev.ContentBlockEnd(
+                session_id=CHILD_A,
+                block_type="thinking",
+                block={"thinking": "child secret reasoning"},
+                ts=1.4,
+            )
+        )
+        await pilot.pause()
+
+        thinking = blocks_of(app, "thinking")
+        assert [block.text for block in thinking if isinstance(block, Thinking)] == [
+            "root reasoning"
+        ]
+        assert all("child secret reasoning" not in t for t in _answer_texts(app))
+
+
+@pytest.mark.asyncio
+async def test_chat_carries_lifecycle_markers_for_spawn_completion_and_failure() -> None:
+    """The chat's cross-agent view is one dim ✳ marker per lifecycle beat."""
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        _start_turn(app)
+        # The delegate call's instruction becomes the marker's few-word task.
+        app.reducer.handle(
+            ev.ToolPre(
+                session_id=ROOT,
+                ts=1.0,
+                tool_name="delegate",
+                tool_call_id="d1",
+                tool_input={"agent": "researcher", "instruction": "scan provider docs"},
+            )
+        )
         _spawn(app, CHILD_A, "researcher")
         _spawn(app, CHILD_B, "coder")
-        _delta(app, CHILD_A, "scanning provider docs")
-        assert app.live_tail.lane_markup == "[$dim]┆ researcher › scanning provider docs[/]"
-
-        # The other lane streams — the main-chat tail follows it.
-        _delta(app, CHILD_B, "migrating the store")
+        app.reducer.handle(
+            ev.AgentCompleted(
+                session_id=ROOT,
+                ts=2.0,
+                agent="researcher",
+                sub_session_id=CHILD_A,
+                parent_session_id=ROOT,
+                success=True,
+                result="docs scanned",
+            )
+        )
+        app.reducer.handle(
+            ev.AgentCompleted(
+                session_id=ROOT,
+                ts=2.5,
+                agent="coder",
+                sub_session_id=CHILD_B,
+                parent_session_id=ROOT,
+                success=False,
+                result="migration blew up",
+            )
+        )
         await pilot.pause()
-        assert app.live_tail.lane_markup == "[$dim]┆ coder › migrating the store[/]"
+
+        texts = _answer_texts(app)
+        assert "✳ researcher started · scan provider docs" in texts
+        assert "✳ coder started" in texts
+        assert "✳ researcher done · docs scanned" in texts
+        assert "✳ coder failed · migration blew up" in texts
+        # Markers are the dim recap-line shape: non-clickable status lines.
+        markers = [
+            block
+            for block in blocks_of(app, "answer")
+            if isinstance(block, Answer) and "".join(s.text for s in block.spans).startswith("✳ ")
+        ]
+        assert markers and all(not marker.clickable for marker in markers)
 
 
 @pytest.mark.asyncio
-async def test_main_chat_tail_clears_on_lane_completion_and_turn_end() -> None:
-    """Rust: test_main_chat_tail_clears_on_lane_completion_and_turn_end."""
+async def test_lane_tail_still_clears_on_lane_completion_and_turn_end() -> None:
+    """The lanes-panel tail lifecycle is unchanged by the chat-side rerouting."""
     app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         _start_turn(app)
         _spawn(app, CHILD_A, "researcher")
         _delta(app, CHILD_A, "scanning provider docs")
-        assert app.live_tail.lane_mode
+        await pilot.pause()
+        assert app.lanes_panel.has_lane_tail
 
-        # Lane completion clears the shown tail (same lifecycle as the panel).
         app.reducer.handle(
             ev.AgentCompleted(
                 session_id=ROOT,
@@ -124,44 +211,12 @@ async def test_main_chat_tail_clears_on_lane_completion_and_turn_end() -> None:
             )
         )
         await pilot.pause()
-        assert not app.live_tail.lane_mode
-        assert app.live_tail.lane_markup == ""
+        assert not app.lanes_panel.has_lane_tail
 
-        # A second streamer, then turn end: the tail never survives the turn.
         _spawn(app, CHILD_B, "coder")
         _delta(app, CHILD_B, "migrating the store")
-        assert app.live_tail.lane_mode
+        await pilot.pause()
+        assert app.lanes_panel.has_lane_tail
         app.reducer.handle(ev.PromptComplete(ts=2.0, session_id=ROOT))
         await pilot.pause()
-        assert not app.live_tail.lane_mode
-        assert app.live_tail.lane_markup == ""
-
-
-@pytest.mark.asyncio
-async def test_main_chat_tail_absent_when_lanes_panel_focused() -> None:
-    """Rust: test_main_chat_tail_absent_when_lanes_panel_focused (adapted:
-    the ratatui client has no panel keyboard focus, so its equivalent
-    suppression state is a focused lane's transcript filling the screen)."""
-    app = TuiApp(DemoRuntimeAdapter(instant=True))
-    async with app.run_test(size=SIZE) as pilot:
-        await seed_done(pilot, app)
-        _start_turn(app)
-        _spawn(app, CHILD_A, "researcher")
-        _delta(app, CHILD_A, "scanning provider docs")
-        assert app.live_tail.lane_mode
-
-        # The panel auto-opened unfocused at fan-out; ctrl-t twice gives it
-        # the keyboard. Taking focus retires the painted main-chat tail…
-        assert app.lanes_panel.display and not app.lanes_panel.has_focus
-        await pilot.press("ctrl+t")
-        await pilot.press("ctrl+t")
-        assert app.lanes_panel.has_focus
-        assert not app.live_tail.lane_mode
-        assert app.live_tail.lane_markup == ""
-
-        # …and new child deltas stay dark while the panel holds it (the
-        # panel's own ┆ tail under the lane row is the one on show).
-        _delta(app, CHILD_A, " — checking trackers next")
-        await pilot.pause()
-        assert not app.live_tail.lane_mode
-        assert app.live_tail.lane_markup == ""
+        assert not app.lanes_panel.has_lane_tail
