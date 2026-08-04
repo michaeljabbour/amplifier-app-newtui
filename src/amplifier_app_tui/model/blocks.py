@@ -596,6 +596,17 @@ class UnsupportedBlock(_FrozenModel):
     carry secrets or arbitrary tool/user text. There is deliberately no
     expand affordance: unlike :class:`ToolLine`/:class:`Thinking`, there is
     no raw body behind this block that would be safe to reveal.
+
+    ``source_path``/``source_line`` are a SAFE RECOVERY REFERENCE (S5 AC2):
+    a *locator* for the original persisted record \u2014 a path plus a
+    1-based line number, since ``ui-events.jsonl`` is one JSON record per
+    line \u2014 not the record itself. A user or support engineer who needs
+    the original content can deliberately open that exact file/line; the
+    placeholder carries no payload, so nothing leaks just by this block
+    existing on screen or in an export. Both are empty/``None`` when no
+    file position is available (a render-time failure has no log position
+    at all; a directly constructed placeholder in a test carries none
+    either) \u2014 never guessed, matching ``type_name``'s own contract.
     """
 
     id: str = ""
@@ -606,6 +617,13 @@ class UnsupportedBlock(_FrozenModel):
     kind: Literal["unsupported"] = "unsupported"
     type_name: str = "unknown"
     summary: str = ""
+    source_path: str = ""
+    """Absolute path to the persisted log this record was read from, or
+    ``""`` when unavailable. A locator only \u2014 never read back and shown
+    as content; see the class docstring's recovery-reference contract."""
+    source_line: int | None = None
+    """1-based line number of the record within ``source_path``, or
+    ``None`` when unavailable/inapplicable."""
 
 
 TranscriptBlock = Annotated[

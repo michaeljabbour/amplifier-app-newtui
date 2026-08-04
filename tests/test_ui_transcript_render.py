@@ -53,6 +53,7 @@ from amplifier_app_tui.ui.segments import (
     segment_style,
     to_rich_text,
 )
+from amplifier_app_tui.ui import transcript_render
 from amplifier_app_tui.ui.live_tail import answer_spans
 from amplifier_app_tui.ui.transcript_render import (
     _RENDERERS,  # noqa: PLC2701 — direct renderer-table monkeypatch for isolation tests
@@ -938,3 +939,51 @@ def test_render_block_handles_an_unregistered_kind_without_raising(
     block = Answer(id="a2", spans=(Segment(text="hi", style_token="fg"),))
     text = line_plain(render_block(block, 80)[0])
     assert text == "  ● unsupported block · answer"
+
+
+def test_render_failure_log_carries_the_bound_session_reference(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """S5 AC4: a render-failure log line names the block type AND a
+    redacted session id — matching kernel.runtime's parse-failure log —
+    without adding a session_id parameter to render_block or any of the 21
+    pure _render_* functions. bind_session_context is called once by the
+    boundary that owns session identity (ui/app.py); it never changes what
+    render_block RETURNS, only what its isolation-boundary log line says.
+    """
+
+    def _boom(block: object, width: int) -> tuple[object, ...]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(_RENDERERS, "answer", _boom)
+    block = Answer(id="a3", spans=(Segment(text="hi", style_token="fg"),))
+    try:
+        transcript_render.bind_session_context("abcdef0123456789")
+        with caplog.at_level("WARNING"):
+            text = line_plain(render_block(block, 80)[0])
+    finally:
+        transcript_render.bind_session_context("")  # never bleed into other tests
+
+    # Rendered OUTPUT is untouched by the bound session — purity holds.
+    assert text == "  ● unsupported block · answer · render failed"
+    assert "session=abcdef" in caplog.text  # redacted to 6 chars, like kernel.runtime
+    assert "abcdef0123456789" not in caplog.text  # never the full id
+
+
+def test_render_failure_log_degrades_gracefully_when_unbound(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No boundary has bound a session (e.g. a demo session, whose
+    ``adapter.session_id`` is ``""``, or a test importing the renderer
+    directly) — the log line still reads cleanly instead of a blank or
+    malformed session tag."""
+
+    def _boom(block: object, width: int) -> tuple[object, ...]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(_RENDERERS, "answer", _boom)
+    block = Answer(id="a4", spans=(Segment(text="hi", style_token="fg"),))
+    transcript_render.bind_session_context("")  # explicit: nothing bound
+    with caplog.at_level("WARNING"):
+        line_plain(render_block(block, 80)[0])
+    assert "session=-" in caplog.text

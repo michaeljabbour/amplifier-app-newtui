@@ -542,7 +542,12 @@ ParsedEvent = UIEvent | UnsupportedBlock
 record :func:`parse_event` could not type — see there."""
 
 
-def parse_event(record: Mapping[str, Any]) -> ParsedEvent:
+def parse_event(
+    record: Mapping[str, Any],
+    *,
+    source_path: str = "",
+    source_line: int | None = None,
+) -> ParsedEvent:
     """Round-trip one stored event record back into a typed :class:`UIEvent`.
 
     The inverse of ``event.model_dump(mode="json")`` as persisted by
@@ -557,6 +562,15 @@ def parse_event(record: Mapping[str, Any]) -> ParsedEvent:
     field-names-only summary — never the raw payload, which may carry
     secrets or arbitrary tool/user content — so a resumed session stays
     visible and usable instead of silently losing the line (S5).
+
+    ``source_path``/``source_line`` are optional and keyword-only — pure
+    round-trip callers (tests building a placeholder straight from a dict)
+    omit them and get the pre-S5-AC2 shape back. The one caller that reads
+    from a real log, :func:`~amplifier_app_tui.kernel.runtime.restored_ui_events`,
+    supplies them (via :meth:`~amplifier_app_tui.kernel.persistence.SessionStore.read_events_located`)
+    so an ``UnsupportedBlock`` this call returns carries a safe RECOVERY
+    REFERENCE — where to find the original record — never the record's own
+    content.
     """
     try:
         return _EVENT_ADAPTER.validate_python(dict(record))
@@ -564,6 +578,8 @@ def parse_event(record: Mapping[str, Any]) -> ParsedEvent:
         return UnsupportedBlock(
             type_name=_unsupported_type_name(record),
             summary=_unsupported_summary(record),
+            source_path=source_path,
+            source_line=source_line,
         )
 
 

@@ -57,7 +57,7 @@ from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
 from ..model.prompt_stash import PromptStash, stash_list_spans
 from ..model.turn import OutcomeLedger
-from . import app_support, keymap, notifications
+from . import app_support, keymap, notifications, transcript_render
 from .approval_bar import ApprovalBar
 from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
 from .sessions_strip import SessionsStrip
@@ -444,6 +444,24 @@ class TuiApp(App[None]):
         self.adapter.attach(self)
         try:
             await self.adapter.start(lambda: app_support.announce_ready(self))
+            # Both bindings below fire ONCE, right here, because this is the
+            # one boundary that owns session identity: RuntimeAdapter.start()
+            # has just resolved adapter.session_id / adapter.session_dir as
+            # plain attributes (set synchronously before start() returns), so
+            # neither call below can observe a half-initialized adapter, and
+            # their relative order is inconsequential -- each binds a
+            # DIFFERENT, independent piece of module/instance state and
+            # neither reads the other's output. A resume/second window is a
+            # fresh process (``amplifier-tui resume SESSION_ID``), so there is
+            # no in-place session switch that could leave either bound to a
+            # stale value.
+            #
+            # Session identity is resolved by now (RuntimeAdapter.start()'s own
+            # contract); bind it for transcript_render's render-failure log
+            # lines (S5 AC4) here, at the ONE boundary that owns session
+            # identity, rather than threading a session_id through every pure
+            # renderer. Empty for demo sessions, matching adapter.session_id.
+            transcript_render.bind_session_context(self.adapter.session_id)
             # B7 gap 1: the session directory is only known once boot
             # completes -- bind durability now so a restart/second-process
             # observes prior attention state (no-op for the demo adapter,
