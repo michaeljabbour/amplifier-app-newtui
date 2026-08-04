@@ -21,8 +21,13 @@ integrator can wire ``amplifier-tui doctor`` straight to it.
 from __future__ import annotations
 
 import json
+import os
+import platform
+import re
 import shutil
-from collections.abc import Iterable, Sequence
+import subprocess
+import sys
+from collections.abc import Iterable, Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -39,6 +44,31 @@ DEFAULT_SETTINGS_PATHS = (
     Path.home() / ".amplifier" / "settings.yaml",
     Path.home() / ".amplifier" / "settings.json",
 )
+
+APP_INSTALL_URI = "git+https://github.com/michaeljabbour/amplifier-app-tui"
+"""The README's documented global-install source.
+
+Kept as a literal here rather than imported (``commands/`` may not import
+``kernel/`` -- ADR-0007 layering); pinned equal to
+``kernel.updater.APP_REPO_URL`` by a cross-check test so the two copies can
+never quietly drift apart.
+"""
+
+_UNSUPPORTED_MACHINES = frozenset({"i386", "i486", "i586", "i686", "x86"})
+"""32-bit archs: uv and this app's dependencies (textual, httpx[socks], ...)
+publish only 64-bit wheels/binaries today (x86_64/amd64, arm64/aarch64)."""
+
+_SHELL_RC_FILES: dict[str, str] = {
+    "zsh": "~/.zshrc",
+    "bash": "~/.bashrc (~/.bash_profile on macOS)",
+    "fish": "~/.config/fish/config.fish",
+    "ksh": "~/.kshrc",
+    "dash": "~/.profile",
+    "sh": "~/.profile",
+}
+"""Startup file per shell, keyed by the ``$SHELL`` basename (see
+:func:`_detect_shell`) -- the exact file ``check_path``'s PATH-repair
+guidance names."""
 
 UNUSED_MCP_THRESHOLD_DAYS = 30
 REPEATED_APPROVAL_THRESHOLD = 10
@@ -118,11 +148,357 @@ def check_install(package: str = PACKAGE_NAME) -> CheckResult:
     return CheckResult(name="install", ok=True, message="install healthy")
 
 
-def check_path(executable: str = EXECUTABLE_NAME) -> CheckResult:
-    """The console script is reachable on PATH."""
-    if shutil.which(executable) is None:
-        return CheckResult(name="path", ok=False, message=f"{executable} not on PATH")
-    return CheckResult(name="path", ok=True, message="PATH clean")
+def _detect_shell(shell_env: str) -> str:
+    """Shell name from a ``$SHELL``-shaped path; ``"unknown"`` when unclear."""
+    name = Path(shell_env).name if shell_env else ""
+    return name if name in _SHELL_RC_FILES else "unknown"
+
+
+def _path_export_line(shell: str, directory: Path) -> str:
+    """The exact line to paste into the shell's startup file."""
+    if shell == "fish":
+        return f"fish_add_path {directory}"
+    return f'export PATH="{directory}:$PATH"'
+
+
+def _find_on_disk(executable: str, dirs: Sequence[Path]) -> Path | None:
+    """The first *executable* found under *dirs* — real file check, never raises."""
+    for directory in dirs:
+        candidate = directory / executable
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _default_bin_dirs(home: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
+    """Best-effort guess at where ``uv tool install`` puts executables.
+
+    Mirrors uv's own resolution order (``UV_TOOL_BIN_DIR`` override →
+    XDG_BIN_HOME → platform default) closely enough to explain a PATH miss
+    or a permissions problem — never used to decide whether the app IS
+    installed. *env* is threaded explicitly (never reads ``os.environ``
+    itself) so callers/tests control it precisely instead of depending on
+    the machine running them.
+    """
+    override = env.get("UV_TOOL_BIN_DIR")
+    if override:
+        return (Path(override),)
+    if sys.platform == "win32":
+        appdata = env.get("APPDATA")
+        if appdata:
+            return (Path(appdata) / "uv" / "tools" / "bin",)
+        return (home / "AppData" / "Roaming" / "uv" / "tools" / "bin",)
+    xdg_bin = env.get("XDG_BIN_HOME")
+    return (Path(xdg_bin),) if xdg_bin else (home / ".local" / "bin",)
+
+
+def check_path(
+    executable: str = EXECUTABLE_NAME,
+    *,
+    path_env: str | None = None,
+    shell_env: str | None = None,
+    home: Path | None = None,
+    search_dirs: Sequence[Path] | None = None,
+) -> CheckResult:
+    """The console script is reachable on PATH — and if not, exactly how to
+    fix it: where the executable actually landed (if findable), which
+    directory needs to be on PATH, and the precise shell-specific line to
+    add (shell detected from ``$SHELL``).
+
+    Every environment-derived input (``path_env``/``shell_env``/``home``/
+    ``search_dirs``) is overridable so tests never depend on the PATH,
+    shell, or home directory of the machine running the suite. Only the
+    OK-path message (``"PATH clean"``) is a stable contract other
+    tests/docs pin to; the failure message is free to be as helpful as
+    possible.
+    """
+    resolved_path = os.environ.get("PATH", "") if path_env is None else path_env
+    if shutil.which(executable, path=resolved_path) is not None:
+        return CheckResult(name="path", ok=True, message="PATH clean")
+
+    resolved_home = home if home is not None else Path.home()
+    dirs = (
+        tuple(search_dirs)
+        if search_dirs is not None
+        else _default_bin_dirs(resolved_home, os.environ)
+    )
+    shell = _detect_shell(os.environ.get("SHELL", "") if shell_env is None else shell_env)
+    landed = _find_on_disk(executable, dirs)
+
+    if landed is not None:
+        directory = landed.parent
+        export_line = _path_export_line(shell, directory)
+        rc_file = _SHELL_RC_FILES.get(shell, "your shell's startup file (e.g. ~/.profile)")
+        message = (
+            f"{executable} not on PATH · found at {landed} · add {directory} to PATH: run "
+            f"`uv tool update-shell` and restart your terminal, or add `{export_line}` to {rc_file}"
+        )
+    elif executable == EXECUTABLE_NAME:
+        looked = ", ".join(str(d) for d in dirs)
+        message = (
+            f"{executable} not on PATH and not found in the usual install dir(s) ({looked}) · "
+            f"install it: `uv tool install {APP_INSTALL_URI}`, then `uv tool update-shell` and "
+            "restart your terminal"
+        )
+    else:
+        looked = ", ".join(str(d) for d in dirs)
+        message = f"{executable} not on PATH and not found in the usual install dir(s) ({looked})"
+    return CheckResult(name="path", ok=False, message=message)
+
+
+# --- platform: OS/arch support -------------------------------------------
+
+
+def detect_platform() -> tuple[str, str]:
+    """The real ``(system, machine)`` — impure edge; never raises."""
+    return platform.system(), platform.machine()
+
+
+def check_platform(system: str, machine: str) -> CheckResult:
+    """OS/arch, flagging combinations this app genuinely doesn't support.
+
+    Native Windows is flagged — the README documents macOS, Linux, and WSL
+    only, and WSL reports its kernel honestly as ``Linux`` (it IS one), so
+    this never conflates the two or penalizes a WSL user. 32-bit CPUs are
+    flagged because uv itself ships no 32-bit builds. Pure: same inputs,
+    same result on any machine — :func:`detect_platform` resolves the real
+    values for the production caller.
+    """
+    label = f"{system} ({machine})" if machine else system
+    if system == "Windows":
+        return CheckResult(
+            name="platform",
+            ok=False,
+            message=(
+                f"{label} is not a supported platform · amplifier-tui is tested on macOS, "
+                "Linux, and WSL · install WSL2 (`wsl --install` in an admin PowerShell), then "
+                "reinstall from inside the WSL shell"
+            ),
+        )
+    if machine.lower() in _UNSUPPORTED_MACHINES:
+        return CheckResult(
+            name="platform",
+            ok=False,
+            message=(
+                f"{label} — 32-bit CPUs are not supported (uv publishes no 32-bit builds) · "
+                "use a 64-bit OS/CPU (x86_64/amd64 or arm64/aarch64)"
+            ),
+        )
+    return CheckResult(name="platform", ok=True, message=f"platform {label} supported")
+
+
+# --- python / uv: versions found + pyproject's declared minimum ----------
+
+
+class PythonUvFacts(BaseModel):
+    """Python/uv facts the ``python_uv`` check reasons about.
+
+    Populated by :func:`detect_python_uv` (the impure edge) for real use;
+    tests construct one directly so the check's logic never depends on the
+    interpreter, uv install, or PATH of the machine running the suite.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    python_version: str
+    min_python: str | None = None
+    uv_version: str | None = None
+
+
+def _min_from_requires_python(specifier: str) -> str | None:
+    """Extract the floor from a ``>=3.12``-shaped specifier.
+
+    This project declares a single floor with no upper bound, so the first
+    ``>=`` clause is enough; an unparseable specifier degrades to ``None``
+    (the check just stops comparing, never crashes).
+    """
+    match = re.search(r">=\s*([0-9]+(?:\.[0-9]+)*)", specifier)
+    return match.group(1) if match else None
+
+
+def _declared_min_python(package: str = PACKAGE_NAME) -> str | None:
+    """This project's declared ``requires-python`` floor.
+
+    Read from the INSTALLED distribution's own metadata — hatchling copies
+    ``pyproject.toml``'s ``requires-python`` into the wheel's
+    ``Requires-Python`` field at build time — never hardcoded here. Works
+    for a real end-user install with no ``pyproject.toml`` file on disk,
+    not just a dev checkout. ``None`` when the package/field can't be found.
+    """
+    try:
+        raw = metadata.metadata(package).get("Requires-Python")
+    except metadata.PackageNotFoundError:
+        return None
+    return _min_from_requires_python(raw) if raw else None
+
+
+def _version_at_least(actual: str, minimum: str) -> bool:
+    """Is *actual* >= *minimum*? PEP 440 compare when ``packaging`` is
+    importable (a transitive dep here), else a tolerant numeric-tuple
+    fallback — never raises, never blocks a doctor run on a parse quirk.
+    """
+    try:
+        from packaging.version import Version
+
+        return Version(actual) >= Version(minimum)
+    except Exception:  # noqa: BLE001 — fall back to a plain numeric compare
+
+        def _parts(value: str) -> tuple[int, ...]:
+            return tuple(int(p) for p in re.findall(r"\d+", value))
+
+        return _parts(actual) >= _parts(minimum)
+
+
+def _uv_version(timeout: float = 2.0) -> str | None:
+    """``uv --version``'s version token, or ``None`` if uv is missing/hung.
+
+    Short timeout: this can run synchronously on the Textual UI thread (the
+    in-session ``/doctor``), so a hung subprocess must not stall the app.
+    """
+    exe = shutil.which("uv")
+    if exe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [exe, "--version"], capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except Exception:  # noqa: BLE001 — never crash the doctor over a subprocess hiccup
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(r"(\d+\.\d+(?:\.\d+)?)", result.stdout)
+    return match.group(1) if match else None
+
+
+def detect_python_uv(package: str = PACKAGE_NAME) -> PythonUvFacts:
+    """The real, current-machine Python/uv facts (impure edge; never raises)."""
+    return PythonUvFacts(
+        python_version=platform.python_version(),
+        min_python=_declared_min_python(package),
+        uv_version=_uv_version(),
+    )
+
+
+def check_python_uv(facts: PythonUvFacts) -> CheckResult:
+    """Python + uv health: versions found, whether Python meets pyproject's
+    declared floor (never hardcoded — see :func:`_declared_min_python`), and
+    the exact command to fix whichever is short. Pure: same *facts*, same
+    result on any machine — :func:`detect_python_uv` resolves the real
+    values for the production caller.
+    """
+    parts: list[str] = []
+    healthy: list[str] = []
+
+    if facts.min_python is not None and not _version_at_least(
+        facts.python_version, facts.min_python
+    ):
+        parts.append(
+            f"Python {facts.python_version} is older than the {facts.min_python}+ this app "
+            f"requires · upgrade: `uv python install {facts.min_python}` (uv manages its own "
+            f"Pythons), then `uv tool install --reinstall {APP_INSTALL_URI}` to rebuild against it"
+        )
+    else:
+        floor = f" (>={facts.min_python})" if facts.min_python else ""
+        healthy.append(f"Python {facts.python_version}{floor}")
+
+    if facts.uv_version is None:
+        parts.append(
+            "uv not found · install: `curl -LsSf https://astral.sh/uv/install.sh | sh` (see "
+            "https://astral.sh/uv for other platforms)"
+        )
+    else:
+        healthy.append(f"uv {facts.uv_version}")
+
+    if parts:
+        return CheckResult(name="python_uv", ok=False, message=" · ".join(parts))
+    return CheckResult(name="python_uv", ok=True, message=" · ".join(healthy))
+
+
+# --- permissions: the common "install dir not writable" failure ----------
+
+
+class PermissionFacts(BaseModel):
+    """Writability facts the ``permissions`` check reasons about.
+
+    Populated by :func:`detect_permissions` for real use; tests construct
+    one directly (an explicit bool, never a chmod'd path — unreliable when
+    a suite runs as root) so the check's logic never depends on the actual
+    filesystem permissions of the machine running the suite.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bin_dir: Path
+    bin_dir_writable: bool
+    amplifier_home: Path
+    amplifier_home_writable: bool
+
+
+def _writable(path: Path) -> bool:
+    """Can we write to *path*, or (if it doesn't exist yet) create it?
+
+    Walks up to the nearest existing ancestor so a not-yet-created app home
+    or bin dir is judged by whether it COULD be created, not by permission
+    bits that don't exist yet. Any stat failure degrades to "not writable"
+    (the conservative answer) rather than raising.
+    """
+    try:
+        current = path
+        seen: set[Path] = set()
+        while not current.exists():
+            if current in seen:  # pathological loop guard; never spin forever
+                return False
+            seen.add(current)
+            parent = current.parent
+            if parent == current:  # reached the filesystem root, found nothing
+                return False
+            current = parent
+        return os.access(current, os.W_OK)
+    except OSError:
+        return False
+
+
+def detect_permissions() -> PermissionFacts:
+    """The real bin-dir / app-home writability facts (impure edge)."""
+    home = Path.home()
+    bin_dir = _default_bin_dirs(home, os.environ)[0]
+    amplifier_home = Path(os.environ.get("AMPLIFIER_HOME") or (home / ".amplifier"))
+    return PermissionFacts(
+        bin_dir=bin_dir,
+        bin_dir_writable=_writable(bin_dir),
+        amplifier_home=amplifier_home,
+        amplifier_home_writable=_writable(amplifier_home),
+    )
+
+
+def check_permissions(facts: PermissionFacts) -> CheckResult:
+    """The common real-world failure: an install/state dir you can't write to.
+
+    Checks the uv-tool bin dir (where the executable/symlink installs) and
+    the app's own state dir (settings, keys, cache — ``AMPLIFIER_HOME`` or
+    ``~/.amplifier``). Pure: same *facts*, same result —
+    :func:`detect_permissions` resolves the real values for the production
+    caller.
+    """
+    problems: list[str] = []
+    if not facts.bin_dir_writable:
+        problems.append(
+            f"install dir {facts.bin_dir} is not writable · fix: "
+            f"`sudo chown -R $(whoami) {facts.bin_dir}` or point `UV_TOOL_BIN_DIR` at a "
+            "writable directory"
+        )
+    if not facts.amplifier_home_writable:
+        problems.append(
+            f"app home {facts.amplifier_home} is not writable · fix: "
+            f"`sudo chown -R $(whoami) {facts.amplifier_home}` or set `AMPLIFIER_HOME` to a "
+            "writable directory"
+        )
+    if problems:
+        return CheckResult(name="permissions", ok=False, message=" · ".join(problems))
+    return CheckResult(name="permissions", ok=True, message="install/app-home dirs writable")
 
 
 def check_settings(paths: Sequence[Path] = DEFAULT_SETTINGS_PATHS) -> CheckResult:
@@ -280,6 +656,9 @@ def run_checks(
         checks=(
             check_install(package),
             check_path(executable),
+            check_platform(*detect_platform()),
+            check_python_uv(detect_python_uv(package)),
+            check_permissions(detect_permissions()),
             check_settings(settings_paths),
             check_mounts(mount_report),
             check_unused_mcp(mcp_stats),
@@ -343,6 +722,7 @@ def run_standalone(
 
 
 __all__ = [
+    "APP_INSTALL_URI",
     "AnchorsPinStatus",
     "CheckResult",
     "DoctorReport",
@@ -350,6 +730,8 @@ __all__ = [
     "McpServerStats",
     "MountHealth",
     "PACKAGE_NAME",
+    "PermissionFacts",
+    "PythonUvFacts",
     "REPEATED_APPROVAL_THRESHOLD",
     "UNUSED_MCP_THRESHOLD_DAYS",
     "build_doctor_block",
@@ -357,9 +739,15 @@ __all__ = [
     "check_install",
     "check_mounts",
     "check_path",
+    "check_permissions",
+    "check_platform",
+    "check_python_uv",
     "check_repeated_approvals",
     "check_settings",
     "check_unused_mcp",
+    "detect_permissions",
+    "detect_platform",
+    "detect_python_uv",
     "render_text",
     "run_checks",
     "run_standalone",

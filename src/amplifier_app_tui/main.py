@@ -1550,9 +1550,17 @@ def version() -> None:
     """Show the app version alongside amplifier-core / -foundation versions.
 
     The subcommand form of the ``--version`` flag; the flag stays available on
-    the top-level command.
+    the top-level command. Also the lightweight way to VERIFY an upgrade
+    actually took effect (see ``update``'s upgrade guidance): the top line is
+    the VERIFIED installed identity (``importlib.metadata`` + PEP 610, not
+    the hardcoded ``__version__`` alone), including the commit for a
+    git-sourced install -- this project doesn't bump the semantic version on
+    every commit, so the commit is the signal that actually changes.
     """
-    click.echo(f"amplifier-tui {__version__}")
+    from .kernel import updater
+
+    identity = updater.app_identity()
+    click.echo(f"amplifier-tui {identity.label()}")
     click.echo(f"  core        {_package_version('amplifier-core')}")
     click.echo(f"  foundation  {_package_version('amplifier-foundation')}")
 
@@ -3551,6 +3559,21 @@ async def _update(check_only: bool, yes: bool, force: bool, verbose: bool) -> in
     from .kernel import updater
 
     console = Console()
+
+    # AC3: prove what's installed -- every invocation, regardless of mode --
+    # and confirm it when it changed since the last invocation (typically
+    # because the user followed this same command's own guidance below:
+    # `uv tool install --reinstall ...` / `git pull && uv sync`, both out of
+    # this command's own scope). Never blocks: identity/state I/O degrades
+    # to "unknown"/silently-skipped rather than raising.
+    current_identity = updater.app_identity()
+    previous_identity = updater.read_last_identity()
+    console.print(f"amplifier-tui {current_identity.label()}", style="dim")
+    identity_change = updater.describe_identity_change(previous_identity, current_identity)
+    if identity_change is not None:
+        console.print(f"[green]✓[/green] {identity_change}")
+    updater.record_identity(current_identity)
+
     if force:
         console.print("Force update mode...")
         console.print("  Clearing uv cache...", style="dim")

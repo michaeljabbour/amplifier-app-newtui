@@ -20,7 +20,7 @@ That's it. `uv` fetches a suitable Python (3.12+) automatically, and the install
 - **No API key yet?** `amplifier-tui --demo` runs the full UI on a scripted session — free, offline, zero credentials. When you're ready, keys come from your provider (e.g. [console.anthropic.com](https://console.anthropic.com/settings/keys) — the packaged bundle uses Anthropic by default).
 - **Already have `ANTHROPIC_API_KEY` exported?** Skip `init` — the app reads your environment directly (env vars win over saved keys).
 - **`amplifier-tui: command not found`?** Run `uv tool update-shell` and restart your terminal.
-- **Something off?** `amplifier-tui doctor` checks install, PATH, and settings health (exit 0 = ready) and explains each fix. It doesn't check credentials; a missing key surfaces at first real launch (`--demo` never needs one).
+- **Something off?** `amplifier-tui doctor` checks install, PATH, platform, Python/uv versions, permissions, and settings health (exit 0 = ready) and explains each fix in plain language — the exact command or shell line to run, not just what's wrong. It doesn't check credentials; a missing key surfaces at first real launch (`--demo` never needs one).
 
 Credentials and settings live in `~/.amplifier/` (`keys.env`, `settings.yaml`) — the same configuration the full [Amplifier](https://github.com/microsoft/amplifier) platform uses, in both directions: if you already run Amplifier, the TUI picks up your setup with zero extra configuration.
 
@@ -143,6 +143,10 @@ git pull && uv sync                          # update a development clone instea
 
 `amplifier-tui update --check-only` reports available bundle/module updates without
 changing anything; `--force` runs `uv cache clean` first so `@main` sources genuinely re-fetch.
+Every `update` run also prints the app's VERIFIED installed version (read from the installed
+package's own metadata, not a hardcoded string) and, if it changed since your last run —
+typically because you just ran the reinstall command above — confirms what you upgraded
+from and to. `amplifier-tui version` shows the same verified version on demand.
 
 ## Providers
 
