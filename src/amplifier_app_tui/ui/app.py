@@ -193,6 +193,9 @@ class TuiApp(App[None]):
             lane_seed_lookup=adapter.lane_seed,
             evidence_lookup=adapter.evidence_links,
             session_cost_start=adapter.session_cost_start,
+            # D5 AC5: guarantees a coalesced lane-rows repaint is never
+            # stranded — see LaneReducer._schedule_trailing_flush.
+            schedule_flush=self.set_timer,
         )
         self.turn_active = False
         # Current reasoning-effort tier for the footer indicator (HGT effort
@@ -1011,6 +1014,15 @@ class TuiApp(App[None]):
         # same text under the working line, duplicating lane content into
         # the chat transcript — the chat now carries compact lifecycle
         # markers instead (reducer._agent_spawned/_agent_completed).
+        #
+        # D5 AC5: resync the panel's tailed-row pointer from the
+        # authoritative registry FIRST. This callback's own D4 throttle is
+        # independent of (and can now run ahead of) the coalesced
+        # lanes_changed() repaint, so ``show_lane_tail`` must not depend on
+        # that repaint having already landed to find its row.
+        tailed = self.lanes.tail_lane
+        if tailed is not None:
+            self.lanes_panel.sync_tailed(tailed.session_id)
         self.lanes_panel.show_lane_tail(text)
 
     def lane_tail_cleared(self) -> None:

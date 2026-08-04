@@ -9,6 +9,10 @@ only through the turn reducer's dispatch.
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
+
 from amplifier_app_tui.kernel import events as ev
 from amplifier_app_tui.model.blocks import (
     Answer,
@@ -21,6 +25,7 @@ from amplifier_app_tui.model.blocks import (
 )
 from amplifier_app_tui.model.lanes import LaneRegistry
 from amplifier_app_tui.ui.lane_reducer import (
+    LANE_ROWS_NOTIFY_SECONDS,
     LANE_TAIL_NOTIFY_SECONDS,
     LaneReducer,
     _LANE_TRANSCRIPT_MAX_BLOCKS,
@@ -41,11 +46,12 @@ class FakeClock:
 
 
 class FakeHost:
-    """Only the two lane-tail callbacks the LaneReducer actually drives."""
+    """The lane-tail callbacks plus ``lanes_changed`` (D5 AC5)."""
 
     def __init__(self) -> None:
         self.tail_updates: list[str] = []
         self.tail_cleared = 0
+        self.lanes_changed_count = 0
 
     def lane_tail_updated(self, text: str) -> None:
         self.tail_updates.append(text)
@@ -53,12 +59,42 @@ class FakeHost:
     def lane_tail_cleared(self) -> None:
         self.tail_cleared += 1
 
+    def lanes_changed(self) -> None:
+        self.lanes_changed_count += 1
 
-def make() -> tuple[LaneReducer, FakeHost, FakeClock, LaneRegistry]:
+
+class FakeScheduler:
+    """Captures scheduled trailing flushes instead of using a real timer.
+
+    ``fire_all`` runs (and clears) every pending callback — the test's
+    stand-in for "enough real time passed for the timer to fire"."""
+
+    def __init__(self) -> None:
+        self.scheduled: list[tuple[float, Any]] = []
+
+    def __call__(self, delay: float, callback: Any) -> None:
+        self.scheduled.append((delay, callback))
+
+    def fire_all(self) -> None:
+        pending = list(self.scheduled)
+        self.scheduled.clear()
+        for _delay, callback in pending:
+            callback()
+
+
+def make(
+    *, scheduler: FakeScheduler | None = None
+) -> tuple[LaneReducer, FakeHost, FakeClock, LaneRegistry]:
     host = FakeHost()
     clock = FakeClock()
     lanes = LaneRegistry()
-    lane = LaneReducer(host, allocator=BlockIdAllocator(), lanes=lanes, tail_clock=clock)
+    lane = LaneReducer(
+        host,
+        allocator=BlockIdAllocator(),
+        lanes=lanes,
+        tail_clock=clock,
+        schedule_flush=scheduler,
+    )
     return lane, host, clock, lanes
 
 
@@ -272,3 +308,129 @@ def test_lane_activity_recap_row_appends_to_the_transcript() -> None:
     tools = [b for b in blocks if isinstance(b, ToolLine)]
     assert tools and tools[0].status == "completed"
     assert "completed \u00b7 result reported back to parent" in _texts(blocks)[-1]
+
+
+# -- D5 AC5: lossless coalescing for high-volume lane updates ----------------
+
+
+def test_progress_notifications_are_coalesced_within_the_window() -> None:
+    """A flood of same-instant ``progress`` notifies repaints only once \u2014
+    the leading call; the rest land inside the throttle window and are
+    coalesced (the registry itself was already updated by the caller
+    before each notify \u2014 only the REPAINT is throttled, never the data)."""
+    lane, host, _clock, _lanes = make()
+    for _ in range(500):
+        lane.notify_lanes_changed(kind="progress")
+    assert host.lanes_changed_count == 1
+
+
+@pytest.mark.parametrize("kind", ["final", "error", "attention"])
+def test_privileged_kinds_always_flush_even_mid_flood(kind: str) -> None:
+    """The core AC5 guarantee: flood N rapid progress updates, end with one
+    privileged (final/error/attention) notification \u2014 it ALWAYS lands,
+    landing as its own extra host call no matter how many progress calls
+    were coalesced immediately before it in the same instant."""
+    lane, host, _clock, _lanes = make()
+    for _ in range(1000):
+        lane.notify_lanes_changed(kind="progress")
+    assert host.lanes_changed_count == 1  # only the leading progress call
+    lane.notify_lanes_changed(kind=kind)  # type: ignore[arg-type]
+    assert host.lanes_changed_count == 2  # the privileged call ALWAYS lands
+
+
+@pytest.mark.parametrize("kind", ["final", "error", "attention"])
+def test_privileged_kinds_never_throttled_even_back_to_back(kind: str) -> None:
+    """Privileged kinds bypass the window entirely \u2014 unlike progress, a
+    RUN of many privileged calls in the same instant all land (each is a
+    distinct real event \u2014 e.g. several lanes completing together \u2014 and
+    none may be silently merged away)."""
+    lane, host, _clock, _lanes = make()
+    for _ in range(50):
+        lane.notify_lanes_changed(kind=kind)  # type: ignore[arg-type]
+    assert host.lanes_changed_count == 50
+
+
+def test_progress_reopens_after_the_window_elapses() -> None:
+    """Once real time advances past the window, the NEXT progress call
+    flushes again \u2014 coalescing only ever delays a repaint, never loses
+    the eventual one (the registry state it paints is always current)."""
+    lane, host, clock, _lanes = make()
+    lane.notify_lanes_changed(kind="progress")
+    assert host.lanes_changed_count == 1
+    lane.notify_lanes_changed(kind="progress")
+    assert host.lanes_changed_count == 1  # still inside the window
+    clock.now += LANE_ROWS_NOTIFY_SECONDS
+    lane.notify_lanes_changed(kind="progress")
+    assert host.lanes_changed_count == 2  # window reopened
+
+
+def test_progress_boundary_slack_paints_exactly_on_the_window_edge() -> None:
+    """A clock landing exactly on the boundary still paints (mirrors the
+    tail throttle's own 1e-9 slack \u2014 float subtraction alone under-reports
+    elapsed time at an exact boundary)."""
+    lane, host, clock, _lanes = make()
+    lane.notify_lanes_changed(kind="progress")
+    clock.now += LANE_ROWS_NOTIFY_SECONDS  # exactly the boundary, no more
+    lane.notify_lanes_changed(kind="progress")
+    assert host.lanes_changed_count == 2
+
+
+def test_coalesced_progress_schedules_exactly_one_trailing_flush() -> None:
+    """A lane that goes quiet right after a coalesced update is never
+    stranded showing stale telemetry: the flush is scheduled once per
+    window (not once per coalesced call \u2014 that would still work, just
+    wastefully), and firing it repaints with whatever is current then."""
+    scheduler = FakeScheduler()
+    lane, host, _clock, _lanes = make(scheduler=scheduler)
+    lane.notify_lanes_changed(kind="progress")  # leading call: flushes now
+    assert host.lanes_changed_count == 1
+    assert scheduler.scheduled == []  # nothing pending yet \u2014 nothing coalesced
+    for _ in range(20):
+        lane.notify_lanes_changed(kind="progress")  # all coalesced
+    assert host.lanes_changed_count == 1
+    assert len(scheduler.scheduled) == 1  # ONE trailing flush covers all 20
+    scheduler.fire_all()
+    assert host.lanes_changed_count == 2  # the stranded update still lands
+
+
+def test_trailing_flush_does_not_refire_once_delivered() -> None:
+    scheduler = FakeScheduler()
+    lane, host, _clock, _lanes = make(scheduler=scheduler)
+    lane.notify_lanes_changed(kind="progress")
+    lane.notify_lanes_changed(kind="progress")  # coalesced, schedules a flush
+    scheduler.fire_all()
+    assert host.lanes_changed_count == 2
+    assert scheduler.scheduled == []  # nothing left dangling
+
+
+def test_privileged_notify_clears_a_pending_trailing_flush_flag() -> None:
+    """A privileged call already paints the current state \u2014 the earlier
+    pending-flush bookkeeping resets so a later coalesced progress call
+    schedules its OWN fresh trailing flush rather than silently no-op'ing
+    because a (now-irrelevant) flag was still set."""
+    scheduler = FakeScheduler()
+    lane, host, _clock, _lanes = make(scheduler=scheduler)
+    lane.notify_lanes_changed(kind="progress")
+    lane.notify_lanes_changed(kind="progress")  # coalesced -> schedules a flush
+    assert len(scheduler.scheduled) == 1
+    lane.notify_lanes_changed(kind="final")  # privileged: flushes immediately
+    assert host.lanes_changed_count == 2
+    # A fresh coalesced progress call after a privileged flush must still
+    # be able to schedule its own trailing flush later.
+    lane.notify_lanes_changed(kind="progress")
+    lane.notify_lanes_changed(kind="progress")
+    assert host.lanes_changed_count == 2  # coalesced (privileged reset the window)
+
+
+def test_no_scheduler_degrades_to_never_coalescing_silently_forever() -> None:
+    """Without a wired scheduler (``schedule_flush=None``, the default),
+    coalescing still only ever delays \u2014 never permanently drops \u2014 because
+    nothing here claims a trailing guarantee without one. This documents
+    the degrade-safe default rather than asserting a false guarantee."""
+    lane, host, _clock, _lanes = make()  # no scheduler
+    lane.notify_lanes_changed(kind="progress")
+    lane.notify_lanes_changed(kind="progress")
+    assert host.lanes_changed_count == 1  # coalesced, and nothing scheduled
+    # A privileged call (or the window reopening) is still what recovers it:
+    lane.notify_lanes_changed(kind="final")
+    assert host.lanes_changed_count == 2
