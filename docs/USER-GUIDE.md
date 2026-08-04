@@ -246,7 +246,12 @@ each configured server's tools mount as `mcp_<server>_<tool>` at session start, 
 drive the mounted skills tool — the agent also loads skills on its own when relevant.
 Discovered skills additionally register as first-class commands: `/cranky-old-sam`
 (and its declared `shortcut:` alias, e.g. `/cosam`) resolves exactly like a built-in —
-in the palette, in the help listing, and at the prompt — and loads that skill.
+in the palette, in the help listing, and at the prompt — and loads that skill. Text
+after the name or alias forwards to the skill exactly like `/skill <name> <rest>` does.
+A shortcut that collides — shared with another skill, or shadowing a built-in — is
+reported in the transcript at boot instead of silently dropped, and an unrecognized
+`/command` offers the nearest registered match (“did you mean …?”) rather than a bare
+rejection.
 
 **Directory capabilities.** The project root is always an implicit allowed write path.
 Top-level `amplifier-tui allowed-dirs` / `denied-dirs` commands persist global, project,
