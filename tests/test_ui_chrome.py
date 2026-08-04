@@ -10,7 +10,9 @@ from amplifier_app_tui.ui.chrome import (
     SPINNER_INTERVAL,
     TERMINAL_TITLE_MAX_CHARS,
     TERMINAL_SPINNER_FRAMES,
+    TITLE_BUNDLE_MAX_CELLS,
     TitleBar,
+    _truncate_bundle_label,
     terminal_title_sequence,
     write_terminal_title,
 )
@@ -46,6 +48,55 @@ def test_empty_identity_fragments_are_skipped() -> None:
     bar = TitleBar()
     bar.set_reactive(TitleBar.state_text, "planning")
     assert bar.title_text() == "amplifier — planning"
+
+
+# -- D4 AC4: long bundle paths truncate safely, never wrap the composer -------
+#
+# Finding 2 (post-merge compliance audit): ``TitleBar`` is the sole persistent
+# home for the active bundle (item D4 AC1), but a ``--bundle`` path/URI or a
+# ``bundle.active`` settings value (``kernel/config.resolve_bundle_source``)
+# is user-supplied and unbounded. Before this fix ``_plain_title`` appended it
+# verbatim -- no truncation, no ellipsis, no tooltip -- so Textual silently
+# hard-clipped an over-long value with zero visual cue anything was cut. These
+# tests pin the reconciled behavior: a bounded, cell-width-safe truncation
+# that always ends a cut value in one visible ellipsis, while the row itself
+# never grows past its fixed ``height: 1`` (so it can never wrap down onto the
+# composer docked below it). The FULL value stays inspectable via ``/status``
+# (test_ui_session_ops_view.py pins that ``status_spans`` never truncates its
+# ``bundle`` row).
+
+
+def test_truncate_bundle_label_passes_short_values_through_unchanged() -> None:
+    assert _truncate_bundle_label("dev-bundle") == "dev-bundle"
+    # Exactly at the budget: still untouched, no ellipsis appended.
+    exact = "b" * TITLE_BUNDLE_MAX_CELLS
+    assert _truncate_bundle_label(exact) == exact
+
+
+def test_truncate_bundle_label_truncates_long_values_with_one_ellipsis() -> None:
+    long_path = "/Users/dev/projects/" + ("nested-dir/" * 10) + "bundle.md"
+    assert len(long_path) > TITLE_BUNDLE_MAX_CELLS
+    truncated = _truncate_bundle_label(long_path)
+    assert truncated != long_path
+    assert truncated.endswith("\u2026")
+    assert truncated.count("\u2026") == 1
+    assert truncated.startswith(long_path[:10])  # a real prefix, not a generic marker
+    # Bounded to the budget (cell-width, matching the house _clip/_elide shape).
+    assert len(truncated) == TITLE_BUNDLE_MAX_CELLS
+
+
+def test_idle_title_truncates_long_bundle_with_ellipsis() -> None:
+    """AC4, via the real rendering path (title_text -> _plain_title)."""
+    long_bundle = "org/" + "x" * 100 + "/tui-bundle"
+    bar = TitleBar()
+    bar.set_reactive(TitleBar.state_text, "ready")
+    bar.set_reactive(TitleBar.bundle, long_bundle)
+    bar.set_reactive(TitleBar.session_short, "a1b2c3")
+    title = bar.title_text()
+    assert long_bundle not in title  # the raw unbounded value never rides the title
+    assert "\u2026" in title
+    assert title.startswith("amplifier — ready — org/")
+    assert title.endswith("— a1b2c3")  # session fragment survives after the truncated one
 
 
 def test_running_title_prefixes_spinner_and_cycles_frames() -> None:
