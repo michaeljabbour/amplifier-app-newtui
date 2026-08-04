@@ -75,6 +75,17 @@ async def test_clear_mid_stream_fences_stale_events_but_new_turns_still_render()
         await _run_clear(pilot, app)
         assert app.transcript.blocks == ()
 
+        # The app's 1s working-line heartbeat (ui/app.py's _working_timer
+        # -> reducer.tick) pulses the pre-clear turn's spinner OUTSIDE
+        # handle()'s dispatch, so it does not get the free _StaleTurnHost
+        # swap every other mutation gets — it is fenced by its own
+        # generation check inside _update_working(). Firing it directly
+        # proves that deterministically rather than racing the real
+        # 1s timer (which is what made this assertion CI-flaky: the bug
+        # this guards was only reachable once a real second elapsed).
+        app.reducer.tick(10.0)
+        assert app.transcript.blocks == ()
+
         # The stale turn's belated tail must not resurrect anything.
         app.reducer.handle(
             ev.ContentBlockEnd(

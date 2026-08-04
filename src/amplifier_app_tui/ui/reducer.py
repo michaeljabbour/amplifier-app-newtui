@@ -1882,8 +1882,22 @@ class TranscriptReducer:
         )
 
     def _update_working(self) -> None:
+        """Repaint the live working-status row for the current turn.
+
+        Generation-guarded (D3): unlike every other transcript mutation in
+        this class, :meth:`tick` calls this directly from the app's 1s
+        heartbeat — OUTSIDE :meth:`handle`'s dispatch, so it never passes
+        through :class:`_StaleTurnHost`. Without this guard, a ``/clear``
+        mid-turn would see its own just-unmounted pulse silently
+        RE-APPENDED a second later (``TuiApp.replace_block``'s
+        not-currently-mounted fallback treats the row as merely unmounted,
+        not gone) — once a second, for as long as the pre-clear turn's own
+        bookkeeping keeps running. That is exactly the resurrection D3
+        promises can't happen, so the check has to live here rather than
+        rely on the dispatch host swap.
+        """
         turn = self._turn
-        if turn is None or turn.working_id is None:
+        if turn is None or turn.working_id is None or turn.generation != self._generation:
             return
         self._host.replace_block(self._working_block(turn))
 
@@ -1894,6 +1908,13 @@ class TranscriptReducer:
         arrive at each content-block end, which froze the seconds counter
         during long provider calls); scripted demo turns keep their
         virtual-clock telemetry and only pulse the spinner.
+
+        Runs even for a turn stamped with a stale clear-generation (D3)
+        — spinner_frame/last_ts keep advancing and lanes still tick
+        (mirrors :meth:`bump_generation`'s "cost/ledger/lanes still
+        complete normally" contract, and ``lanes_changed()`` is the same
+        deliberate un-fenced pass-through used elsewhere); only the
+        transcript-visible repaint in :meth:`_update_working` is fenced.
         """
         turn = self._turn
         if turn is None or turn.working_id is None:
