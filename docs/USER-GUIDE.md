@@ -88,10 +88,15 @@ footer.
 
 **Plan panel.** When the agent keeps a live checklist (the `todo` tool), a compact
 **`Plan N/M`** panel appears in the bottom strip's right column: `✔` done, `▶` in
-progress, `○` pending — windowed around the in-progress item, with a `⋮ +N more` line
-when the plan is long. Once every item completes it collapses to the header line
-(done stays visible). On narrow terminals the panel hides and the footer carries the
-`Plan N/M` count instead — the count never shows in both places at once.
+progress, `○` pending — windowed around the in-progress item, with a `⋮ +N more`
+control when the plan is long. **`↑↓`/click** it (or **ctrl-n**, which instead widens
+the window default → +2 → +3 rows → back) to see more — the `+N more` control
+itself is focusable: **enter**, **space**, or a **click** expands the full list in
+place and flips the control to **`▾ Show less`** to collapse it again; at a short
+terminal height the expanded list scrolls inside the panel rather than covering the
+composer. Once every item completes it collapses to the header line (done stays
+visible). On narrow terminals the panel hides and the footer carries the `Plan N/M`
+count instead — the count never shows in both places at once.
 
 ## 3. Talking to Amplifier
 
@@ -241,7 +246,12 @@ each configured server's tools mount as `mcp_<server>_<tool>` at session start, 
 drive the mounted skills tool — the agent also loads skills on its own when relevant.
 Discovered skills additionally register as first-class commands: `/cranky-old-sam`
 (and its declared `shortcut:` alias, e.g. `/cosam`) resolves exactly like a built-in —
-in the palette, in the help listing, and at the prompt — and loads that skill.
+in the palette, in the help listing, and at the prompt — and loads that skill. Text
+after the name or alias forwards to the skill exactly like `/skill <name> <rest>` does.
+A shortcut that collides — shared with another skill, or shadowing a built-in — is
+reported in the transcript at boot instead of silently dropped, and an unrecognized
+`/command` offers the nearest registered match (“did you mean …?”) rather than a bare
+rejection.
 
 **Directory capabilities.** The project root is always an implicit allowed write path.
 Top-level `amplifier-tui allowed-dirs` / `denied-dirs` commands persist global, project,
@@ -322,9 +332,14 @@ tailing — also shown in the panel header hint). The moment the root model spea
 switches back to it. Tail text is a live preview only: the agent's full prose lives in its
 own transcript (focus the lane to read it), and nothing from the tail lands in yours.
 
-Select a lane with ↑↓ and press **enter** to *focus* it: the transcript switches to that
-subagent's own work. **esc** steps back out — first unfocusing the lane, then closing the
-panel; with nothing left open, esc interrupts the whole agent tree.
+Select a lane with ↑↓ and press **enter** (or click its row) to *focus* it: the transcript
+switches to that subagent's own work, with a **‹ Back to parent** control at the top — click it,
+or press **esc**, to return; nothing left open, esc interrupts the whole agent tree instead.
+Focusing is pure navigation: it never ends the subagent's turn or the session, the parent
+transcript keeps accumulating underneath, and returning — to the same lane or a different one —
+restores exactly where you left off (scroll position included) rather than snapping to the
+latest line. The first time you ever focus a lane, a one-off notice calls out the esc/Back exit
+path; it does not repeat and never sits onscreen as a permanent overlay.
 
 The transcript itself keeps one **delegate summary** line per fan-out: `● 2 delegates
 running…` while work is in flight, then `● Used 2 delegates · Plan 3/4 · 1m 12s ▸` when
@@ -380,6 +395,16 @@ Sessions persist under `~/.amplifier/projects/<project>/sessions/` — transcrip
 and a full event log. Saving is incremental (after every tool call), so even a crash loses
 almost nothing. `sessions` lists them; `resume ID` picks one back up with history, cost,
 and checkpoints intact.
+
+In-session, `/sessions` opens an interactive picker over this project's stored roster
+(never just a wall of ids): **↑/↓** or click a row to select it, **enter** or click to open
+it — keyboard and mouse both work everywhere. Opening a row shows its full id on its own
+line (the table itself only shows a short 8-char id) plus name, bundle, message/turn counts
+and age; the full id is copied to the clipboard automatically where the terminal allows it,
+and is always safely mouse-selectable from that detail view even when it isn't. A session
+whose stored metadata could not be read is never dropped or shown as if it were healthy — it
+lists with an explicit **recovered** (patched from a backup) or **corrupt** (unreadable)
+state chip instead.
 
 ## 15. When something's off
 

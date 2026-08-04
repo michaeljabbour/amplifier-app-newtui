@@ -36,7 +36,7 @@ from ..model.formatting import command_digest
 from ..model.queues import NeedsYouItem
 from . import keymap, notifications
 from .footer import FooterState
-from .plan_panel import plan_counts, plan_panel_width
+from .plan_panel import plan_counts, plan_panel_max_height, plan_panel_width
 from .transcript import TranscriptView
 
 if TYPE_CHECKING:
@@ -49,6 +49,10 @@ QUEUED_NOTICE = "message queued · runs as the next turn"
 APPROVAL_NOTICE = "approval required · choose below the transcript"
 APPROVAL_NOTICE_DURATION = 6.0
 """Approval notices linger 6s, not the 4s default (mockup requestApproval)."""
+LANE_FOCUS_INTRO_NOTICE = "focused view · esc or click Back returns to parent"
+"""First-ever lane focus (S6 AC4): announces the exit path once per app
+session — a transient notice (today's ~4s default), never a permanent
+tutorial overlay."""
 
 _GLOBAL_ACTIONS = frozenset(
     {
@@ -684,6 +688,18 @@ def native_modes_segments(
     return tuple(segments)
 
 
+def go_back_to_parent(app: TuiApp) -> None:
+    """Leave a focused lane back to the parent transcript.
+
+    The single seam both Escape's ``lane_unfocus`` action (keyboard) and
+    the transcript's focus-header Back control (click/enter/space) route
+    through (S6 AC2/AC5) — pure navigation: it never interrupts or ends
+    the subagent's turn (DESIGN-SPEC §5/§8 — focus is reversible view
+    state, not a session lifecycle edge).
+    """
+    app.run_worker(app.transcript.restore_main(), exclusive=False)
+
+
 def handle_esc(app: TuiApp, *, now: float | None = None) -> None:
     """Resolve Esc priority plus interrupt-then-backtrack (spec §5)."""
     pressed_at = monotonic() if now is None else now
@@ -694,13 +710,15 @@ def handle_esc(app: TuiApp, *, now: float | None = None) -> None:
         # hidden, so typed "/…" text never falls through to interrupt.
         "palette": lambda: app.palette.filter_text is not None,
         "rewind": lambda: bool(app.rewind.display),
+        "sessions": lambda: bool(app.sessions_strip.display),
         "lanes": lambda: bool(app.lanes_panel.display),
         "running": lambda: app.turn_active,
     }
     actions = {
-        "lane_unfocus": lambda: app.run_worker(app.transcript.restore_main(), exclusive=False),
+        "lane_unfocus": lambda: go_back_to_parent(app),
         "close_palette": app.close_palette,
         "close_rewind": app.rewind.close_strip,
+        "close_sessions": app.sessions_strip.close_strip,
         "close_lanes": app.lanes_panel.action_close,
         "interrupt_running": app.interrupt_turn,
     }
@@ -743,6 +761,11 @@ def sync_plan_surfaces(app: TuiApp) -> None:
         # Content-fitted width (37 floor, one-third cap) — real plans carry
         # longer items than the mockup and wrapped at the fixed width.
         app.plan_panel.styles.width = plan_panel_width(app.plan_items, app.size.width)
+        # S7 AC5: bound the (possibly expanded) panel's height to the
+        # terminal's actual rows so a long expanded plan can never grow the
+        # bottom strip enough to push the composer/footer off-screen —
+        # recomputed here so a resize re-fits it like the width does.
+        app.plan_panel.styles.max_height = plan_panel_max_height(app.size.height)
         app.plan_panel.show_panel()
     else:
         app.plan_panel.hide_panel()
@@ -794,6 +817,7 @@ def footer_state(app: TuiApp) -> FooterState:
 __all__ = [
     "APPROVAL_NOTICE",
     "EscSequence",
+    "LANE_FOCUS_INTRO_NOTICE",
     "PLAN_PANEL_MIN_WIDTH",
     "QUEUED_NOTICE",
     "STEER_NOTICE",
@@ -806,6 +830,7 @@ __all__ = [
     "finish_turn_queues",
     "footer_state",
     "global_bindings",
+    "go_back_to_parent",
     "handle_esc",
     "handle_fork",
     "handle_lane_focus_change",

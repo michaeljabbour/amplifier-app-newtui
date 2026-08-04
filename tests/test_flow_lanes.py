@@ -21,10 +21,12 @@ from amplifier_app_tui.kernel.demo import (
     DEMO_SESSION_ID,
 )
 from amplifier_app_tui.ui.app import TuiApp
+from amplifier_app_tui.ui.app_support import LANE_FOCUS_INTRO_NOTICE
 from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 from amplifier_app_tui.ui.footer import footer_right_text
 from amplifier_app_tui.ui.lanes_panel import LANES_HEADER
 from amplifier_app_tui.ui.needs_you import focused_lane_banner
+from amplifier_app_tui.ui.transcript import FocusHeader
 
 from .test_flow_helpers import (
     SIZE,
@@ -282,6 +284,99 @@ async def test_focus_lane_child_transcript_banner_and_esc_back() -> None:
         assert await wait_for(pilot, lambda: app.transcript.focused_lane is None)
         assert app.notice_slot.current == "back to parent session"
         assert any(b.text == AGENTS_PROMPT for b in blocks_of(app, "user_line"))
+
+
+@pytest.mark.asyncio
+async def test_first_focus_transition_shows_intro_notice_once() -> None:
+    """S6 AC4: the first-ever focus transition announces the exit path
+    via a transient notice; it never repeats on a later transition (not
+    a permanent tutorial overlay)."""
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=SIZE) as pilot:
+        await _run_agents_turn(pilot, app)
+        await pilot.press("ctrl+t")
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+
+        await pilot.press("enter")  # focus the first lane (researcher)
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane is not None)
+        assert app.notice_slot.current == LANE_FOCUS_INTRO_NOTICE
+        assert "esc" in LANE_FOCUS_INTRO_NOTICE
+        assert "Back" in LANE_FOCUS_INTRO_NOTICE
+
+        await pilot.press("escape")
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane is None)
+        assert app.notice_slot.current == "back to parent session"
+
+        # A second, later transition (a different lane) does not repeat it.
+        await pilot.press("ctrl+t")
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        await pilot.press("down", "enter")
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane is not None)
+        assert app.notice_slot.current == "back to parent session"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_focus_header_back_click_returns_without_ending_agent_or_session() -> None:
+    """S6 AC1/AC2/AC5: the focus-header Back control is a visible,
+    clickable mouse-equivalent of Escape \u2014 clicking it returns to the
+    parent exactly like Escape does, and it is exercised here while a
+    lane is ACTIVELY STREAMING so a false 'cancel' would be immediately
+    observable (S6 design note: navigation, never an interrupt)."""
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.submit_prompt(AGENTS_PROMPT)
+        assert await wait_for(pilot, lambda: len(app.lanes.lanes) == 3)
+        running_before = {r.session_id: r.lane.state for r in app.lanes.lanes}
+        assert any(state == "running" for state in running_before.values())
+
+        await pilot.press("ctrl+t")
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        await pilot.press("enter")  # focus the first (actively running) lane
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane is not None)
+        focused_session = app.transcript.focused_lane
+
+        header = app.transcript.query_one(FocusHeader)
+        assert "Back to parent" in header.render().plain
+        await pilot.click(header)
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane is None)
+        assert app.notice_slot.current == "back to parent session"
+
+        # Still running, untouched: the click navigated back \u2014 it never
+        # interrupted or ended the turn, the session, or any lane.
+        assert app.turn_active
+        after = {r.session_id: r.lane.state for r in app.lanes.lanes}
+        assert after == running_before
+        assert focused_session in after
+
+        adapter.release()
+        assert await wait_for(pilot, lambda: rules(app) >= 2 and not app.turn_active)
+
+
+@pytest.mark.asyncio
+async def test_completed_agent_lane_still_offers_focus_header_back_control() -> None:
+    """S6: a DONE lane (not just an actively running one) gets the same
+    visible Back control, and clicking it works identically."""
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=SIZE) as pilot:
+        await _run_agents_turn(pilot, app)
+        assert all(r.lane.state == "done" for r in app.lanes.lanes)
+
+        await pilot.press("ctrl+t")
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        await pilot.press("down", "down", "enter")  # focus "tester" (done)
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane is not None)
+
+        header = app.transcript.query_one(FocusHeader)
+        assert "Back to parent" in header.render().plain
+        await pilot.click(header)
+        assert await wait_for(pilot, lambda: app.transcript.focused_lane is None)
+        assert any(r.lane.name == "tester" and r.lane.state == "done" for r in app.lanes.lanes)
 
 
 @pytest.mark.asyncio

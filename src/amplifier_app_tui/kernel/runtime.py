@@ -17,6 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from ..model.blocks import UnsupportedBlock
 from ..model.config import SessionConfigState
 from ..model.queues import (
     LaneSteeringQueue,
@@ -64,6 +65,7 @@ from .events import (
     ContentBlockEnd,
     ContextInjected,
     Notification,
+    ParsedEvent,
     PromptComplete,
     PromptSubmit,
     ProviderResponseUsage,
@@ -273,14 +275,20 @@ than merely filtered at load time. The load-time filter in
 logs written by older builds that still recorded every delta."""
 
 
-def restored_ui_events(store: SessionStore, session_id: str) -> tuple[UIEvent, ...]:
+def restored_ui_events(store: SessionStore, session_id: str) -> tuple[ParsedEvent, ...]:
     """The session's persisted UIEvents, typed, for resume transcript replay.
 
     Read through the store's own reader (never a hardcoded filename — the
     event-log path is the store's contract) and re-typed via
-    :func:`~amplifier_app_tui.kernel.events.parse_event`; foreign lines
-    from other writers sharing the file are skipped, as are Channel A
-    stream kinds (see :data:`_REPLAY_STREAM_KINDS`).
+    :func:`~amplifier_app_tui.kernel.events.parse_event`; Channel A stream
+    kinds are skipped (see :data:`_REPLAY_STREAM_KINDS`). Records this build
+    cannot type — a foreign writer's line, an unknown/removed ``kind``, or
+    schema drift — degrade to a redacted
+    :class:`~amplifier_app_tui.model.blocks.UnsupportedBlock` placeholder
+    (S5) rather than being dropped; each one is logged with a redacted
+    (6-char) session id and the record's own type name — never the raw
+    payload — so a resumed session stays visible and diagnosable instead of
+    silently losing the line.
 
     Post-rewind ghost turns are filtered out here (issue #40): the log is
     append-only, so a confirmed rewind leaves its discarded turns in the
@@ -290,13 +298,18 @@ def restored_ui_events(store: SessionStore, session_id: str) -> tuple[UIEvent, .
     that were still on screen — the read-side half of the append-only
     contract.
     """
-    events: list[UIEvent] = []
+    events: list[ParsedEvent] = []
     for record in store.read_events(session_id):
         if record.get("kind") in _REPLAY_STREAM_KINDS:
             continue
         event = parse_event(record)
-        if event is not None:
-            events.append(event)
+        if isinstance(event, UnsupportedBlock):
+            logger.warning(
+                "resume: unsupported persisted record · session=%s type=%s",
+                session_id[:6],
+                event.type_name,
+            )
+        events.append(event)
     return tuple(drop_rewound_events(events))
 
 
@@ -581,12 +594,14 @@ class RealRuntime:
         history (DESIGN-SPEC §9)."""
         self.restored_history: tuple[tuple[str, str], ...] = ()
         """(role, text) pairs replayed into the transcript on resume."""
-        self.restored_events: tuple[UIEvent, ...] = ()
-        """The session's persisted UIEvents on resume (foreign lines and
-        Channel A stream kinds already filtered) — the reducer replays
-        them so the transcript rebuilds exactly as it rendered live
-        (DESIGN-SPEC §3/§11); empty for fresh sessions and for stored
-        sessions with no usable event log (prose fallback)."""
+        self.restored_events: tuple[ParsedEvent, ...] = ()
+        """The session's persisted UIEvents on resume (Channel A stream
+        kinds already filtered) — the reducer replays them so the
+        transcript rebuilds exactly as it rendered live (DESIGN-SPEC
+        §3/§11); empty for fresh sessions and for stored sessions with no
+        usable event log (prose fallback). Records this build could not
+        type degrade to a redacted ``UnsupportedBlock`` placeholder rather
+        than being dropped (S5) — see :func:`restored_ui_events`."""
         self.degraded_notice: str | None = None
         self.gated_auto = False
         """Whether ``permissions.governance: gated`` armed auto-mode gating
@@ -736,8 +751,12 @@ class RealRuntime:
             # stream (keyed by exact answer text, so replaying the whole
             # log in order restores links for EVERY turn's answer) — the
             # collector otherwise starts empty and every restored answer
-            # would render unclickable.
+            # would render unclickable. UnsupportedBlock placeholders (S5)
+            # carry no event fields to observe and are skipped here — the
+            # reducer still renders them in place during transcript replay.
             for event in self.restored_events:
+                if isinstance(event, UnsupportedBlock):
+                    continue
                 self.evidence.observe(event)
 
         # Directory policy is derived from the prepared mount plan so the

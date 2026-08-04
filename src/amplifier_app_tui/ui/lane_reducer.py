@@ -121,6 +121,14 @@ class LaneReducer:
         AgentSpawned event carries no instruction)."""
         self._pending_briefs[agent] = brief
 
+    def pending_brief(self, agent: str) -> str:
+        """Peek the stashed brief for *agent* without consuming it.
+
+        The turn reducer reads it at spawn for the chat's compact
+        ``started`` lifecycle marker; :meth:`seed_transcript` still pops
+        it into the lane's focus transcript."""
+        return self._pending_briefs.get(agent, "")
+
     # -- focused-lane transcripts (DESIGN-SPEC §8) ---------------------------
 
     def seed_transcript(self, event: ev.AgentSpawned) -> None:

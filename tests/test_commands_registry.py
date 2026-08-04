@@ -219,3 +219,34 @@ def test_subscribers_hear_successful_changes_only() -> None:
     registry.unregister("/aa")
     assert not registry.unregister("/zz")  # no-op: silent
     assert pings == [2, 3, 2]
+
+
+# --- nearby suggestions for an unrecognized command (B2 compliance AC3) ---
+
+
+def test_suggest_finds_close_matches_for_a_typo() -> None:
+    registry = CommandRegistry((_spec("/mode"), _spec("/modes"), _spec("/model"), _spec("/status")))
+    assert registry.suggest("/mdoe") == ("/mode", "/modes", "/model")
+
+
+def test_suggest_respects_limit() -> None:
+    registry = CommandRegistry((_spec("/mode"), _spec("/modes"), _spec("/model")))
+    assert registry.suggest("/mdoe", limit=1) == ("/mode",)
+
+
+def test_suggest_empty_when_nothing_close_enough() -> None:
+    registry = CommandRegistry((_spec("/mode"),))
+    assert registry.suggest("/zzzznope") == ()
+
+
+def test_suggest_strips_whitespace() -> None:
+    registry = CommandRegistry((_spec("/mode"),))
+    assert registry.suggest("  /mdoe  ") == ("/mode",)
+
+
+def test_suggest_covers_dynamic_skill_sourced_triggers_too() -> None:
+    # AC3 is not skill-specific: any registered trigger — built-in or a
+    # dynamic (skill/recipe/...) contribution — is a candidate.
+    registry = CommandRegistry((_spec("/mode"),))
+    registry.register(_spec("/cosam", tag="skill"), source="skill")
+    assert registry.suggest("/cosm") == ("/cosam",)

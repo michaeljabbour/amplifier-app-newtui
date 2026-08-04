@@ -20,8 +20,9 @@ outside the chain:
     1             lane_focus             restore the parent transcript
     2             palette                close the command palette
     3             rewind                 close the rewind picker strip
-    4             lanes                  close the agent-lanes panel
-    5             running                interrupt the running turn
+    4             sessions               close the sessions picker strip
+    5             lanes                  close the agent-lanes panel
+    6             running                interrupt the running turn
     ============  =====================  ==============================
 """
 
@@ -50,7 +51,7 @@ from ..model.blocks import (
     TranscriptBlock,
     UserLine,
 )
-from ..model.lanes import LaneRegistry, lane_labels
+from ..model.lanes import LaneRegistry
 from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
 from ..model.prompt_stash import PromptStash, stash_list_spans
@@ -58,6 +59,7 @@ from ..model.turn import OutcomeLedger
 from . import app_support, keymap, notifications
 from .approval_bar import ApprovalBar
 from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
+from .sessions_strip import SessionsStrip
 from .command_context import AppCommandContext
 from .composer import Composer
 from .footer import FooterBar
@@ -79,10 +81,11 @@ from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
 from .runtime_adapter import RuntimeAdapter
 from .session_ops_controller import SessionOpsController
-from .session_ops_view import sessions_spans
+from .session_ops_view import session_detail_spans, sessions_spans
 from .splash import BootSplash
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
+    BackToParent,
     BlockWidget,
     CloseEvidence,
     CopyCodeFence,
@@ -219,6 +222,9 @@ class TuiApp(App[None]):
         self.approval_bar: ApprovalBar | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
         self._lanes_fanout_open = False  # active-lane edge for the auto-open
+        self._lane_focus_intro_shown = (
+            False  # first-ever focus shows the exit-path notice once (S6)
+        )
         self.plan_items: tuple[TodoItem, ...] = ()  # latest root todo list
         self.title_bar = TitleBar(id="title-bar")
         self.transcript = TranscriptView(id="transcript")
@@ -231,6 +237,7 @@ class TuiApp(App[None]):
         self.lanes_panel = LanesPanel(id="lanes-panel")
         self.plan_panel = PlanPanel(id="plan-panel")
         self.rewind = RewindStrip(id="rewind-strip")
+        self.sessions_strip = SessionsStrip(id="sessions-strip")
         self.queued_strip = QueuedStrip(id="queued-strip")
         self.file_mentions = FileMentionStrip(id="file-mentions")
         self.history_recall = HistoryRecallStrip(id="history-recall")
@@ -248,6 +255,7 @@ class TuiApp(App[None]):
             yield self.lanes_panel
             yield self.plan_panel
         yield self.rewind
+        yield self.sessions_strip
         yield self.queued_strip
         yield self.file_mentions
         yield self.history_recall
@@ -633,13 +641,20 @@ class TuiApp(App[None]):
         self.run_worker(self._show_sessions(), exclusive=False)
 
     async def _show_sessions(self) -> None:
+        """``/sessions``: open the interactive picker (S2 compliance gap 2).
+
+        An empty roster shows a notice instead of an empty strip (mirrors
+        ``open_rewind_strip`` on zero checkpoints). Selecting a row does
+        NOT resume in-place (the stored-session roster has always been
+        read-only here) -- it opens that session's full-id detail via
+        :meth:`on_sessions_strip_session_activated`.
+        """
         summaries = await self.adapter.session_summaries()
-        self.append_block(
-            Answer(
-                id=self.allocator.next_id(),
-                spans=sessions_spans(summaries, current=self.adapter.session_short),
-            )
-        )
+        if not summaries:
+            self.show_notice("no stored sessions \u00b7 this project has no history yet")
+            return
+        self.sessions_strip.show_sessions(summaries, current=self.adapter.session_short)
+        self._refresh_footer()
 
     # -- prompt-stash (HGT from opencode) -----------------------------------
 
@@ -789,10 +804,26 @@ class TuiApp(App[None]):
         """Discovered skills (+ ``shortcut:`` aliases) become
         ``skill``-sourced registry contributions, so ``/cosam`` resolves
         in dispatch before the unknown-command notice (story #1); the
-        palette follows via the registry subscription."""
-        from ..commands.skills import register_skill_commands
+        palette follows via the registry subscription.
 
-        register_skill_commands(self._commands, skills)
+        Alias collisions — a skill name or shortcut a built-in or an
+        earlier skill already holds — are surfaced here rather than
+        skipped silently (compliance B2 AC4: collision detection is
+        deterministic; "configuration load" IS this boot-time discovery
+        pass). A rich listing goes to the transcript, a short dim notice
+        points at it (the same split ``/ledger`` and ``/doctor`` use:
+        block for the listing, notice for the pointer).
+        """
+        from ..commands.skills import alias_collision_spans, register_skill_commands_reporting
+
+        plan = register_skill_commands_reporting(self._commands, skills)
+        if plan.collisions:
+            self.append_block(
+                Answer(id=self.allocator.next_id(), spans=alias_collision_spans(plan.collisions))
+            )
+            count = len(plan.collisions)
+            noun = "collision" if count == 1 else "collisions"
+            self.show_notice(f"{count} skill alias {noun} · printed to scrollback")
 
     def manage_directories(self, kind: str, args: str) -> None:
         from .directory_admin import manage
@@ -915,33 +946,15 @@ class TuiApp(App[None]):
         # Throttle + focus policy live in the reducer (design doc D4); this
         # just paints. The tail renders under its lane's row in the lanes
         # panel (issue #90) — co-located with the agent it streams for, not a
-        # detached strip.
+        # detached strip. Child streams (thinking/narration) render in the
+        # lanes panel ONLY: the old main-chat delegate tail mirrored the
+        # same text under the working line, duplicating lane content into
+        # the chat transcript — the chat now carries compact lifecycle
+        # markers instead (reducer._agent_spawned/_agent_completed).
         self.lanes_panel.show_lane_tail(text)
-        # Main-chat delegate tail (joint enhancement with the Rust client):
-        # the same throttled text also renders under the working line via
-        # LiveTail's lane mode, labeled with the tailed lane's short name —
-        # unless the lanes panel holds the keyboard or a focused lane
-        # already fills the screen with its own transcript. Root streams
-        # keep preempting inside show_lane_tail.
-        if self.lanes_panel.has_focus or self.transcript.focused_lane is not None:
-            return
-        self.live_tail.show_lane_tail(text, label=self._tail_lane_label())
 
     def lane_tail_cleared(self) -> None:
         self.lanes_panel.clear_lane_tail()
-        self.live_tail.clear_lane_tail()
-
-    def _tail_lane_label(self) -> str:
-        """The tailed lane's short label — the exact disambiguated name its
-        panel row shows (``lane_labels``), so the two surfaces always agree."""
-        tailed = self.lanes.tail_lane
-        if tailed is None:
-            return ""
-        records = self.lanes.lanes
-        for record, label in zip(records, lane_labels(records), strict=True):
-            if record.session_id == tailed.session_id:
-                return label
-        return tailed.lane.name
 
     # -- approvals -------------------------------------------------------------------
 
@@ -1066,7 +1079,11 @@ class TuiApp(App[None]):
             # notice, never a silent provider turn. Skills + shortcuts
             # registered at boot resolve above via parse_and_run.
             name = text.split(maxsplit=1)[0]
-            self.show_notice(f"unknown command: {name} · / lists commands")
+            # AC3: a typo'd command/alias gets nearby suggestions instead
+            # of a bare rejection — never a silent fall-through to chat.
+            suggestions = self._commands.suggest(name, limit=1)
+            hint = f" · did you mean {' or '.join(suggestions)}?" if suggestions else ""
+            self.show_notice(f"unknown command: {name}{hint} · / lists commands")
             self._refresh_footer()
             return
         self.submit_prompt(text, message.attachments)
@@ -1324,12 +1341,15 @@ class TuiApp(App[None]):
         # The panel stays open while a lane is focused (mockup focusLane
         # never touches lanesOpen); its row snaps to the focused lane.
         self.lanes_panel.set_focused(message.name)
-        # The focused lane's transcript fills the screen — drop the
-        # main-chat delegate tail (the lane's own stream is now on show).
-        self.live_tail.clear_lane_tail()
         # Esc must resolve via ESC_CHAIN (lane_focus first, lanes later),
         # so the keyboard returns to the composer, not the panel.
         self.composer.focus_input()
+        if not self._lane_focus_intro_shown:
+            # First-ever focus transition (S6 AC4): a transient notice
+            # announcing the exit path, not a permanent tutorial overlay —
+            # never repeats once the user has seen it.
+            self._lane_focus_intro_shown = True
+            self.show_notice(app_support.LANE_FOCUS_INTRO_NOTICE)
         self.run_worker(
             self.transcript.focus_lane(message.session_id or message.name, blocks),
             exclusive=False,
@@ -1351,6 +1371,13 @@ class TuiApp(App[None]):
 
     def on_lane_focus_changed(self, message: LaneFocusChanged) -> None:
         app_support.handle_lane_focus_change(self, message.lane_id)
+
+    def on_back_to_parent(self, message: BackToParent) -> None:
+        """Focus-header Back control (click or enter/space): the exact
+        same navigation seam as Escape's ``lane_unfocus`` action — never
+        a turn interrupt/cancel (S6 AC2/AC5)."""
+        message.stop()
+        app_support.go_back_to_parent(self)
 
     def on_delegate_summary_toggled(self, message: DelegateSummaryToggled) -> None:
         """Drill-down v1 (ambient-progress D5): an expanded summary opens the
@@ -1379,6 +1406,32 @@ class TuiApp(App[None]):
         self.composer.insert_text(message.character)
 
     def on_rewind_strip_closed(self, message: RewindStrip.Closed) -> None:
+        message.stop()
+        self._restore_keyboard()
+        self._refresh_footer()
+
+    def on_sessions_strip_session_activated(self, message: SessionsStrip.SessionActivated) -> None:
+        """A session row was activated (Enter or click) -- S2 gap 1 + 2:
+        show its full-id detail rather than an in-place resume (the
+        stored-session roster has always been read-only here), and
+        best-effort copy the full id via the app's existing clipboard
+        helper (OSC 52 + OS tool where available; the detail block below
+        is the reliable fallback -- terminal clipboard access is
+        environment-dependent)."""
+        message.stop()
+        summary = next(
+            (s for s in self.sessions_strip.summaries if s.session_id == message.session_id),
+            None,
+        )
+        self.sessions_strip.close_strip()
+        self._restore_keyboard()
+        self._refresh_footer()
+        if summary is None:
+            return
+        self.copy_to_clipboard(summary.session_id)
+        self.append_block(Answer(id=self.allocator.next_id(), spans=session_detail_spans(summary)))
+
+    def on_sessions_strip_closed(self, message: SessionsStrip.Closed) -> None:
         message.stop()
         self._restore_keyboard()
         self._refresh_footer()
@@ -1536,9 +1589,6 @@ class TuiApp(App[None]):
                 queued_counts=self.adapter.lane_steering.counts(),
             )
             self.lanes_panel.show_panel()
-            # The panel takes the keyboard: its own ┆ tail is on show under
-            # the tailed lane's row — retire the main-chat delegate tail.
-            self.live_tail.clear_lane_tail()
             if self.approval_bar is not None:
                 self.approval_bar.focus()  # approval owns the keyboard (spec §7)
         self._refresh_footer()
@@ -1708,6 +1758,8 @@ class TuiApp(App[None]):
             return "lane_focus"
         if self.palette.is_open:
             return "palette"
+        if self.sessions_strip.is_open:
+            return "sessions"
         if self.turn_active:
             return "running"
         return "idle"
