@@ -57,9 +57,16 @@ async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
         await pilot.press("ctrl+r")
         await pilot.pause()
         assert app.rewind.display
+        # Finding 1 guard: checkpoints exist (rewind IS available), but the
+        # picker itself is now open and already shows its own "rewind . pick
+        # a turn . ..." header + enter/esc hints -- the idle footer must NOT
+        # also advertise ctrl-r rewind underneath it (that would just
+        # duplicate the strip's own affordance while it owns the screen).
+        assert footer_right_text(app.footer_bar.state) == ""
         # Newest selected by default; exact strip text.
         assert app.rewind.label_text == rewind_line(checkpoints[1])
         assert app.rewind.label_text.startswith("rewind · pick a turn · turn 2 · $")
+        assert app.footer_bar.state.context == "idle"  # footer_context has no rewind branch
 
         # ‹ / › navigate, clamped at both ends.
         await pilot.press("left")
@@ -76,8 +83,12 @@ async def test_ctrl_r_opens_picker_on_newest_and_navigation_clamps() -> None:
         await pilot.pause()
         assert not app.rewind.display
         assert app.footer_bar.state.context == "idle"
-        # Item D4: idle no longer carries a persistent generic hint.
-        assert footer_right_text(app.footer_bar.state) == ""
+        # Post-merge audit Finding 1 (S1 AC1 x D4 AC2/AC3): checkpoints exist
+        # and the picker is closed, so the idle hint restores exactly the
+        # ctrl-r chord -- never the old always-on generic reminder row D4
+        # removed (history/newline/commands stay off; see test_ui_footer.py
+        # for the pure-function pin of both constraints together).
+        assert footer_right_text(app.footer_bar.state) == "ctrl-r rewind"
 
 
 @pytest.mark.asyncio

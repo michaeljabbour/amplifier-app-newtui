@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import unicodedata
 
+from rich.cells import cell_len
 from textual.content import Content
 from textual.driver import Driver
 from textual.message import Message
@@ -35,6 +36,43 @@ TERMINAL_TITLE_MAX_CHARS = 180
 """Keep macOS terminal tabs useful when a plan step has a long title."""
 
 APP_TITLE_NAME = "amplifier"
+
+TITLE_BUNDLE_MAX_CELLS = 40
+"""Cap on the bundle fragment's rendered width in the centered, height-1
+TitleBar row (compliance 2026-08-02, item D4 AC4: "long paths truncate
+safely and remain inspectable ... without wrapping over the composer").
+
+``TitleBar`` is the ONE persistent place the active bundle renders (see
+the class docstring below), and a ``--bundle`` path/URI or a
+``bundle.active`` settings value is user-supplied and unbounded
+(``kernel/config.resolve_bundle_source``). Left alone, Textual just hard
+-clips an over-long value with no visual cue anything was cut -- this
+bounds the fragment ourselves so a truncated value always ends in one
+visible ``\u2026`` instead. The full, untruncated value stays inspectable
+through ``/status`` (``ui/session_ops_view.status_spans`` never
+truncates its ``bundle`` row), which is what satisfies AC4's "remains
+inspectable" half without duplicating the identity a second place (AC1).
+"""
+
+
+def _truncate_bundle_label(bundle: str, max_cells: int = TITLE_BUNDLE_MAX_CELLS) -> str:
+    """Cell-width-safe truncation with a single trailing ellipsis (D4 AC4).
+
+    Mirrors the house truncation shape already used elsewhere for the same
+    reason (``ui/transcript_render._clip``, ``ui/lanes_panel._elide``):
+    never silently clip -- a value longer than *max_cells* always ends in
+    exactly one ``\u2026`` so the title visibly promises more text exists.
+    Cell-width (not code-point) aware, so a wide-glyph bundle name
+    truncates at the same visual boundary a narrow-glyph one would.
+    """
+    if cell_len(bundle) <= max_cells:
+        return bundle
+    out = ""
+    for character in bundle:
+        if cell_len(out + character) > max_cells - 1:
+            break
+        out += character
+    return out.rstrip() + "\u2026"
 
 
 def terminal_title_sequence(title: str) -> str:
@@ -161,7 +199,7 @@ class TitleBar(Static):
     def _plain_title(self) -> str:
         parts = [APP_TITLE_NAME, self.state_text]
         if self.bundle:
-            parts.append(self.bundle)
+            parts.append(_truncate_bundle_label(self.bundle))
         if self.session_short:
             parts.append(self.session_short)
         return TITLE_SEPARATOR.join(parts)
@@ -209,6 +247,7 @@ class TitleBar(Static):
 __all__ = [
     "APP_TITLE_NAME",
     "SPINNER_INTERVAL",
+    "TITLE_BUNDLE_MAX_CELLS",
     "TERMINAL_SPINNER_FRAMES",
     "TERMINAL_TITLE_MAX_CHARS",
     "TITLE_SEPARATOR",

@@ -245,13 +245,29 @@ every frame the composer wasn't running or overlaid -- the majority of a
 session. That text never changed, so it wasn't a *hint* so much as
 permanent teaching copy squatting on status real estate (AC2/AC3: the
 footer reserves its space for transient status, attention, and the
-actions actually available *right now*). It is empty on purpose -- not
-replaced with a shorter reminder -- because the same shortcuts are taught
-progressively elsewhere: :data:`COMPOSER_PLACEHOLDER` (shown exactly when
-there is empty space to teach in) and the ``/keys`` command
-(:func:`help_rows`, reachable any time via the palette). The other
-entries stay: they are genuinely context-sensitive -- tied to a live
-overlay or a running turn, not shown "every frame".
+actions actually available *right now*). The literal table value here
+stays empty -- not replaced with a shorter reminder -- because the same
+shortcuts are taught progressively elsewhere: :data:`COMPOSER_PLACEHOLDER`
+(shown exactly when there is empty space to teach in) and the ``/keys``
+command (:func:`help_rows`, reachable any time via the palette). The
+other entries stay: they are genuinely context-sensitive -- tied to a
+live overlay or a running turn, not shown "every frame".
+
+Post-merge audit (Finding 1): D4 deliberately dropped the ``ctrl-r
+rewind`` fragment along with the rest of that generic reminder, but item
+S1 (already DONE before this merge train) has its own AC1 requiring the
+footer to expose the rewind shortcut "in plain language when the action
+is available" -- which the table's bare "" no longer did, regardless of
+whether checkpoints existed. :func:`~amplifier_app_tui.ui.footer.
+footer_right_text` reconciles both constraints by composing ``idle``'s
+hint live (the same shape ``running`` already uses for its own dynamic
+queue-chord swap) instead of a static table lookup: still exactly this
+"" the table defines whenever rewind is not genuinely available, but
+``ctrl-r rewind`` -- and only that one chord, never the rest of the old
+row -- the moment a checkpoint exists (see ``FooterState.
+rewind_available`` and ``test_ui_footer.py``). AC2/AC3 hold exactly as
+before: nothing rides every frame, only a state-tied, immediately-
+available action does.
 """
 
 

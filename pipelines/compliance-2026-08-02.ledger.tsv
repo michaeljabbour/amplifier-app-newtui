@@ -1,7 +1,8 @@
-# Ledger — Compliance 2026-08-02 finish-work (amplifier-app-tui)
+# Ledger — Compliance finish-work (amplifier-app-tui)
 # Source: "Amplifier TUI Feedback — Consolidated Implementation Brief, Compliance Update 2026-08-02"
-# Scope: every item whose Compliance line reads Partial or Open, excluding D6 (PR #190).
-# All PRs branch from main@4767699, full gate green, awaiting user merge approval.
+# Outcome doc: "... — Compliance Update 2026-08-03.docx" (same outputs/ folder)
+# Scope: every item Partial or Open at 2026-08-02. COMPLETE — all 20 implemented.
+# Nothing merged: every row below is an OPEN PR awaiting merge approval.
 #
 # item	branch	pr	base	status
 B2	compliance/b2-alias-fixture	191	main	pr_ready
@@ -18,17 +19,24 @@ B9	compliance/b9-pinned-deps	201	main	pr_ready
 B7	compliance/b7-attention-record	202	main	pr_ready
 B6	compliance/b6-session-control	203	main	pr_ready
 S3	compliance/s3-resume-syntax	204	main	pr_ready
+D1	compliance/d1-executable-decision	208	main	pr_ready
+B5	compliance/b5-adoption-ledger	209	main	pr_ready
 D4	compliance/d4-footer-consolidation	205	compliance/d2-composer-separation	pr_ready_stacked
 D7	compliance/d7-evidence-panel	206	compliance/s6-focus-back	pr_ready_stacked
 B8	compliance/b8-voice-design	207	compliance/b6-session-control	pr_ready_stacked
-#
-# HUMAN GATES — blocked pending your decision:
+B1	compliance/b1-final-answer-anchor	211	fix/agent-lane-chat-dedup	pr_ready_stacked
+D5	compliance/d5-preview-expand	212	fix/agent-lane-chat-dedup	pr_ready_stacked
 D6	fix/agent-lane-chat-dedup	190	main	GATE: your merge approval
-B1	-	-	-	GATE: blocked on #190 merge
-D5	-	-	-	GATE: blocked on #190 merge
-D1	-	-	-	GATE: executable rename (amplifier vs amplifier-tui)
-B5	-	-	-	GATE: adoption stage owners + usage windows
 #
-# D7probe RESULT: David's "dead Enter-to-expand" report is STALE. Handlers exist and
-# work on main (landed #157, pre-review). D7 scope narrowed to side panel + fallbacks
-# + focus/scroll restore. Confirmed independently by the orchestrator and the D7 agent.
+# MERGE ORDER: #190 -> {#211,#212} | #194 -> #205 | #195 -> #206 | #203 -> #207
+#
+# DECISIONS RESOLVED THIS ROUND (were human gates):
+#   D1  -> ADR-0008: keep amplifier-tui. `amplifier` is already owned by
+#          microsoft/amplifier AND amplifier-app-cli; collision measured live on
+#          uv 0.10.2. Upstream issue DRAFTED, NOT FILED — needs MJ.
+#   B5  -> five gates + owners + >=1d windows taken verbatim from Brian's Teams
+#          proposal. Stage-3 seats reserved but unnamed (TBD) — needs MJ.
+#   D7probe -> David's dead-Enter report is STALE (works since #157). Scope narrowed.
+#
+# OPEN FOLLOW-UPS: issue #210 (full light theme, from B1's explicit AC4 narrowing)
+#                  issue #187 (app-scoped settings namespace) — separable from D1

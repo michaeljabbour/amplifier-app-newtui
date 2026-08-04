@@ -72,6 +72,37 @@ def test_status_spans_include_mode_and_cost() -> None:
     assert "on · 80% · 200,000 token window · estimated accounting" in text
 
 
+def test_status_spans_show_the_full_untruncated_bundle_value() -> None:
+    """D4 AC4 ("remains inspectable"): unlike the title bar (which truncates
+    a long bundle with an ellipsis -- ui/chrome.TITLE_BUNDLE_MAX_CELLS),
+    ``/status`` is the one place the complete, unbounded value is always
+    shown verbatim -- a long ``--bundle`` path/URI or ``bundle.active``
+    settings value (kernel/config.resolve_bundle_source) must never be
+    clipped here too, or nothing would satisfy AC4's inspectability half."""
+    long_bundle = "/Users/dev/projects/amplifier/" + ("nested/" * 12) + "custom-bundle.md"
+    info = StatusInfo(
+        session_id="abcdef123",
+        provider="anthropic",
+        model="m1",
+        effort=None,
+        messages=1,
+        tools=0,
+        agents=(),
+    )
+    text = _text(
+        status_spans(
+            info,
+            mode="chat",
+            bundle=long_bundle,
+            session_short="abcdef",
+            cost=Decimal("0"),
+            compaction=CompactionConfig(max_tokens=100_000, auto_compact=None),
+        )
+    )
+    assert long_bundle in text  # verbatim, not truncated and not ellipsized
+    assert "\u2026" not in text
+
+
 def test_names_spans_roster_and_empty() -> None:
     assert "3 mounted" in _text(names_spans("Tools", ("a", "b", "c"), "none"))
     assert "none" in _text(names_spans("Tools", (), "none"))
