@@ -33,6 +33,7 @@ Behavioral contract (donor parity):
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from collections.abc import Iterable
@@ -47,6 +48,8 @@ from .persistence import (
     AmbiguousSessionError,
     SessionStore,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_NAME_LENGTH = 50
 """app-cli ``_rename_session`` clamps the stored name to 50 chars."""
@@ -119,6 +122,24 @@ def _coerce_tags(raw: object) -> tuple[str, ...]:
     return tuple(sorted(out))
 
 
+SessionState = Literal["ok", "recovered", "corrupt"]
+"""Health of one session row in the listing (S2 compliance: a damaged
+session must be labeled, never dropped or shown as if it were healthy):
+
+- ``"ok"`` -- metadata parsed normally (this also covers a brand-new
+  session with no ``metadata.json`` yet -- that is a normal, not a
+  damaged, state).
+- ``"recovered"`` -- ``metadata.json`` (and its ``.backup``) existed but
+  neither could be parsed; :meth:`~amplifier_app_tui.kernel.persistence.
+  SessionStore._load_metadata` already substitutes a synthetic
+  ``{"recovered": True, ...}`` shell rather than raising, but nothing
+  upstream surfaced that marker until now.
+- ``"corrupt"`` -- building the summary itself raised past that recovery;
+  :func:`list_summaries` catches it at the per-session boundary so one bad
+  directory cannot take down the whole listing.
+"""
+
+
 @dataclass(frozen=True)
 class SessionSummary:
     """One row of the resume picker / ``session list`` table.
@@ -130,7 +151,8 @@ class SessionSummary:
     incremental saver records as ``turn_count`` in ``metadata.json``
     (see :class:`~amplifier_app_tui.kernel.persistence.SessionSaver`);
     it is ``None`` when the stored metadata predates that field rather than
-    a fabricated zero.
+    a fabricated zero. ``state`` is :data:`SessionState` -- ``"ok"`` unless
+    the session's own files were damaged (S2 compliance).
     """
 
     session_id: str
@@ -140,6 +162,7 @@ class SessionSummary:
     mtime: float = 0.0
     turns: int | None = None
     tags: tuple[str, ...] = ()
+    state: SessionState = "ok"
 
     @property
     def short_id(self) -> str:
@@ -183,7 +206,10 @@ def _message_count(store: SessionStore, session_id: str) -> int:
     try:
         with path.open("r", encoding="utf-8") as handle:
             return sum(1 for line in handle if line.strip())
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError also catches UnicodeDecodeError from a binary/corrupt
+        # transcript file -- one session's bad bytes must not raise past
+        # this point (list_summaries' "never crash the listing" contract).
         return 0
 
 
@@ -204,9 +230,14 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
     bundle = "unknown"
     turns: int | None = None
     tags: tuple[str, ...] = ()
+    state: SessionState = "ok"
     if (session_dir / METADATA_FILENAME).is_file():
         try:
             metadata = store.get_metadata(session_id)
+            if metadata.get("recovered") is True:
+                # persistence.py's own corruption fallback: metadata.json
+                # (and its .backup) existed but neither parsed as JSON.
+                state = "recovered"
             name = str(metadata.get("name", "") or "")
             bundle = str(metadata.get("bundle", "") or "unknown")
             raw_turns = metadata.get("turn_count")
@@ -214,7 +245,11 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
                 turns = raw_turns
             tags = _coerce_tags(metadata.get(TAGS_KEY))
         except (FileNotFoundError, OSError, ValueError):
-            pass
+            # Belt-and-suspenders: _load_metadata degrades a parse failure
+            # to a "recovered" dict instead of raising, so this branch is a
+            # defensive backstop (e.g. a file removed mid-read) rather than
+            # the common path -- either way it is damage, not health.
+            state = "recovered"
     return SessionSummary(
         session_id=session_id,
         name=name,
@@ -223,15 +258,30 @@ def summary_for(store: SessionStore, session_id: str) -> SessionSummary:
         mtime=mtime,
         turns=turns,
         tags=tags,
+        state=state,
     )
 
 
 def list_summaries(store: SessionStore, *, limit: int | None = None) -> list[SessionSummary]:
-    """Newest-first :class:`SessionSummary` rows for the top-level sessions."""
+    """Newest-first :class:`SessionSummary` rows for the top-level sessions.
+
+    Each row is built independently and defensively: if one session's files
+    are damaged beyond even ``summary_for``'s own recovery, that ONE session
+    becomes a bare ``state="corrupt"`` row instead of raising past this
+    point -- the listing itself must never crash on one bad directory (S2
+    compliance).
+    """
     ids = store.list_sessions()
     if limit is not None:
         ids = ids[:limit]
-    return [summary_for(store, session_id) for session_id in ids]
+    summaries: list[SessionSummary] = []
+    for session_id in ids:
+        try:
+            summaries.append(summary_for(store, session_id))
+        except Exception:  # noqa: BLE001 -- one bad session must not crash the listing
+            logger.warning("Could not summarize session %s", session_id, exc_info=True)
+            summaries.append(SessionSummary(session_id=session_id, state="corrupt"))
+    return summaries
 
 
 def resolve(store: SessionStore, partial_id: str) -> str:
@@ -274,9 +324,24 @@ def resolve_for_resume(store: SessionStore, partial_id: str) -> ResumeResolution
 
     Thin wrapper over :meth:`SessionStore.find_session` that turns its two
     exception types (``FileNotFoundError``, :class:`AmbiguousSessionError`)
-    plus a post-resolve corruption probe into one :class:`ResumeResolution`,
-    so CLI callers map status -> exit code / guidance text with no
-    try/except of their own (S3).
+    plus a post-resolve health check into one :class:`ResumeResolution`, so
+    CLI callers map status -> exit code / guidance text with no try/except
+    of their own (S3).
+
+    The health check reuses :func:`summary_for` -- the SAME per-session
+    probe :func:`list_summaries` uses (S2) -- rather than a second,
+    independent reading of ``metadata.json``: any :data:`SessionState`
+    other than ``"ok"`` (``"recovered"`` or ``"corrupt"``) maps to this
+    function's ``"corrupt"`` status. ``summary_for`` itself never raises,
+    but the call is still guarded here so this function's own "never
+    raises" contract cannot be broken by a future change to it.
+
+    One extra, resume-specific rule sits on top of that shared probe: a
+    session directory with NO ``metadata.json`` at all is ``state="ok"``
+    for :func:`summary_for` (S2 treats a still-being-written brand-new
+    session as healthy, not damaged, so it lists cleanly) -- but there is
+    no bundle/identity to relaunch a resume into, so this refuses it too
+    rather than failing deeper and less clearly inside the runtime.
     """
     try:
         resolved = store.find_session(partial_id)
@@ -290,8 +355,12 @@ def resolve_for_resume(store: SessionStore, partial_id: str) -> ResumeResolution
         # candidate-bearing ambiguity -- the same user-facing outcome as
         # "not found" rather than a fifth status the CLI brief never asked for.
         return ResumeResolution(status="not_found", partial_id=partial_id)
-    metadata = store.get_metadata(resolved)
-    if not metadata or metadata.get("recovered"):
+    try:
+        healthy = summary_for(store, resolved).state == "ok"
+    except Exception:  # noqa: BLE001 -- resolve_for_resume must never raise (S3)
+        healthy = False
+    has_metadata = (store.session_dir(resolved) / METADATA_FILENAME).is_file()
+    if not healthy or not has_metadata:
         return ResumeResolution(status="corrupt", session_id=resolved, partial_id=partial_id)
     return ResumeResolution(status="ok", session_id=resolved, partial_id=partial_id)
 
@@ -634,6 +703,7 @@ __all__ = [
     "PENDING_DIRECTIVE_KEY",
     "TAGS_KEY",
     "TAG_PATTERN",
+    "SessionState",
     "SessionSummary",
     "TagOutcome",
     "add_tags",

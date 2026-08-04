@@ -518,3 +518,56 @@ def test_continue_launches_most_recent(
     assert result.exit_code == 0
     assert launched["resume_id"] == "bbbb2222"
     assert "continuing bbbb2222" in result.output
+
+
+def test_sessions_healthy_roster_shows_no_state_column(scratch: SessionStore) -> None:
+    """The common (all-healthy) case renders exactly as before -- no blank
+    'State' column noise (S2 compliance: labeling is additive, not intrusive)."""
+    _seed(scratch, "abc12345", name="auth work", messages=3)
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "State" not in result.output
+
+
+def test_sessions_labels_a_recovered_session_with_a_state_column(
+    scratch: SessionStore,
+) -> None:
+    """A session whose metadata.json cannot be parsed must show an explicit
+    'recovered' state in the table -- never silently dropped or rendered
+    as a normal, healthy row (S2 compliance gap 3)."""
+    _seed(scratch, "healthyid", name="auth work", messages=3)
+    _seed(scratch, "brokenidx", name="will-be-lost", messages=1)
+    (scratch.session_dir("brokenidx") / "metadata.json").write_text("{not json", encoding="utf-8")
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "State" in result.output
+    assert "recovered" in result.output
+    # The healthy sibling is unaffected and still fully listed.
+    assert "auth work" in result.output
+    # The damaged session's id is still shown -- often the only handle a
+    # user has to go delete/inspect it.
+    assert "brokenid" in result.output
+
+
+def test_sessions_never_crashes_when_one_session_is_corrupt(
+    scratch: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One session raising past its own recovery must not crash the CLI
+    listing -- it becomes a bare 'corrupt' row (S2 compliance gap 3)."""
+    from amplifier_app_tui.kernel import session_manager as sm
+
+    _seed(scratch, "healthyid", name="auth work", messages=3)
+    _seed(scratch, "brokenidx", messages=1)
+
+    real_summary_for = sm.summary_for
+
+    def _boom(store: SessionStore, session_id: str):
+        if session_id == "brokenidx":
+            raise RuntimeError("simulated unexpected corruption")
+        return real_summary_for(store, session_id)
+
+    monkeypatch.setattr(sm, "summary_for", _boom)
+    result = CliRunner().invoke(main, ["sessions"])
+    assert result.exit_code == 0
+    assert "corrupt" in result.output
+    assert "auth work" in result.output

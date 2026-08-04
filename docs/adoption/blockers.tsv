@@ -1,0 +1,14 @@
+# Adoption blocker ledger v1 - defects found while daily-driving amplifier-app-tui.
+#
+# severity:
+#   release-blocking - an OPEN row of this severity blocks EVERY stage promotion, no
+#                      matter how much of the usage window has elapsed (AC2), and so
+#                      blocks replacement of amplifier-app-cli (AC5).
+#   friction         - recorded and triaged, does not gate. Qualitative friction reports
+#                      from daily driving belong here so they are not lost.
+# status:     open | resolved
+# resolution: PR / commit / issue that closed it, or `-` while open.
+#
+# No rows yet: no stage has started. Add one row per defect, in a reviewed PR.
+#
+# id	stage	severity	status	opened	resolution	summary

@@ -40,6 +40,7 @@ from amplifier_app_tui.model.blocks import (
     ToolLine,
     TranscriptBlock,
     TurnRule,
+    UnsupportedBlock,
     UserLine,
     WorkingStatus,
 )
@@ -54,6 +55,7 @@ from amplifier_app_tui.ui.segments import (
 )
 from amplifier_app_tui.ui.live_tail import answer_spans
 from amplifier_app_tui.ui.transcript_render import (
+    _RENDERERS,  # noqa: PLC2701 — direct renderer-table monkeypatch for isolation tests
     READING_MEASURE,
     TOOL_EXPAND_HINT,
     fence_text_at_row,
@@ -856,3 +858,52 @@ def test_fence_text_at_row_extracts_dedented_fence() -> None:
     assert fence_text_at_row(lines, 0) is None  # the intro prose line
     assert fence_text_at_row(lines, -1) is None
     assert fence_text_at_row(lines, len(lines)) is None
+
+
+# -- S5: unsupported-block placeholder + per-block render isolation ----------
+
+
+def test_unsupported_block_renders_a_dim_labeled_row() -> None:
+    """The placeholder for a record/block this build could not parse or
+    render reads as one dim, labeled row — the same collapsed treatment as
+    ToolLine/Thinking — naming the type and (when present) the redacted
+    summary; it never offers a click-to-expand hint (there is no raw body
+    behind it that would be safe to reveal)."""
+    block = UnsupportedBlock(id="u1", type_name="loop_started", summary="fields: kind, step")
+    lines = render_block(block, 80)
+    assert len(lines) == 1
+    text = line_plain(lines[0])
+    assert text == "  ● unsupported block · loop_started · fields: kind, step"
+    assert all(seg.style_token == "dim" for seg in lines[0])
+    assert TOOL_EXPAND_HINT not in text
+
+
+def test_unsupported_block_without_a_summary_omits_the_trailing_separator() -> None:
+    block = UnsupportedBlock(id="u2", type_name="unknown")
+    text = line_plain(render_block(block, 80)[0])
+    assert text == "  ● unsupported block · unknown"
+
+
+def test_render_block_isolates_a_renderer_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A renderer bug on one block must not crash the transcript (S5): the
+    failure is caught and logged, and the block degrades to the same
+    placeholder shape an unparseable persisted record renders as."""
+
+    def _boom(block: object, width: int) -> tuple[object, ...]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(_RENDERERS, "answer", _boom)
+    block = Answer(id="a1", spans=(Segment(text="hi", style_token="fg"),))
+    text = line_plain(render_block(block, 80)[0])
+    assert text == "  ● unsupported block · answer · render failed"
+
+
+def test_render_block_handles_an_unregistered_kind_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A block kind with no registered renderer (a stale/future build
+    mismatch) degrades to the placeholder instead of raising."""
+    monkeypatch.delitem(_RENDERERS, "answer")
+    block = Answer(id="a2", spans=(Segment(text="hi", style_token="fg"),))
+    text = line_plain(render_block(block, 80)[0])
+    assert text == "  ● unsupported block · answer"

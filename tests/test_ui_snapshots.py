@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from time import monotonic
 
 from amplifier_app_tui.kernel.demo import BRAINSTORM_PROMPT, BUILD_PROMPT
 from amplifier_app_tui.ui.app import TuiApp
-from amplifier_app_tui.ui.live_tail import LiveTail
+from amplifier_app_tui.ui.lanes_panel import _LaneTail
 from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 from textual._doc import take_svg_screenshot
 from textual.app import App, ComposeResult
@@ -51,6 +52,26 @@ def test_double_esc_rewind_snapshot(monkeypatch) -> None:
         await pilot.press("escape")
         adapter.release()
         assert await wait_for(pilot, lambda: not app.turn_active)
+        # The double-esc "backtrack to rewind" gesture (EscSequence in
+        # ui/app_support.py) only fires when the second Esc lands within
+        # keymap.ESC_BACKTRACK_WINDOW_SECONDS (0.75s) of the first one, a
+        # real wall-clock window measured from time.monotonic(). The
+        # `wait_for` above is the genuine precondition for a deterministic
+        # screenshot (the interrupted turn must actually settle -- recap
+        # rendered, checkpoints synced -- before the rewind picker opens on
+        # top of it) but it is a polling loop, so its OWN wall-clock cost is
+        # unbounded on a loaded CI runner and was silently eating into the
+        # SAME 0.75s budget the second press below needs: under load the
+        # settle-wait alone could exceed 0.75s, so the "backtrack" was
+        # already expired by the time the second Esc arrived and the
+        # picker never opened (issue: race between a load-sensitive test
+        # poll and a fixed product timing constant, not a real regression).
+        # Re-arm the interrupt to "now" immediately before the second press
+        # so the backtrack window is always freshly open here regardless of
+        # how long settling took to observe; the real ESC chain,
+        # `consume_backtrack`, and `action_open_rewind` below still run
+        # for real over the real key press.
+        app.esc_sequence.arm_interrupt(monotonic())
         await pilot.press("escape")
         assert await wait_for(pilot, lambda: app.rewind.display)
 
@@ -92,7 +113,10 @@ _TAIL_SNAPSHOT = (
 
 
 class _LaneTailShot(App[None]):
-    """Minimal deterministic harness: LiveTail in lane mode, no timers."""
+    """Minimal deterministic harness: the lanes panel's tail widget, no
+    timers. The ┆ tail paints ONLY under its lane's row in the lanes panel
+    now — the LiveTail lane-mode mirror that duplicated child streams into
+    the main chat is gone."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -102,7 +126,7 @@ class _LaneTailShot(App[None]):
         self.theme = theme_id(DEFAULT_THEME)
 
     def compose(self) -> ComposeResult:
-        yield LiveTail(id="live-tail")
+        yield _LaneTail(id="lane-tail")
 
 
 def test_lane_tail_snapshot(monkeypatch) -> None:
@@ -113,8 +137,8 @@ def test_lane_tail_snapshot(monkeypatch) -> None:
     app = _LaneTailShot()
 
     async def paint_tail(pilot) -> None:
-        tail = app.query_one("#live-tail", LiveTail)
-        tail.show_lane_tail(
+        tail = app.query_one("#lane-tail", _LaneTail)
+        tail.set_text(
             "…the queue bridge normalizes delegate lifecycle events at a single\n"
             "boundary, so the lanes are fed from the same UIEvent union as the\n"
             "transcript — checking trackers/task_status.py next"

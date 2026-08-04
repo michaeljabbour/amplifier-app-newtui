@@ -266,8 +266,17 @@ class DemoRuntimeAdapter(RuntimeAdapter):
 
     # -- session tags (in-memory demo store) --------------------------------
 
-    def session_summaries(self) -> tuple[SessionSummary, ...]:
-        """The demo roster, each row carrying its live in-memory tags."""
+    async def session_summaries(self) -> tuple[SessionSummary, ...]:
+        """The demo roster, each row carrying its live in-memory tags.
+
+        Async to match the real adapter's protocol (``RuntimeAdapter.
+        session_summaries`` / ``RealRuntimeAdapter.session_summaries`` are
+        both ``async def``) -- callers ``await`` this uniformly across
+        both runtimes (S2: caught by a demo-runtime flow test exercising
+        ``/sessions`` end-to-end for the first time; this method was
+        previously sync and every ``await`` of it against the demo
+        runtime would have raised).
+        """
         return tuple(
             SessionSummary(
                 session_id=sid,
@@ -284,7 +293,8 @@ class DemoRuntimeAdapter(RuntimeAdapter):
 
     async def sessions_by_tag(self, tag: str) -> tuple[SessionSummary, ...]:
         wanted = normalize_tag(tag)
-        return tuple(row for row in self.session_summaries() if wanted in row.tags)
+        summaries = await self.session_summaries()
+        return tuple(row for row in summaries if wanted in row.tags)
 
     async def add_session_tags(self, tags: tuple[str, ...]) -> tuple[bool, str]:
         current = self._demo_tags.setdefault(DEMO_SESSION_ID, set())

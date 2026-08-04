@@ -45,6 +45,7 @@ from ..model.blocks import (
     ToolLine,
     TranscriptBlock,
     TurnRule,
+    UnsupportedBlock,
     UserLine,
     WorkingStatus,
 )
@@ -796,7 +797,7 @@ class TranscriptReducer:
 
     def replay(
         self,
-        events: Sequence[ev.UIEvent],
+        events: Sequence[ev.UIEvent | UnsupportedBlock],
         *,
         turn_base: int = 0,
         session_cost: Decimal = Decimal("0"),
@@ -809,6 +810,14 @@ class TranscriptReducer:
         focus transcripts, plan state, turn rules with real telemetry —
         instead of the prose-only fallback. Side effects are suppressed
         via :class:`_ReplayHost` + :data:`REPLAY_SKIPPED_KINDS`.
+
+        ``events`` may interleave :class:`UnsupportedBlock` placeholders
+        (S5) for persisted records ``kernel.events.parse_event`` could not
+        type — a foreign writer's line, an unknown/removed ``kind``, or
+        schema drift. Each one is appended directly, in its original log
+        position, with a freshly minted id; it never reaches :meth:`handle`
+        (it carries no turn semantics to dispatch), so one unrecognized
+        record can never drop the rest of a rich, mixed transcript.
 
         ``turn_base``/``session_cost`` are the transcript-derived turn
         count and the kernel-restored cost baseline; both stay the
@@ -829,6 +838,9 @@ class TranscriptReducer:
         self.session_cost = Decimal("0")
         try:
             for event in events:
+                if isinstance(event, UnsupportedBlock):
+                    self._host.append_block(event.model_copy(update={"id": self._ids.next_id()}))
+                    continue
                 if event.kind in REPLAY_SKIPPED_KINDS:
                     continue
                 self.handle(event)
@@ -1990,6 +2002,9 @@ class TranscriptReducer:
                 cost=seed.cost,
                 tokens=seed.tokens,
             )
+        # Peek the delegate brief BEFORE seeding pops it into the lane's
+        # focus transcript — the chat marker names the task in a few words.
+        brief = _lane_result_summary(self._lane.pending_brief(event.agent))
         self._lane.seed_transcript(event)
         now = event.ts
         if not self._delegate_rows:
@@ -1999,6 +2014,7 @@ class TranscriptReducer:
         # A known sub-session re-spawning is a replayed turn reusing its ids
         # (see lanes.register reopen above) — reset the row live either way.
         self._delegate_rows[event.sub_session_id] = _DelegateRow(agent=event.agent, spawned_ts=now)
+        self._lifecycle_marker(f"{event.agent} started" + (f" · {brief}" if brief else ""))
         self._render_delegate_summary()
         self._update_working()
         self._host.lanes_changed()
@@ -2027,6 +2043,12 @@ class TranscriptReducer:
                 ),
             )
         self.lanes.complete(event.sub_session_id, result=_lane_result_summary(result))
+        hint = _lane_result_summary(result)
+        if event.success:
+            marker = f"{event.agent} done" + (f" · {hint}" if hint else "")
+        else:
+            marker = f"{event.agent} failed" + (f" · {hint}" if hint and hint != "failed" else "")
+        self._lifecycle_marker(marker)
         row = self._delegate_rows.get(event.sub_session_id)
         if row is not None:
             end_ts = event.ts  # same clock domain as spawned_ts — no fallback
@@ -2038,6 +2060,21 @@ class TranscriptReducer:
             self._render_delegate_summary()
         self._update_working()
         self._host.lanes_changed()
+
+    def _lifecycle_marker(self, text: str) -> None:
+        """One compact dim ✳ line in the chat for a delegate lifecycle beat
+        (started / done / failed) — the chat's view of cross-agent activity.
+
+        Child thinking, prose and tool chatter stay lanes-only (the
+        foreign-turn divert plus the lanes-panel tail); the root session's
+        own narration renders exactly as before. Real turns only: scripted
+        demo turns carry their own fan-out narration beats, and a straggler
+        completion landing after close-out would render below the turn rule
+        (the delegate summary already updates in place for those)."""
+        turn = self._turn
+        if turn is None or turn.spec is not None:
+            return
+        self._append_content(self._recap_line(text))
 
     def _render_delegate_summary(self) -> None:
         """Append-once / replace-in-place, keyed by ``_delegate_summary_id``.

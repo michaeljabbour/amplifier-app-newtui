@@ -190,6 +190,18 @@ garbage — is kitty (via `TERM`/`KITTY_WINDOW_ID`) and ghostty / iTerm2 / WezTe
 (via `TERM_PROGRAM`). `AMPLIFIER_TERMINAL_NOTIFICATIONS=force` opts any other terminal in;
 `=off` opts any terminal out.
 
+**One normalized event per transition.** The bell and desktop rungs above are both driven
+by a single internal `AttentionRecord` (session id, reason, a stable event id, and an
+acknowledged flag) minted exactly once when the app transitions into needing you — a turn
+completes, a decision is parked awaiting your approval or clarification, or the session
+hits an error. Repeated renders, a reconnect, or a second kernel-side ping for a decision
+that is already parked all resolve to the SAME record and do not notify again. Answering a
+deferred decision, or bringing the terminal window back into focus, acknowledges the
+record: the bell has nothing to retract, but the OSC 777 desktop indicator is best-effort
+cleared. Off-machine ntfy push (below) is a separate destination fired independently by the
+kernel's raw `orchestrator:complete` event — it does not go through this record and has no
+acknowledgement channel back to the TUI (a different device's notification tray).
+
 ### Configuring notifications (`config.notifications.*` + the `notify` CLI)
 
 The ladder above reads two env vars directly; the `config.notifications` settings section

@@ -53,3 +53,36 @@ async def test_plan_panel_hides_below_90_cols() -> None:
         assert await wait_for(pilot, lambda: not app.turn_active)
         assert not app.plan_panel.display
         assert "Plan 3/3" in footer_left_text(app.footer_bar.state)
+
+
+@pytest.mark.asyncio
+async def test_expanded_plan_stays_bounded_and_composer_reachable_at_short_height() -> None:
+    """S7 AC5, end-to-end: a long plan, expanded, at a short terminal --
+    the panel bounds its own height and scrolls internally rather than
+    pushing the composer off-screen."""
+    from amplifier_app_tui.model.blocks import TodoItem
+    from amplifier_app_tui.ui.plan_panel import plan_panel_max_height
+
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=(100, 18)) as pilot:  # a short terminal
+        await seed_done(pilot, app)
+        app.submit_prompt(BUILD_PROMPT)
+        assert await wait_for(pilot, lambda: app.plan_panel.display)
+        # A much longer plan than the demo script itself ever seeds.
+        long_items = tuple(
+            TodoItem(content=f"task {i}", status="in_progress" if i == 0 else "pending")
+            for i in range(40)
+        )
+        app.plan_panel.update_plan(long_items)
+        await pilot.pause()
+        await pilot.click("#plan-overflow")
+        await pilot.pause()
+        assert app.plan_panel.expanded is True
+        bound = plan_panel_max_height(app.size.height)
+        assert app.plan_panel.size.height <= bound
+        assert app.plan_panel.max_scroll_y > 0  # scrolls internally, not unbounded growth
+        # The composer's full region still fits on screen: never pushed off
+        # by the expanded panel.
+        assert app.composer.region.y + app.composer.region.height <= app.size.height
+        adapter.release()

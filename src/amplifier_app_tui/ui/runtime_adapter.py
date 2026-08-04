@@ -22,7 +22,7 @@ from pathlib import Path
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from ..kernel.events import UIEvent
+from ..kernel.events import ParsedEvent, UIEvent
 
 from ..kernel.compaction import CompactionConfig
 from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
@@ -192,7 +192,7 @@ class RuntimeAdapter:
         ids offset past it — DESIGN-SPEC §9); 0 for fresh/demo sessions."""
         self.restored_history: tuple[tuple[str, str], ...] = ()
         """(role, text) pairs replayed into the transcript on resume."""
-        self.restored_events: tuple[UIEvent, ...] = ()
+        self.restored_events: tuple[ParsedEvent, ...] = ()
         """The resumed session's stored UIEvents, replayed through the
         reducer to rebuild the full transcript (digests, delegate
         summaries, turn rules — DESIGN-SPEC §3/§11); empty means the

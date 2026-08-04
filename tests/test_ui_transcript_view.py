@@ -18,6 +18,8 @@ from textual.selection import SELECT_ALL
 
 from amplifier_app_tui.model.blocks import (
     Answer,
+    DelegateEntry,
+    DelegateSummaryBlock,
     EvidenceBlock,
     Narration,
     NeedsYouBlock,
@@ -35,10 +37,14 @@ from amplifier_app_tui.ui.live_tail import answer_spans
 from amplifier_app_tui.ui.needs_you import NeedsYouList
 from amplifier_app_tui.ui.themes import DEFAULT_THEME, register_themes, theme_id
 from amplifier_app_tui.ui.transcript import (
+    BackToParent,
     BlockWidget,
     CloseEvidence,
     CopyCodeFence,
     ExpandEvidenceClaim,
+    FOCUS_HEADER_HINT,
+    FOCUS_HEADER_TITLE,
+    FocusHeader,
     HISTORY_COMPACT_TRIGGER,
     HISTORY_WIDGET_LIMIT,
     HistoryArchive,
@@ -66,6 +72,7 @@ class Harness(App[None]):
         self.closed_evidence: list[CloseEvidence] = []
         self.decisions: list[NeedsYouList.DecisionTaken] = []
         self.fence_copies: list[CopyCodeFence] = []
+        self.back_to_parent: list[BackToParent] = []
 
     def on_mount(self) -> None:
         self.theme = theme_id(DEFAULT_THEME)
@@ -96,6 +103,9 @@ class Harness(App[None]):
 
     def on_needs_you_list_decision_taken(self, message: NeedsYouList.DecisionTaken) -> None:
         self.decisions.append(message)
+
+    def on_back_to_parent(self, message: BackToParent) -> None:
+        self.back_to_parent.append(message)
 
 
 def _view(app: Harness) -> TranscriptView:
@@ -313,6 +323,193 @@ async def test_lane_focus_swaps_block_list_and_restore_brings_main_back() -> Non
         assert _block(view, "b2", Narration).text == "agents finishing up"
         assert _block(view, "b3", Narration).text == "final answer landed"
         assert app.lane_changes[-1].lane_id is None
+
+
+def _lane_blocks(prefix: str, count: int, focus_note: str) -> list[TranscriptBlock]:
+    blocks: list[TranscriptBlock] = [
+        SessionBanner(id=f"{prefix}-banner", headline="", focus_note=focus_note)
+    ]
+    blocks.extend(Narration(id=f"{prefix}{i}", text=f"{prefix} line {i}") for i in range(count))
+    return blocks
+
+
+_CHILD_BANNER = SessionBanner(
+    id="c1",
+    headline="",
+    focus_note=(
+        "focused: test-writer \u00b7 subagent of a1b2c3 \u00b7 own context window"
+        " \u00b7 results report back to parent \u00b7 esc back"
+    ),
+)
+
+
+@pytest.mark.asyncio
+async def test_focus_header_back_control_click_and_keyboard() -> None:
+    """S6 AC1/AC5: a visible 'Back to parent' control mounts only while a
+    lane is focused, and both click (mouse) and enter/space (keyboard)
+    post the same BackToParent message the app routes through
+    restore_main() \u2014 the same seam Escape uses."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(UserLine(id="b1", text="parent turn", mode="build"))
+        await pilot.pause()
+        assert list(view.query(FocusHeader)) == []  # not focused yet: no Back control
+
+        await view.focus_lane(
+            "lane-1", [_CHILD_BANNER, UserLine(id="c2", text="hi", mode="delegated")]
+        )
+        await pilot.pause()
+        headers = list(view.query(FocusHeader))
+        assert len(headers) == 1
+        header = headers[0]
+        rendered = header.render().plain
+        assert "Back to parent" in rendered  # AC1: the visible action
+        assert "esc" in rendered  # AC1: its keyboard shortcut, shown alongside it
+        assert FOCUS_HEADER_TITLE.endswith("Back to parent")
+        assert "esc" in FOCUS_HEADER_HINT
+
+        # Mouse: a click posts BackToParent.
+        await pilot.click(header)
+        await pilot.pause()
+        assert len(app.back_to_parent) == 1
+
+        # Keyboard: enter AND space also activate it once it holds focus.
+        header.focus()
+        await pilot.press("enter")
+        assert len(app.back_to_parent) == 2
+        await pilot.press("space")
+        assert len(app.back_to_parent) == 3
+
+        # It never rides along with the parent view.
+        await view.restore_main()
+        await pilot.pause()
+        assert list(view.query(FocusHeader)) == []
+
+
+@pytest.mark.asyncio
+async def test_scroll_anchor_restores_each_views_own_position() -> None:
+    """S6 AC3: leaving a view remembers its scroll position; returning
+    (or re-entering) restores THAT view's own position instead of always
+    snapping to the tail. A view visited for the first time still
+    defaults to bottom-follow (today's behavior, unchanged)."""
+    app = Harness()
+    async with app.run_test(size=(60, 8)) as pilot:
+        view = _view(app)
+        for index in range(30):
+            view.append(Narration(id=f"m{index}", text=f"main line {index}"))
+        await pilot.pause()
+        assert view.follow is True
+
+        # The user reads partway up the parent before ever focusing a lane.
+        view.scroll_to(y=0, animate=False)
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
+        await pilot.pause()
+        assert view.follow is False
+        main_scroll_y = view.scroll_y
+
+        lane_a = _lane_blocks("a", 30, "focused: a")
+        await view.focus_lane("lane-a", lane_a)
+        await pilot.pause()
+        assert view.follow is True  # lane-a is a first-ever visit: bottom-follow
+
+        # The user scrolls up inside lane-a's own transcript too.
+        view.scroll_to(y=1, animate=False)
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
+        await pilot.pause()
+        assert view.follow is False
+        lane_a_scroll_y = view.scroll_y
+        assert lane_a_scroll_y != main_scroll_y  # a meaningfully distinct anchor
+
+        await view.restore_main()
+        await pilot.pause()
+        # The parent comes back exactly where it was left, not the tail.
+        assert view.follow is False
+        assert view.scroll_y == pytest.approx(main_scroll_y)
+
+        # Re-focusing the SAME lane (repeated enter/exit cycles) restores
+        # ITS OWN remembered position too, not main's and not the tail.
+        await view.focus_lane("lane-a", lane_a)
+        await pilot.pause()
+        assert view.follow is False
+        assert view.scroll_y == pytest.approx(lane_a_scroll_y)
+
+
+@pytest.mark.asyncio
+async def test_scroll_anchor_independent_across_a_direct_lane_to_lane_hop() -> None:
+    """S6 AC3 (nested panel transitions): the lanes panel stays open
+    while focused, so the user can jump straight from one lane to
+    another without returning to main first. Each view's own anchor
+    stays independent across that hop, and the parent's anchor \u2014
+    captured once, before either lane was ever entered \u2014 is untouched
+    by whatever happens between lanes."""
+    app = Harness()
+    async with app.run_test(size=(60, 8)) as pilot:
+        view = _view(app)
+        for index in range(30):
+            view.append(Narration(id=f"m{index}", text=f"main line {index}"))
+        await pilot.pause()
+
+        view.scroll_to(y=0, animate=False)
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
+        await pilot.pause()
+        main_scroll_y = view.scroll_y
+
+        lane_a = _lane_blocks("a", 30, "focused: a")
+        lane_b = _lane_blocks("b", 30, "focused: b")
+        await view.focus_lane("lane-a", lane_a)
+        await pilot.pause()
+        view.scroll_to(y=2, animate=False)
+        view.on_mouse_scroll_up(cast(events.MouseScrollUp, None))
+        await pilot.pause()
+        lane_a_scroll_y = view.scroll_y
+
+        # Jump straight to lane-b \u2014 no return to main in between (the
+        # lanes panel permits this: it never touches lanesOpen on focus).
+        await view.focus_lane("lane-b", lane_b)
+        await pilot.pause()
+        assert view.follow is True  # lane-b is a first-ever visit
+
+        await view.restore_main()
+        await pilot.pause()
+        # Main is restored to where it was BEFORE ever entering lane-a \u2014
+        # untouched by the a -> b hop in between.
+        assert view.follow is False
+        assert view.scroll_y == pytest.approx(main_scroll_y)
+
+        # And lane-a's own remembered position survived the round trip.
+        await view.focus_lane("lane-a", lane_a)
+        await pilot.pause()
+        assert view.follow is False
+        assert view.scroll_y == pytest.approx(lane_a_scroll_y)
+
+
+@pytest.mark.asyncio
+async def test_expanded_delegate_summary_survives_a_focus_round_trip() -> None:
+    """S6 AC3 ('relevant panel state'): a block the user expanded in the
+    parent (a nested, click-to-expand panel) stays expanded across a
+    focus/return cycle \u2014 the stashed parent list is the live block
+    state, not a stale copy frozen at focus time."""
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        summary = DelegateSummaryBlock(
+            id="s1",
+            entries=(DelegateEntry(agent="researcher", state="done", snippet="ok"),),
+            duration_s=1.0,
+        )
+        widget = view.append(summary)
+        await pilot.pause()
+        assert isinstance(widget, BlockWidget)
+        await pilot.click(widget)  # expand it
+        await pilot.pause()
+        assert _block(view, "s1", DelegateSummaryBlock).expanded is True
+
+        await view.focus_lane("lane-1", [_CHILD_BANNER])
+        await pilot.pause()
+        await view.restore_main()
+        await pilot.pause()
+        assert _block(view, "s1", DelegateSummaryBlock).expanded is True
 
 
 @pytest.mark.asyncio

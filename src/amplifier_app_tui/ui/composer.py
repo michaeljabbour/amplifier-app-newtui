@@ -308,7 +308,18 @@ class ComposerInput(TextArea):
 
 
 class Composer(Horizontal):
-    """[mode] ❯ <input> — the bottom input strip."""
+    """[mode] ❯ <input> — the bottom input strip.
+
+    D2 (composer/status separation, compliance 2026-08-02): the whole row
+    lifts onto the ``$bg-tab`` elevated-surface token while focus is
+    anywhere inside it (``:focus-within`` — the input today, any future
+    focusable child tomorrow) and settles back to the plain ``$bg-chrome``
+    fill when focus moves elsewhere. Both tokens are per-theme (see
+    ``ui/themes.py``), so focused vs unfocused stays visually distinct in
+    every theme, and the swap is a whole-row background change rather than
+    a text-color tint — legible even with color off. See ``ui/footer.py``
+    for the paired structural seam below the composer.
+    """
 
     DEFAULT_CSS = """
     Composer {
@@ -317,6 +328,7 @@ class Composer(Horizontal):
         background: $bg-chrome;
         padding: 0 1;
     }
+    Composer:focus-within { background: $bg-tab; }
     Composer.mode-chat { border-left: thick $rule; }
     Composer.mode-plan { border-left: thick $blue; }
     Composer.mode-brainstorm { border-left: thick $teal; }

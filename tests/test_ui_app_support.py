@@ -57,15 +57,17 @@ def test_esc_sequence_expires_and_clears() -> None:
 
 def test_attention_bell_rings_when_a_decision_is_deferred() -> None:
     """A deferred decision always needs the human — elapsed is irrelevant."""
-    assert attention_bell_needed("decision_deferred", 0.0, environ={})
+    assert attention_bell_needed("awaiting_approval", 0.0, environ={})
+    assert attention_bell_needed("awaiting_clarification", 0.0, environ={})
+    assert attention_bell_needed("error", 0.0, environ={})
 
 
 def test_attention_bell_rings_only_after_long_turns() -> None:
     """Turn end rings only when the turn ran long enough that the user has
     plausibly looked away; quick exchanges stay silent."""
-    assert not attention_bell_needed("turn_finished", 0.0, environ={})
-    assert not attention_bell_needed("turn_finished", ATTENTION_MIN_TURN_SECONDS - 0.1, environ={})
-    assert attention_bell_needed("turn_finished", ATTENTION_MIN_TURN_SECONDS, environ={})
+    assert not attention_bell_needed("completion", 0.0, environ={})
+    assert not attention_bell_needed("completion", ATTENTION_MIN_TURN_SECONDS - 0.1, environ={})
+    assert attention_bell_needed("completion", ATTENTION_MIN_TURN_SECONDS, environ={})
 
 
 def test_attention_bell_honors_amplifier_notify_env() -> None:
@@ -73,9 +75,7 @@ def test_attention_bell_honors_amplifier_notify_env() -> None:
     the suppressed hooks-notify module honored."""
     for value in ("false", "0", "no", "off", "FALSE", "Off"):
         assert not attention_bell_needed(
-            "decision_deferred", 0.0, environ={"AMPLIFIER_NOTIFY": value}
+            "awaiting_approval", 0.0, environ={"AMPLIFIER_NOTIFY": value}
         )
-        assert not attention_bell_needed(
-            "turn_finished", 999.0, environ={"AMPLIFIER_NOTIFY": value}
-        )
-    assert attention_bell_needed("decision_deferred", 0.0, environ={"AMPLIFIER_NOTIFY": "true"})
+        assert not attention_bell_needed("completion", 999.0, environ={"AMPLIFIER_NOTIFY": value})
+    assert attention_bell_needed("awaiting_approval", 0.0, environ={"AMPLIFIER_NOTIFY": "true"})
