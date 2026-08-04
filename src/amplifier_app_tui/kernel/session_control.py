@@ -49,12 +49,24 @@ import os
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from .file_lock import locked as _file_lock
+from .session_authz import (
+    CONTROL,
+    READ,
+    TRUSTED_LOCAL,
+    WRITE,
+    AuthorizationPolicy,
+    AuthProvenance,
+    Principal,
+)
+
 CONTROL_FILENAME = "control.json"
+
 """Durable control state (handle, lease, pause flag, handoffs, idem keys)."""
 
 AUDIT_FILENAME = "control-audit.jsonl"
@@ -96,6 +108,12 @@ REASON_TAKEOVER_DENIED = "takeover_denied"
 REASON_SESSION_PAUSED = "session_paused"
 REASON_UNKNOWN_HANDOFF = "unknown_handoff"
 REASON_HANDOFF_CLAIMED = "handoff_claimed"
+REASON_UNAUTHENTICATED = "unauthenticated"
+REASON_IDENTITY_UNVERIFIED = "identity_unverified"
+REASON_PERMISSION_DENIED = "permission_denied"
+
+PERMISSION_FOR = {READ: READ, WRITE: WRITE, CONTROL: CONTROL}
+"""Re-exported so an adapter can name a permission without a second import."""
 
 
 # -- actors ------------------------------------------------------------------
@@ -105,17 +123,24 @@ REASON_HANDOFF_CLAIMED = "handoff_claimed"
 class Actor:
     """Who a control message is from.
 
-    ``kind`` drives takeover precedence and nothing else; it is a *claim* the
-    client makes, recorded verbatim in the audit trail. Transport-level
-    authentication is deliberately out of scope here -- serve speaks over a
-    pipe whose peer the OS already established. A networked adapter (item B8)
-    maps its authenticated principal onto this record; the semantics below
-    hold whatever that mapping is.
+    ``kind`` drives takeover precedence. It is a *claim* the client makes --
+    but no longer an unchecked one: :meth:`SessionControl.authenticate` refuses
+    any claim that outranks the authenticated :class:`~.session_authz.Principal`
+    behind the connection, so a client can no longer assert ``kind:"human"``
+    and seize the lease from a real person's automation.
+
+    ``auth`` is the provenance of that check, and is present **only when the
+    identity was actually verified**. Its absence is therefore meaningful: it
+    says "established by the OS pipe peer and nothing stronger", which is
+    exactly what a local ``serve`` over a pipe can honestly claim. A networked
+    adapter authenticates its own principal and the block appears, so the trail
+    distinguishes an authenticated human from a process that typed the word.
     """
 
     id: str
     kind: str = AUTOMATION
     display: str = ""
+    auth: AuthProvenance | None = None
 
     @property
     def precedence(self) -> int:
@@ -125,6 +150,8 @@ class Actor:
         record: dict[str, Any] = {"id": self.id, "kind": self.kind}
         if self.display:
             record["display"] = self.display
+        if self.auth is not None:
+            record["auth"] = self.auth.as_dict()
         return record
 
     @classmethod
@@ -133,6 +160,11 @@ class Actor:
 
         Returns ``None`` when the field is absent or carries no usable id, so
         callers can distinguish "unattributed" from "attributed as X".
+
+        A client-supplied ``auth`` block is deliberately **ignored** here --
+        provenance is minted by the control plane from the policy's own
+        verdict, never accepted from the wire. Only :meth:`from_dict`, which
+        rehydrates state this process previously wrote, reads it back.
         """
         if isinstance(raw, str):
             ident = raw.strip()
@@ -149,7 +181,15 @@ class Actor:
 
     @classmethod
     def from_dict(cls, raw: Any) -> Actor:
-        return cls.parse(raw) or cls(id=ANONYMOUS_ID, kind=UNKNOWN)
+        """Rehydrate an actor written to durable state, provenance included."""
+        parsed = cls.parse(raw)
+        if parsed is None:
+            return cls(id=ANONYMOUS_ID, kind=UNKNOWN)
+        if isinstance(raw, dict):
+            provenance = AuthProvenance.parse(raw.get("auth"))
+            if provenance is not None:
+                return replace(parsed, auth=provenance)
+        return parsed
 
 
 ANONYMOUS = Actor(id=ANONYMOUS_ID, kind=UNKNOWN)
@@ -357,48 +397,36 @@ class WriteDecision:
     reason: str = ""
 
 
-@contextmanager
-def _file_lock(target: Path, *, timeout: float = 5.0, stale_after: float = 30.0) -> Iterator[None]:
-    """Best-effort inter-process critical section around *target*.
+@dataclass(frozen=True)
+class AuthDecision:
+    """Outcome of establishing WHO sent one op, before deciding what they may do.
 
-    An ``O_EXCL`` create IS the lock; a lock file older than *stale_after* is
-    broken (a crashed holder must never wedge a session -- the same spirit as
-    lease expiry). If the lock cannot be taken within *timeout* we proceed
-    anyway: a control op hanging forever is a worse failure than a rare
-    last-writer-wins on the state file, and the lease's own epoch/id check
-    still rejects any writer acting on a superseded grant.
+    ``actor`` is the identity to *record* -- for a verified principal it is the
+    principal's own id and provenance, never the client's say-so.
     """
-    lock = target.with_name(target.name + ".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + timeout
-    acquired = False
-    while True:
-        try:
-            handle = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            try:
-                age = time.time() - lock.stat().st_mtime
-            except OSError:
-                continue
-            if age > stale_after:
-                with suppress(OSError):
-                    lock.unlink()
-                continue
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(0.005)
-            continue
-        except OSError:
-            break
-        os.close(handle)
-        acquired = True
-        break
-    try:
-        yield
-    finally:
-        if acquired:
-            with suppress(OSError):
-                lock.unlink()
+
+    allowed: bool
+    actor: Actor
+    records: list[dict[str, Any]]
+    principal: Principal | None = None
+    reason: str = ""
+    claimed: bool = False
+
+    @property
+    def attributed(self) -> Actor | None:
+        """The identity to *impose* on the op, or ``None`` to leave it open.
+
+        ``None`` is deliberate and load-bearing: an op that claims no actor
+        under the unverified local policy should keep inheriting whoever holds
+        the lease (that is how ``{"op":"submit","lease":"l-..."}`` has always
+        been attributed to the holder), and an ``lease.acquire`` with no actor
+        at all must still be refused with ``no_actor`` rather than silently
+        granted to "anonymous". A verified principal, by contrast, is always
+        imposed -- there is nothing to infer once identity is established.
+        """
+        if self.claimed or (self.principal is not None and self.principal.verified):
+            return self.actor
+        return None
 
 
 class SessionControl:
@@ -418,12 +446,18 @@ class SessionControl:
         now: Callable[[], float] | None = None,
         default_ttl: float = DEFAULT_LEASE_TTL,
         default_actor: Actor = ANONYMOUS,
+        policy: AuthorizationPolicy | None = None,
     ) -> None:
         self.session_dir = session_dir
         self.session_id = session_id
         self._now = now or time.time
         self.default_ttl = default_ttl
         self.default_actor = default_actor
+        # No policy supplied -> trust the OS-established pipe peer, exactly as
+        # this plane behaved before authorization existed. Authorization is
+        # opt-in in the same way the control plane itself is.
+        self.policy: AuthorizationPolicy = policy or TRUSTED_LOCAL
+
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._path = session_dir / CONTROL_FILENAME
         self._audit_path = session_dir / AUDIT_FILENAME
@@ -546,8 +580,168 @@ class SessionControl:
         return record
 
     def status_record(self) -> dict[str, Any]:
-        """Read-only ``lease.status`` reply (never mutates, never audits)."""
+        """Read-only ``lease.status`` reply (never mutates, never audits).
+
+        Deliberately unchanged and lease-shaped: existing clients branch on
+        this record. The complete picture lives in :meth:`control_status`,
+        which ``session.status`` composes with the runtime's own state.
+        """
         return self._lease_record(self._read())
+
+    def control_status(self) -> dict[str, Any]:
+        """Everything the control plane knows, for a controller's decision.
+
+        ``lease.status`` answers "who holds the pen". A controller deciding
+        whether to act needs more than that: how long the grant has left
+        (so it can heartbeat rather than lose it), whether a pause is
+        outstanding and who parked it, which handoffs are still unclaimed
+        (an escalation nobody picked up is the interesting one), how identity
+        is being established at all, and where the audit trail stands. All of
+        it is a pure read -- never mutates, never audits, safe to poll.
+        """
+        state = self._read()
+        now = self._now()
+        lease = state.lease
+        live = lease if lease is not None and not lease.expired(now) else None
+        lease_record = live.as_dict() if live else None
+        if lease_record is not None and live is not None:
+            lease_record["expires_in"] = max(0.0, live.expires_at - now)
+        open_handoffs = [h.as_dict() for h in state.handoffs if not h.claimed]
+        trail = self.audit_entries(1)
+        return {
+            "session_id": self.session_id,
+            "handle_id": state.handle_id,
+            "epoch": state.epoch,
+            "now": now,
+            "paused": state.paused,
+            "paused_by": state.paused_by.as_dict() if state.paused_by else None,
+            "paused_at": state.paused_at,
+            "lease": lease_record,
+            "holder": live.actor.as_dict() if live else None,
+            "handoffs": {
+                "total": len(state.handoffs),
+                "open": len(open_handoffs),
+                "pending": open_handoffs,
+            },
+            "authz": self.policy.describe(),
+            "audit": {"seq": state.audit_seq, "last": trail[-1] if trail else None},
+        }
+
+    # -- authentication / permission ---------------------------------------
+
+    def authenticate(self, op_kind: str, op: dict[str, Any], permission: str) -> AuthDecision:
+        """Establish WHO sent *op* and whether they hold *permission*.
+
+        Three refusals, in order, each a surfaced ``control.conflict`` rather
+        than a silent downgrade:
+
+        1. the policy cannot establish a principal from the presented
+           credential -> ``unauthenticated``;
+        2. the message claims an identity the principal is not entitled to --
+           a different id, or a ``kind`` that outranks the verified one ->
+           ``identity_unverified``. This is the escalation that mattered: a
+           client asserting ``kind:"human"`` could otherwise take the lease
+           from a real person's automation, because a human always outranks a
+           bot;
+        3. the principal holds no ``permission`` for this class of op ->
+           ``permission_denied``.
+
+        On success the returned :class:`Actor` is what the trail records. For
+        a **verified** principal the id and ``kind`` come from the principal,
+        not from the client's say-so, and an ``auth`` provenance block is
+        stamped on -- so an authenticated human on a phone is distinguishable
+        after the fact from a process that merely typed ``kind:"human"``. For
+        the default unverified local policy the actor is byte-identical to
+        what this plane recorded before authorization existed.
+        """
+        claimed = Actor.parse(op.get("actor"))
+        fallback = claimed or self.default_actor
+        principal = self.policy.resolve(
+            op.get("auth"),
+            claimed_id=fallback.id,
+            claimed_kind=fallback.kind,
+        )
+        if principal is None:
+            return self._auth_refusal(
+                op_kind,
+                fallback,
+                REASON_UNAUTHENTICATED,
+                "no verified principal for the presented credential; present a valid control token",
+            )
+        claim_kind = claimed.kind if claimed is not None else fallback.kind
+        wrong_identity = (
+            principal.verified
+            and claimed is not None
+            and claimed.id
+            and claimed.id != principal.principal_id
+        )
+        if wrong_identity or not principal.may_claim(claim_kind):
+            return self._auth_refusal(
+                op_kind,
+                fallback,
+                REASON_IDENTITY_UNVERIFIED,
+                f"principal {principal.principal_id!r} ({principal.kind}) may not act as "
+                f"{(claimed.id if claimed else fallback.id)!r} ({claim_kind})",
+                principal=principal,
+            )
+        if not principal.permits(permission):
+            return self._auth_refusal(
+                op_kind,
+                self._actor_for(principal, claimed, fallback),
+                REASON_PERMISSION_DENIED,
+                f"principal {principal.principal_id!r} lacks the {permission!r} permission "
+                f"(holds {sorted(principal.permissions) or 'none'})",
+                principal=principal,
+            )
+        return AuthDecision(
+            True,
+            self._actor_for(principal, claimed, fallback),
+            [],
+            principal,
+            claimed=claimed is not None,
+        )
+
+    def _actor_for(self, principal: Principal, claimed: Actor | None, fallback: Actor) -> Actor:
+        """The identity to attribute, once the claim has been checked.
+
+        Unverified (the local-pipe default) -> exactly the claimed actor, with
+        no ``auth`` block, so existing records are unchanged. Verified -> the
+        principal's own id, the claimed (permitted) kind, and provenance.
+        """
+        if not principal.verified:
+            return claimed or fallback
+        return Actor(
+            id=principal.principal_id,
+            kind=claimed.kind if claimed is not None else principal.kind,
+            display=(claimed.display if claimed is not None else "") or principal.display,
+            auth=principal.provenance(),
+        )
+
+    def _auth_refusal(
+        self,
+        op_kind: str,
+        actor: Actor,
+        reason: str,
+        detail: str,
+        *,
+        principal: Principal | None = None,
+    ) -> AuthDecision:
+        records: list[dict[str, Any]] = []
+        with self._transaction() as state:
+            records.append(
+                self._conflict(op=op_kind, reason=reason, detail=detail, state=state, actor=actor)
+            )
+            records.append(
+                self._audit(
+                    state,
+                    "auth.denied",
+                    actor,
+                    op=op_kind,
+                    why=reason,
+                    principal=principal.principal_id if principal else None,
+                )
+            )
+        return AuthDecision(False, actor, records, principal, reason)
 
     def _conflict(
         self, *, op: str, reason: str, detail: str, state: _State, actor: Actor
@@ -1015,8 +1209,11 @@ class SessionControl:
 
     # -- write gating ------------------------------------------------------
 
-    def authorize(self, op_kind: str, op: dict[str, Any]) -> WriteDecision:
+    def authorize(
+        self, op_kind: str, op: dict[str, Any], *, actor: Actor | None = None
+    ) -> WriteDecision:
         """Decide whether one write op may proceed, and attribute it.
+
 
         The rule, stated once:
 
@@ -1029,9 +1226,16 @@ class SessionControl:
         That is the single-writer guarantee: two clients can never both land in
         the allowed branch, so conflicting input is refused at the door instead
         of interleaved into the transcript.
+
+        *actor* is the identity :meth:`authenticate` already established for
+        this op; passing it is how an adapter keeps a verified principal's
+        provenance on the record instead of re-reading the client's claim.
+        Omitting it falls back to parsing the op, which is what a caller with
+        no authorization policy in play wants.
         """
         presented = str(op.get("lease", "") or "")
-        supplied = Actor.parse(op.get("actor"))
+        supplied = actor or Actor.parse(op.get("actor"))
+
         records: list[dict[str, Any]] = []
         with self._transaction() as state:
             expired = self._expire_if_due(state)

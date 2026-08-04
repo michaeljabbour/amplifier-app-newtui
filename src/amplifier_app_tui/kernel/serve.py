@@ -133,8 +133,10 @@ import asyncio
 import json
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import redirect_stdout
-from typing import IO, Any
+from typing import IO, Any, cast
+
 
 from . import session_manager
 from .context_meter import ContextMeter
@@ -142,6 +144,20 @@ from .events import ProviderResponseUsage
 from .jsonl import JsonlRecords
 from .prompt_history import PromptHistoryStore
 from .runtime import RealRuntime
+from .session_attach import (
+    AttachServer,
+    FanoutWriter,
+    live_endpoint,
+    run_attach_client,
+)
+from .session_authz import (
+    AUTHZ_FILENAME,
+    CONTROL,
+    READ,
+    WRITE,
+    AuthorizationPolicy,
+    policy_for,
+)
 from .session_control import (
     ANONYMOUS,
     AUTOMATION,
@@ -320,35 +336,123 @@ _CONTROL_OPS = frozenset(
     }
 )
 
-_WRITE_OPS = frozenset({"submit", "steer", "approve", "decision", "interrupt"})
-"""Ops that put words in the session -- exactly what the lease guards."""
+STATUS_OP = "session.status"
+"""The complete-status read. Serviced in the loop (it needs the runtime's own
+state), not in :func:`_handle_control_op`, which is control-plane-only."""
 
-_CONTROL_FIELDS = ("actor", "lease", "idem")
+OP_PERMISSIONS: dict[str, str] = {
+    # -- reads: observe, never change anything -------------------------------
+    "session.handle": READ,
+    "session.status": READ,
+    "lease.status": READ,
+    "handoff.list": READ,
+    "audit.query": READ,
+    "history.query": READ,
+    "history.replay": READ,
+    "context.get": READ,
+    "effort.get": READ,
+    "tag.list": READ,
+    "tag.sessions": READ,
+    # -- mutations: everything that changes the session ----------------------
+    "submit": WRITE,
+    "steer": WRITE,
+    "approve": WRITE,
+    "decision": WRITE,
+    "interrupt": WRITE,
+    "tag.add": WRITE,
+    "tag.remove": WRITE,
+    "effort.set": WRITE,
+    "effort.cycle": WRITE,
+    # -- ownership: who holds the pen ----------------------------------------
+    "lease.acquire": CONTROL,
+    "lease.heartbeat": CONTROL,
+    "lease.release": CONTROL,
+    "lease.takeover": CONTROL,
+    "session.pause": CONTROL,
+    "session.resume": CONTROL,
+    "handoff.claim": CONTROL,
+}
+"""THE registry: every op serve services, and the permission it needs.
+
+This table is the mechanism behind "no mutation path can bypass attribution".
+Membership is not documentation -- an op classified ``WRITE`` is routed through
+:meth:`SessionControl.authorize`, which cannot accept it without appending a
+``write.accepted`` (or ``write.rejected``) entry to the audit trail. So adding
+a mutation without an audit entry is not a discipline anyone has to remember;
+it is impossible without editing this dict, and
+``tests/test_serve_audit_registry.py`` fails the build if an op the loop
+handles is missing from it.
+
+Before this table, ``tag.add`` / ``tag.remove`` / ``effort.set`` /
+``effort.cycle`` mutated the session with no lease check and no attribution
+whatsoever -- the audit trail covered the control plane and the five transcript
+writes, and nothing else.
+"""
+
+_META_OPS = frozenset({"quit", "__eof__"})
+"""Connection lifecycle, not session operations -- no permission, no audit."""
+
+_WRITE_OPS = frozenset(kind for kind, need in OP_PERMISSIONS.items() if need == WRITE)
+"""Ops that mutate the session -- exactly what the lease guards and the trail
+records. Derived from the registry so the two can never drift apart."""
+
+_GUARDED_OPS = frozenset(OP_PERMISSIONS)
+
+_CONTROL_FIELDS = ("actor", "lease", "idem", "auth")
 
 
 def _wants_control(kind: str, op: dict[str, Any]) -> bool:
     """Has this client opted into the control plane?
 
     A control op, or any op carrying attribution / a write token / an
-    idempotency key. Until then serve stays byte-identically legacy and writes
-    no control files (the same lazy discipline the tag ops use).
+    idempotency key / a credential. Until then serve stays byte-identically
+    legacy and writes no control files (the same lazy discipline the tag ops
+    use).
     """
     return kind in _CONTROL_OPS or any(op.get(field) for field in _CONTROL_FIELDS)
+
+
+def _authz_policy(runtime: Any) -> AuthorizationPolicy:
+    """The authorization policy this project implies.
+
+    A project with an issued control token authenticates; one without keeps
+    trusting the OS-established pipe peer. Opt-in, exactly like the control
+    plane itself -- ``amplifier-tui control-token issue`` is the switch.
+    """
+    try:
+        store = _serve_store(runtime)
+        return policy_for(store.base_dir / AUTHZ_FILENAME)
+    except Exception:  # noqa: BLE001 -- an unreadable store must not fail open loudly
+        return policy_for(None)
 
 
 def _open_control(runtime: Any, default_actor: Actor) -> SessionControl:
     """Materialize the control plane over THIS session's store directory."""
     store = _serve_store(runtime)
     session_id = str(getattr(runtime, "session_id", ""))
-    return SessionControl(store.session_dir(session_id), session_id, default_actor=default_actor)
+    return SessionControl(
+        store.session_dir(session_id),
+        session_id,
+        default_actor=default_actor,
+        policy=_authz_policy(runtime),
+    )
 
 
-def _handle_control_op(control: SessionControl, op: dict[str, Any]) -> list[dict[str, Any]]:
+def _handle_control_op(
+    control: SessionControl, op: dict[str, Any], *, actor: Actor | None = None
+) -> list[dict[str, Any]]:
     """Service one control op; return the records to emit (one home for the
-    wire shape, so a non-serve adapter gets the same answers)."""
+    wire shape, so a non-serve adapter gets the same answers).
+
+    *actor* is the identity already established for this op by
+    :meth:`SessionControl.authenticate`; it carries the verified principal's
+    provenance, which the raw ``op["actor"]`` claim does not.
+    """
     kind = str(op.get("op", ""))
-    actor = Actor.parse(op.get("actor"))
+    if actor is None:
+        actor = Actor.parse(op.get("actor"))
     lease_id = str(op.get("lease", "") or "")
+
     if kind == "session.handle":
         return [control.handle_record()]
     if kind == "lease.status":
@@ -444,6 +548,150 @@ DEFAULT_HISTORY_QUERY_LIMIT = 10
 """Default cap for a ``history.query`` with no explicit ``limit``."""
 
 
+def _ledger_tail(runtime: Any) -> dict[str, Any]:
+    """Ledger depth + the last durable event -- "what happened most recently".
+
+    A controller reattaching or deciding whether to intervene needs a cursor
+    and a most-recent fact, and ``history.replay`` is the wrong tool for a
+    one-line answer. Walks the generator without materializing the ledger, and
+    degrades to an empty tail rather than failing a status read.
+    """
+    session_id = str(getattr(runtime, "session_id", ""))
+    count = 0
+    last: dict[str, Any] | None = None
+    try:
+        for raw in _serve_store(runtime).read_events(session_id):
+            count += 1
+            last = raw
+    except Exception:  # noqa: BLE001 -- a status read must never be fatal
+        return {"events": 0, "cursor": 0, "last": None}
+    tail = None
+    if last is not None:
+        tail = {"kind": last.get("kind", ""), "ts": last.get("ts", "")}
+    return {"events": count, "cursor": count, "last": tail}
+
+
+async def _runtime_effort(runtime: Any) -> str | None:
+    getter = getattr(runtime, "get_effort", None)
+    if getter is None:
+        return None
+    try:
+        return await getter()
+    except Exception:  # noqa: BLE001 -- an unreachable tier is unknown, not fatal
+        return None
+
+
+def _pending_approval(runtime: Any) -> dict[str, Any] | None:
+    head = getattr(getattr(runtime, "broker", None), "head", None)
+    if head is None:
+        return None
+    return {
+        "ticket_id": getattr(head, "ticket_id", ""),
+        "prompt": getattr(head, "prompt", ""),
+        "options": list(getattr(head, "options", ()) or ()),
+    }
+
+
+def _pending_decisions(runtime: Any) -> list[dict[str, Any]]:
+    queue = getattr(runtime, "needs_you", None)
+    pending = getattr(queue, "pending", ()) if queue is not None else ()
+    return [
+        {
+            "decision_id": getattr(item, "decision_id", ""),
+            "question": getattr(item, "question", ""),
+        }
+        for item in pending
+    ]
+
+
+def _attention_state(
+    *,
+    paused: bool,
+    approval: dict[str, Any] | None,
+    decisions: list[dict[str, Any]],
+    turn_active: bool,
+) -> str:
+    """The one word a controller branches on, in strict priority order.
+
+    A paused session is paused whatever else is true (nothing may write); an
+    approval blocks the turn it is inside; a deferred decision is waiting on a
+    person but not blocking; otherwise the session is simply working or free.
+    """
+    if paused:
+        return "paused"
+    if approval is not None:
+        return "awaiting_approval"
+    if decisions:
+        return "awaiting_decision"
+    return "busy" if turn_active else "idle"
+
+
+async def _session_status_record(
+    runtime: Any,
+    control: SessionControl | None,
+    meter: ContextMeter,
+    *,
+    turn_active: bool,
+) -> dict[str, Any]:
+    """The complete ``session.status`` reply.
+
+    ``lease.status`` answers exactly one question -- who holds the write token
+    -- which is not enough for a controller to decide anything. The audit
+    behind this record: to act sensibly a controller needs to know whether a
+    turn is running (else its submit is dropped as a re-submit), whether an
+    approval or a deferred decision is blocking (else it waits forever for a
+    turn that cannot finish), which model and reasoning tier are actually in
+    force (they change mid-session), what it has queued, how much context and
+    budget are left, where the durable ledger stands, and only THEN the lease
+    and pause state. All of that is assembled here, from the runtime and the
+    control plane, as ONE record.
+
+    Everything is read defensively: status must answer even when the runtime
+    is mid-boot or a field is missing, because a status call that raises is
+    worse than one that says "unknown".
+    """
+    model_name = str(getattr(runtime, "model_name", "") or "")
+    provider, _, model = model_name.partition("/")
+    steering = getattr(runtime, "steering", None)
+    approval = _pending_approval(runtime)
+    decisions = _pending_decisions(runtime)
+    control_state = control.control_status() if control is not None else None
+    paused = bool(control_state["paused"]) if control_state else False
+    window = getattr(getattr(runtime, "compaction", None), "max_tokens", None)
+    return {
+        "schema_version": 1,
+        "type": "session.status",
+        "ok": True,
+        "session_id": str(getattr(runtime, "session_id", "")),
+        "state": _attention_state(
+            paused=paused, approval=approval, decisions=decisions, turn_active=turn_active
+        ),
+        "turn": {
+            "active": turn_active,
+            "queued_steers": len(getattr(steering, "pending_steers", ()) or ()),
+            "queued_next_turn": len(getattr(steering, "pending_next_turn", ()) or ()),
+        },
+        "session": {
+            "bundle": str(getattr(runtime, "bundle_name", "") or ""),
+            "model": model or model_name,
+            "provider": provider if model else "",
+            "effort": await _runtime_effort(runtime),
+        },
+        "pending": {
+            "approval": approval,
+            "decisions": decisions,
+            "decision_count": len(decisions),
+        },
+        "context": meter.snapshot(
+            session_id=str(getattr(runtime, "session_id", "")),
+            model=model_name,
+            window=window,
+        ),
+        "history": _ledger_tail(runtime),
+        "control": control_state,
+    }
+
+
 def _history_list_record(runtime: RealRuntime, op: dict[str, Any]) -> dict[str, Any]:
     """Build the ``history.list`` reply to a ``history.query`` op.
 
@@ -497,14 +745,27 @@ async def serve(
     attach: str | None = None,
     actor: str | None = None,
     actor_kind: str = AUTOMATION,
+    attachable: bool = False,
 ) -> int:
     """Boot a RealRuntime and run the interactive protocol loop on stdio.
 
     ``attach`` is a durable attach ref (``amplifier-session:<session_id>[#<handoff_id>]``
-    or a bare session id): it resumes THAT session, and when the ref carries a
-    handoff id the loop claims it on boot -- the supported live attach/handoff
-    adapter over the protocol. ``actor``/``actor_kind`` stamp the default
-    identity for ops that omit their own.
+    or a bare session id) and resolves in two stages:
+
+    1. **Live runtime.** If another process is currently serving that session
+       it advertises a Unix-socket endpoint beside the session directory; we
+       join it as a peer and drive the SAME running runtime. No second runtime
+       is booted, so there is no second writer and no way to corrupt the
+       transcript. Detaching closes the socket and leaves that session running.
+    2. **Session state.** With no live owner, this falls back to what
+       ``--attach`` always did: resume that session here and, when the ref
+       carries a handoff id, claim it on boot so the arriving human holds the
+       write lease before their first keystroke. This process then becomes the
+       live owner and advertises its own endpoint.
+
+    ``actor``/``actor_kind`` stamp the default identity for ops that omit their
+    own; a project with an issued control token additionally requires each op
+    to present one (:mod:`kernel.session_authz`).
 
     Returns an exit code. Construction lives here; the loop lives in
     :func:`serve_loop`, which a test can drive against a pre-started runtime.
@@ -515,6 +776,18 @@ async def serve(
         if attached_session:
             resume_id = attached_session
     default_actor = Actor(id=actor, kind=actor_kind) if actor else ANONYMOUS
+    if attach and resume_id:
+        joined = await _join_live_session(
+            resume_id,
+            project_dir=project_dir,
+            stdin=stdin,
+            stdout=stdout,
+            attach_handoff=attach_handoff,
+            default_actor=default_actor,
+        )
+        if joined is not None:
+            return joined
+
     # Capture the real stdout BEFORE redirecting stray module prints to stderr —
     # exactly the discipline the ``run`` JSONL path uses so the protocol stream
     # stays clean while boot/module chatter still goes somewhere visible.
@@ -567,7 +840,52 @@ async def serve(
             out=out,
             default_actor=default_actor,
             attach_handoff=attach_handoff,
+            attachable=attachable or bool(attach),
         )
+
+
+async def _join_live_session(
+    session_id: str,
+    *,
+    project_dir: Any,
+    stdin: IO[str] | None,
+    stdout: IO[str] | None,
+    attach_handoff: str | None,
+    default_actor: Actor,
+) -> int | None:
+    """Join a session another process is already serving, or return ``None``.
+
+    ``None`` means "no live owner" -- the caller boots its own runtime and
+    becomes one. This is the whole double-writer defence: the check happens
+    BEFORE a rival runtime exists, and a stale advert (owner hard-killed,
+    socket dead) is broken rather than believed, so a crash can never make a
+    session look permanently occupied.
+    """
+    from .persistence import SessionStore
+
+    try:
+        store = SessionStore(project_dir=project_dir)
+        endpoint = live_endpoint(store.session_dir(session_id))
+    except Exception:  # noqa: BLE001 -- an unreadable store simply has no live owner
+        return None
+    if endpoint is None:
+        return None
+    hello: dict[str, Any] | None = None
+    if attach_handoff:
+        # The arriving human claims the escalation over the socket, so the
+        # lease changes hands in the OWNER's control plane -- one writer, one
+        # state machine, whichever process the request came from.
+        hello = {
+            "op": "handoff.claim",
+            "handoff": attach_handoff,
+            "actor": default_actor.as_dict(),
+        }
+    return await run_attach_client(
+        endpoint,
+        source=stdin or sys.stdin,
+        out=stdout or sys.stdout,
+        hello=hello,
+    )
 
 
 async def serve_loop(
@@ -577,6 +895,8 @@ async def serve_loop(
     out: IO[str],
     default_actor: Actor = ANONYMOUS,
     attach_handoff: str | None = None,
+    attachable: bool = False,
+    control_factory: Callable[[], SessionControl] | None = None,
 ) -> int:
     """The protocol loop over an already-started ``runtime``: emit session start,
     stream events, and service ``submit``/``steer``/``approve``/``interrupt``
@@ -585,12 +905,65 @@ async def serve_loop(
 
     ``default_actor`` attributes ops that carry no ``actor`` of their own;
     ``attach_handoff`` claims that handoff right after ``session.started`` (the
-    human-takeover boot path)."""
+    human-takeover boot path).
+
+    ``attachable`` publishes the live-attach endpoint immediately instead of
+    waiting for the control plane to materialize, so a second process can join
+    THIS running runtime (see :mod:`kernel.session_attach`). Either way the
+    endpoint is retracted on the way out.
+
+    ``control_factory`` overrides how the control plane is constructed --
+    the seam the multi-process tests use to inject a deterministic clock, so
+    lease expiry can be exercised across real processes without racing a real
+    timer."""
     records = JsonlRecords()
     loop = asyncio.get_running_loop()
 
     # stdin is blocking; read it on a thread and marshal ops onto the loop.
     ops: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    # Attached peers see (and drive) the same session: every record goes to
+    # stdout AND to every peer, and their ops land in the SAME queue as
+    # stdin's, so one lease gate decides who may write regardless of which
+    # process asked.
+    fanout = FanoutWriter(out)
+    out = cast("IO[str]", fanout)
+    attach_server: AttachServer | None = None
+
+    async def _ensure_attach() -> None:
+        nonlocal attach_server
+        if attach_server is not None:
+            return
+        try:
+            store = _serve_store(runtime)
+            session_dir = store.session_dir(str(getattr(runtime, "session_id", "")))
+        except Exception:  # noqa: BLE001 -- no store, no attachment; keep serving
+            return
+        server = AttachServer(
+            session_dir,
+            str(getattr(runtime, "session_id", "")),
+            on_op=ops.put_nowait,
+        )
+        endpoint = await server.start()
+        if endpoint is None:
+            # Either the platform has no AF_UNIX or another process already
+            # owns this session. Both mean "do not advertise"; neither is a
+            # reason to stop serving the client we already have.
+            return
+        attach_server = server
+        fanout.server = server
+        # Announce it: a second participant needs a deterministic "you may
+        # attach now" edge, and so does anything automating the handover.
+        _emit_raw(
+            out,
+            {
+                "schema_version": 1,
+                "type": "attach.listening",
+                "session_id": endpoint.session_id,
+                "socket_path": endpoint.socket_path,
+                "pid": endpoint.pid,
+            },
+        )
 
     def _read_stdin() -> None:
         for line in source:
@@ -680,6 +1053,18 @@ async def serve_loop(
     # The control plane is materialized lazily (first control op / first op
     # carrying actor|lease|idem) so a legacy client's stream is untouched.
     control: SessionControl | None = None
+    policy: AuthorizationPolicy | None = None
+
+    def _policy() -> AuthorizationPolicy:
+        """This project's authorization policy, resolved once per connection.
+
+        Lazy and cached: a legacy client that never touches the control plane
+        never even stats the token store.
+        """
+        nonlocal policy
+        if policy is None:
+            policy = _authz_policy(runtime)
+        return policy
 
     def _emit_all(records: list[dict[str, Any]]) -> None:
         for record in records:
@@ -689,7 +1074,10 @@ async def serve_loop(
         nonlocal control
         if control is None:
             try:
-                control = _open_control(runtime, default_actor)
+                control = (
+                    control_factory() if control_factory else _open_control(runtime, default_actor)
+                )
+
             except Exception as caught:  # noqa: BLE001 -- report, stay legacy-open
                 # An unwritable session dir must not fake an ownership
                 # guarantee: say so and keep serving the legacy contract.
@@ -704,6 +1092,9 @@ async def serve_loop(
                 )
         return control
 
+    if attachable:
+        await _ensure_attach()
+
     if attach_handoff:
         # Live attach/handoff adapter: claim the escalation on boot so the
         # arriving human holds the write lease before their first keystroke.
@@ -712,27 +1103,71 @@ async def serve_loop(
             _emit_all([attached.handle_record()])
             _emit_all(attached.claim_handoff(attach_handoff, default_actor))
 
+    async def _emit_status() -> None:
+        _emit_raw(
+            out,
+            await _session_status_record(
+                runtime, control, meter, turn_active=turn is not None and not turn.done()
+            ),
+        )
+
     try:
         while True:
             op = await ops.get()
             kind = op.get("op")
-            if kind in ("__eof__", "quit"):
+            if kind in _META_OPS:
                 break
 
             # -- control plane ------------------------------------------------
             kind_str = str(kind or "")
-            if control is None and _wants_control(kind_str, op):
+            # Two doors in. Either the CLIENT opted in (a control op, or an op
+            # carrying actor / lease / idem / auth), or the PROJECT did, by
+            # having a control token issued -- in which case every classified
+            # op is authenticated and omitting the fields is not a way around
+            # it. That second door is the point: an authorization scheme you
+            # can skip by sending less is not an authorization scheme. It is
+            # also the ONLY thing that changes the legacy contract, it only
+            # does so for a project whose operator explicitly turned it on,
+            # and it never fires for a project with no tokens issued.
+            if control is None and (
+                _wants_control(kind_str, op)
+                or (kind_str in _GUARDED_OPS and _policy().requires_credential)
+            ):
                 _ensure_control()
-            if control is not None and (kind_str in _CONTROL_OPS or kind_str in _WRITE_OPS):
-                idem = str(op.get("idem", "") or "")
+
+                if control is not None:
+                    # A client that uses the control plane is a client that may
+                    # want a second participant: publish the live endpoint so a
+                    # human can attach to THIS runtime rather than boot a rival.
+                    await _ensure_attach()
+            if control is None and kind_str == STATUS_OP:
+                # Status before anyone opted in: answer the runtime half with a
+                # null control block rather than materializing control files.
+                await _emit_status()
+                continue
+            if control is not None and kind_str in _GUARDED_OPS:
+                # 1. WHO is this? A claimed identity that outranks the
+                #    authenticated principal is refused here, before any op
+                #    semantics run -- otherwise asserting "kind": "human" alone
+                #    beats a real person's automation to the lease.
+                auth = control.authenticate(kind_str, op, OP_PERMISSIONS[kind_str])
+                _emit_all(auth.records)
+                if not auth.allowed:
+                    continue
+                gated = kind_str in _CONTROL_OPS or kind_str in _WRITE_OPS
+                idem = str(op.get("idem", "") or "") if gated else ""
                 replayed = control.replay(idem) if idem else None
                 if replayed is not None:
                     # A retry after a dropped connection: answer with the
                     # original records, do NOT act twice.
                     _emit_all(replayed)
                     continue
+                if kind_str == STATUS_OP:
+                    await _emit_status()
+                    continue
                 if kind_str in _CONTROL_OPS:
-                    records = _handle_control_op(control, op)
+                    records = _handle_control_op(control, op, actor=auth.attributed)
+
                     _emit_all(records)
                     if idem and records:
                         control.remember(idem, records)
@@ -741,28 +1176,36 @@ async def serve_loop(
                         # turn stays an explicit opt-in.
                         asyncio.create_task(runtime.interrupt())  # noqa: RUF006
                     continue
-                decision = control.authorize(kind_str, op)
-                _emit_all(decision.records)
-                if not decision.allowed:
-                    # Deterministically refused (lease_held / not_holder /
-                    # lease_expired / session_paused) -- never interleaved.
-                    # Rejections are deliberately NOT remembered: a retry must
-                    # re-evaluate against the lease as it stands then.
-                    continue
-                if idem:
-                    ack = {
-                        "schema_version": 1,
-                        "type": "control.ack",
-                        "ok": True,
-                        "op": kind_str,
-                        "idem": idem,
-                        "session_id": getattr(runtime, "session_id", ""),
-                        "actor": decision.actor.as_dict(),
-                    }
-                    _emit_raw(out, ack)
-                    control.remember(idem, [ack])
+                if gated:
+                    # 2. MAY they write, right now? The single-writer lease
+                    #    gate -- which also appends write.accepted /
+                    #    write.rejected, so nothing classified WRITE in
+                    #    OP_PERMISSIONS can reach the runtime unattributed.
+                    decision = control.authorize(kind_str, op, actor=auth.attributed)
 
-            if kind == "submit":
+                    _emit_all(decision.records)
+                    if not decision.allowed:
+                        # Deterministically refused (lease_held / not_holder /
+                        # lease_expired / session_paused) -- never interleaved.
+                        # Rejections are deliberately NOT remembered: a retry
+                        # must re-evaluate against the lease as it stands then.
+                        continue
+                    if idem:
+                        ack = {
+                            "schema_version": 1,
+                            "type": "control.ack",
+                            "ok": True,
+                            "op": kind_str,
+                            "idem": idem,
+                            "session_id": getattr(runtime, "session_id", ""),
+                            "actor": decision.actor.as_dict(),
+                        }
+                        _emit_raw(out, ack)
+                        control.remember(idem, [ack])
+
+            if kind == STATUS_OP:
+                await _emit_status()
+            elif kind == "submit":
                 if turn is not None and not turn.done():
                     continue  # a turn is already running; ignore re-submit
                 text = str(op.get("text", ""))
@@ -860,6 +1303,15 @@ async def serve_loop(
             except Exception:  # noqa: BLE001 — a failed turn already emitted its record
                 pass
         pump.cancel()
+        if attach_server is not None:
+            # Clean detach from the other side: drop every peer and retract the
+            # advert, so the next process to open this session sees a free one
+            # rather than a socket nobody is listening on.
+            fanout.server = None
+            try:
+                await attach_server.stop()
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                pass
         try:
             await runtime.cleanup()
         except Exception:  # noqa: BLE001 — best-effort teardown

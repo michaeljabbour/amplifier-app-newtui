@@ -113,6 +113,8 @@ dot -Tsvg docs/diagrams/tui-amplifier-integration.dot -o docs/diagrams/tui-ampli
 | widgets & reducer | `tests/test_ui_*.py` | per-widget + Textual Pilot headless driving |
 | end-to-end flows | `tests/test_flow_*.py` | scripted turns via `DemoRuntime` (approval, interrupt, lanes, rewind, steer/queue…) |
 | real lifecycle | `tests/test_runtime_offline.py` | genuine foundation lifecycle with fake modules mounted via `file://` bundles |
+| two-process contention | `tests/test_session_control_multiprocess.py` | spawns `tests/helpers/serve_process.py` under `sys.executable` so two REAL processes contend over one session directory (single-writer, takeover, lease expiry, reattach after `kill -9`, live attach, identity). Deterministic without sleeps: every step is a barrier on a specific stdout record, and lease expiry is driven by a clock file the test writes rather than a real timer |
+
 | renderer | `tests/test_golden_widths.py` | golden width matrix |
 | performance | `tests/test_perf_spike.py` | renderer + live-tail budgets and the hybrid infinite-history 5k frame budget are enforced |
 | real-PTY capability (opt-in) | `tests/forge/test_capability_*.py` (`-m forge`) | drives the shipped binary through a real PTY via the forge daemon — demo lane always-on, real lane credential-gated (see below) |
