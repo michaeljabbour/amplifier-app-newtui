@@ -4,17 +4,19 @@
 **Status:** 📐 design direction — **proposed, review-gated. Not a confirmed implementation
 commitment.** The document *is* the deliverable; no code lands with it, and nothing here
 authorizes building a voice client, a mobile client, or a Teams/Outlook connector.
-**Built on:** B6 session-control contract (PR #203 — this branch's base) · B7 attention
-contract (PR #202)
+**Built on:** B6 session-control contract (PR #203 — merged to `main`) · B7 attention
+contract (PR #202 — open, not yet merged)
 **Author:** compliance worker · **Date:** 2026-08-03 · **Slug:** `voice-first-ambient-delegation`
 
 > **Citation honesty.** Every `file:line` cite into `kernel/session_control.py`,
 > `kernel/persistence.py`, `ui/notifications.py`, `docs/SESSION-CONTROL.md` and
-> `docs/SETTINGS.md` was verified against **this branch** at `55c8f48`. B7's
-> `AttentionRecord` / `AttentionCenter` are **not on this branch** — `ui/notifications.py`
-> here is still the pre-B7 bell → OSC 777 ladder. B7 is cited from **PR #202's stated
-> contract**, and every claim that depends on B7's *internals* (rather than its published
-> shape) is marked as such. Re-verify both before building anything below.
+> `docs/SETTINGS.md` was verified at `55c8f48`; B6 has since landed on **`main`**
+> (PR #203, squash-merged byte-identically), so those cites carry over unchanged. B7's
+> `AttentionRecord` / `AttentionCenter` are **still not on `main`** — `ui/notifications.py`
+> there is still the pre-B7 bell → OSC 777 ladder. B7 is cited from **PR #202's stated
+> contract** (open, unmerged as of this writing), and every claim that depends on B7's
+> *internals* (rather than its published shape) is marked as such. Re-verify both before
+> building anything below.
 
 ---
 
@@ -79,7 +81,7 @@ acceptable for that increment. Do not let "we shipped voice" stand in for "we sh
 
 ## What already exists (verified evidence)
 
-### B6 — session control (verified on this branch, `55c8f48`)
+### B6 — session control (merged to `main` via PR #203; verified at `55c8f48`)
 
 | Capability | Where |
 |---|---|
@@ -104,7 +106,7 @@ document:
 
 B6 named B8 as the layer that closes that gap. This document accepts that assignment (E1).
 
-### B7 — attention contract (PR #202; **not on this branch**)
+### B7 — attention contract (PR #202; **open, not yet merged to `main`**)
 
 Published shape, quoted from the PR:
 
@@ -131,7 +133,7 @@ honestly:** off-machine ntfy push is fired by an external hook off the raw kerne
 not routed through `AttentionRecord`, and has **no acknowledgement channel back to the TUI**.
 §3 is written against that constraint rather than around it.
 
-### Neighbouring facts on this branch
+### Neighbouring facts on `main`
 
 - Sessions live at `~/.amplifier/projects/<slug>/sessions/<session-id>/`
   (`kernel/persistence.py:138-142`); `SessionStore.list_sessions()` enumerates **one project**
@@ -522,7 +524,7 @@ this design needs.
 
 ### What needs **no** extension (the thin-adapter proof)
 
-These already reduce to B6/B7 as they stand on this branch:
+These already reduce to B6/B7 as they stand today:
 
 - Observer reattach and inspection — `history.replay`, read-only, lease untouched.
 - A human interrupting or taking over anything — `lease.takeover`, human always wins.
@@ -591,7 +593,7 @@ the right layer (`docs/DEVELOPMENT.md`, test-suite map):
 | Grants cached at session start survive a revoke | design | Consult grants **at use**, never at start — stated as a rule in §1 |
 | Activity scan cost grows with session count | `kernel/persistence.py:345` | mtime-keyed cache; add a write-side index only if measured too slow |
 | A pause parks the session while the human never answers | `kernel/session_control.py:1047-1051` (paused denies all writes) | Interpretations expire; expiry cancels **and resumes**, so a forgotten voice request cannot wedge a session |
-| This doc predates any implementation and cites two very fresh contracts | B7 is not even on this branch | Re-verify every B6/B7 cite before Phase 1; treat E5 as "verify first, then build" |
+| This doc predates any implementation and cites two very fresh contracts | B6 has landed on `main` (PR #203); B7 (PR #202) is still open, not yet merged | Re-verify every B6/B7 cite before Phase 1; treat E5 as "verify first, then build" |
 | Teams/Outlook specifics get invented under delivery pressure | — | They are marked OPEN below and sequenced into Phase 4, behind the permission model that constrains them |
 
 ---
