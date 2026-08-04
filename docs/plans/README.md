@@ -28,3 +28,13 @@ artifact; any follow-on implementation is tracked in the linked issue.
 | [self-improvement loop over skills/harness](2026-07-22-self-improvement-loop.md) | 🧭 Decision recorded (PR #58; issue #50 closed) |
 | [anchors pin lifecycle](2026-07-22-anchors-pin-lifecycle.md) | 🧭 Decision recorded (PR #59; issue #53 closed) |
 | [amplifier-agent eval (spike + decision)](2026-07-22-amplifier-agent-eval.md) | 🧭 Decided — stay core-native (PR #60; issue #54 closed) |
+
+## Architecture tracks (compliance round, 2026-08-02)
+
+Design-only tracks: the specification *is* the deliverable, and it is **design direction, not
+a confirmed implementation commitment**. Each names its required-but-missing contract
+extensions explicitly rather than assuming them.
+
+| Doc | Status |
+|---|---|
+| [voice-first, ambient delegation](2026-08-03-voice-first-ambient-delegation.md) | 📐 Design direction proposed (compliance item B8; built on the B6 session-control contract in [../SESSION-CONTROL.md](../SESSION-CONTROL.md) and the B7 attention contract) |
