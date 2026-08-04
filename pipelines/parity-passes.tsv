@@ -1,0 +1,2 @@
+# pass	date	commit	outcome	gaps_found	gap_ids	note
+1	2026-07-23	e6b50cd	gaps	11	100,101,102,103,104,105,106,107,108,109,110	baseline: three-lane read-only audit, docs/audits/ (1814 tests green)
