@@ -193,8 +193,12 @@ garbage — is kitty (via `TERM`/`KITTY_WINDOW_ID`) and ghostty / iTerm2 / WezTe
 **One normalized event per transition.** The bell and desktop rungs above are both driven
 by a single internal `AttentionRecord` (session id, reason, a stable event id, and an
 acknowledged flag) minted exactly once when the app transitions into needing you — a turn
-completes, a decision is parked awaiting your approval or clarification, or the session
-hits an error. Repeated renders, a reconnect, or a second kernel-side ping for a decision
+completes, or a decision is parked awaiting your approval or clarification. The record's
+`reason` contract also defines an `error` state, reserved for a session-level failure, but
+no production code path mints one today — nothing under `src/` calls `AttentionCenter.note`
+(or `TuiApp._notify_attention`) with `"error"` yet, so treat it as defined-but-not-yet-wired
+rather than a live trigger (only a unit test exercises the mechanism directly, against the
+reason literal). Repeated renders, a reconnect, or a second kernel-side ping for a decision
 that is already parked all resolve to the SAME record and do not notify again. Answering a
 deferred decision, or bringing the terminal window back into focus, acknowledges the
 record: the bell has nothing to retract, but the OSC 777 desktop indicator is best-effort
