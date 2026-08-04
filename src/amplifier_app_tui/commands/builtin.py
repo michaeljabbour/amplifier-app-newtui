@@ -101,7 +101,13 @@ def _cmd_compact(ctx: CommandContext, args: str) -> None:
 
 
 def _cmd_clear(ctx: CommandContext, args: str) -> None:
-    """``/clear`` — clear the conversation context."""
+    """``/clear`` — clear the transcript view AND the conversation context.
+
+    Both reset together (D3): every rendered row disappears immediately
+    and the live coordinator's context empties in the same action
+    (app-cli parity). Persisted session history on disk is untouched —
+    resume and ``/export`` still see the prior turns.
+    """
     del args
     ctx.clear_context()
 
@@ -376,6 +382,10 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         group="During",
         name="/clear",
+        # Mockup-verbatim palette copy (tests/test_commands_builtin.py pins
+        # this table to the design mockup) -- the fuller D3 explanation
+        # (view + context together, persisted history untouched) lives in
+        # _cmd_clear's docstring and docs/USER-GUIDE.md instead.
         desc="clear the conversation context",
         tag="built-in",
         handler=_cmd_clear,

@@ -126,6 +126,7 @@ class _FakeHost:
         self.status_refreshes = 0
         self.workers_run = 0
         self.effort_indicator: list[str | None] = []
+        self.transcript_view_clears = 0
 
     def run_worker(self, work: Any, *, exclusive: bool = False) -> None:
         # The app schedules the async body on its loop; here we just run it
@@ -138,6 +139,9 @@ class _FakeHost:
 
     def show_notice(self, text: str, duration: float | None = None) -> None:
         self.notices.append(text)
+
+    def clear_transcript_view(self) -> None:
+        self.transcript_view_clears += 1
 
     def refresh_status(self) -> None:
         self.status_refreshes += 1
@@ -268,7 +272,31 @@ def test_compact_context_notice(controller: SessionOpsController, host: _FakeHos
 def test_clear_context_notice(controller: SessionOpsController, host: _FakeHost) -> None:
     controller.clear_context()
     assert host.adapter.calls == ["clear_context"]
-    assert host.notices == ["context cleared · 4 messages dropped"]
+    # D3: /clear resets BOTH the context (this notice) AND the rendered
+    # view (clear_transcript_view), together, on a successful clear.
+    assert host.notices == ["view cleared · 4 messages dropped"]
+    assert host.transcript_view_clears == 1
+
+
+def test_clear_context_failure_leaves_the_view_untouched(
+    controller: SessionOpsController, host: _FakeHost
+) -> None:
+    """D3: a failed/unavailable clear must never wipe the transcript for
+    a no-op -- the view-only reset is gated on a confirmed context clear."""
+    host.adapter.clear_result = (False, 0)
+    controller.clear_context()
+    assert host.notices == ["clear unavailable in this session"]
+    assert host.transcript_view_clears == 0
+
+
+def test_repeated_clear_context_clears_the_view_every_time(
+    controller: SessionOpsController, host: _FakeHost
+) -> None:
+    """AC5 repeated clear: back-to-back ``/clear`` each reset the view."""
+    controller.clear_context()
+    controller.clear_context()
+    assert host.transcript_view_clears == 2
+    assert host.notices == ["view cleared · 4 messages dropped"] * 2
 
 
 def test_show_diff_unstaged(controller: SessionOpsController, host: _FakeHost) -> None:

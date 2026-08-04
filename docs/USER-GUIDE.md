@@ -207,7 +207,7 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | | `/model [name]` | list the provider's models, or switch the live model |
 | | `/effort [none…max]` | show or set reasoning effort |
 | | `/compact [focus]` | compact the conversation context, optionally focused |
-| | `/clear` | clear the conversation context |
+| | `/clear` | clear the transcript view + conversation context (not persisted history) |
 | | `/tools` | list the mounted tools |
 | | `/agents` | list the delegatable agents |
 | | `/skills` | list available skills |
@@ -232,7 +232,11 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 **Model, effort, compact, clear, status, tools, agents, diff** act on the live
 Amplifier session through the coordinator (the same calls the reference CLI
 makes). **`/model`** switches the mounted provider's model in place;
-**`/compact`** and **`/clear`** drive the context module directly.
+**`/compact`** and **`/clear`** drive the context module directly. **`/clear`**
+additionally empties the visible transcript in the same action — both the
+rendered rows and the live context reset together, immediately, with a brief
+confirmation. Neither touches the persisted session log on disk: resume and
+`/export` still see every prior turn.
 The packaged tui bundle also compacts automatically at 80% of its 300k
 window. Override `context.auto_compact`, `context.compact_threshold`, or
 `context.max_tokens` in settings; `/status` shows the effective policy and

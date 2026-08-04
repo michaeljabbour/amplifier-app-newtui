@@ -232,7 +232,9 @@ class CommandContext(Protocol):
         ...
 
     def clear_context(self) -> None:
-        """``/clear``: clear the conversation context."""
+        """``/clear``: clear the transcript view AND the conversation
+        context together (D3) — not persisted session history (resume
+        and ``/export`` are unaffected)."""
         ...
 
     def show_tools(self) -> None:
