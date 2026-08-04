@@ -2023,7 +2023,9 @@ class TuiApp(App[None]):
 
     def _refresh_title(self) -> None:
         self.title_bar.state_text = self.reducer.title_state()
-        self.title_bar.bundle = self.adapter.bundle_name
+        # The resolved bundle URI/path, not just its short name (D4 gap 1) --
+        # TitleBar fits it to the live terminal width itself (D4 gap 2).
+        self.title_bar.bundle_uri = self.adapter.bundle_uri
         self.title_bar.session_short = self.adapter.session_short
 
     def refresh_status(self) -> None:

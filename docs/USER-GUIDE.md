@@ -77,7 +77,11 @@ While Amplifier is working, the title bar pulses in-app and an unmistakable
 braille spinner is mirrored into your terminal window or tab title. Both use
 the same active-turn timer, so they stop immediately when the turn finishes and
 consume no idle redraw loop. The title bar is also the one place the
-active **bundle** shows — it never repeats in the footer below.
+active **bundle** shows — it never repeats in the footer below. It shows the
+actual resolved bundle path/URI (not just its short name), fitted to your
+terminal's live width so it never wraps onto the composer — wide terminals
+show more of it, narrow ones truncate with a trailing `…`; `/status` always
+prints the complete, untruncated value.
 
 The footer's left side always shows your current mode, trust posture, model, session id,
 and session cost (`~$…` when any usage couldn't be priced — the total is a floor). A green

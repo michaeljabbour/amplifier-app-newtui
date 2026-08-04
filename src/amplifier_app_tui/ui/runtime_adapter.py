@@ -178,6 +178,13 @@ class RuntimeAdapter:
         events; the RealRuntime reads it at each provider:request."""
         self.app: Any = None
         self.bundle_name: str = ""
+        self.bundle_uri: str = ""
+        """The actually-resolved bundle URI/path (``RealRuntime.bundle_uri`` /
+        ``ResolvedConfig.bundle_uri``) -- distinct from :attr:`bundle_name`,
+        which is the short requested name and can differ from where the
+        bundle actually loaded from. This is what the UI's one persistent
+        bundle display (``TitleBar``) and ``/status`` must show so the
+        "full active bundle path" claim (D4 AC1) is true, not just a name."""
         self.model_name: str = ""
         """Primary model id, possibly provider-qualified (``anthropic/x``)."""
         self.session_short: str = ""
@@ -555,6 +562,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         await started  # runtime.start() finished (or raised) on its thread
         runtime = self._runtime
         self.bundle_name = runtime.bundle_name
+        self.bundle_uri = runtime.bundle_uri
         self.gated_auto = runtime.gated_auto
         self.model_name = runtime.model_name
         self.session_short = runtime.session_short

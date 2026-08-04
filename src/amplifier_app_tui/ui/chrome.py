@@ -9,6 +9,14 @@ running the title is prefixed with an orange spinner glyph cycling
 The ``<state>`` text is owned by the app: it reflects the current plan
 step (lowercased) or ``ready`` / ``planning`` / ``brainstorming`` /
 ``✳ coordinating N agents`` — the title bar only displays it.
+
+The ``<bundle>`` fragment is the ACTUALLY-RESOLVED bundle URI/path
+(:attr:`~amplifier_app_tui.ui.runtime_adapter.RuntimeAdapter.bundle_uri`,
+sourced from ``kernel/config.resolve_bundle_source`` via
+``ResolvedConfig.bundle_uri``) — not just the short name it was
+requested by — fitted to the live terminal width (see
+:func:`_bundle_fit_budget`) rather than a fixed cap, so it reflows on
+resize the way ``ui/footer.py``'s fit ladder does for its own segments.
 """
 
 from __future__ import annotations
@@ -16,6 +24,7 @@ from __future__ import annotations
 import unicodedata
 
 from rich.cells import cell_len
+from textual import events
 from textual.content import Content
 from textual.driver import Driver
 from textual.message import Message
@@ -38,21 +47,27 @@ TERMINAL_TITLE_MAX_CHARS = 180
 APP_TITLE_NAME = "amplifier"
 
 TITLE_BUNDLE_MAX_CELLS = 40
-"""Cap on the bundle fragment's rendered width in the centered, height-1
-TitleBar row (compliance 2026-08-02, item D4 AC4: "long paths truncate
-safely and remain inspectable ... without wrapping over the composer").
+"""Fallback bundle-fragment budget (cells) used only before the real
+terminal width is known — a bare, unmounted :class:`TitleBar` (no App/
+layout pass yet) has no live width to fit against, so :func:`_bundle_fit_budget`
+falls back to this constant rather than showing an unbounded value.
 
-``TitleBar`` is the ONE persistent place the active bundle renders (see
-the class docstring below), and a ``--bundle`` path/URI or a
-``bundle.active`` settings value is user-supplied and unbounded
-(``kernel/config.resolve_bundle_source``). Left alone, Textual just hard
--clips an over-long value with no visual cue anything was cut -- this
-bounds the fragment ourselves so a truncated value always ends in one
-visible ``\u2026`` instead. The full, untruncated value stays inspectable
-through ``/status`` (``ui/session_ops_view.status_spans`` never
-truncates its ``bundle`` row), which is what satisfies AC4's "remains
-inspectable" half without duplicating the identity a second place (AC1).
+Once mounted, the budget is VIEWPORT-AWARE (compliance 2026-08-02, item D4
+gap 2): it is computed from the title row's actual rendered width — not
+this fixed cap — mirroring the footer's fit-ladder idiom
+(``ui/footer.py:_fit_drops``) applied to the title's one elastic fragment.
+A wide terminal can show MORE of a long resolved bundle URI than this
+constant used to allow; a narrow one shows less, down to dropping the
+fragment entirely once even a truncated stub would be meaningless (see
+:data:`_MIN_BUNDLE_CELLS`) — never wrapping the ``height: 1`` row onto the
+composer docked below it (D4 AC4).
 """
+
+_MIN_BUNDLE_CELLS = 4
+"""Below this budget a truncated bundle stub (a couple of characters plus
+an ellipsis) reads as noise, not identity — :func:`_bundle_fit_budget`
+returns 0 instead, and the title drops the fragment entirely rather than
+show it. Mirrors the footer ladder's "drop, don't garble" shape."""
 
 
 def _truncate_bundle_label(bundle: str, max_cells: int = TITLE_BUNDLE_MAX_CELLS) -> str:
@@ -73,6 +88,32 @@ def _truncate_bundle_label(bundle: str, max_cells: int = TITLE_BUNDLE_MAX_CELLS)
             break
         out += character
     return out.rstrip() + "\u2026"
+
+
+def _bundle_fit_budget(width: int, state_text: str, session_short: str) -> int:
+    """Cells available for the bundle fragment so the WHOLE title fits *width*.
+
+    The viewport-aware replacement for the old fixed :data:`TITLE_BUNDLE_MAX_CELLS`
+    cap (D4 gap 2): reserves exactly the cells the rest of the title needs
+    (``amplifier``, its separators, ``state_text``, and ``session_short`` when
+    present) and returns whatever is left over for the bundle fragment --
+    mirroring the footer's fit-ladder idiom (``ui/footer.py:_fit_drops``)
+    applied to the title's one elastic, user-supplied fragment instead of a
+    set of droppable decorations.
+
+    ``width <= 0`` (no real layout yet -- a bare, unmounted ``TitleBar``)
+    falls back to :data:`TITLE_BUNDLE_MAX_CELLS` so pre-layout behavior is
+    unchanged. Below :data:`_MIN_BUNDLE_CELLS` the budget collapses to 0 --
+    drop the fragment rather than show a near-meaningless truncated stub.
+    """
+    if width <= 0:
+        return TITLE_BUNDLE_MAX_CELLS
+    reserved = cell_len(TITLE_SEPARATOR.join((APP_TITLE_NAME, state_text)))
+    reserved += cell_len(TITLE_SEPARATOR)  # the separator introducing the bundle fragment
+    if session_short:
+        reserved += cell_len(TITLE_SEPARATOR) + cell_len(session_short)
+    budget = width - reserved
+    return budget if budget >= _MIN_BUNDLE_CELLS else 0
 
 
 def terminal_title_sequence(title: str) -> str:
@@ -106,15 +147,20 @@ class TitleBar(Static):
     State API (all reactives; the app sets them, the bar repaints):
 
     - ``state_text``: the ``<state>`` fragment (``ready``, a plan step, …).
-    - ``bundle`` / ``session_short``: identity fragments (skipped when empty).
+    - ``bundle_uri`` / ``session_short``: identity fragments (skipped when empty).
     - ``running``: True while a turn executes — starts the spinner timer.
 
-    ``bundle`` is also the ONE persistent place the active bundle renders
+    ``bundle_uri`` is also the ONE persistent place the active bundle renders
     anywhere in the UI (compliance 2026-08-02, item D4 — David Koleczek's
     UX review, July 31 2026, preferred it kept here at the top since "the
-    footer is already crowded"). ``ui/footer.py`` used to paint a second,
-    always-identical copy in its left segment; that duplication is gone —
-    see the footer module's docstring for the consolidation.
+    footer is already crowded"). It carries the ACTUALLY-RESOLVED bundle
+    URI/path (``RuntimeAdapter.bundle_uri``), not just the short name a
+    bundle was requested by, so the "full active bundle path" claim (AC1)
+    is literally true; ``_plain_title`` fits it to the live terminal width
+    (:func:`_bundle_fit_budget`) rather than showing it verbatim.
+    ``ui/footer.py`` used to paint a second, always-identical copy in its
+    left segment; that duplication is gone — see the footer module's
+    docstring for the consolidation.
     """
 
     DEFAULT_CSS = """
@@ -130,7 +176,7 @@ class TitleBar(Static):
     """
 
     state_text: reactive[str] = reactive("ready")
-    bundle: reactive[str] = reactive("")
+    bundle_uri: reactive[str] = reactive("")
     session_short: reactive[str] = reactive("")
     running: reactive[bool] = reactive(False)
 
@@ -198,8 +244,12 @@ class TitleBar(Static):
 
     def _plain_title(self) -> str:
         parts = [APP_TITLE_NAME, self.state_text]
-        if self.bundle:
-            parts.append(_truncate_bundle_label(self.bundle))
+        if self.bundle_uri:
+            budget = _bundle_fit_budget(
+                self.container_size.width, self.state_text, self.session_short
+            )
+            if budget > 0:
+                parts.append(_truncate_bundle_label(self.bundle_uri, max_cells=budget))
         if self.session_short:
             parts.append(self.session_short)
         return TITLE_SEPARATOR.join(parts)
@@ -226,7 +276,7 @@ class TitleBar(Static):
     def watch_state_text(self, _value: str) -> None:
         self._repaint()
 
-    def watch_bundle(self, _value: str) -> None:
+    def watch_bundle_uri(self, _value: str) -> None:
         self._repaint()
 
     def watch_session_short(self, _value: str) -> None:
@@ -242,6 +292,13 @@ class TitleBar(Static):
         if self._spinner_timer is not None:
             self._spinner_timer.stop()
             self._spinner_timer = None
+
+    def on_resize(self, event: events.Resize) -> None:
+        # Viewport-aware bundle fitting (D4 gap 2): width changed, so the
+        # bundle fragment's budget may have grown or shrunk -- mirrors
+        # FooterBar.on_resize's identical "width changed, repaint" shape.
+        del event
+        self._repaint()
 
 
 __all__ = [

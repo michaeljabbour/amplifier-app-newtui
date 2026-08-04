@@ -135,7 +135,9 @@ class SessionOpsController:
                 spans=status_spans(
                     info,
                     mode=self._host.mode_id,
-                    bundle=self._host.adapter.bundle_name,
+                    # The FULL resolved bundle URI/path, untruncated (D4 gap 1) --
+                    # status_spans never truncates its bundle row.
+                    bundle=self._host.adapter.bundle_uri,
                     session_short=self._host.adapter.session_short,
                     cost=self._host.session_cost,
                     compaction=self._host.adapter.compaction,

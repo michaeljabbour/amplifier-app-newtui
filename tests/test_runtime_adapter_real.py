@@ -150,6 +150,7 @@ class FakeRealRuntime:
         }
         self.gated_auto = False
         self.bundle_name = "fake-bundle"
+        self.bundle_uri = "file:///workspace/fake-bundle/bundle.md"
         self.model_name = "fake/model-1"
         self.session_short = "abc12345"
         self.session_id = "abc12345deadbeef"
