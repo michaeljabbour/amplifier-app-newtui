@@ -51,6 +51,7 @@ from ..model.blocks import (
     TranscriptBlock,
     UserLine,
 )
+from ..model.evidence import EvidenceLink, build_evidence_detail
 from ..model.lanes import LaneRegistry
 from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
@@ -62,6 +63,7 @@ from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
 from .sessions_strip import SessionsStrip
 from .command_context import AppCommandContext
 from .composer import Composer
+from .evidence_panel import EvidencePanel
 from .footer import FooterBar
 from .history_recall import HistoryRecallStrip
 from .file_mentions import (
@@ -92,6 +94,7 @@ from .transcript import (
     DelegateSummaryToggled,
     ExpandEvidenceClaim,
     LaneFocusChanged,
+    OpenEvidenceDetail,
     OpenRewind,
     ShowEvidence,
     TranscriptView,
@@ -135,6 +138,12 @@ class TuiApp(App[None]):
         background: $bg-term;
         content-align: center middle;
     }
+    /* D7: the transcript shares its row with the evidence detail side
+       panel, which defaults display:none (an empty split occupies zero
+       extra columns) and claims a fixed width only once opened. */
+    #transcript-split { width: 100%; height: 1fr; }
+    #transcript-split > #transcript { width: 1fr; height: 1fr; padding: 0 1; }
+    #transcript-split > #evidence-panel { width: 44; height: 1fr; }
     #transcript { height: 1fr; padding: 0 1; }
     /* Scrollbar colors from the §1 tokens only (never Textual-derived);
        set here (not widget DEFAULT_CSS) so the token variables are
@@ -236,8 +245,13 @@ class TuiApp(App[None]):
             False  # first-ever focus shows the exit-path notice once (S6)
         )
         self.plan_items: tuple[TodoItem, ...] = ()  # latest root todo list
+        self._evidence_panel_target: tuple[str, EvidenceLink] | None = None
+        """(block_id, link) currently shown in the evidence side panel —
+        None while it is closed (D7). Lets a second ``d`` press on the
+        SAME claim toggle-close instead of re-opening."""
         self.title_bar = TitleBar(id="title-bar")
         self.transcript = TranscriptView(id="transcript")
+        self.evidence_panel = EvidencePanel(id="evidence-panel")
         self.live_tail = LiveTail(id="live-tail")
         self.notice_slot = NoticeSlot(id="notice-slot")
         self.palette = PaletteStrip(self._commands.specs, id="palette-strip")
@@ -257,7 +271,9 @@ class TuiApp(App[None]):
     def compose(self) -> ComposeResult:
         yield self.title_bar
         with Container(id="transcript-region"):
-            yield self.transcript
+            with Horizontal(id="transcript-split"):
+                yield self.transcript
+                yield self.evidence_panel
             yield self.live_tail
             yield self.notice_slot
         yield self.palette
@@ -539,7 +555,18 @@ class TuiApp(App[None]):
         append, replace or remove a row here). The composer keeps focus
         either way, but a removed widget can steal it first, so re-assert
         explicitly rather than rely on nothing else having grabbed it.
+
+        D7: the evidence detail panel is keyed to a specific block that
+        ``clear_view()`` is about to unmount unconditionally, along with
+        everything else. Direct close here -- the same "whole block gone"
+        shape as ``on_close_evidence`` -- rather than ``close_evidence_panel()``:
+        there is no row left to restore focus/scroll to, and replaying a
+        remembered scroll position would fight the fresh bottom-follow
+        anchor ``clear_view()`` itself asserts below.
         """
+        if self.evidence_panel.is_open:
+            self.evidence_panel.close()
+            self._evidence_panel_target = None
         self.transcript.clear_view()
         self.reducer.bump_generation()
         self.composer.focus_input()
@@ -965,6 +992,7 @@ class TuiApp(App[None]):
         # hint (#35); a resize lands on the next turn's provider:request.
         self.adapter.terminal.set_cols(event.size.width)
         app_support.sync_plan_surfaces(self)  # responsive ladder (D2)
+        app_support.sync_evidence_panel(self, event.size.width)  # responsive collapse (D7 AC4)
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
         del prompt, options  # presentation runs via present_approval
@@ -1580,10 +1608,57 @@ class TuiApp(App[None]):
         # reference itself instead of silently doing nothing.
         self.show_notice(f"grounded by {link.tool_ref}")
 
+    def on_open_evidence_detail(self, message: OpenEvidenceDetail) -> None:
+        """``d`` on the evidence block (D7 AC4): open the side panel's
+        detail for the selected claim, refresh it for a different claim,
+        or toggle-close it for the same one (a second ``d``)."""
+        target = (message.block_id, message.link)
+        if self._evidence_panel_target == target and self.evidence_panel.is_open:
+            self.close_evidence_panel()
+            return
+        if self.size.width < app_support.EVIDENCE_PANEL_MIN_WIDTH:
+            # A dead control would silently do nothing; say why instead.
+            self.show_notice(
+                "evidence detail needs a wider terminal "
+                f"(≥{app_support.EVIDENCE_PANEL_MIN_WIDTH} cols)"
+            )
+            return
+        if not self.evidence_panel.is_open:
+            # First open in this view: remember the row + scroll to
+            # restore on close (AC3). Refreshing to a different claim
+            # while already open must NOT re-capture — that would
+            # overwrite the anchor with the panel already-open state.
+            self.transcript.capture_evidence_focus(message.block_id)
+        record = self.adapter.evidence_tool_call(message.link.tool_call_id)
+        detail = build_evidence_detail(message.link, record)
+        self.evidence_panel.show_detail(detail)
+        self._evidence_panel_target = target
+        # The docked panel's width claim reflows the transcript; keep the
+        # evidence row itself in view through that reflow.
+        self.transcript.scroll_block_visible(message.block_id)
+
+    def close_evidence_panel(self) -> None:
+        """Dismiss the evidence detail panel (D7 AC3): restores focus and
+        scroll position to the evidence row exactly as before the panel
+        opened. A no-op while already closed."""
+        if not self.evidence_panel.is_open:
+            return
+        self.evidence_panel.close()
+        self._evidence_panel_target = None
+        self.transcript.restore_evidence_focus()
+
     def on_close_evidence(self, message: CloseEvidence) -> None:
         """Esc on the evidence block: close it and hand the keyboard back."""
         if self.transcript.get_block(message.block_id) is not None:
             self.transcript.remove_block(message.block_id)
+        if (
+            self._evidence_panel_target is not None
+            and self._evidence_panel_target[0] == message.block_id
+        ):
+            # The whole block is gone — no row left to restore focus to;
+            # _restore_keyboard() below hands focus to the composer instead.
+            self.evidence_panel.close()
+            self._evidence_panel_target = None
         self._restore_keyboard()
 
     def on_needs_you_list_decision_taken(self, message: NeedsYouList.DecisionTaken) -> None:

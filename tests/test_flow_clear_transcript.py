@@ -18,9 +18,12 @@ from __future__ import annotations
 import pytest
 
 from amplifier_app_tui.kernel import events as ev
+from amplifier_app_tui.model.blocks import EvidenceBlock
+from amplifier_app_tui.model.evidence import EvidenceLink
 from amplifier_app_tui.ui.app import TuiApp
 from amplifier_app_tui.ui.composer import ComposerInput
 from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
+from amplifier_app_tui.ui.transcript import BlockWidget
 
 from .test_flow_helpers import SIZE, blocks_of, seed_done, type_text, wait_for
 
@@ -215,3 +218,32 @@ async def test_clear_unavailable_leaves_the_transcript_untouched() -> None:
         # like any other command (unrelated to D3; see registry.py.run()).
         assert app.transcript.blocks[: len(before)] == before
         assert len(app.transcript.blocks) == len(before) + 1
+
+
+@pytest.mark.asyncio
+async def test_clear_while_evidence_panel_open_closes_the_panel_too() -> None:
+    """D7 x D3 composition guarantee: the evidence detail panel (D7 AC3)
+    keys its captured focus/scroll anchor to one specific block, but
+    ``clear_view()`` (D3) unmounts EVERY block unconditionally. A panel
+    left open across a ``/clear`` would otherwise keep showing detail for
+    a row that no longer exists -- a dangling reference to an unmounted
+    block. Mirrors ``on_close_evidence``'s existing "whole block gone"
+    handling (tests/test_ui_evidence_detail_flow.py), just triggered by a
+    bulk clear instead of a single esc."""
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    app.adapter.clear_context = _fake_clear_context
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        link = EvidenceLink(claim_quote="tests pass", tool_ref="pytest run", tool_call_id="c1")
+        widget = app.transcript.append(EvidenceBlock(id="ev1", links=(link,)))
+        assert isinstance(widget, BlockWidget)
+        widget.action_evidence_detail()
+        await pilot.pause()
+        assert app.evidence_panel.is_open  # sanity: the panel is actually open first
+
+        await _run_clear(pilot, app)
+
+        assert app.transcript.blocks == ()
+        assert not app.evidence_panel.is_open
+        assert app.evidence_panel.detail is None
+        assert app.composer.query_one(ComposerInput).has_focus

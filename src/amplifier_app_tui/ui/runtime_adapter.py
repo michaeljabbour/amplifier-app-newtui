@@ -36,7 +36,7 @@ from ..model.config import (
     SessionConfigState,
     default_config_state,
 )
-from ..model.evidence import EvidenceLink
+from ..model.evidence import EvidenceLink, ToolCallRecord
 from ..model.queues import LaneSteeringQueue, NeedsYouQueue, SteeringQueue
 from ..model.terminal import TerminalSurface
 from ..model.trust import (
@@ -451,6 +451,12 @@ class RuntimeAdapter:
         """Evidence links grounding the final answer *answer_text* (spec §10)."""
         return ()
 
+    def evidence_tool_call(self, tool_call_id: str) -> ToolCallRecord | None:
+        """Durable provenance for *tool_call_id* (compliance item D7, AC2),
+        or ``None`` when it cannot be resolved (AC5: the caller then shows
+        an explicit "expired" fallback rather than a dead control)."""
+        return None
+
     def deferred_decision(
         self, message: str, decision_id: str = ""
     ) -> tuple[str, str, tuple[str, ...], str, str]:
@@ -836,6 +842,14 @@ class RealRuntimeAdapter(RuntimeAdapter):
         if self._runtime is None:
             return ()
         return self._runtime.evidence.links_for(answer_text)
+
+    def evidence_tool_call(self, tool_call_id: str) -> ToolCallRecord | None:
+        """The provenance record the same collector persisted for
+        *tool_call_id* (D7) — independent of ``evidence_links`` above and
+        of how the transcript currently renders ToolLine blocks."""
+        if self._runtime is None:
+            return None
+        return self._runtime.evidence.record_for(tool_call_id)
 
     def lane_seed(self, agent_name: str) -> LaneSeed | None:
         """Seed a real lane with the delegate brief as its activity line.

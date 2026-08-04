@@ -172,6 +172,12 @@ KEYMAP: tuple[Binding, ...] = (
     _b("evidence_prev", ("left",), "←/→", _EVIDENCE),
     _b("evidence_next", ("right",), "←/→", _EVIDENCE),
     _b("evidence_expand", ("enter",), "enter", _EVIDENCE),
+    # Side-panel toggle (D7 AC4): opens/refreshes/closes the evidence
+    # detail panel for the currently-selected claim; documented in the
+    # block's own header hint (transcript_render._render_evidence),
+    # mirroring how the header already advertises the other evidence
+    # chords (single source: KEYMAP feeds both the bindings AND the hint).
+    _b("evidence_detail", ("d",), "d detail", _EVIDENCE),
     # Approval bar (owns the keyboard while open, spec §7). Mockup
     # keydown: ``e.key === "Tab"`` matches with or without shift, so
     # shift+tab cycles the selection here — never the mode.
