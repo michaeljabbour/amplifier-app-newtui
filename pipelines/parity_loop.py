@@ -45,10 +45,21 @@ Commands:
   gate <gap_id>         owner gate for one gap; last line PROCEED (exit 0) or
                         BLOCKED (exit 1) — the only route to code-changing work
   decide <gap_id> <disposition> [<owner>] [<note>...]
-                        record the product owner's disposition for one gap
+                        record the product owner's disposition for one gap.
+                        A real disposition needs a REAL owner: `TBD`, `owner`,
+                        `team`, `?`, `unknown`, blank and the rest of
+                        PLACEHOLDER_OWNERS are refused, unwritten.
+  validate              audit the gate file for decisions nobody signed;
+                        last line VALID (exit 0) or INVALID (exit 1)
+  awaiting              print gaps still owed a real, attributed decision
   passes                print the pass record
   gaps [<disposition>]  print gate rows, optionally filtered
   stats                 counts for both artifacts
+
+A DECISION NOBODY SIGNED IS NOT A DECISION. An owner field naming a
+placeholder (see PLACEHOLDER_OWNERS — one list, one home) cannot record a
+disposition, and a hand-edited row that claims one reads back `unattributed`
+and BLOCKS at the gate exactly like `pending` does.
 """
 
 from __future__ import annotations
@@ -75,6 +86,95 @@ OUTCOME_OWNER_ENDED = "owner-ended"
 DISPOSITIONS = ("pending", "accepted", "rejected", "deferred", "already-covered")
 PROCEED_DISPOSITIONS = ("accepted",)
 UNDECIDED = "undecided"
+
+#: Dispositions that assert a human actually ruled on the gap. `pending` is the
+#: ABSENCE of a ruling, so it is the one disposition allowed to carry no owner.
+DECIDED_DISPOSITIONS = tuple(d for d in DISPOSITIONS if d != "pending")
+
+#: What `disposition_of` reports for a row that claims a decision but attributes
+#: it to a placeholder owner. A decision nobody signed is not a decision, so it
+#: blocks exactly like `pending` does.
+UNATTRIBUTED = "unattributed"
+
+#: THE placeholder-owner list — one home, deliberately. `decide`, `disposition_of`
+#: and `validate` all consult this and nothing else, so a hand-edited gate file
+#: cannot smuggle an unattributed decision past a check that knows a shorter list.
+#: Compared against the owner NORMALIZED by `_normalize_owner` (see there), so an
+#: empty / whitespace-only / bracketed / @-prefixed placeholder is caught too.
+PLACEHOLDER_OWNERS = frozenset(
+    {
+        "",  # empty or whitespace-only
+        "-",  # the TSV's own "no value" filler
+        "?",
+        "??",
+        "???",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "nil",
+        "tbd",
+        "tba",
+        "todo",
+        "pending",
+        "unknown",
+        "unassigned",
+        "nobody",
+        "anyone",
+        "someone",
+        "somebody",
+        "placeholder",
+        "example",
+        "sample",
+        "test",
+        "xxx",
+        "yyy",
+        "zzz",
+        "foo",
+        "bar",
+        "baz",
+        "me",
+        "you",
+        "us",
+        "self",
+        "agent",
+        "ai",
+        "bot",
+        "assistant",
+        # Role names, not people. A role cannot be held accountable for a call:
+        # "the team accepted it" names no one who can be asked why.
+        "owner",
+        "owners",
+        "product owner",
+        "product-owner",
+        "productowner",
+        "po",
+        "team",
+        "the team",
+        "teams",
+        "maintainer",
+        "maintainers",
+        "reviewer",
+        "reviewers",
+        "approver",
+        "approvers",
+        "lead",
+        "leads",
+        "tech lead",
+        "dev",
+        "devs",
+        "developer",
+        "developers",
+        "eng",
+        "engineer",
+        "engineering",
+        "admin",
+        "user",
+        "human",
+        "author",
+        "someone else",
+    }
+)
 
 PASS_WIDTH = 7
 GATE_WIDTH = 6
@@ -124,6 +224,40 @@ def _int(value: str) -> int:
         return int(value)
     except ValueError:
         return 0
+
+
+# -------------------------------------------------------------- owner identity
+
+
+def _normalize_owner(owner: str) -> str:
+    """Fold an owner field into the form `PLACEHOLDER_OWNERS` is written in.
+
+    Collapses whitespace, lowercases, drops a leading `@`, and strips wrapping
+    punctuation — so `"  <TBD>  "`, `"@TBD"` and `"tbd."` all normalize to `tbd`
+    and are caught by the one enumerated list.
+    """
+    text = " ".join(owner.replace("\t", " ").split()).lower()
+    text = text.strip("\"'`<>[](){}*_~!?.,;:")
+    return text.lstrip("@").strip()
+
+
+def is_placeholder_owner(owner: str) -> bool:
+    """True when the owner field names nobody a human could actually go ask.
+
+    Two rules, both deliberately blunt:
+
+    1. its normalized form is in `PLACEHOLDER_OWNERS` (empty, whitespace, `-`,
+       `?`, `TBD`, `unknown`, `owner`, `team`, and the rest of that one list); or
+    2. it carries fewer than two letters — punctuation, digits and lone initials
+       identify no one either.
+
+    A decision attributed to such an owner is not a decision: `decide` refuses to
+    write it and `disposition_of` refuses to read it back as one.
+    """
+    normalized = _normalize_owner(owner)
+    if normalized in PLACEHOLDER_OWNERS:
+        return True
+    return sum(1 for ch in normalized if ch.isalpha()) < 2
 
 
 # ---------------------------------------------------------------- pass record
@@ -228,11 +362,40 @@ def read_gates() -> list[list[str]]:
 
 
 def disposition_of(gap_id: str, rows: list[list[str]] | None = None) -> str:
+    """The disposition that COUNTS for `gap_id` — not merely the word stored.
+
+    Enforced at READ time as well as write time, so a hand-edited gate file that
+    claims `accepted` against owner `TBD` reads back `unattributed` and blocks
+    just like `pending` does.
+    """
+    rows = read_gates() if rows is None else rows
+    for row in rows:
+        if row[0] == gap_id:
+            if row[2] in DECIDED_DISPOSITIONS and is_placeholder_owner(row[3]):
+                return UNATTRIBUTED
+            return row[2]
+    return UNDECIDED
+
+
+def stored_disposition_of(gap_id: str, rows: list[list[str]] | None = None) -> str:
+    """The raw word on the row, placeholder owner or not (for reporting only)."""
     rows = read_gates() if rows is None else rows
     for row in rows:
         if row[0] == gap_id:
             return row[2]
     return UNDECIDED
+
+
+def unattributed_rows(rows: list[list[str]] | None = None) -> list[list[str]]:
+    """Gate rows claiming a decision that no identifiable human signed."""
+    rows = read_gates() if rows is None else rows
+    return [r for r in rows if r[2] in DECIDED_DISPOSITIONS and is_placeholder_owner(r[3])]
+
+
+def awaiting_rows(rows: list[list[str]] | None = None) -> list[list[str]]:
+    """Gate rows still waiting on a real, attributed product-owner decision."""
+    rows = read_gates() if rows is None else rows
+    return [r for r in rows if disposition_of(r[0], rows) not in DECIDED_DISPOSITIONS]
 
 
 def may_proceed(gap_id: str) -> bool:
@@ -263,8 +426,15 @@ def register_gap(gap_id: str, slug: str = "-") -> bool:
     return True
 
 
-def decide(gap_id: str, disposition: str, owner: str = "-", note: str = "") -> list[str]:
-    """Record the product owner's disposition for one gap (upsert)."""
+def decide(gap_id: str, disposition: str, owner: str = "-", note: str = "") -> list[str] | None:
+    """Record the product owner's disposition for one gap (upsert).
+
+    Returns None WITHOUT writing anything when a decided disposition is
+    attributed to a placeholder owner — an unsigned ruling is not a ruling, and
+    silently storing one would let the gate be opened by nobody.
+    """
+    if disposition in DECIDED_DISPOSITIONS and is_placeholder_owner(owner):
+        return None
     rows = read_gates()
     today = _date.today().isoformat()
     for row in rows:
@@ -291,7 +461,8 @@ def _counts(values: list[str]) -> str:
 USAGE = (
     "commands: record-pass <commit> [<gap_ids>] [<date>] [<note>...] | "
     "end-run <owner> [<reason>...] | streak | should-continue | gate <gap_id> | "
-    "decide <gap_id> <disposition> [<owner>] [<note>...] | passes | gaps [<disposition>] | stats"
+    "decide <gap_id> <disposition> [<owner>] [<note>...] | validate | awaiting | "
+    "passes | gaps [<disposition>] | stats"
 )
 
 
@@ -350,13 +521,35 @@ def _dispatch(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 1
-        row = decide(
-            gap_id,
-            disposition,
-            owner=args[2] if len(args) > 2 else "-",
-            note=" ".join(args[3:]),
-        )
+        owner = args[2] if len(args) > 2 else "-"
+        row = decide(gap_id, disposition, owner=owner, note=" ".join(args[3:]))
+        if row is None:
+            print(
+                f"placeholder owner refused: {owner!r} names nobody who can be asked why. "
+                f"A `{disposition}` disposition needs a real person; nothing was written.",
+                file=sys.stderr,
+            )
+            return 1
         print(f"{row[0]} -> {row[2]} (owner={row[3]})")
+        return 0
+
+    if cmd == "validate":
+        rows = read_gates()
+        bad = unattributed_rows(rows)
+        for row in bad:
+            print(f"{row[0]}\t{row[2]}\towner={row[3]!r}\tplaceholder owner — not a decision")
+        if bad:
+            print(f"INVALID gates={len(rows)} unattributed={len(bad)}")
+            return 1
+        print(f"VALID gates={len(rows)} unattributed=0")
+        return 0
+
+    if cmd == "awaiting":
+        rows = read_gates()
+        waiting = awaiting_rows(rows)
+        for row in waiting:
+            print("\t".join([*row, f"effective={disposition_of(row[0], rows)}"]))
+        print(f"awaiting={len(waiting)}/{len(rows)}")
         return 0
 
     if cmd == "passes":

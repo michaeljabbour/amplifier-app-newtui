@@ -82,9 +82,21 @@ The 2026-07-23 audit above is **pass 1** (commit `e6b50cd`, 11 gaps: #100–#110
 redo the three lanes read-only against the new commit, then record what the pass found —
 
 ```sh
-python3 pipelines/parity_loop.py record-pass <sha> 111:new-gap-slug   # or `-` if clean
+python3 pipelines/parity_loop.py record-pass <sha> 119:new-gap-slug   # or `-` if clean
 python3 pipelines/parity_loop.py should-continue                      # CONTINUE | DONE
 ```
+
+### Passes on record
+
+| Pass | Date | Target commit | Donor ref | Found | Report |
+|---|---|---|---|---|---|
+| 1 | 2026-07-23 | `e6b50cd` | `30c0a65` / `origin/main` `51194ef` | 11 gaps (#100–#110) | the three lanes above |
+| 2 | 2026-08-04 | `7030527` | `30c0a65` / `origin/main` `f1fcb66` | 8 gaps (#111–#118) | [pass2-2026-08-04.md](pass2-2026-08-04.md) |
+
+`clean_streak=0/3` — no pass has yet come back clean. Pass 2 confirmed all eleven
+baseline gaps are **closed in code**, and found eight fresh divergences: one new
+donor capability (`/goal`), one new donor policy (fail-loud module activation),
+and six rows pass 1 recorded as `MISSING` but never filed as tracked gaps.
 
 **The run stops after three consecutive clean passes, or when the owner ends it.** That
 counter is over *read-only re-audits*, and it is deliberately not the transfer pipeline's
@@ -104,6 +116,23 @@ is a *decision process*, not a mandate to copy every app-cli behavior:
 | `deferred` | real, but not now |
 | `already-covered` | tui reaches the capability by another route; not a gap |
 
-The 11 gaps from pass 1 are seeded `pending`: they were filed and ranked before this gate
-existed, so none of them carries a recorded owner disposition yet. Triage is the first
-action of the next run.
+**A disposition needs a real owner.** `TBD`, `owner`, `team`, `unknown`, `?`, blank and
+their relatives are refused at write time and read back as `unattributed` — which blocks
+exactly like `pending` — if hand-edited into the file. The list lives in one place
+(`PLACEHOLDER_OWNERS` in `parity_loop.py`); `parity_loop.py validate` audits the whole gate
+file for decisions nobody signed. A decision nobody signed is not a decision.
+
+### 19 gaps await a human
+
+All 19 gaps on record (#100–#118) are `pending` — the baseline eleven were filed and ranked
+before this gate existed, and pass 2's eight are fresh. **Triage is the next action on this
+loop, and it is the only one an agent cannot do.**
+
+→ **[parity-decision-sheet.md](parity-decision-sheet.md)** is the ready-to-review working
+document: every undispositioned gap with its evidence, its user-visible consequence, a
+proposed disposition, and a paste-ready `decide` command. One sitting, ~20 minutes. Where
+implementation is recommended and the design is non-trivial, a spike is attached
+([gap #111, `/goal`](../plans/2026-08-04-spike-goal-command-parity.md)); where a one-line
+remediation suffices, the sheet says so per gap.
+
+Until then every gap blocks, which is the safe default working as designed.

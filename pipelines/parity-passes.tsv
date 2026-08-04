@@ -1,2 +1,3 @@
 # pass	date	commit	outcome	gaps_found	gap_ids	note
 1	2026-07-23	e6b50cd	gaps	11	100,101,102,103,104,105,106,107,108,109,110	baseline: three-lane read-only audit, docs/audits/ (1814 tests green)
+2	2026-08-04	7030527	gaps	8	111,112,113,114,115,116,117,118	read-only re-audit of all 3 lanes vs donor origin/main f1fcb66 (+19) and 30c0a65 slash surface; see docs/audits/pass2-2026-08-04.md
