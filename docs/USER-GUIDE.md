@@ -312,9 +312,14 @@ tailing — also shown in the panel header hint). The moment the root model spea
 switches back to it. Tail text is a live preview only: the agent's full prose lives in its
 own transcript (focus the lane to read it), and nothing from the tail lands in yours.
 
-Select a lane with ↑↓ and press **enter** to *focus* it: the transcript switches to that
-subagent's own work. **esc** steps back out — first unfocusing the lane, then closing the
-panel; with nothing left open, esc interrupts the whole agent tree.
+Select a lane with ↑↓ and press **enter** (or click its row) to *focus* it: the transcript
+switches to that subagent's own work, with a **‹ Back to parent** control at the top — click it,
+or press **esc**, to return; nothing left open, esc interrupts the whole agent tree instead.
+Focusing is pure navigation: it never ends the subagent's turn or the session, the parent
+transcript keeps accumulating underneath, and returning — to the same lane or a different one —
+restores exactly where you left off (scroll position included) rather than snapping to the
+latest line. The first time you ever focus a lane, a one-off notice calls out the esc/Back exit
+path; it does not repeat and never sits onscreen as a permanent overlay.
 
 The transcript itself keeps one **delegate summary** line per fan-out: `● 2 delegates
 running…` while work is in flight, then `● Used 2 delegates · Plan 3/4 · 1m 12s ▸` when
