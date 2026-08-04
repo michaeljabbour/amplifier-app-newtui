@@ -67,7 +67,7 @@ def test_record_pass_registers_every_discovered_gap_as_pending(loop: ModuleType)
 
 def test_registering_a_known_gap_never_overwrites_its_disposition(loop: ModuleType) -> None:
     loop.record_pass("abc1234", "120:notify-cli")
-    loop.decide("120", "rejected", "owner", "belongs below the harness")
+    loop.decide("120", "rejected", "mjabbour", "belongs below the harness")
 
     loop.record_pass("def5678", "120:notify-cli")
 
@@ -164,7 +164,7 @@ def test_clean_pass_counter_is_not_the_fix_retry_counter(loop: ModuleType) -> No
     ledger = REPO_ROOT / "pipelines" / "ledger.tsv"
     before = ledger.read_bytes()
     loop.record_pass("sha", "160")
-    loop.decide("160", "accepted", "owner")
+    loop.decide("160", "accepted", "mjabbour")
     loop.main(["gate", "160"])
     assert ledger.read_bytes() == before
 
@@ -173,7 +173,7 @@ def test_clean_pass_counter_is_not_the_fix_retry_counter(loop: ModuleType) -> No
     loop.record_pass("sha", "-")
     assert loop.clean_streak() == 1
     for _ in range(5):
-        loop.decide("160", "accepted", "owner", "retry attempt")
+        loop.decide("160", "accepted", "mjabbour", "retry attempt")
     assert loop.clean_streak() == 1
 
 
@@ -194,7 +194,7 @@ def test_only_accepted_opens_the_code_changing_route(
     loop: ModuleType, capsys, disposition: str, expected_code: int
 ) -> None:
     loop.record_pass("sha", "170")
-    loop.decide("170", disposition, "owner", "decision recorded")
+    loop.decide("170", disposition, "mjabbour", "decision recorded")
 
     assert loop.main(["gate", "170"]) == expected_code
     out = capsys.readouterr().out.strip()
@@ -220,14 +220,14 @@ def test_decide_upserts_and_records_owner_and_note(loop: ModuleType) -> None:
 
 
 def test_unknown_disposition_is_rejected_without_writing(loop: ModuleType, capsys) -> None:
-    assert loop.main(["decide", "190", "maybe", "owner"]) == 1
+    assert loop.main(["decide", "190", "maybe", "mjabbour"]) == 1
     assert "unknown disposition" in capsys.readouterr().err
     assert loop.read_gates() == []
 
 
 def test_gaps_command_filters_by_disposition(loop: ModuleType, capsys) -> None:
     loop.record_pass("sha", "200,201")
-    loop.decide("200", "accepted", "owner")
+    loop.decide("200", "accepted", "mjabbour")
 
     loop.main(["gaps", "accepted"])
     lines = capsys.readouterr().out.strip().splitlines()
@@ -285,11 +285,210 @@ def test_cli_entrypoint_exit_codes(tmp_path: Path) -> None:
 
     assert run("record-pass", "sha", "220").returncode == 0
     assert run("gate", "220").returncode == 1
-    assert run("decide", "220", "accepted", "owner").returncode == 0
+    assert run("decide", "220", "accepted", "mjabbour").returncode == 0
 
     proceed = run("gate", "220")
     assert proceed.returncode == 0
     assert proceed.stdout.strip().splitlines()[-1].startswith("PROCEED")
+
+
+# ------------------------------------------------- placeholder owner rejection
+#
+# A disposition is a PRODUCT-OWNER decision. A decision nobody signed is not a
+# decision, so an owner field that names no askable human must not be able to
+# record one -- at write time OR by hand-editing the gate file.
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "",  # empty
+        "   ",  # whitespace only
+        "\t",  # whitespace only, tab flavour
+        "-",  # the TSV's own filler
+        "?",
+        "???",
+        "TBD",
+        "tbd",
+        " Tbd ",
+        "<TBD>",
+        "@tbd",
+        "tbd.",
+        "TBA",
+        "todo",
+        "n/a",
+        "N/A",
+        "none",
+        "unknown",
+        "UNKNOWN",
+        "unassigned",
+        "nobody",
+        "someone",
+        "placeholder",
+        "xxx",
+        "owner",
+        "Owner",
+        "owners",
+        "product owner",
+        "product-owner",
+        "PO",
+        "team",
+        "the team",
+        "maintainer",
+        "reviewer",
+        "lead",
+        "dev",
+        "engineering",
+        "admin",
+        "human",
+        "ai",
+        "bot",
+        "agent",
+        "me",
+        "self",
+        "x",  # fewer than two letters names no one
+        "1",
+        "!!",
+    ],
+)
+def test_these_owners_are_placeholders(loop: ModuleType, owner: str) -> None:
+    assert loop.is_placeholder_owner(owner) is True
+
+
+@pytest.mark.parametrize(
+    "owner",
+    ["mjabbour", "@mjabbour", "Michael Jabbour", "m.jabbour", "jd", "octocat"],
+)
+def test_these_owners_are_real(loop: ModuleType, owner: str) -> None:
+    assert loop.is_placeholder_owner(owner) is False
+
+
+def test_the_placeholder_list_has_exactly_one_home(loop: ModuleType) -> None:
+    """Every enforcement point must consult PLACEHOLDER_OWNERS, not its own copy."""
+    assert isinstance(loop.PLACEHOLDER_OWNERS, frozenset)
+    assert loop.PLACEHOLDER_OWNERS == frozenset(loop.PLACEHOLDER_OWNERS)
+    source = TOOL.read_text()
+    assert source.count("PLACEHOLDER_OWNERS = frozenset(") == 1
+    # `is_placeholder_owner` is the only reader; nothing re-implements the check.
+    assert source.count("in PLACEHOLDER_OWNERS") == 1
+
+
+def test_decide_refuses_a_disposition_attributed_to_a_placeholder_owner(
+    loop: ModuleType,
+) -> None:
+    loop.record_pass("sha", "300:some-gap")
+
+    for owner in ("", "-", "TBD", "owner", "team", "unknown", "?", "   "):
+        assert loop.decide("300", "accepted", owner, "looks fine to me") is None
+
+    row = next(r for r in loop.read_gates() if r[0] == "300")
+    assert row[2] == "pending", "a refused decision must not be written at all"
+    assert loop.disposition_of("300") == "pending"
+    assert loop.may_proceed("300") is False
+
+
+def test_pending_is_the_one_disposition_that_may_carry_no_owner(loop: ModuleType) -> None:
+    """A gap discovered by a read-only pass has no owner yet -- and must not need one."""
+    loop.record_pass("sha", "301")
+    row = next(r for r in loop.read_gates() if r[0] == "301")
+    assert row[3] == "-" and loop.is_placeholder_owner(row[3])
+    assert loop.disposition_of("301") == "pending"
+
+    assert loop.decide("301", "pending", "-", "still awaiting the owner") is not None
+
+
+def test_a_real_owner_records_a_real_disposition(loop: ModuleType) -> None:
+    loop.record_pass("sha", "302")
+    row = loop.decide("302", "rejected", "mjabbour", "belongs below the harness")
+
+    assert row is not None
+    assert loop.disposition_of("302") == "rejected"
+    assert loop.stored_disposition_of("302") == "rejected"
+
+
+def test_a_hand_edited_placeholder_decision_reads_back_unattributed(
+    loop: ModuleType, capsys
+) -> None:
+    """The load-bearing case: someone edits the TSV to open the gate themselves."""
+    loop.gates_file().write_text(
+        loop.GATES_HEADER
+        + "310\tsmuggled\taccepted\tTBD\t2026-08-04\thand-edited past the tool\n"
+        + "311\tsmuggled-blank\taccepted\t-\t2026-08-04\tno owner at all\n"
+    )
+
+    for gap_id in ("310", "311"):
+        assert loop.stored_disposition_of(gap_id) == "accepted"
+        assert loop.disposition_of(gap_id) == loop.UNATTRIBUTED
+        assert loop.may_proceed(gap_id) is False
+        assert loop.main(["gate", gap_id]) == 1
+        assert capsys.readouterr().out.strip() == f"BLOCKED gap={gap_id} disposition=unattributed"
+
+
+def test_validate_flags_unattributed_rows_and_exits_nonzero(loop: ModuleType, capsys) -> None:
+    loop.gates_file().write_text(
+        loop.GATES_HEADER
+        + "320\tok\trejected\tmjabbour\t2026-08-04\tsigned\n"
+        + "321\tsmuggled\taccepted\towner\t2026-08-04\trole name, not a person\n"
+    )
+
+    assert loop.unattributed_rows() == [
+        ["321", "smuggled", "accepted", "owner", "2026-08-04", "role name, not a person"]
+    ]
+    assert loop.main(["validate"]) == 1
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out[-1] == "INVALID gates=2 unattributed=1"
+    assert out[0].startswith("321\t")
+
+
+def test_validate_passes_a_gate_file_whose_decisions_are_all_signed(
+    loop: ModuleType, capsys
+) -> None:
+    loop.record_pass("sha", "330,331")
+    loop.decide("330", "accepted", "mjabbour", "wanted")
+
+    assert loop.main(["validate"]) == 0
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "VALID gates=2 unattributed=0"
+
+
+def test_awaiting_counts_pending_and_unattributed_alike(loop: ModuleType, capsys) -> None:
+    loop.gates_file().write_text(
+        loop.GATES_HEADER
+        + "340\tdecided\tdeferred\tmjabbour\t2026-08-04\tafter 0.3\n"
+        + "341\tstill-open\tpending\t-\t2026-08-04\tawaiting owner disposition\n"
+        + "342\tsmuggled\taccepted\tTBD\t2026-08-04\tunsigned\n"
+    )
+
+    assert [row[0] for row in loop.awaiting_rows()] == ["341", "342"]
+    loop.main(["awaiting"])
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "awaiting=2/3"
+
+
+def test_cli_reports_the_refusal_and_writes_nothing(loop: ModuleType, capsys) -> None:
+    loop.record_pass("sha", "350")
+
+    assert loop.main(["decide", "350", "accepted", "TBD", "ship it"]) == 1
+    err = capsys.readouterr().err
+    assert "placeholder owner refused" in err
+    assert "'TBD'" in err
+    assert loop.disposition_of("350") == "pending"
+
+
+def test_cli_entrypoint_refuses_placeholder_owner(tmp_path: Path) -> None:
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "PARITY_PASSES_FILE": str(tmp_path / "p.tsv"),
+        "PARITY_GATES_FILE": str(tmp_path / "g.tsv"),
+    }
+    run = lambda *args: subprocess.run(  # noqa: E731
+        [sys.executable, str(TOOL), *args], capture_output=True, text=True, env=env
+    )
+
+    assert run("record-pass", "sha", "360").returncode == 0
+    assert run("decide", "360", "accepted", "team").returncode == 1
+    assert run("gate", "360").returncode == 1
+    assert run("decide", "360", "accepted", "mjabbour").returncode == 0
+    assert run("gate", "360").returncode == 0
+    assert run("validate").stdout.strip().splitlines()[-1].startswith("VALID")
 
 
 # --------------------------------------------- the artifacts shipped in-repo
@@ -307,3 +506,10 @@ def test_shipped_artifacts_are_well_formed() -> None:
     recorded = {gap_id for row in passes for gap_id, _ in module.parse_gap_ids(row[5])}
     gated = {row[0] for row in gates}
     assert recorded <= gated, "every discovered gap must carry a gate row"
+
+
+def test_shipped_gate_file_carries_no_unsigned_decision() -> None:
+    """The repo's own artifact must satisfy the placeholder rule it enforces."""
+    module = _load()  # no env override: read the repo's own artifacts
+    assert module.unattributed_rows() == []
+    assert module.main(["validate"]) == 0

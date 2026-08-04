@@ -10,3 +10,11 @@
 108	fork-session-directive	pending	-	2026-08-02	awaiting owner disposition
 109	run-per-invocation-flags-and-resume	pending	-	2026-08-02	awaiting owner disposition
 110	data-safe-reset-command	pending	-	2026-08-02	awaiting owner disposition
+111	goal-command-autonomous-continuation	pending	-	2026-08-04	awaiting owner disposition
+112	in-session-project-memory-scaffold	pending	-	2026-08-04	awaiting owner disposition
+113	shell-completion-install	pending	-	2026-08-04	awaiting owner disposition
+114	module-cli-introspection	pending	-	2026-08-04	awaiting owner disposition
+115	agents-cli-introspection	pending	-	2026-08-04	awaiting owner disposition
+116	btw-side-question-verb	pending	-	2026-08-04	awaiting owner disposition
+117	feedback-deep-link	pending	-	2026-08-04	awaiting owner disposition
+118	fail-loud-module-activation	pending	-	2026-08-04	awaiting owner disposition

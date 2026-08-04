@@ -118,6 +118,20 @@ that), and `ledger.py` never sees the pass record.
   `gap_id · slug · disposition · owner · date · note`, `disposition ∈ {pending, accepted,
   rejected, deferred, already-covered}`.
 
+**A decision nobody signed is not a decision.** The `owner` field must name a real person:
+blank, whitespace, `-`, `?`, `TBD`, `unknown`, `owner`, `team`, and the rest of
+`PLACEHOLDER_OWNERS` (one list, one home, in `parity_loop.py`) are **refused** by `decide`,
+which writes nothing and exits 1. Enforcement is at read time too, so hand-editing the TSV
+doesn't help: a row claiming `accepted` against a placeholder owner reads back
+`disposition=unattributed` and **blocks at the gate exactly like `pending`**. `pending` is
+the one disposition allowed to carry no owner — it is the *absence* of a ruling, which is
+precisely what a freshly-discovered gap has.
+
+```sh
+python3 pipelines/parity_loop.py validate    # VALID | INVALID unattributed=<n> (exit 1)
+python3 pipelines/parity_loop.py awaiting    # gaps still owed a real, attributed decision
+```
+
 **The gate.** Parity is a *decision process*, not a mandate to copy every app-cli behavior —
 some capabilities belong below the harness or on another surface. So every newly-discovered
 gap is auto-registered `pending`, and **only `accepted` opens a code-changing route**:
@@ -129,11 +143,22 @@ owner has never ruled on reads `disposition=undecided` — which blocks. `reject
 python3 pipelines/parity_loop.py record-pass <sha> 120:notify-cli,121   # read-only pass
 python3 pipelines/parity_loop.py record-pass <sha> -                    # clean pass
 python3 pipelines/parity_loop.py decide 120 rejected mjabbour "belongs below the harness"
+python3 pipelines/parity_loop.py decide 120 accepted TBD                # REFUSED, exit 1
 python3 pipelines/parity_loop.py gate 120        # PROCEED (exit 0) | BLOCKED (exit 1)
+python3 pipelines/parity_loop.py validate        # VALID | INVALID (unsigned decisions)
+python3 pipelines/parity_loop.py awaiting        # awaiting=<n>/<total>
 python3 pipelines/parity_loop.py should-continue # CONTINUE clean_streak=1/3 | DONE reason=...
 python3 pipelines/parity_loop.py end-run mjabbour "remaining gaps deferred to 0.3"
 python3 pipelines/parity_loop.py stats           # passes=4 clean_streak=2/3 run=open
 ```
+
+**Where the run actually stands (2026-08-04):** `passes=2 clean_streak=0/3 run=open`,
+19 gaps, **all `pending`**. Pass 2 re-audited all three lanes at `7030527`
+([report](../docs/audits/pass2-2026-08-04.md)) and found 8 new gaps, so the streak is 0 and
+honestly so — it is derived from the gap ids on each row, not from a typed word. The next
+action on this loop is **triage, which is the one step an agent cannot do**: see the
+[decision sheet](../docs/audits/parity-decision-sheet.md), 19 gaps with evidence and a
+proposed disposition each.
 
 The streak is derived from the gap ids each row actually carries, not from the stored
 `outcome` word — you cannot hand-edit a clean streak into existence without also deleting
