@@ -7,6 +7,7 @@ them; the pure helpers are tested directly.
 
 from __future__ import annotations
 
+import pathlib
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -42,6 +43,189 @@ def test_target_bundles_defaults_to_packaged() -> None:
 def test_self_update_hint_mentions_uv() -> None:
     hint = updater.self_update_hint()
     assert "uv sync" in hint and "uv tool upgrade amplifier" in hint
+
+
+def test_self_update_hint_git_install_uses_real_uri_not_dot() -> None:
+    """Regression: the old hint said `uv tool install --reinstall .` -- wrong
+    (and potentially dangerous) advice for the documented global-install
+    path, since `.` only resolves from inside a clone. Must match the
+    README's actual command."""
+    identity = updater.AppIdentity(version="0.1.0", commit="abc1234", source="git")
+    hint = updater.self_update_hint(identity)
+    assert (
+        "uv tool install --reinstall git+https://github.com/michaeljabbour/amplifier-app-tui"
+        in hint
+    )
+    assert "--reinstall .`" not in hint
+
+
+def test_self_update_hint_editable_checkout_skips_tool_install() -> None:
+    """A dev checkout must NEVER be told to run a tool-install command --
+    that would fight its own venv link."""
+    identity = updater.AppIdentity(version="0.1.0", commit=None, source="editable")
+    hint = updater.self_update_hint(identity)
+    assert "git pull && uv sync" in hint
+    assert "uv tool install" not in hint
+    assert "dev checkout" in hint
+
+
+def test_self_update_hint_mentions_verification_step() -> None:
+    hint = updater.self_update_hint(updater.AppIdentity("0.1.0", "abc1234", "git"))
+    assert "amplifier-tui version" in hint
+
+
+# -- AppIdentity: verified (not hardcoded) installed version + source -------
+
+
+def test_app_identity_editable_dev_checkout() -> None:
+    """This repo's OWN checkout, read for real: `uv sync` installs an
+    editable dist with no vcs_info -- must classify as "editable", not
+    silently fall through to "unknown" or "pypi"."""
+    identity = updater.app_identity("amplifier-app-tui")
+    assert identity.version == "0.1.0"
+    assert identity.source == "editable"
+    assert identity.commit is None
+    assert identity.label() == "0.1.0 (dev checkout)"
+
+
+def test_app_identity_unknown_package_degrades_gracefully() -> None:
+    identity = updater.app_identity("definitely-not-a-package-xyz")
+    assert identity.version is None
+    assert identity.source == "unknown"
+    assert identity.label() == "unknown (package metadata not found)"
+
+
+def test_app_identity_label_prefers_commit_over_source_tag() -> None:
+    identity = updater.AppIdentity(version="0.1.0", commit="deadbee", source="git")
+    assert identity.label() == "0.1.0 (deadbee)"
+
+
+def test_app_identity_label_pypi_is_bare_version() -> None:
+    identity = updater.AppIdentity(version="1.2.3", commit=None, source="pypi")
+    assert identity.label() == "1.2.3"
+
+
+# -- read/record identity: hermetic persisted-state round trip --------------
+
+
+def test_identity_state_round_trips_through_tmp_home(tmp_path: Path) -> None:
+    assert updater.read_last_identity(tmp_path) is None  # nothing recorded yet
+    identity = updater.AppIdentity(version="0.1.0", commit="aaaaaaa", source="git")
+    assert updater.record_identity(identity, tmp_path) is True
+    assert updater.read_last_identity(tmp_path) == identity
+
+
+def test_identity_state_lives_under_the_auto_regenerating_cache_dir(tmp_path: Path) -> None:
+    """So `amplifier-tui reset` (which already clears `cache/`) accounts for
+    it with zero extra wiring -- losing it is a no-op, not data loss."""
+    identity = updater.AppIdentity(version="0.1.0", commit="aaaaaaa", source="git")
+    updater.record_identity(identity, tmp_path)
+    assert (tmp_path / "cache" / "tui_identity.json").exists()
+
+
+def test_read_last_identity_corrupt_state_degrades_to_none(tmp_path: Path) -> None:
+    state = tmp_path / "cache" / "tui_identity.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("{not json", encoding="utf-8")
+    assert updater.read_last_identity(tmp_path) is None
+
+
+def test_read_last_identity_unexpected_shape_degrades_to_none(tmp_path: Path) -> None:
+    state = tmp_path / "cache" / "tui_identity.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("[1, 2, 3]", encoding="utf-8")  # a JSON array, not an object
+    assert updater.read_last_identity(tmp_path) is None
+
+
+def test_record_identity_read_only_home_degrades_to_false(tmp_path: Path, monkeypatch) -> None:
+    def _raise_mkdir(*a, **k):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", _raise_mkdir)
+    identity = updater.AppIdentity(version="0.1.0", commit="aaaaaaa", source="git")
+    assert updater.record_identity(identity, tmp_path) is False  # degraded, not raised
+
+
+# -- describe_identity_change: the "upgraded from X to Y" line --------------
+
+
+def test_describe_identity_change_none_on_first_run() -> None:
+    current = updater.AppIdentity(version="0.1.0", commit="aaaaaaa", source="git")
+    assert updater.describe_identity_change(None, current) is None
+
+
+def test_describe_identity_change_none_when_unchanged() -> None:
+    identity = updater.AppIdentity(version="0.1.0", commit="aaaaaaa", source="git")
+    assert updater.describe_identity_change(identity, identity) is None
+
+
+def test_describe_identity_change_reports_commit_bump() -> None:
+    old = updater.AppIdentity(version="0.1.0", commit="aaaaaaa", source="git")
+    new = updater.AppIdentity(version="0.1.0", commit="bbbbbbb", source="git")
+    line = updater.describe_identity_change(old, new)
+    assert line == "upgraded \u00b7 0.1.0 (aaaaaaa) \u2192 0.1.0 (bbbbbbb)"
+
+
+def test_describe_identity_change_reports_version_bump() -> None:
+    old = updater.AppIdentity(version="0.1.0", commit=None, source="pypi")
+    new = updater.AppIdentity(version="0.2.0", commit=None, source="pypi")
+    line = updater.describe_identity_change(old, new)
+    assert line is not None
+    assert "0.1.0" in line and "0.2.0" in line
+
+
+# -- CLI wiring: `update` prints + records the installed identity -----------
+
+
+def test_update_prints_installed_identity_line(monkeypatch) -> None:
+    _stub(monkeypatch, [updater.BundleUpdate("tui", "tui", "up to date", False)])
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert "amplifier-tui 0.1.0 (aaaaaaa)" in result.output  # _DEFAULT_STUB_IDENTITY
+
+
+def test_update_reports_upgrade_when_identity_changed(monkeypatch) -> None:
+    previous = updater.AppIdentity(version="0.1.0", commit="aaa1111", source="git")
+    current = updater.AppIdentity(version="0.1.0", commit="bbb2222", source="git")
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "up to date", False)],
+        identity=current,
+        previous_identity=previous,
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert "upgraded" in result.output
+    assert "aaa1111" in result.output and "bbb2222" in result.output
+
+
+def test_update_silent_about_upgrade_when_identity_unchanged(monkeypatch) -> None:
+    same = updater.AppIdentity(version="0.1.0", commit="aaaaaaa", source="git")
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "up to date", False)],
+        identity=same,
+        previous_identity=same,
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    assert "upgraded" not in result.output
+
+
+def test_update_records_identity_even_in_check_only_mode(monkeypatch) -> None:
+    recorded: list = []
+    _stub(
+        monkeypatch,
+        [updater.BundleUpdate("tui", "tui", "up to date", False)],
+        recorded=recorded,
+    )
+    result = CliRunner().invoke(main, ["update", "--check-only"])
+    assert result.exit_code == 0
+    # Even --check-only records the current identity: the NEXT invocation
+    # (of `update` or, after a manual reinstall, whenever the user next
+    # checks) is what diffs against this baseline.
+    assert len(recorded) == 1
+    assert recorded[0] == _DEFAULT_STUB_IDENTITY
 
 
 # -- uncheckable_sources: deduplicated, plainly labeled (pure) ---------------
@@ -202,6 +386,13 @@ def _offline_packages() -> list:
     ]
 
 
+_DEFAULT_STUB_IDENTITY = updater.AppIdentity(version="0.1.0", commit="aaaaaaa", source="git")
+"""A fixed, hermetic stand-in for `app_identity()` -- CLI tests assert on
+`result.output` and must never depend on how THIS repo checkout happens to
+be installed (editable dev checkout here, but a real `uv tool install` for
+an end user)."""
+
+
 def _stub(
     monkeypatch,
     statuses,
@@ -211,6 +402,9 @@ def _stub(
     anchors=None,
     refreshed=None,
     packages=None,
+    identity=None,
+    previous_identity=None,
+    recorded=None,
 ):
     async def _check(*a, **k):
         return statuses
@@ -232,6 +426,11 @@ def _stub(
     async def _packages(*a, **k):
         return packages if packages is not None else _offline_packages()
 
+    def _record(ident, *a, **k):
+        if recorded is not None:
+            recorded.append(ident)
+        return True
+
     monkeypatch.setattr(updater, "check_bundles", _check)
     monkeypatch.setattr(updater, "update_bundles", _apply)
     monkeypatch.setattr(updater, "anchors_status", _anchors)
@@ -240,6 +439,12 @@ def _stub(
     monkeypatch.setattr(
         updater, "uv_cache_clean", lambda: cleaned.append(True) if cleaned is not None else True
     )
+    # AC3: the CLI always resolves/prints/records app identity -- stub every
+    # invocation to a fixed value so no test's `result.output` assertions
+    # (or disk state) depend on how THIS checkout happens to be installed.
+    monkeypatch.setattr(updater, "app_identity", lambda *a, **k: identity or _DEFAULT_STUB_IDENTITY)
+    monkeypatch.setattr(updater, "read_last_identity", lambda *a, **k: previous_identity)
+    monkeypatch.setattr(updater, "record_identity", _record)
 
 
 def test_update_all_up_to_date(monkeypatch) -> None:

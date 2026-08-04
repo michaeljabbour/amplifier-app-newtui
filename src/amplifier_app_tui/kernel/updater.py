@@ -23,6 +23,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .config import (
     DEFAULT_BUNDLE,
@@ -303,6 +304,156 @@ async def check_packages() -> list[PackageStatus]:
             asyncio.to_thread(_git_package_status, "amplifier-foundation", FOUNDATION_REPO_URL),
         )
     )
+
+
+# --- app identity (verified, not hardcoded) + upgrade-path confirmation -----
+# D1/AC3: `update` and the upgrade docs must PROVE what's installed, not just
+# echo the static `__version__` string baked at build time -- and, when the
+# app itself was upgraded (via the README's `uv tool install --reinstall` /
+# `git pull && uv sync`, both OUT of this command's scope), confirm it and say
+# what changed. See `self_update_hint` below for the paired guidance fix.
+
+AppSource = Literal["git", "editable", "pypi", "unknown"]
+"""How the running app was installed (PEP 610-derived).
+
+``git`` -- a ``uv tool install``/``uv sync`` git source (the README's
+documented path; carries a commit). ``editable`` -- a dev checkout
+(``uv sync`` / ``pip install -e``); MUST NOT be told to run a tool-install
+command, which would fight its own venv link. ``pypi`` -- a published
+release (no ``direct_url.json`` at all). ``unknown`` -- dist not found or an
+unreadable/unexpected metadata shape.
+"""
+
+
+@dataclass(frozen=True)
+class AppIdentity:
+    """What's ACTUALLY installed right now -- verified, not assumed.
+
+    Reads the installed distribution's own metadata + PEP 610
+    ``direct_url.json`` (the same mechanism :func:`installed_commit` already
+    uses for the update-check tables), so this reflects reality even if the
+    source tree and the installed dist ever drift apart.
+    """
+
+    version: str | None
+    commit: str | None
+    source: AppSource
+
+    def label(self) -> str:
+        """One display string: ``0.1.0 (a1b2c3d)`` / ``0.1.0 (dev checkout)``."""
+        if self.version is None:
+            return "unknown (package metadata not found)"
+        if self.commit:
+            return f"{self.version} ({self.commit[:7]})"
+        if self.source == "editable":
+            return f"{self.version} (dev checkout)"
+        return self.version
+
+
+def _install_source(dist_name: str) -> tuple[AppSource, str | None]:
+    """PEP 610 introspection: how was *dist_name* installed, and its commit.
+
+    ``direct_url.json`` is present for git/dir-sourced installs (``uv tool
+    install``, ``uv sync``, ``pip install -e``); absent entirely for a plain
+    PyPI release. Never raises -- any surprise shape degrades to
+    ``("unknown", None)``.
+    """
+    import json
+    from importlib import metadata
+
+    try:
+        raw = metadata.distribution(dist_name).read_text("direct_url.json")
+    except Exception:  # noqa: BLE001 -- dist not found / unreadable metadata
+        return "unknown", None
+    if not raw:
+        return "pypi", None
+    try:
+        parsed = json.loads(raw)
+    except Exception:  # noqa: BLE001 -- malformed direct_url.json
+        return "unknown", None
+    vcs_info = parsed.get("vcs_info")
+    if isinstance(vcs_info, dict):
+        commit = vcs_info.get("commit_id")
+        return "git", (str(commit) if commit else None)
+    dir_info = parsed.get("dir_info")
+    if isinstance(dir_info, dict) and dir_info.get("editable"):
+        return "editable", None
+    return "unknown", None
+
+
+def app_identity(dist_name: str = APP_PACKAGE) -> AppIdentity:
+    """Verify what's actually installed -- offline, never raises."""
+    version = _dist_version(dist_name)
+    source, commit = _install_source(dist_name)
+    return AppIdentity(version=version, commit=commit, source=source)
+
+
+_IDENTITY_STATE_NAME = "tui_identity.json"
+# Lives under the `cache` reset category (auto-regenerates, see
+# kernel/reset.py) -- losing this file just means the next upgrade-diff has
+# nothing to compare against, never a crash or data loss.
+
+
+def _identity_state_path(amplifier_home: Path | None = None) -> Path:
+    return _amplifier_home(amplifier_home) / "cache" / _IDENTITY_STATE_NAME
+
+
+def read_last_identity(amplifier_home: Path | None = None) -> AppIdentity | None:
+    """The identity recorded by the previous :func:`record_identity` call.
+
+    ``None`` on first run, or if the state file is missing/corrupt -- the
+    caller then has nothing to diff against, not a crash.
+    """
+    import json
+
+    try:
+        raw = json.loads(_identity_state_path(amplifier_home).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 -- missing/corrupt state is not fatal
+        return None
+    if not isinstance(raw, dict):
+        return None
+    source = raw.get("source")
+    return AppIdentity(
+        version=raw.get("version"),
+        commit=raw.get("commit"),
+        source=source if source in ("git", "editable", "pypi", "unknown") else "unknown",
+    )
+
+
+def record_identity(identity: AppIdentity, amplifier_home: Path | None = None) -> bool:
+    """Persist *identity* as the baseline the NEXT run diffs against.
+
+    Best-effort: a read-only/missing home degrades to ``False`` (never
+    raises) -- upgrade reporting just skips the before/after line next time.
+    """
+    import json
+
+    path = _identity_state_path(amplifier_home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"version": identity.version, "commit": identity.commit, "source": identity.source}
+            ),
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
+
+
+def describe_identity_change(previous: AppIdentity | None, current: AppIdentity) -> str | None:
+    """One line confirming a genuine upgrade, or ``None`` if there's nothing to report.
+
+    ``None`` on a first run (no baseline yet) or when nothing changed --
+    callers print this line ONLY when it is not ``None``, so a no-op
+    invocation stays quiet about a version it didn't touch.
+    """
+    if previous is None:
+        return None
+    if previous.version == current.version and previous.commit == current.commit:
+        return None
+    return f"upgraded · {previous.label()} → {current.label()}"
 
 
 # --- anchors include ref (tracked, not statically pinned) -------------------
@@ -617,12 +768,32 @@ def uv_cache_clean() -> bool:
         return False
 
 
-def self_update_hint() -> str:
-    """How to update the app + platform (out of scope for this command)."""
+def self_update_hint(identity: AppIdentity | None = None) -> str:
+    """How to update the app + platform (out of scope for this command).
+
+    Tailored to how the app is ACTUALLY installed (verified via
+    :func:`app_identity`, defaulting to the live one) so an editable dev
+    checkout -- which `uv tool install --reinstall` would fight, clobbering
+    its own venv link -- is told ONLY `git pull && uv sync`, and every other
+    install shape gets the REAL installable URI (the one README.md
+    documents), never a bare `.` (which only resolves from inside a clone,
+    and was actively wrong advice for the documented global-install path:
+    running it from an arbitrary directory tries to install whatever
+    project happens to be in the CWD).
+    """
+    identity = identity or app_identity()
+    tool_install = f"uv tool install --reinstall git+{APP_REPO_URL}"
+    if identity.source == "editable":
+        app_line = "to update the app itself (dev checkout): `git pull && uv sync`"
+    else:
+        app_line = (
+            f"to update the app itself: `git pull && uv sync` (clone) or `{tool_install}` (tool)"
+        )
     return (
-        "to update the app itself: `git pull && uv sync` (clone) or "
-        "`uv tool install --reinstall .` (tool)\n"
-        "to update the Amplifier platform: `uv tool upgrade amplifier`"
+        f"{app_line}\n"
+        "to update the Amplifier platform: `uv tool upgrade amplifier`\n"
+        "then verify: `amplifier-tui version` (or re-run this command -- it reports the "
+        "installed version and flags an upgrade automatically)"
     )
 
 
@@ -632,18 +803,24 @@ __all__ = [
     "FOUNDATION_REPO_URL",
     "UNCHECKABLE_LABEL",
     "AnchorsStatus",
+    "AppIdentity",
+    "AppSource",
     "BundleUpdate",
     "PackageStatus",
     "SourceRow",
     "anchors_ref",
     "anchors_status",
+    "app_identity",
     "check_bundles",
     "check_packages",
     "count_stale_sources",
+    "describe_identity_change",
     "display_name",
     "installed_commit",
     "pin_files",
     "read_anchors_ref",
+    "read_last_identity",
+    "record_identity",
     "refresh_anchors",
     "self_update_hint",
     "shape_package_status",

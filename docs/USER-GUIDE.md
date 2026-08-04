@@ -236,7 +236,7 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | Repair | `/permissions` | show trust slots: boundary, blocks, exceptions |
 | | `/allowed-dirs [list\|add PATH\|remove PATH]` | edit allowed write paths for this session |
 | | `/denied-dirs [list\|add PATH\|remove PATH]` | edit denied write paths for this session |
-| | `/doctor` | setup checkup — reports findings and the fixes to make; changes nothing itself |
+| | `/doctor` | setup checkup — install, PATH, platform, Python/uv, permissions, settings; each finding names the exact fix, changes nothing itself |
 | | `/improve` | suggests allowlist/trust tweaks from your approval history — never applies silently |
 | | `/theme [name]` | switch or cycle theme: slate · graphite · carbon · paper (session-only — resets to slate on restart) |
 | | `/keys` | list every keyboard shortcut and what it does |
