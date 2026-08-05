@@ -1535,7 +1535,9 @@ async def test_parent_directory_replacement_after_tracked_delete_skips_restore(
     await _event(store, "tool:post", "delete_file", "delete-nested")
     store.finish("cp-delete-parent")
 
-    parent.rmdir()
+    # Keep the original directory alive so filesystems cannot immediately
+    # recycle its inode for the replacement and hide the identity change.
+    parent.rename(workspace / "original-parent")
     parent.mkdir()
     outcome = store.restore("cp-delete-parent")
 
