@@ -3,7 +3,13 @@
 # AC3 needs at least THREE additional daily-driver users beyond MJ (stage 1) and Brian
 # (stage 2). The brief defines the seats but does NOT name the people - they have not been
 # chosen yet. The three seats below are real and reserved; `TBD` is the only unknown.
-# Filling a name is a one-line edit, not a blocker.
+# Filling a name is a one-line edit, not a blocker - see RUNBOOK.md for the sheet.
+#
+# `TBD` is REFUSED, not merely uncounted. So are `-`, an empty cell, whitespace, `?`,
+# `unknown`, `n/a`, `<name>` and the rest of PLACEHOLDERS in scripts/adoption_gate.py.
+# `promote 3` names each unfilled seat individually. And a seat that holds a placeholder
+# participant while recording a commit, a date, a report or a disposition is a HARD
+# validation error: evidence needs a name attached to it.
 #
 # tested_commit is REQUIRED so a report can be reproduced against the exact build the
 # participant ran (short or full git sha).
