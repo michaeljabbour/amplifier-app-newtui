@@ -37,6 +37,7 @@ and exactly one forced reflow runs when streaming ends
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from time import monotonic
 from typing import Any, NamedTuple, cast
@@ -906,6 +907,11 @@ class TranscriptView(VerticalScroll):
         self._compaction_pending = False
         self._focused_lane: str | None = None
         self._main_stash: list[TranscriptBlock] | None = None
+        # Focus/restore requests arrive through independent Textual workers.
+        # Serialize the complete remove-and-remount transaction: overlapping
+        # swaps can otherwise both observe the same child set and remount two
+        # widgets with the same stable ``block-*`` id.
+        self._view_swap_lock = asyncio.Lock()
         self._view_anchors: dict[str, ViewAnchor] = {}
         self._evidence_focus: dict[str, EvidenceFocusAnchor] = {}
         self._streaming = False
@@ -1217,27 +1223,29 @@ class TranscriptView(VerticalScroll):
 
     async def focus_lane(self, lane_id: str, blocks: Sequence[TranscriptBlock]) -> None:
         """Swap the transcript to a subagent's own block list."""
-        if self._focused_lane is None:
-            self._main_stash = list(self.blocks)
-        self._capture_anchor()  # remember the outgoing view's position (S6)
-        self._focused_lane = lane_id
-        await self._swap(blocks)
-        self._restore_anchor()  # this lane's own remembered position, else tail (S6)
-        self.post_message(LaneFocusChanged(lane_id))
+        async with self._view_swap_lock:
+            if self._focused_lane is None:
+                self._main_stash = list(self.blocks)
+            self._capture_anchor()  # remember the outgoing view's position (S6)
+            self._focused_lane = lane_id
+            await self._swap(blocks)
+            self._restore_anchor()  # this lane's own remembered position, else tail (S6)
+            self.post_message(LaneFocusChanged(lane_id))
 
     async def restore_main(self) -> None:
         """Esc (or the focus-header Back control) from a focused lane:
         restore the parent transcript — including its own scroll position
         (S6), never forced back to the tail."""
-        if self._focused_lane is None:
-            return
-        stash = self._main_stash or []
-        self._capture_anchor()  # remember the lane view's own position (S6)
-        self._focused_lane = None
-        self._main_stash = None
-        await self._swap(stash)
-        self._restore_anchor()  # the parent's remembered position, else tail (S6)
-        self.post_message(LaneFocusChanged(None))
+        async with self._view_swap_lock:
+            if self._focused_lane is None:
+                return
+            stash = self._main_stash or []
+            self._capture_anchor()  # remember the lane view's own position (S6)
+            self._focused_lane = None
+            self._main_stash = None
+            await self._swap(stash)
+            self._restore_anchor()  # the parent's remembered position, else tail (S6)
+            self.post_message(LaneFocusChanged(None))
 
     # -- per-view scroll-anchor seam (S6) --------------------------------
     #
