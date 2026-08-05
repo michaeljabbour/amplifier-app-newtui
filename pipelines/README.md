@@ -48,7 +48,9 @@ issue to the right treatment rather than porting everything the same way:
 
 The [paste-in prompt](PROMPT.md) gives amplifier agency to categorize each issue (via its
 GitHub labels), adapt or author the pipeline graph(s) that fit, and stand up the attractor
-engine itself. Edit the queue with `python3 pipelines/ledger.py add <issue> <slug>`.
+engine itself. For a separately authorized, non-parity backlog item, edit the queue with
+`python3 pipelines/ledger.py add-non-parity <issue> <slug>`. The plain `add` command is
+reserved for the owner-gated parity loop.
 
 ## The pipeline
 
@@ -56,8 +58,9 @@ engine itself. Edit the queue with `python3 pipelines/ledger.py add <issue> <slu
 
 ```
 CheckLedger ──done──> exit
+    │blocked──> owner_gate_blocked
     │process
-SelectIssue → BranchSetup → LocateDonor → PlanTransfer → Implement → UnitValidate
+SelectIssue → RecheckOwnerGate → BranchSetup → LocateDonor → PlanTransfer → Implement → UnitValidate
                                                                           │pass │fail
                                                        ForgeValidate <────┘     ▼
                                                         │pass │fail      AnalyzeFailure
@@ -68,13 +71,18 @@ SelectIssue → BranchSetup → LocateDonor → PlanTransfer → Implement → U
 ```
 
 - **LLM nodes** (`box`): SelectIssue, LocateDonor, PlanTransfer, Implement, AnalyzeFailure.
-- **Deterministic gates** (`parallelogram`): BranchSetup, UnitValidate (`ruff` + `pyright`
+- **Deterministic gates** (`parallelogram`): CheckLedger / RecheckOwnerGate, BranchSetup,
+  UnitValidate (`ruff` + `pyright`
   + `pytest`), ForgeValidate (boots the real TUI / runs the new CLI via forge and asserts),
   RetryGate (bounds retries at 3), Commit, MarkBlocked.
 - Each transfer lands on its own `gene-transfer/<slug>` branch with a PR — never on `main`
   (branch protection enforces the gates a second time).
 - Non-converging issues after 3 attempts are marked `acknowledged` and commented for a
   human; the loop moves on rather than stalling.
+- `ledger-sources.tsv` records whether each queue row came from parity or the explicit
+  non-parity path. A parity row is selected only while its effective disposition is still
+  `accepted`, and the same gate is rechecked immediately before `BranchSetup`. A hand edit,
+  a revoked decision, or a direct enqueue therefore stops before any code-changing node.
 
 ## Owner-gated parity loop (continuous re-audit)
 
@@ -121,14 +129,15 @@ that), and `ledger.py` never sees the pass record.
 **A decision nobody signed is not a decision.** The `owner` field must name a real person:
 blank, whitespace, `-`, `?`, `TBD`, `unknown`, `owner`, `team`, and the rest of
 `PLACEHOLDER_OWNERS` (one list, one home, in `parity_loop.py`) are **refused** by `decide`,
-which writes nothing and exits 1. Enforcement is at read time too, so hand-editing the TSV
-doesn't help: a row claiming `accepted` against a placeholder owner reads back
+which writes nothing and exits 1. The same rule applies to `end-run`; new rows use
+`owner=<full name> | <reason>` so full names are unambiguous. Enforcement is at read time too,
+so hand-editing either TSV doesn't help: a row claiming `accepted` against a placeholder owner reads back
 `disposition=unattributed` and **blocks at the gate exactly like `pending`**. `pending` is
 the one disposition allowed to carry no owner — it is the *absence* of a ruling, which is
 precisely what a freshly-discovered gap has.
 
 ```sh
-python3 pipelines/parity_loop.py validate    # VALID | INVALID unattributed=<n> (exit 1)
+python3 pipelines/parity_loop.py validate    # gate and owner-ended attribution audit (exit 1)
 python3 pipelines/parity_loop.py awaiting    # gaps still owed a real, attributed decision
 ```
 
@@ -148,7 +157,7 @@ python3 pipelines/parity_loop.py gate 120        # PROCEED (exit 0) | BLOCKED (e
 python3 pipelines/parity_loop.py validate        # VALID | INVALID (unsigned decisions)
 python3 pipelines/parity_loop.py awaiting        # awaiting=<n>/<total>
 python3 pipelines/parity_loop.py should-continue # CONTINUE clean_streak=1/3 | DONE reason=...
-python3 pipelines/parity_loop.py end-run mjabbour "remaining gaps deferred to 0.3"
+python3 pipelines/parity_loop.py end-run "Michael Jabbour" "remaining gaps deferred to 0.3"
 python3 pipelines/parity_loop.py stats           # passes=4 clean_streak=2/3 run=open
 ```
 

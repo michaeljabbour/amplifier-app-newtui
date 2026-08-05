@@ -489,33 +489,55 @@ def write_key(path: Path, name: str, value: str, *, update_environ: bool = True)
 
 # -- provider module catalog ------------------------------------------------
 
-# Mirrors app-cli's provider_sources.DEFAULT_PROVIDER_SOURCES.
+# The same provider roster app-cli exposes, but pinned to the upstream main
+# commits verified on 2026-08-05. These URIs are persisted into user settings
+# when a provider is added, so a moving branch would make the same settings
+# install different code on different days. Updating the app is the review
+# point for deliberately bumping this catalog; users can still override any
+# source explicitly in settings.
 PROVIDER_SOURCES: dict[str, str] = {
     "provider-anthropic": (
-        "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main"
+        "git+https://github.com/microsoft/amplifier-module-provider-anthropic"
+        "@add3f43b68b89f04eff54e6d008708d009bdf7fe"
     ),
     "provider-azure-openai": (
-        "git+https://github.com/microsoft/amplifier-module-provider-azure-openai@main"
+        "git+https://github.com/microsoft/amplifier-module-provider-azure-openai"
+        "@bcca5fec164b376b38370aceb615b6344379aa7e"
     ),
     "provider-chat-completions": (
-        "git+https://github.com/microsoft/amplifier-module-provider-chat-completions@main"
+        "git+https://github.com/microsoft/amplifier-module-provider-chat-completions"
+        "@0965dae38d195482471cfb6fe706d84342cbad7f"
     ),
-    "provider-gemini": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
+    "provider-gemini": (
+        "git+https://github.com/microsoft/amplifier-module-provider-gemini"
+        "@d49a7b865dd0ab195e9f24549b2141cee229e6b1"
+    ),
     "provider-github-copilot": (
-        "git+https://github.com/microsoft/amplifier-module-provider-github-copilot@main"
+        "git+https://github.com/microsoft/amplifier-module-provider-github-copilot"
+        "@5a2b3fbde0778673ae66d9c4982f86f612d98649"
     ),
-    "provider-ollama": "git+https://github.com/microsoft/amplifier-module-provider-ollama@main",
-    "provider-openai": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
-    "provider-vllm": "git+https://github.com/microsoft/amplifier-module-provider-vllm@main",
+    "provider-ollama": (
+        "git+https://github.com/microsoft/amplifier-module-provider-ollama"
+        "@7f28b262f0b651badcaa9c6cdbf33ad896aaccb8"
+    ),
+    "provider-openai": (
+        "git+https://github.com/microsoft/amplifier-module-provider-openai"
+        "@2f44edc9564c7bfd0d79f45c62e56308f8c0d3ae"
+    ),
+    "provider-vllm": (
+        "git+https://github.com/microsoft/amplifier-module-provider-vllm"
+        "@c01e6ecb33998df64963cfb895144ae3496aafb0"
+    ),
 }
 """Known provider modules and where to fetch them.
 
 Entry-point discovery only sees modules already installed in the running
 interpreter, and tui installs just the bundle's provider — so on a fresh
 machine discovery is empty or partial and the picker had nothing to offer
-beyond a hardcoded five. This catalog is the second source, matching app-cli:
-a provider can be offered, configured and persisted (with its ``source:``)
-before it is installed, and the next boot installs it from that source.
+beyond a hardcoded five. This catalog is the second source, matching
+app-cli's roster while pinning each source to a reviewed commit: a provider
+can be offered, configured and persisted (with its ``source:``) before it is
+installed, and the next boot installs that exact source.
 
 Deliberately separate from :data:`PROVIDER_CREDENTIAL_VARS`, which answers a
 different question (which env vars mark a provider as configured for
@@ -1442,17 +1464,20 @@ def configured_providers(
 
 
 def _credential_available(amplifier_home: Path | None = None) -> bool:
-    """True when a known provider's credential vars are all present.
+    """True when the *packaged default* provider credential is present.
 
-    The packaged bundle already mounts a default provider (anthropic) that
-    reads ``ANTHROPIC_API_KEY``; if the credential is live in the process
-    env or stored in keys.env, that default will mount without an explicit
-    ``config.providers`` entry — so it is NOT a first run."""
+    A credential for some other known provider is not enough on its own: no
+    settings entry exists to mount that provider yet, so treating (for
+    example) an isolated ``OPENAI_API_KEY`` as launch-ready skips onboarding
+    and leaves the packaged Anthropic provider without a key.  Non-default
+    environment credentials are converted into a real provider entry by
+    :func:`auto_init_from_env` (headless) or the interactive setup flow.
+    """
     stored = stored_key_names(keys_file(amplifier_home))
-    for variables in PROVIDER_CREDENTIAL_VARS.values():
-        if variables and all(os.environ.get(v) or v in stored for v in variables):
-            return True
-    return False
+    variables = PROVIDER_CREDENTIAL_VARS["provider-anthropic"]
+    return bool(variables) and all(
+        os.environ.get(variable) or variable in stored for variable in variables
+    )
 
 
 def has_configured_provider(

@@ -134,7 +134,7 @@ def test_reset_reports_when_nothing_to_remove(tmp_path: Path) -> None:
     assert "nothing to remove" in result.output
 
 
-# -- --reinstall (repair flow; the uv call is mocked, never actually run) -----
+# -- --reinstall (repair flow; the installer call is mocked, never run) -------
 
 
 def test_reset_reinstall_dry_run_previews_and_changes_nothing(tmp_path: Path) -> None:
@@ -142,7 +142,7 @@ def test_reset_reinstall_dry_run_previews_and_changes_nothing(tmp_path: Path) ->
     result = CliRunner().invoke(main, ["reset", "--home", str(home), "--reinstall", "--dry-run"])
     assert result.exit_code == 0
     assert "would reinstall" in result.output
-    assert "uv tool install --reinstall" in result.output
+    assert "scripts/install.sh" in result.output
     assert (home / "cache" / "bundle-abc").exists()  # nothing removed in dry-run
 
 

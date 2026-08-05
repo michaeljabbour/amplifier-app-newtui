@@ -111,6 +111,79 @@ async def test_listeners_fire_on_queue_changes() -> None:
     remove()
 
 
+# -- defer / deny-and-continue -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_defer_parks_decision_and_resolves_current_call_to_deny() -> None:
+    broker, needs_you, denial_log = make_broker()
+    broker.stage_detail(
+        "Push upstream?",
+        ApprovalDetail(
+            command="git push origin main",
+            cwd="/work/project",
+            rule="external write needs approval",
+            capability="exec",
+        ),
+    )
+    task = asyncio.create_task(broker.request_approval("Push upstream?", [], timeout=3600))
+    await _settle()
+    ticket = broker.head
+    assert ticket is not None
+
+    item = broker.defer(ticket.ticket_id)
+
+    assert item is not None
+    assert item.question == "Push upstream?"
+    assert item.reason == "external write needs approval"
+    assert item.action == "git push origin main"
+    assert item.choices == STANDARD_OPTIONS
+    assert item.highlight == ""
+    assert needs_you.pending == (item,)
+    assert broker.head is None  # the hidden ticket can no longer block the bar
+    assert await asyncio.wait_for(task, timeout=1) == DENY
+    assert broker.pending == ()
+    assert denial_log.total_count == 1
+    assert denial_log.records[0].reason == "approval deferred · denied for current attempt"
+
+
+@pytest.mark.asyncio
+async def test_defer_exposes_next_fifo_ticket_before_cleanup() -> None:
+    broker, needs_you, _ = make_broker()
+    first = asyncio.create_task(broker.request_approval("First?", [], timeout=3600))
+    second = asyncio.create_task(broker.request_approval("Second?", [], timeout=3600))
+    await _settle()
+    first_ticket = broker.head
+    assert first_ticket is not None
+
+    broker.defer(first_ticket.ticket_id)
+    next_ticket = broker.head
+    assert next_ticket is not None and next_ticket.prompt == "Second?"
+    with pytest.raises(ValueError, match="already deferred"):
+        broker.defer(first_ticket.ticket_id)
+    assert len(needs_you.pending) == 1
+
+    broker.answer(next_ticket.ticket_id, ALLOW_ONCE)
+    assert await asyncio.wait_for(first, timeout=1) == DENY
+    assert await asyncio.wait_for(second, timeout=1) == ALLOW_ONCE
+
+
+@pytest.mark.asyncio
+async def test_defer_still_denies_when_needs_you_queue_is_full() -> None:
+    needs_you = NeedsYouQueue()
+    for index in range(needs_you._MAX_DECISIONS):  # noqa: SLF001 - boundary test
+        needs_you.defer(f"existing-{index}")
+    broker = ApprovalBroker(needs_you=needs_you)
+    task = asyncio.create_task(broker.request_approval("One more?", [], timeout=3600))
+    await _settle()
+    ticket = broker.head
+    assert ticket is not None
+
+    assert broker.defer(ticket.ticket_id) is None
+    assert await asyncio.wait_for(task, timeout=1) == DENY
+    assert len(needs_you.pending) == needs_you._MAX_DECISIONS  # noqa: SLF001
+
+
 # -- allow-always pass-through ------------------------------------------------------
 
 

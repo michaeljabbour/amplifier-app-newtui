@@ -1,10 +1,12 @@
-"""Host-provided ``question`` tool: pause the turn to ask the USER.
+"""Host-provided ``question`` tool: ask the USER without freezing Auto mode.
 
 Re-expression (behavior only, no opencode TS vendored) of opencode's
 ``question`` tool. The model calls it to ask the user one or more structured
-questions (multiple-choice ± free text), the turn PAUSES until the user answers,
-and the answers come back as the tool result so the model continues "with the
-user's answers in mind."
+questions (multiple-choice ± free text).  Interactive modes pause until the
+user answers and return those answers as the tool result.  Auto mode parks the
+questions and returns immediately, so the model can continue independent work;
+an answer is injected at a later provider boundary through the existing
+needs-you/steering bridge.
 
 Routing (the point of this slice): the tool goes through the EXISTING
 deferred-decision / needs-you plumbing so BOTH clients (the in-process Textual
@@ -16,10 +18,12 @@ speak -- no new protocol op, ``kernel/serve.py`` untouched:
 - reply -> :meth:`NeedsYouQueue.answer` -- the SAME entry point ``serve.py``'s
            ``{"op":"decision"}`` op and the TUI's ``app_support.apply_decision``
            both call
-- the tool BLOCKS in :meth:`execute` until every deferred question is answered
-  (or dismissed), then consumes each answered item so the ``StepBoundaryBridge``
-  never RE-injects the answer as a next-turn instruction (double-answer + turn
-  miscount).
+- outside Auto, the tool BLOCKS in :meth:`execute` until every deferred question
+  is answered (or dismissed), then consumes each answer so the
+  ``StepBoundaryBridge`` never re-injects it;
+- in Auto, the tool returns a successful "deferred" result immediately and
+  leaves each item pending.  Work continues, and a later answer is injected by
+  ``StepBoundaryBridge`` exactly once.
 
 Cancellation (app philosophy -- deny-and-continue, replacing the donor's
 ``Effect.orDie``): a dismissed question resolves to ``"Unanswered"`` and the turn
@@ -37,7 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,8 +53,10 @@ QUESTION_TOOL_NAME = "question"
 """Mount name and model-facing tool name."""
 
 DESCRIPTION = (
-    "Ask the user one or more structured questions mid-turn and wait for their "
-    "answer before continuing. Use it to gather preferences, clarify ambiguous "
+    "Ask the user one or more structured questions mid-turn. Outside Auto mode, "
+    "wait for the answer before continuing. In Auto mode, the questions are "
+    "deferred and independent work continues; answers arrive when available. "
+    "Use it to gather preferences, clarify ambiguous "
     "instructions, get a decision on an implementation choice, or offer a "
     "direction. Each question may list `options` (label + short description); set "
     "`multiple` true to allow selecting more than one. A free-text answer is "
@@ -150,15 +156,39 @@ def format_output(pairs: Sequence[tuple[str, str]]) -> str:
     )
 
 
+def format_deferred_output(prompts: Sequence[QuestionPrompt]) -> str:
+    """Model-facing Auto-mode result: the questions are parked, not failed."""
+    questions = ", ".join(f'"{prompt.question}"' for prompt in prompts)
+    return (
+        f"Questions deferred to the user: {questions}. Auto mode is continuing; "
+        "do not wait or repeat the questions. Continue independent work now. "
+        "The user's answers will be injected when available."
+    )
+
+
 class QuestionTool:
-    """The ``question`` tool: blocks the turn on the needs-you queue until answered.
+    """Structured questions over needs-you, nonblocking in Auto mode.
 
     Duck-typed over :class:`~amplifier_app_tui.model.queues.NeedsYouQueue`, so
     it unit-tests with a bare queue -- no session, no model, no network.
     """
 
-    def __init__(self, needs_you: NeedsYouQueue) -> None:
+    def __init__(
+        self,
+        needs_you: NeedsYouQueue,
+        *,
+        mode: Callable[[], str] | None = None,
+    ) -> None:
         self._needs_you = needs_you
+        self._mode = mode
+
+    def _auto_continues(self) -> bool:
+        if self._mode is None:
+            return False
+        try:
+            return self._mode() == "auto"
+        except Exception:  # noqa: BLE001 - a broken mode source must not change semantics
+            return False
 
     @property
     def name(self) -> str:
@@ -232,13 +262,21 @@ class QuestionTool:
             )
             return ToolResult(success=False, error={"message": message}, output=message)
 
+        auto_continues = self._auto_continues()
         loop = asyncio.get_running_loop()
         index_by_id: dict[str, int] = {}
         try:
             for i, prompt in enumerate(prompts):
+                reason = prompt.header
+                if auto_continues:
+                    reason = (
+                        f"{reason} · Auto continues while this waits"
+                        if reason
+                        else "Auto continues while this waits"
+                    )
                 item = self._needs_you.defer(
                     prompt.question,
-                    reason=prompt.header,
+                    reason=reason,
                     choices=prompt.labels,
                     descriptions=prompt.descriptions,
                     multiple=prompt.multiple,
@@ -253,6 +291,12 @@ class QuestionTool:
                     pass
             message = f"could not ask question: {error}"
             return ToolResult(success=False, error={"message": message}, output=message)
+
+        if auto_continues:
+            # Leave items pending.  Their eventual answers are consumed by the
+            # provider-boundary bridge as context, while this tool result lets
+            # the current loop keep making progress immediately.
+            return ToolResult(success=True, output=format_deferred_output(prompts))
 
         answers: dict[int, str] = {}
         done = asyncio.Event()
@@ -295,6 +339,7 @@ __all__ = [
     "QuestionOption",
     "QuestionPrompt",
     "QuestionTool",
+    "format_deferred_output",
     "format_output",
     "parse_questions",
 ]

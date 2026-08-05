@@ -1,4 +1,4 @@
-"""Tests for ui/rewind_strip.py — rewind picker strip (DESIGN-SPEC §9)."""
+"""Tests for the pre-prompt checkpoint restore strip (DESIGN-SPEC §9)."""
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ class RewindHost(App[None]):
         register_themes(self)
         self.theme = theme_id(DEFAULT_THEME)
         self.forks: list[str] = []
+        self.scopes: list[str] = []
         self.closed = 0
 
     def compose(self) -> ComposeResult:
@@ -49,6 +50,7 @@ class RewindHost(App[None]):
 
     def on_rewind_strip_fork_requested(self, message: RewindStrip.ForkRequested) -> None:
         self.forks.append(message.checkpoint_id)
+        self.scopes.append(message.scope)
 
     def on_rewind_strip_closed(self, message: RewindStrip.Closed) -> None:
         self.closed += 1
@@ -58,14 +60,14 @@ class RewindHost(App[None]):
 
 
 def test_rewind_label_exact_string() -> None:
-    assert rewind_label(CHECKPOINTS[2]) == "turn 3 · $1.12 · plan ready"
+    assert rewind_label(CHECKPOINTS[2]) == "before turn 3 · $1.12 · plan ready"
     assert rewind_line(CHECKPOINTS[0]) == (
-        "rewind · pick a turn · turn 1 · $0.18 · store refactor · shipped"
+        "checkpoint · pick a prompt · before turn 1 · $0.18 · store refactor · shipped"
     )
 
 
 def test_hint_strings() -> None:
-    assert FORK_HINT == "enter fork"
+    assert FORK_HINT == "enter restore"
     assert CLOSE_HINT == "esc close"
 
 
@@ -82,7 +84,11 @@ async def test_opens_on_newest_checkpoint_by_default() -> None:
         await pilot.pause()
         assert strip.display
         assert strip.index == 2
-        assert strip.label_text == "rewind · pick a turn · turn 3 · $1.12 · plan ready"
+        assert strip.label_text == (
+            "checkpoint · pick a prompt · before turn 3 · $1.12 · plan ready"
+        )
+        assert strip.scope == "both"
+        assert strip.scope_text == "↑↓ code + conversation"
 
 
 @pytest.mark.asyncio
@@ -93,7 +99,7 @@ async def test_opens_at_clicked_rule_checkpoint() -> None:
         strip.show_checkpoints(CHECKPOINTS, index=0)
         await pilot.pause()
         assert strip.label_text == (
-            "rewind · pick a turn · turn 1 · $0.18 · store refactor · shipped"
+            "checkpoint · pick a prompt · before turn 1 · $0.18 · store refactor · shipped"
         )
 
 
@@ -110,11 +116,13 @@ async def test_arrow_navigation_is_clamped() -> None:
         assert strip.index == 0
         await pilot.press("right", "right", "right", "right")  # clamped at newest
         assert strip.index == 2
-        assert strip.label_text == "rewind · pick a turn · turn 3 · $1.12 · plan ready"
+        assert strip.label_text == (
+            "checkpoint · pick a prompt · before turn 3 · $1.12 · plan ready"
+        )
 
 
 @pytest.mark.asyncio
-async def test_enter_requests_fork_for_current_checkpoint_and_closes() -> None:
+async def test_enter_requests_restore_for_current_checkpoint_and_closes() -> None:
     app = RewindHost()
     async with app.run_test() as pilot:
         strip = app.query_one(RewindStrip)
@@ -123,7 +131,27 @@ async def test_enter_requests_fork_for_current_checkpoint_and_closes() -> None:
         await pilot.press("left", "enter")
         await pilot.pause()
         assert app.forks == ["t2"]
+        assert app.scopes == ["both"]
         assert not strip.display
+
+
+@pytest.mark.asyncio
+async def test_up_down_select_restore_scope_and_enter_carries_it() -> None:
+    app = RewindHost()
+    async with app.run_test() as pilot:
+        strip = app.query_one(RewindStrip)
+        strip.show_checkpoints(CHECKPOINTS)
+        await pilot.pause()
+        await pilot.press("down")
+        assert strip.scope == "conversation"
+        await pilot.press("down", "down")
+        assert strip.scope == "code"  # clamped
+        await pilot.press("up")
+        assert strip.scope == "conversation"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.forks == ["t3"]
+        assert app.scopes == ["conversation"]
 
 
 @pytest.mark.asyncio
@@ -143,7 +171,7 @@ async def test_close_action_posts_closed_and_hides() -> None:
 
 
 @pytest.mark.asyncio
-async def test_click_glyphs_navigate_and_fork_chip_forks() -> None:
+async def test_click_glyphs_navigate_and_restore_chip_requests_restore() -> None:
     app = RewindHost()
     async with app.run_test(size=(120, 40)) as pilot:
         strip = app.query_one(RewindStrip)
@@ -158,6 +186,7 @@ async def test_click_glyphs_navigate_and_fork_chip_forks() -> None:
         await pilot.click("#rewind-fork")
         await pilot.pause()
         assert app.forks == ["t3"]
+        assert app.scopes == ["both"]
         assert not strip.display
 
 

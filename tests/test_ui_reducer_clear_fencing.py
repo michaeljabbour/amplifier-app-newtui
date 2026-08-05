@@ -25,8 +25,10 @@ and test_ui_reducer_replay.py's style.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from amplifier_app_tui.kernel import events as ev
-from amplifier_app_tui.model.blocks import BlockIdAllocator
+from amplifier_app_tui.model.blocks import BlockIdAllocator, TurnRule
 from amplifier_app_tui.model.lanes import LaneRegistry
 from amplifier_app_tui.model.turn import OutcomeLedger
 from amplifier_app_tui.ui.reducer import TranscriptReducer
@@ -84,6 +86,23 @@ def test_idle_clear_bumps_generation_with_no_active_turn() -> None:
     assert len(host.blocks) == 2  # UserLine + working_status, dispatched normally
 
 
+def test_confirmed_idle_context_clear_resets_checkpoint_lineage_only() -> None:
+    """A successful backend clear drops old rewind boundaries and resets
+    the context offset without changing generation-fencing semantics."""
+    reducer, _host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id=ROOT, prompt="old context", ts=1.0))
+    reducer.handle(ev.PromptComplete(session_id=ROOT, response="done", ts=2.0))
+    reducer.turn_base = 7
+    assert reducer.ledger.checkpoints
+
+    reducer.context_cleared()
+
+    assert reducer.ledger.turns == ()
+    assert reducer.ledger.checkpoints == ()
+    assert reducer.turn_base == 0
+    assert reducer.generation == 0  # presentation fencing remains a separate operation
+
+
 # -- mid-stream (AC5) -----------------------------------------------------------
 
 
@@ -122,6 +141,34 @@ def test_clear_mid_stream_fences_the_delayed_tail() -> None:
     assert len(host.blocks) == before[0] + 2
     new_user_line = host.blocks[before[0]]
     assert getattr(new_user_line, "text", None) == "try again"  # genuinely new, not resurrected
+
+
+def test_context_cleared_turn_accounts_cost_without_recreating_checkpoint() -> None:
+    """A stale PromptComplete settles the in-flight turn but cannot write a
+    checkpoint or TurnRule whose indices refer to the deleted context."""
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id=ROOT, prompt="expensive work", ts=1.0))
+    reducer.handle(
+        ev.ProviderResponseUsage(
+            session_id=ROOT,
+            input_tokens=100,
+            output_tokens=25,
+            cost_usd=Decimal("0.42"),
+            ts=2.0,
+        )
+    )
+    before = _snapshot(host)
+
+    reducer.context_cleared()
+    reducer.bump_generation()
+    reducer.handle(ev.PromptComplete(session_id=ROOT, response="late", ts=3.0))
+
+    assert not reducer.running
+    assert reducer.session_cost == Decimal("0.42")
+    assert reducer.ledger.turns == ()
+    assert reducer.ledger.checkpoints == ()
+    assert not any(isinstance(block, TurnRule) for block in host.blocks)
+    assert _snapshot(host) == before
 
 
 # -- tool-running (AC5) ---------------------------------------------------------
@@ -226,6 +273,12 @@ def test_repeated_clear_keeps_fencing_and_stays_idempotent() -> None:
             session_id=ROOT, block_type="text", block={"type": "text", "text": "late"}, ts=1.5
         )
     )
+    assert _snapshot(host) == before
+
+    # Close the fenced turn before submitting another prompt.  Besides
+    # mirroring the runtime lifecycle, this consumes its pre-prompt
+    # checkpoint without allowing the stale rule or notice into the view.
+    reducer.handle(ev.PromptComplete(session_id=ROOT, response="late", ts=1.75))
     assert _snapshot(host) == before
 
     reducer.handle(ev.PromptSubmit(session_id=ROOT, prompt="two", ts=2.0))

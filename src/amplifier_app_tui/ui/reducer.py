@@ -39,6 +39,7 @@ from ..model.blocks import (
     PlanItemState,
     Recap,
     Segment,
+    StyleToken,
     Thinking,
     TodoItem,
     TodoStatus,
@@ -176,6 +177,45 @@ def _op_detail(tool: str, tool_input: dict[str, Any], result: dict[str, Any]) ->
     verb = _verb_noun(tool)[0]
     target = _op_target(tool, tool_input)
     return f"{verb} {target}".strip() if target else verb
+
+
+def _tool_result_failed(result: dict[str, Any]) -> bool:
+    """Whether a ``tool:post`` payload represents a failed invocation.
+
+    loop-streaming deliberately turns tool exceptions into
+    ``ToolResult(success=False)`` and emits ``tool:post`` so the error can be
+    added to model context and the turn can continue.  A literal
+    ``tool:error`` is therefore only one failure shape; the reducer must also
+    recognize the ordinary result envelope used by the recovery path.
+    """
+    status = str(result.get("status", "")).strip().casefold()
+    success = result.get("success")
+    return (
+        success is False
+        or status in {"error", "failed"}
+        or (success is not True and bool(result.get("error")))
+    )
+
+
+def _tool_failure_message(result: dict[str, Any]) -> str:
+    """Extract one bounded, human-readable message from a failed result."""
+
+    def text(value: object) -> str:
+        if isinstance(value, str):
+            return " ".join(value.split())[:2000]
+        if isinstance(value, dict):
+            for key in ("message", "msg", "detail", "reason", "error", "type"):
+                nested = text(value.get(key))
+                if nested:
+                    return nested
+        return ""
+
+    for key in ("error", "message", "reason", "output"):
+        message = text(result.get(key))
+        if message:
+            return message
+    status = str(result.get("status", "")).strip()
+    return status if status.casefold() in {"error", "failed"} else ""
 
 
 def _truncate(text: str, width: int = _OP_LABEL_MAX) -> str:
@@ -620,9 +660,13 @@ class _StaleTurnHost:
     duration of one event when the active turn's generation is behind the
     live counter (a ``/clear`` landed mid-turn, D3). Silences every
     transcript-visible effect — appends, replaces, removals, notices,
-    stream deltas, turn start/finish, plan/approval/decision surfaces,
-    lane tail — so a delayed tool result or streaming tail from BEFORE
+    stream deltas, turn start, plan/approval/decision surfaces, lane tail —
+    so a delayed tool result or streaming tail from BEFORE
     the clear can never resurrect a row in the freshly emptied view.
+    Turn completion is the one lifecycle exception: it forwards so the app
+    can drop its running state, stop the heartbeat, and drain any explicitly
+    queued next turn. The reducer's block and notice mutations remain
+    silenced, so completion cannot repaint the cleared transcript.
     ``lanes_changed`` still forwards: the lanes panel tracks real
     background-agent state independently of the transcript and stays
     accurate either way.
@@ -654,7 +698,7 @@ class _StaleTurnHost:
         pass
 
     def turn_finished(self) -> None:
-        pass
+        self._host.turn_finished()
 
     def lanes_changed(self) -> None:
         self._host.lanes_changed()
@@ -692,6 +736,8 @@ class _Turn:
     turn_id: int
     session_id: str
     prompt: str
+    restore_turn_id: int
+    workspace_checkpoint_id: str
     start_ts: float
     mode: str
     spec: TurnSpecLike | None = None
@@ -722,6 +768,17 @@ class _Turn:
     phase: str = "submitted"
     """Liveness phase feeding the working line's empty-activity note
     (``submitted`` → ``executing`` → ``streaming``, see _PHASE_NOTES)."""
+    compaction_id: str | None = None
+    compaction_count: int = 0
+    compaction_strategy: int = 0
+    """One update-in-place root-context maintenance row per turn.
+
+    The context-simple module intentionally rebuilds an ephemeral request
+    view on every provider request once the source history crosses its
+    threshold.  Those are distinct diagnostic events, but rendering every
+    pass as a new transcript row turns implementation telemetry into a wall
+    of duplicate-looking conversation content.
+    """
     # -- rolling activity burst (DESIGN-SPEC §3) --------------------------
     digest_id: str | None = None
     """The current burst's in-place digest ToolLine (``Read 4 files · …``);
@@ -762,6 +819,13 @@ class _Turn:
     compares it against the LIVE counter on every event so a ``/clear``
     mid-turn fences the rest of this turn's tail (see
     :meth:`TranscriptReducer.bump_generation`).
+    """
+    context_cleared: bool = False
+    """The live context was cleared while this turn was still in flight.
+
+    Its remaining events still settle cost, lanes, and lifecycle state, but
+    its pre-clear checkpoint can no longer address the cleared context and
+    must never be committed as a rewind boundary.
     """
 
 
@@ -822,6 +886,17 @@ class TranscriptReducer:
         system prompt, memory/instruction files and tool definitions —
         sized from provider cache traffic (largest cache_read+cache_write
         seen; reads cover the previously written prefix)."""
+        self.context_tokens: int | None = None
+        """Latest ROOT request-view occupancy learned from native compaction.
+
+        Kept separate from ``total_tokens``: that counter is session-wide
+        output telemetry and deliberately includes child lanes, while the
+        footer must describe the root conversation's current request view.
+        """
+        self.context_window: int | None = None
+        """Provider-derived effective request budget from the latest root
+        ``context:compaction`` event.  ``None`` means use the configured
+        fallback because no native budget has been observed yet."""
         self._cost = CostTracker()
         self._turn: _Turn | None = None
         self.turn_base = 0
@@ -872,6 +947,19 @@ class TranscriptReducer:
         """
         return self._generation
 
+    @property
+    def root_stream_identity(self) -> tuple[str, int]:
+        """Producer/turn label for the currently active root stream (D6 AC4).
+
+        The turn reducer is already the authority for the 1-indexed turn id;
+        the live-tail widget receives only this presentation snapshot.  Child
+        streams continue to take their identity from :class:`LaneRecord`, so
+        there is no second counter or independently maintained stream model.
+        """
+
+        turn = self._turn
+        return ("main", turn.turn_id if turn is not None else 0)
+
     def bump_generation(self) -> int:
         """Start a new clear-generation (``/clear``, D3).
 
@@ -884,6 +972,21 @@ class TranscriptReducer:
         """
         self._generation += 1
         return self._generation
+
+    def context_cleared(self) -> None:
+        """Reset rewind lineage after a successful backend ``/clear``.
+
+        This is deliberately separate from :meth:`bump_generation`: the
+        latter remains a presentation fence and retains its existing
+        bookkeeping semantics when used on its own.  A confirmed context
+        clear invalidates every completed and pending checkpoint, resets the
+        next live prompt to context position one, and marks an in-flight turn
+        so its eventual close-out cannot recreate a stale boundary.
+        """
+        self.ledger.clear()
+        self.turn_base = 0
+        if self._turn is not None:
+            self._turn.context_cleared = True
 
     @property
     def live_session_cost(self) -> Decimal:
@@ -1027,6 +1130,17 @@ class TranscriptReducer:
         # the lane to its normal running state (validated dead window:
         # spawn → child session_start runs ~tens of seconds).
         self._wake_booting_lane(event)
+        # Approval events remain global interaction events -- the parent
+        # approval bar is still the one place where the user answers -- but
+        # their normalized envelope also identifies the exact child that is
+        # waiting or blocked. Project that SAME event into the existing lane
+        # snapshot before ordinary dispatch so every active subagent exposes
+        # its own attention state without a parallel approval registry (D5
+        # AC1/AC2). Other child execution events take the foreign-event path
+        # immediately below.
+        if isinstance(event, (ev.ApprovalRequired, ev.ApprovalGranted, ev.ApprovalDenied)):
+            if event.session_id and self.lanes.get(event.session_id) is not None:
+                self._track_child_activity(event)
         if self._is_foreign_turn_event(event):
             self._track_child_activity(event)
             return
@@ -1130,6 +1244,8 @@ class TranscriptReducer:
             case ev.OrchestratorComplete():
                 if event.status == "cancelled" and self._turn is not None:
                     self._turn.cancelled = True
+            case ev.GoalProgress():
+                self._goal_progress(event)
             case ev.CancelCompleted():
                 if self._turn is not None:
                     self._turn.cancelled = True
@@ -1172,6 +1288,8 @@ class TranscriptReducer:
                 ev.ToolPost,
                 ev.ToolError,
                 ev.OrchestratorComplete,
+                ev.GoalProgress,
+                ev.ContextCompacted,
             ),
         )
 
@@ -1189,9 +1307,10 @@ class TranscriptReducer:
         activity: str | None = None
         # ``None`` is a sentinel meaning "ordinary narration — neither
         # enters nor clears attention" (resolved below): only a fresh tool
-        # attempt (ToolPre) clears a prior ``attention`` back to ``working``,
-        # and only a discrete failure (ToolError / a failed ToolPost) enters
-        # it. Everything else (stream/content/orchestrator narration)
+        # attempt (ToolPre) or approval grant clears a prior ``attention``
+        # back to ``working``; a discrete failure, pending approval, or
+        # denied child action enters it. Everything else
+        # (stream/content/orchestrator narration)
         # preserves whatever attention-ness the lane already has — an
         # attention row must survive the very next unrelated narration
         # beat, not flicker off before anyone can see it (D5 AC1).
@@ -1199,11 +1318,51 @@ class TranscriptReducer:
         # D5 AC5: classifies the repaint notification below. "error" is a
         # discrete failure surfaced against a lane that keeps running (a
         # tool errored, or came back denied/failed) — distinct from
-        # "final" (the lane itself completing, handled in
-        # ``_agent_completed``). Everything else here is ordinary
-        # narration churn and may be coalesced under high volume.
+        # "attention" (approval required/granted/denied) and "final" (the
+        # lane itself completing, handled in ``_agent_completed``).
+        # Everything else here is ordinary narration churn and may be
+        # coalesced under high volume.
         kind: LaneNotifyKind = "progress"
         match event:
+            case ev.ApprovalRequired():
+                prompt = _truncate(event.prompt or "tool approval", 44)
+                activity = f"approval needed · {prompt}"
+                self._lane.append_block(
+                    record,
+                    ToolLine(
+                        id=self._ids.next_id(),
+                        summary=activity,
+                        status="blocked",
+                    ),
+                )
+                state = "attention"
+                kind = "attention"
+            case ev.ApprovalGranted():
+                choice = _truncate(event.choice or "allowed", 44)
+                activity = f"approval granted · {choice}"
+                self._lane.append_block(
+                    record,
+                    ToolLine(
+                        id=self._ids.next_id(),
+                        summary=activity,
+                        status="completed",
+                    ),
+                )
+                state = "working"
+                kind = "attention"
+            case ev.ApprovalDenied():
+                action = _truncate(event.command or event.prompt or event.reason or "tool", 44)
+                activity = f"blocked · {action}"
+                self._lane.append_block(
+                    record,
+                    ToolLine(
+                        id=self._ids.next_id(),
+                        summary=activity,
+                        status="blocked",
+                    ),
+                )
+                state = "attention"
+                kind = "attention"
             case ev.ToolPre():
                 if self._turn is not None:
                     self._turn.child_calls[(record.session_id, event.tool_call_id)] = {
@@ -1349,10 +1508,20 @@ class TranscriptReducer:
         # automatically when a confirmed fork trims the ledger (spec §9).
         checkpoints = self.ledger.checkpoints
         last_turn_id = checkpoints[-1].turn_id if checkpoints else self.turn_base
+        self.ledger.begin_turn(
+            turn_id=last_turn_id + 1,
+            restore_turn_id=last_turn_id,
+            message_index=last_turn_id,
+            label=event.prompt,
+            cost_at=self.session_cost,
+            workspace_id=event.workspace_checkpoint_id,
+        )
         turn = _Turn(
             turn_id=last_turn_id + 1,
             session_id=event.session_id,
             prompt=event.prompt,
+            restore_turn_id=last_turn_id,
+            workspace_checkpoint_id=event.workspace_checkpoint_id,
             start_ts=event.ts,
             last_ts=event.ts,
             # The event carries the posture the turn was submitted under
@@ -1460,7 +1629,6 @@ class TranscriptReducer:
                 kind = "shipped"
             else:
                 kind = "plan_ready" if "plan ready" in spec.outcome else "answer"
-            label = spec.checkpoint_label
         else:
             # Real-runtime close-out: per-turn cost and cache % come from
             # the provider usage recorded by the CostTracker (spec §11);
@@ -1483,7 +1651,6 @@ class TranscriptReducer:
                 kind = "plan_ready"
             else:
                 kind = "answer"
-            label = turn.prompt[:40]
         if spec is None:
             outcome = TurnOutcome(
                 kind=kind,  # type: ignore[arg-type]
@@ -1497,39 +1664,42 @@ class TranscriptReducer:
         # checkpoint $ always equals the footer $ at rule time
         # (mockup ``cp.cost = this.cost``) — one session cost basis everywhere.
         self.session_cost += telemetry.cost
-        recorded = self.ledger.record_turn(
-            telemetry,
-            outcome,
-            turn_id=turn.turn_id,
-            message_index=turn.turn_id,
-            label=label,
-            cost_at=self.session_cost,
-        )
-        if spec is not None:
-            rule_label = spec.rule_label
-        else:
-            outcome_text = outcome.outcome_label()
-            # ``· interrupted``/``· plan ready`` carry their own separator.
-            joiner = " " if outcome_text.startswith("·") else " · "
-            rule_label = f"{telemetry.label()}{joiner}{outcome_text}"
-            if turn.cancelled:
-                # Real interrupted close-out: the italic recap the demo
-                # scripts as its own recap event (spec §11 — ``Interrupted.
-                # Goal: <goal>. Context saved; resume or restate direction.``).
-                self._host.append_block(
-                    self._recap_line(
-                        f"Interrupted. Goal: {turn.prompt[:40]}. "
-                        "Context saved; resume or restate direction."
-                    )
-                )
-        self._host.append_block(
-            TurnRule(
-                id=self._ids.next_id(),
-                checkpoint_id=recorded.checkpoint.id,
-                label=rule_label,
-                shipped=shipped,
+        if not turn.context_cleared:
+            recorded = self.ledger.record_turn(
+                telemetry,
+                outcome,
+                turn_id=turn.turn_id,
+                message_index=turn.turn_id,
+                label=turn.prompt,
+                cost_at=self.session_cost,
+                restore_turn_id=turn.restore_turn_id,
+                workspace_id=turn.workspace_checkpoint_id,
             )
-        )
+            if spec is not None:
+                rule_label = spec.rule_label
+            else:
+                outcome_text = outcome.outcome_label()
+                # ``· interrupted``/``· plan ready`` carry their own separator.
+                joiner = " " if outcome_text.startswith("·") else " · "
+                rule_label = f"{telemetry.label()}{joiner}{outcome_text}"
+                if turn.cancelled:
+                    # Real interrupted close-out: the italic recap the demo
+                    # scripts as its own recap event (spec §11 — ``Interrupted.
+                    # Goal: <goal>. Context saved; resume or restate direction.``).
+                    self._host.append_block(
+                        self._recap_line(
+                            f"Interrupted. Goal: {turn.prompt[:40]}. "
+                            "Context saved; resume or restate direction."
+                        )
+                    )
+            self._host.append_block(
+                TurnRule(
+                    id=self._ids.next_id(),
+                    checkpoint_id=recorded.checkpoint.id,
+                    label=rule_label,
+                    shipped=shipped,
+                )
+            )
         self._turn = None
         self._host.turn_finished()
         if turn.deferred:
@@ -1809,7 +1979,7 @@ class TranscriptReducer:
             self._settle_activity(turn, _op_label(tool, tool_input))
             self._update_working()
             return
-        status = str(event.result.get("status", ""))
+        status = str(event.result.get("status", "")).strip().casefold()
         if status == "denied":
             # A denial is load-bearing: it always gets its own durable ⊘
             # line (spec §3/§7), never folded into the digest.
@@ -1824,12 +1994,36 @@ class TranscriptReducer:
             self._settle_activity(turn, _op_label(tool, tool_input))
             self._update_working()
             return
+        if _tool_result_failed(event.result):
+            # This is the normal loop-streaming recovery shape: the failed
+            # ToolResult was already written back to model context and the
+            # orchestrator is free to choose a fallback in the SAME turn.
+            # Keep it out of the successful burst digest and render a durable
+            # failed row so that continuation does not look like success.
+            message = _tool_failure_message(event.result)
+            summary = f"{tool} failed"
+            if message:
+                summary = f"{summary} · {_truncate(message)}"
+            body = [_op_detail(tool, tool_input, event.result)]
+            if message:
+                body.append(message)
+            self._append_content(
+                ToolLine(
+                    id=self._ids.next_id(),
+                    summary=summary,
+                    body=tuple(part for part in body if part),
+                    status="failed",
+                    tool_call_ids=(event.tool_call_id,) if event.tool_call_id else (),
+                )
+            )
+            self._settle_activity(turn, _op_label(tool, tool_input))
+            # Freeze any successful work that preceded the failure; a fallback
+            # starts a new digest below this row, preserving chronology.
+            self._flush_burst()
+            self._update_working()
+            return
         # Success: roll into the burst tally + live tree, update the digest.
-        if event.result.get("success", True) is not False and status.lower() not in {
-            "error",
-            "failed",
-        }:
-            self._record_change(turn, "main agent", tool, tool_input)
+        self._record_change(turn, "main agent", tool, tool_input)
         self._settle_activity(turn, _op_label(tool, tool_input))
         key = _verb_noun(tool)
         turn.burst_counts[key] = turn.burst_counts.get(key, 0) + 1
@@ -2090,9 +2284,28 @@ class TranscriptReducer:
     def _usage(self, event: ev.ProviderResponseUsage) -> None:
         self.total_tokens += event.output_tokens
         self.memory_tokens = max(self.memory_tokens, event.cache_read + event.cache_write)
+        turn = self._turn
+        root_usage = (
+            turn is None
+            or not turn.session_id
+            or not event.session_id
+            or event.session_id == turn.session_id
+        )
+        if root_usage:
+            if event.input_tokens or event.cache_write:
+                # Amplifier's canonical input_tokens is the gross prompt
+                # total (cache reads are already included); cache creation
+                # is separate. This is the latest request occupancy, never
+                # a session accumulation and never input+cache_read twice.
+                self.context_tokens = event.input_tokens + event.cache_write + event.output_tokens
+            elif self.context_tokens is not None:
+                # A compaction event may be the only occupancy source for a
+                # provider that omits input usage. Its response becomes new
+                # context for the next iteration.
+                self.context_tokens += event.output_tokens
         cost = self._cost.record(event)
-        if self._turn is not None:
-            self._turn.tokens += event.output_tokens
+        if turn is not None:
+            turn.tokens += event.output_tokens
             self._update_working()
         # Route per-lane telemetry: usage stamped with a registered child
         # session id belongs to that subagent's lane. The root turn session
@@ -2110,17 +2323,87 @@ class TranscriptReducer:
             self._lane.notify_lanes_changed(kind="progress")
 
     def _context_compacted(self, event: ev.ContextCompacted) -> None:
-        """Persist a quiet but inspectable compaction boundary in history."""
+        """Persist one inspectable root compaction summary per turn.
+
+        Raw normalized events remain lossless in ``ui-events.jsonl``.  Only
+        presentation is coalesced, so a long tool loop cannot flood the
+        parent conversation with one row and toast per provider request.
+        Child events are diverted before this method by
+        :meth:`_is_foreign_turn_event`.
+        """
+        if event.after_tokens:
+            self.context_tokens = event.after_tokens
+        if event.budget:
+            self.context_window = event.budget
+
+        turn = self._turn
+        count = 1
+        if turn is not None:
+            turn.compaction_count += 1
+            turn.compaction_strategy = max(turn.compaction_strategy, event.strategy_level)
+            count = turn.compaction_count
         token_delta = f"{event.before_tokens:,} → {event.after_tokens:,} tokens"
         message_delta = (
             f" · {event.before_messages} → {event.after_messages} messages"
             if event.before_messages or event.after_messages
             else ""
         )
-        level = f" · strategy {event.strategy_level}" if event.strategy_level else ""
-        text = f"Context compacted · {token_delta}{message_delta}{level}"
-        self._append_content(Narration(id=self._ids.next_id(), text=text))
-        self._host.show_notice(text)
+        target = (
+            f" · target {event.target_tokens:,} / {event.budget:,}"
+            if event.target_tokens and event.budget
+            else ""
+        )
+        strategy = turn.compaction_strategy if turn is not None else event.strategy_level
+        level = f" · strategy {strategy}" if strategy else ""
+        prefix = "Context compacted" if count == 1 else f"Context compacted ×{count} this turn"
+        text = f"{prefix} · {token_delta}{message_delta}{target}{level}"
+
+        if turn is None or turn.compaction_id is None:
+            block = Narration(id=self._ids.next_id(), text=text)
+            if turn is not None:
+                turn.compaction_id = block.id
+            self._append_content(block)
+            self._host.show_notice(text)
+        else:
+            self._host.replace_block(Narration(id=turn.compaction_id, text=text))
+
+    def _goal_progress(self, event: ev.GoalProgress) -> None:
+        """Render Amplifier's native goal-loop telemetry without owning it."""
+
+        cap = f"/{event.cap}" if event.cap else ""
+        turn = f"turn {event.turn}{cap}"
+        if event.state == "continuing":
+            reason = _truncate(event.reason or "condition not yet satisfied", 72)
+            self.set_activity(f"goal · {turn} · {reason}")
+            return
+
+        labels: dict[str, tuple[str, StyleToken]] = {
+            "achieved": ("Goal met", "green"),
+            "cap_hit": ("Goal unconfirmed · cap reached", "orange"),
+            "stalled": ("Goal not met · stalled", "red"),
+            "cancelled": ("Goal unconfirmed · cancelled", "orange"),
+            "error": ("Goal unconfirmed · evaluation failed", "red"),
+        }
+        label, color = labels.get(event.state, (f"Goal {event.state or 'updated'}", "blue"))
+        spans: list[Segment] = [
+            Segment(text="· ", style_token=color),
+            Segment(text=label, style_token="bright", bold=True),
+            Segment(
+                text=f"  {turn} · native {event.orchestrator or 'orchestrator'}\n",
+                style_token="dim",
+            ),
+        ]
+        if event.summary:
+            spans.append(Segment(text=f"  {event.summary}\n", style_token="bright"))
+        if event.reason:
+            spans.append(Segment(text=f"  reason · {event.reason}\n", style_token="dim"))
+        if event.stall_detail:
+            spans.append(Segment(text=f"  stall · {event.stall_detail}\n", style_token="dim"))
+        if event.stall_verdict:
+            spans.append(Segment(text=f"  verdict · {event.stall_verdict}\n", style_token="dim"))
+        self._append_content(Answer(id=self._ids.next_id(), spans=tuple(spans)))
+        self.set_activity("")
+        self._host.show_notice(f"{label.lower()} · {turn}")
 
     # -- approvals / notifications -----------------------------------------------------
 

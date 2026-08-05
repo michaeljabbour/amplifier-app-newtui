@@ -52,8 +52,8 @@ def test_read_anchors_ref_none_when_absent() -> None:
 
 
 def test_anchors_ref_reads_real_packaged_bundle() -> None:
-    # The shipped bundle currently tracks @main (see #96); assert it resolves.
-    assert updater.anchors_ref() is not None
+    # The shipped bundle is an immutable full commit.
+    assert updater._is_sha(updater.anchors_ref())
 
 
 # -- pin_files: single source of truth --------------------------------------
@@ -124,6 +124,7 @@ async def test_anchors_status_behind(monkeypatch) -> None:
 
     import amplifier_foundation.sources.git as git_mod
 
+    monkeypatch.setattr(updater, "anchors_ref", lambda: "main")
     monkeypatch.setattr(git_mod, "GitSourceHandler", _Handler)
     status = await updater.anchors_status()
     assert status.is_stale
@@ -139,11 +140,27 @@ async def test_anchors_status_degrades_offline(monkeypatch) -> None:
 
     import amplifier_foundation.sources.git as git_mod
 
+    monkeypatch.setattr(updater, "anchors_ref", lambda: "main")
     monkeypatch.setattr(git_mod, "GitSourceHandler", _Handler)
     status = await updater.anchors_status()
     assert status.error is not None
     assert status.has_update is None
     assert not status.is_stale  # never a false finding offline
+
+
+@pytest.mark.asyncio
+async def test_anchors_status_for_shipped_sha_is_network_free(monkeypatch) -> None:
+    class _Handler:
+        def __init__(self):
+            raise AssertionError("a static pin must not query the network")
+
+    import amplifier_foundation.sources.git as git_mod
+
+    monkeypatch.setattr(git_mod, "GitSourceHandler", _Handler)
+    status = await updater.anchors_status()
+    assert status.is_pinned
+    assert status.has_update is False
+    assert status.cached_commit == status.ref
 
 
 @pytest.mark.asyncio
@@ -173,11 +190,13 @@ def test_bump_rewrites_all_copies(tmp_path: Path, monkeypatch) -> None:
     bump = _load_bump()
     _write_pin_copies(tmp_path, "main")
     monkeypatch.setattr(bump, "REPO_ROOT", tmp_path)
-    assert bump.main(["v2.3.0"]) == 0
+    sha = "93615d9847ce40313cc0d60583cb886de4337f9e"
+    monkeypatch.setattr(bump, "ANCHORS_COMMIT", sha)
+    assert bump.main([sha]) == 0
     refs = {
         updater.read_anchors_ref(p.read_text(encoding="utf-8")) for p in updater.pin_files(tmp_path)
     }
-    assert refs == {"v2.3.0"}
+    assert refs == {sha}
     # byte-identity (bundle.md ↔ tui.md) preserved by the bump.
     root, tui, _ = updater.pin_files(tmp_path)
     assert root.read_bytes() == tui.read_bytes()
@@ -185,16 +204,18 @@ def test_bump_rewrites_all_copies(tmp_path: Path, monkeypatch) -> None:
 
 def test_bump_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     bump = _load_bump()
-    _write_pin_copies(tmp_path, "main")
+    sha = "93615d9847ce40313cc0d60583cb886de4337f9e"
+    _write_pin_copies(tmp_path, sha)
     monkeypatch.setattr(bump, "REPO_ROOT", tmp_path)
-    assert bump.main(["main"]) == 0  # no-op path
+    monkeypatch.setattr(bump, "ANCHORS_COMMIT", sha)
+    assert bump.main([sha]) == 0  # no-op path
 
 
-def test_bump_refuses_bare_sha_without_override(tmp_path: Path, monkeypatch) -> None:
+def test_bump_refuses_float_or_sha_not_in_recursive_lock(tmp_path: Path, monkeypatch) -> None:
     bump = _load_bump()
     _write_pin_copies(tmp_path, "main")
     monkeypatch.setattr(bump, "REPO_ROOT", tmp_path)
-    sha = "93615d9847ce40313cc0d60583cb886de4337f9e"
-    assert bump.main([sha]) == 1  # refused
-    # --allow-sha overrides the guard.
-    assert bump.main([sha, "--allow-sha"]) == 0
+    locked = "93615d9847ce40313cc0d60583cb886de4337f9e"
+    monkeypatch.setattr(bump, "ANCHORS_COMMIT", locked)
+    assert bump.main(["main"]) == 1
+    assert bump.main(["a" * 40]) == 1

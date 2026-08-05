@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from amplifier_app_tui.kernel.rewind import CheckpointRestoreOutcome
+from amplifier_app_tui.kernel.goal import GoalCommandResult
 from amplifier_app_tui.kernel.session_ops import ModelListing, StatusInfo
 from amplifier_app_tui.model.blocks import BlockIdAllocator
 from amplifier_app_tui.ui.runtime_adapter import RuntimeAdapter
@@ -38,6 +40,7 @@ NEUTRAL_CASES: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
     ("set_effort", ("high",), (False, "reasoning effort needs a real session")),
     ("compact", ("focus",), (False, "compaction needs a real session")),
     ("clear_context", (), (False, 0)),
+    ("manage_goal", ("finish",), GoalCommandResult(False, "error", "goals need a real session")),
     ("status", (), StatusInfo()),
     ("list_tools", (), ()),
     ("list_agents", (), ()),
@@ -46,7 +49,30 @@ NEUTRAL_CASES: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
     ("list_skills", (), ()),
     ("load_skill", ("brainstorming",), (False, "skills need a real session")),
     ("mcp_tools", (), ()),
+    ("mcp_prompts", (), ()),
+    (
+        "execute_mcp_prompt",
+        ("github", "triage", "#42"),
+        (False, "MCP prompts need a real session"),
+    ),
+    ("mcp_servers", (), {}),
+    (
+        "add_mcp_server",
+        ("docs", "docs-server", ("--stdio",)),
+        (False, "MCP connections need a real session"),
+    ),
+    (
+        "reload_mcp_server",
+        ("docs",),
+        (False, "MCP connections need a real session"),
+    ),
+    (
+        "remove_mcp_server",
+        ("docs",),
+        (False, "MCP connections need a real session"),
+    ),
     ("load_deferred_bundle", ("team",), (False, "loading a bundle needs a real session")),
+    ("load_module", ("tool-extra", ""), (False, "loading a module needs a real session")),
     ("deferred_bundles", (), ()),
     ("rename_session", ("auth work",), (False, "renaming needs a real session")),
     ("session_summaries", (), ()),
@@ -71,6 +97,8 @@ COVERED_ELSEWHERE: frozenset[str] = frozenset(
         "start",  # T4: invokes ready()
         "submit_queued",  # T3: delegates to submit()
         "fork",  # T4: trims the ledger (confirm-then-trim)
+        # T6: returns a structured demo restore outcome for each supported scope.
+        "restore_checkpoint",
         # T5: /config methods do real work over the in-memory config state.
         "config_view",
         "config_toggle",
@@ -223,3 +251,43 @@ async def test_base_start_calls_ready_and_fork_trims() -> None:
     ledger = _FakeLedger()
     await adapter.fork("cp-3", ledger)  # in-memory: confirmation is immediate
     assert ledger.trimmed == ["cp-3"]
+
+
+# ---------------------------------------------------------------------------
+# T6 — restore_checkpoint reports the base/demo runtime's actual capabilities
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_base_restore_checkpoint_has_scope_specific_demo_outcomes() -> None:
+    """The base adapter can restore its in-memory conversation, but it has
+    no code checkpoint store. Keep that distinction explicit so callers do
+    not mistake a neutral demo response for a successful code rollback."""
+    adapter = RuntimeAdapter()
+    ledger = _FakeLedger()
+
+    conversation = await adapter.restore_checkpoint("cp-3", ledger, "conversation")
+    assert conversation == CheckpointRestoreOutcome(
+        scope="conversation",
+        summary="conversation restored",
+        conversation_restored=True,
+    )
+
+    code = await adapter.restore_checkpoint("cp-3", ledger, "code")
+    assert code == CheckpointRestoreOutcome(
+        scope="code",
+        summary="code restore unavailable in demo sessions",
+        code_status="unavailable",
+        partial=True,
+    )
+
+    both = await adapter.restore_checkpoint("cp-3", ledger, "both")
+    assert both == CheckpointRestoreOutcome(
+        scope="both",
+        summary="conversation restored · no tracked code edits in demo sessions",
+        conversation_restored=True,
+        code_status="unchanged",
+    )
+
+    with pytest.raises(ValueError, match="unknown restore scope"):
+        await adapter.restore_checkpoint("cp-3", ledger, "invalid")

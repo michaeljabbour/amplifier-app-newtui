@@ -50,6 +50,36 @@ class CollidingSkillsDemoAdapter(DemoRuntimeAdapter):
         return COLLIDING_ALIAS_FIXTURE
 
 
+BASE_NATIVE_SKILLS = (
+    SkillInfo("baseline-review", "review without a native mode", shortcut="basereview"),
+)
+MODE_NATIVE_SKILLS = (
+    SkillInfo("mode-review", "review contributed by the active native mode", shortcut="modereview"),
+)
+
+
+class NativeModeSkillsDemoAdapter(DemoRuntimeAdapter):
+    """Mode activation swaps the effective catalog exposed by tool-skills."""
+
+    def __init__(self) -> None:
+        super().__init__(instant=True)
+        self.active_native_mode: str | None = None
+        self.failed_modes: set[str | None] = set()
+        self.mode_calls: list[str | None] = []
+        self.skill_catalog_calls = 0
+
+    async def list_skills(self) -> tuple[SkillInfo, ...]:
+        self.skill_catalog_calls += 1
+        return MODE_NATIVE_SKILLS if self.active_native_mode else BASE_NATIVE_SKILLS
+
+    async def set_native_mode(self, name: str | None) -> tuple[bool, str]:
+        self.mode_calls.append(name)
+        if name in self.failed_modes:
+            return (False, f"mode unavailable · {name or 'off'}")
+        self.active_native_mode = name
+        return (True, f"mode {'off' if name is None else name}")
+
+
 def _answer_text(app: TuiApp) -> str:
     return "".join(seg.text for block in blocks_of(app, "answer") for seg in block.spans)
 
@@ -141,13 +171,19 @@ async def test_shortcut_invokes_the_aliased_skill() -> None:
         await type_text(pilot, "/cosam")
         await pilot.press("enter")
         assert await wait_for(pilot, lambda: adapter.loaded == ["cranky-old-sam"])
-        # Echoed as a user line, loaded through the /skill path (notice + block).
+        # The native skill is activated, then a normal generated turn applies
+        # it immediately; user-invoked skills no longer need a second manual
+        # prompt before they do work.
         assert await wait_for(
-            pilot, lambda: app.notice_slot.current == "skill loaded · cranky-old-sam"
+            pilot,
+            lambda: any(
+                line.text.startswith("Apply the active /cranky-old-sam skill now")
+                for line in blocks_of(app, "user_line")
+            ),
         )
         lines = blocks_of(app, "user_line")
-        assert lines and lines[-1].text == "/cosam"
-        assert not app.turn_active  # a skill load is not a provider turn
+        assert any(line.text == "/cosam" for line in lines)
+        assert await wait_for(pilot, lambda: not app.turn_active)
 
 
 @pytest.mark.asyncio
@@ -199,3 +235,112 @@ async def test_alias_collision_is_surfaced_at_boot() -> None:
         # First registration still wins: the earlier skill's alias resolves.
         assert app._commands.get("/cosam") is not None
         assert app._commands.get("/crusty-old-sam") is not None  # canonical name is unique, kept
+
+
+@pytest.mark.asyncio
+async def test_native_mode_activation_and_deactivation_refresh_skill_commands() -> None:
+    """A successful native mode change immediately reconciles slash aliases."""
+    adapter = NativeModeSkillsDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        assert await wait_for(pilot, lambda: app._commands.get("/basereview") is not None)
+        assert app._commands.get("/modereview") is None
+
+        await type_text(pilot, "/mode reviewer")
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: (
+                adapter.active_native_mode == "reviewer"
+                and app._commands.get("/modereview") is not None
+            ),
+        )
+        assert app._commands.get("/mode-review") is not None
+        assert app._commands.get("/baseline-review") is None
+        assert app._commands.get("/basereview") is None
+        assert app._commands.get("/status") is not None  # built-ins are never reconciled away
+
+        await type_text(pilot, "/mode -reviewer")
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: (
+                adapter.active_native_mode is None and app._commands.get("/basereview") is not None
+            ),
+        )
+        assert app._commands.get("/baseline-review") is not None
+        assert app._commands.get("/mode-review") is None
+        assert app._commands.get("/modereview") is None
+        assert app._commands.get("/status") is not None
+        assert adapter.skill_catalog_calls == 3  # boot, activate, deactivate
+
+
+@pytest.mark.asyncio
+async def test_failed_native_mode_activation_does_not_refresh_skill_commands() -> None:
+    adapter = NativeModeSkillsDemoAdapter()
+    adapter.failed_modes.add("blocked")
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        assert await wait_for(pilot, lambda: app._commands.get("/basereview") is not None)
+
+        await type_text(pilot, "/mode blocked")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: adapter.mode_calls == ["blocked"])
+        assert adapter.skill_catalog_calls == 1  # boot only
+        assert app._commands.get("/basereview") is not None
+        assert app._commands.get("/modereview") is None
+        assert not app._native_modes
+
+
+@pytest.mark.asyncio
+async def test_failed_native_mode_clear_keeps_mode_skill_commands() -> None:
+    adapter = NativeModeSkillsDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+
+        await type_text(pilot, "/mode reviewer")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: app._commands.get("/modereview") is not None)
+        adapter.failed_modes.add(None)
+
+        await type_text(pilot, "/mode off")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: adapter.mode_calls[-1] is None)
+        assert adapter.skill_catalog_calls == 2  # boot + successful activation only
+        assert app._commands.get("/mode-review") is not None
+        assert app._commands.get("/modereview") is not None
+        assert app._commands.get("/basereview") is None
+        assert app._native_modes.names == ("reviewer",)
+
+
+@pytest.mark.asyncio
+async def test_posture_native_mode_bridge_refreshes_skill_commands() -> None:
+    """Plan/brainstorm use the same native capability refresh boundary."""
+    adapter = NativeModeSkillsDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+
+        await type_text(pilot, "/mode plan")
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: (
+                adapter.active_native_mode == "plan"
+                and app._commands.get("/modereview") is not None
+            ),
+        )
+
+        await type_text(pilot, "/mode auto")
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: (
+                adapter.active_native_mode is None and app._commands.get("/basereview") is not None
+            ),
+        )
+        assert app._commands.get("/modereview") is None
+        assert adapter.skill_catalog_calls == 3  # boot, posture activate, posture clear

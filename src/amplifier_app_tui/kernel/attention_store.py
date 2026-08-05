@@ -17,13 +17,13 @@ the ui-side dataclass.
 
 Non-blocking by design: :func:`kernel.file_lock.locked` is given a SHORT
 timeout here (a fraction of session_control's 5s default) because a
-notification is a best-effort nicety, not a correctness-critical write --
-if the lock cannot be acquired promptly, :class:`AttentionStore` simply
-proceeds with the atomic write anyway (last-writer-wins is acceptable; a
-stalled UI thread is not). Every public method also never raises: a read
-failure returns empty state, a write failure is silently skipped -- a
-destination/persistence problem must never block or crash the session (B7
-hard requirement).
+notification must never stall the UI. Unlike a replace-only writer, the
+dedupe and acknowledgement operations are read-modify-write transactions:
+they check the helper's acquisition result and fail closed rather than run
+unlocked. Every public method also never raises: a read failure returns empty
+state and a mutation failure returns ``None`` -- a persistence problem must
+never block or crash the session, and a stale writer must never overwrite a
+newer acknowledgement.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import json
 import logging
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +129,91 @@ class AttentionStore:
         }
         return by_id, current
 
+    def _write_unlocked(
+        self,
+        by_id: Mapping[str, AttentionRow],
+        current: Mapping[str, str],
+    ) -> None:
+        """Atomically replace the state file while the caller owns its lock."""
+
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "by_id": {event_id: row.as_dict() for event_id, row in by_id.items()},
+            "current": dict(current),
+        }
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_name(f"{self._path.name}.tmp{os.getpid()}")
+        tmp.write_text(json.dumps(payload, default=str), encoding="utf-8")
+        os.replace(tmp, self._path)
+
+    def record(
+        self,
+        row: AttentionRow,
+    ) -> tuple[dict[str, AttentionRow], dict[str, str], AttentionRow, bool] | None:
+        """Atomically claim one attention event ID.
+
+        The returned boolean is true only for the process that inserted the
+        event. Every contender reloads inside the inter-process critical
+        section, so two centers bound before either write still agree on one
+        winner. ``None`` means persistence was unavailable; callers may keep
+        operating in memory, but must not replace durable state from a stale
+        snapshot.
+        """
+
+        try:
+            with _file_lock(
+                self._path,
+                timeout=self._lock_timeout,
+                stale_after=self._stale_after,
+            ) as acquired:
+                if not acquired:
+                    logger.debug("attention record lock unavailable; mutation skipped")
+                    return None
+                by_id, current = self.load()
+                existing = by_id.get(row.event_id)
+                if existing is not None:
+                    return by_id, current, existing, False
+                by_id[row.event_id] = row
+                current[row.session_id] = row.event_id
+                self._write_unlocked(by_id, current)
+                return by_id, current, row, True
+        except OSError:
+            logger.debug("attention record persist failed (non-fatal)", exc_info=True)
+            return None
+
+    def acknowledge(
+        self,
+        session_id: str,
+    ) -> tuple[dict[str, AttentionRow], dict[str, str], AttentionRow | None] | None:
+        """Atomically acknowledge the current event for *session_id*.
+
+        Acknowledgement is monotonic because the current durable row is read
+        and replaced under the same acquired lock. A stale in-memory center
+        never supplies the snapshot being written.
+        """
+
+        try:
+            with _file_lock(
+                self._path,
+                timeout=self._lock_timeout,
+                stale_after=self._stale_after,
+            ) as acquired:
+                if not acquired:
+                    logger.debug("attention acknowledgement lock unavailable; mutation skipped")
+                    return None
+                by_id, current = self.load()
+                event_id = current.get(session_id)
+                record = None if event_id is None else by_id.get(event_id)
+                if record is None or record.acknowledged:
+                    return by_id, current, None
+                acknowledged = replace(record, acknowledged=True)
+                by_id[acknowledged.event_id] = acknowledged
+                self._write_unlocked(by_id, current)
+                return by_id, current, acknowledged
+        except OSError:
+            logger.debug("attention acknowledgement persist failed (non-fatal)", exc_info=True)
+            return None
+
     def save(self, by_id: Mapping[str, AttentionRow], current: Mapping[str, str]) -> None:
         """Best-effort atomic durable write.
 
@@ -139,17 +224,16 @@ class AttentionStore:
         means a concurrent reader (or a later restart) sees slightly stale
         state, never a crash or a stall.
         """
-        payload = {
-            "schema_version": SCHEMA_VERSION,
-            "by_id": {event_id: row.as_dict() for event_id, row in by_id.items()},
-            "current": dict(current),
-        }
         try:
-            with _file_lock(self._path, timeout=self._lock_timeout, stale_after=self._stale_after):
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._path.with_name(f"{self._path.name}.tmp{os.getpid()}")
-                tmp.write_text(json.dumps(payload, default=str), encoding="utf-8")
-                os.replace(tmp, self._path)
+            with _file_lock(
+                self._path,
+                timeout=self._lock_timeout,
+                stale_after=self._stale_after,
+            ) as acquired:
+                if not acquired:
+                    logger.debug("attention state lock unavailable; snapshot skipped")
+                    return
+                self._write_unlocked(by_id, current)
         except OSError:
             logger.debug("attention state persist failed (non-fatal)", exc_info=True)
 

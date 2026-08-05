@@ -1,16 +1,10 @@
-"""Re-verify the constraint that keeps the anchors include floating ``@main``.
+"""Historical diagnostic: do Foundation release tags now ship Anchors?
 
-Compliance B9 gap 1, item 3's "lockfile/verification step that records and
-checks the resolved ref so a silent upstream change is detected" -- applied
-to the ONE thing that actually needs re-checking here: not "has @main moved"
-(``kernel.updater.anchors_status`` already answers that live, every boot,
-offline-safe), but "do foundation's release TAGS still lack ``bundles/
-anchors``" -- the reason (issue #96) ``bundle.md``'s anchors include cannot
-be pinned to a tag or a bare SHA today. That fact was true when reverted, was
-re-checked once during the B9 pinning pass (2026-08-02: latest tag v2.1.2,
-404), and is re-checked again here (2026-08-04: still v2.1.2, still 404) --
-this script turns that manual GitHub-API poke into a reusable, re-runnable
-check instead of a comment that quietly goes stale.
+This check explained the former ``@main`` exception. It no longer controls the
+app's source policy: Anchors and its recursive repositories are full-SHA locked
+by ``data/anchors-source-lock.json``. Keep this script only as an upstream
+release-packaging signal; a tag gaining ``bundles/anchors`` does not authorize
+replacing the app's immutable commit pin.
 
 This is deliberately NOT part of the default (offline, no-credentials) test
 gate: answering "has upstream shipped a new tag" needs the network. Run it
@@ -18,10 +12,8 @@ by hand (or from a scheduled/maintainer CI job) when re-auditing the pin:
 
     uv run python scripts/verify_anchors_constraint.py
 
-Exit codes: 0 -- constraint still holds (nothing to do). 1 -- network/API
-call failed (inconclusive; try again later, never treated as "fixed"). 2 --
-the constraint may have changed (a tag now ships bundles/anchors) -- pinnable!
-Investigate and consider ``scripts/bump_anchors_ref.py <tag>``.
+Exit codes: 0 -- latest tag still lacks Anchors. 1 -- network/API failure.
+2 -- a tag now ships Anchors (upstream packaging changed; app stays SHA-locked).
 
 Pure decision logic (:func:`latest_release_tag`, :func:`anchors_shipped_at`)
 is exercised offline in ``tests/test_verify_anchors_constraint.py`` against
@@ -38,9 +30,8 @@ import urllib.request
 
 FOUNDATION_REPO = "microsoft/amplifier-foundation"
 ANCHORS_PATH = "bundles/anchors"
-TRACKED_REF = "main"
-"""The ref ``bundle.md``'s anchors include currently tracks (see
-``kernel.updater.anchors_ref()`` for the live-read version of this)."""
+TRACKED_REF = "full commit SHA"
+"""The app policy; kept as display text to avoid importing repo-local code."""
 
 _TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
@@ -117,18 +108,14 @@ def main(argv: list[str] | None = None) -> int:
     if anchors_shipped_at(status):
         print(
             f"CONSTRAINT MAY HAVE CHANGED: {FOUNDATION_REPO}@{latest} now ships "
-            f"{ANCHORS_PATH} (HTTP {status}). The anchors include may be pinnable "
-            "to a release tag now -- investigate, then consider:\n"
-            f"  uv run python scripts/bump_anchors_ref.py {latest}\n"
-            "and update tests/test_no_floating_dependencies.py's allow-list "
-            "justification (or remove the entry) accordingly."
+            f"{ANCHORS_PATH} (HTTP {status}). Upstream packaging improved; the app "
+            "remains full-SHA locked. Review a deliberate recursive lock bump if desired."
         )
         return 2
 
     print(
         f"constraint still holds: {FOUNDATION_REPO}@{latest} (latest tag) does not "
-        f"ship {ANCHORS_PATH} (HTTP {status}) -- @{TRACKED_REF} remains the only "
-        "fetchable source for the anchors include. Nothing to do."
+        f"ship {ANCHORS_PATH} (HTTP {status}). The app remains pinned to a {TRACKED_REF}."
     )
     return 0
 

@@ -12,17 +12,19 @@ shape for B2 (one shared fixture, driven through every surface side by
 side, asserting agreement rather than merely asserting each surface's own
 hand-rolled expectation).
 
-Scope, deliberately narrow (do not invent cross-surface behavior that
-doesn't exist): all three surfaces already read ``RealRuntime.bundle_name``
-/ ``model_name`` verbatim off ONE ``_provider_and_model()`` resolution --
-see ``test_cli_tui_serve_identity_fixture.py``'s module docstring for the
-three exact call sites. This suite is the proof that they stay in
-lockstep; it is not a claim that CLI/TUI/serve share every surface (command
-flags, settings precedence, skill/tool availability, etc. remain
-single-surface or not-yet-proven today). One more axis IS now proven the
-same way: resume-target resolution and its deterministic exit codes --
-see ``test_cli_tui_serve_resume_fixture.py`` / ``test_cli_tui_serve_resume_
-parity.py`` (compliance B9 gap 2's second axis).
+Scope stays evidence-bounded (do not invent cross-surface behavior that
+doesn't exist), but now covers six proven axes:
+
+- provider/model identity from ONE ``_provider_and_model()`` resolution;
+- resume-target resolution and deterministic exit codes;
+- normalized tool-event ordering over one real offline turn; and
+- the durable ``ui-events.jsonl`` sequence for that same turn;
+- real child-routing fallback through Foundation's preference resolver; and
+- cooperative live cancellation through each bidirectional runtime owner.
+
+See the three ``*_fixture.py`` modules for the exact shipped call paths.
+The one-shot ``run`` command has no live op channel, so cancellation applies
+to the TUI adapter and serve wire; routing applies to all three surfaces.
 """
 
 from __future__ import annotations
@@ -36,6 +38,16 @@ from .test_cli_tui_serve_identity_fixture import (
     cli_run_jsonl_identity,
     real_runtime_identity,
     serve_identity,
+)
+from .test_cli_tui_serve_lifecycle_fixture import (
+    cli_lifecycle,
+    cli_routing_fallback,
+    serve_live_cancellation,
+    serve_lifecycle,
+    serve_routing_fallback,
+    tui_live_cancellation,
+    tui_lifecycle,
+    tui_routing_fallback,
 )
 
 
@@ -80,3 +92,88 @@ async def test_cli_tui_serve_agree_on_the_same_offline_bundle(
 
     assert serve_bundle == cli_bundle == tui_bundle
     assert serve_model == cli_model == tui_model
+
+
+@pytest.mark.asyncio
+async def test_cli_tui_serve_agree_on_tool_events_and_durable_logging(
+    offline_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One real offline turn proves two more B9 behavior families.
+
+    Each surface must expose the same ordered durable lifecycle and persist
+    that same normalized sequence. Stream deltas are intentionally excluded:
+    the ledger never stores per-token Channel-A traffic.
+    """
+    project: Path = offline_env["project"]
+    cli = await cli_lifecycle(project, monkeypatch)
+    tui = await tui_lifecycle(project, monkeypatch)
+    serve = await serve_lifecycle(project)
+
+    durable = (
+        "prompt_submit",
+        "provider_response_usage",
+        "tool_pre",
+        "tool_post",
+        "content_block_end",
+        "orchestrator_complete",
+        "prompt_complete",
+    )
+
+    def _only_required(kinds: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(kind for kind in kinds if kind in durable)
+
+    assert _only_required(cli.event_kinds) == durable
+    assert _only_required(tui.event_kinds) == durable
+    assert _only_required(serve.event_kinds) == durable
+    assert _only_required(cli.logged_kinds) == durable
+    assert _only_required(tui.logged_kinds) == durable
+    assert _only_required(serve.logged_kinds) == durable
+
+
+@pytest.mark.asyncio
+async def test_cli_tui_serve_agree_on_real_routing_fallback(
+    offline_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first model glob misses; the second preference must serve the child.
+
+    The offline orchestrator only triggers the runtime's real SessionSpawner.
+    Foundation performs the ordered model resolution and the mounted provider
+    reports the model it actually received, so this does not copy routing
+    selection into the fixture.
+    """
+    project: Path = offline_env["project"]
+    cli = await cli_routing_fallback(project, monkeypatch)
+    tui = await tui_routing_fallback(project, monkeypatch)
+    serve = await serve_routing_fallback(project)
+
+    expected = "routing-fallback=Hello from the fake provider via fake-routed."
+    assert cli.response == tui.response == serve.response == expected
+    for observed in (cli, tui, serve):
+        assert "orchestrator_complete" in observed.event_kinds
+        assert "prompt_complete" in observed.event_kinds
+        assert "orchestrator_complete" in observed.logged_kinds
+        assert "prompt_complete" in observed.logged_kinds
+
+
+@pytest.mark.asyncio
+async def test_tui_and_serve_agree_on_live_core_cancellation(
+    offline_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every bidirectional owner cancels the same live amplifier-core token.
+
+    ``run --output-format jsonl`` is a one-shot prompt stream and therefore
+    has no live interrupt op.  The full-screen TUI adapter and serve protocol
+    are the applicable owners; both must expose and persist core's real
+    ``cancel:completed`` event before the synthesized prompt close-out.
+    """
+    project: Path = offline_env["project"]
+    tui = await tui_live_cancellation(project, monkeypatch)
+    serve = await serve_live_cancellation(project)
+
+    assert tui.response == serve.response == "cancelled-by-core-token"
+    for observed in (tui, serve):
+        required = ("orchestrator_complete", "cancel_completed", "prompt_complete")
+        outward = tuple(kind for kind in observed.event_kinds if kind in required)
+        durable = tuple(kind for kind in observed.logged_kinds if kind in required)
+        assert outward == required
+        assert durable == required

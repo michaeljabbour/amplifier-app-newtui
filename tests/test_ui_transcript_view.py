@@ -9,6 +9,7 @@ reflow with streaming deferral.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TypeVar, cast
 
 import pytest
@@ -489,6 +490,49 @@ async def test_scroll_anchor_independent_across_a_direct_lane_to_lane_hop() -> N
         await pilot.pause()
         assert view.follow is False
         assert view.scroll_y == pytest.approx(lane_a_scroll_y)
+
+
+@pytest.mark.asyncio
+async def test_overlapping_lane_view_swaps_are_serialized() -> None:
+    """Independent focus/restore workers may overlap during rapid input.
+
+    The remove-and-remount transaction must remain single-filed or Textual
+    can receive two children with the same stable ``block-*`` id.
+    """
+    app = Harness()
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = _view(app)
+        view.append(Narration(id="main", text="parent"))
+        await pilot.pause()
+
+        original_swap = view._swap
+        first_swap_entered = asyncio.Event()
+        release_first_swap = asyncio.Event()
+        swap_calls = 0
+
+        async def gated_swap(blocks: list[TranscriptBlock]) -> None:
+            nonlocal swap_calls
+            swap_calls += 1
+            if swap_calls == 1:
+                first_swap_entered.set()
+                await release_first_swap.wait()
+            await original_swap(blocks)
+
+        view._swap = gated_swap  # type: ignore[method-assign]
+        focus = asyncio.create_task(view.focus_lane("lane-a", [Narration(id="lane", text="child")]))
+        await first_swap_entered.wait()
+        restore = asyncio.create_task(view.restore_main())
+        await asyncio.sleep(0)
+
+        # restore_main is queued behind the in-flight focus transaction.
+        assert swap_calls == 1
+        release_first_swap.set()
+        await asyncio.gather(focus, restore)
+        await pilot.pause()
+
+        assert view.focused_lane is None
+        assert view.block_ids == ("main",)
+        assert len({widget.id for widget in view.children}) == len(view.children)
 
 
 @pytest.mark.asyncio

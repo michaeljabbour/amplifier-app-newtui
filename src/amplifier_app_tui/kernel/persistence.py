@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import tempfile
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -48,6 +50,7 @@ TRANSCRIPT_FILENAME = "transcript.jsonl"
 METADATA_FILENAME = "metadata.json"
 EVENTS_FILENAME = "ui-events.jsonl"
 LEGACY_EVENTS_FILENAME = "events.jsonl"
+REWIND_INTENT_FILENAME = "rewind-intent.json"
 """Pre-rename UIEvent log name — now owned by foundation's hooks-logging
 for canonical hook records; read-only fallback, never written."""
 
@@ -91,18 +94,65 @@ def _validate_session_id(session_id: str) -> str:
     return session_id
 
 
+def _write_private_bytes(path: Path, payload: bytes) -> None:
+    """Atomically replace one private file and fsync its directory entry."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+        os.chmod(path, 0o600, follow_symlinks=False)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _write_with_backup(path: Path, content: str) -> None:
-    """Atomic write with backup: existing file → ``.backup``, tmp → replace."""
+    """Durable atomic write with a durable copy of the prior value."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         backup = path.with_name(path.name + ".backup")
         try:
-            backup.write_bytes(path.read_bytes())
+            _write_private_bytes(backup, path.read_bytes())
         except OSError:
             logger.warning("Could not write backup for %s", path, exc_info=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
+    _write_private_bytes(path, content.encode("utf-8"))
+
+
+def _write_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    """Atomically fsync one private transaction record."""
+    payload = json.dumps(value, ensure_ascii=False, default=_json_default).encode("utf-8")
+    _write_private_bytes(path, payload)
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    """Write every byte, including when the OS reports a short append."""
+    remaining = memoryview(payload)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError("event log append made no progress")
+        remaining = remaining[written:]
 
 
 def _sanitize_message(message: Any) -> Any:
@@ -168,6 +218,10 @@ class SessionStore:
         is lost. The runtime surfaces it as a user-facing Notification,
         mirroring ``_load_metadata``'s ``recovered`` marker (which was the
         only side of this pair that spoke up)."""
+        self.rewind_recovery_failed = False
+        """A pending restore transaction could not be reconciled on load."""
+        self.rewind_recovery_interrupted = False
+        """A combined restore stopped before code success; conversation stayed put."""
 
     # -- paths -------------------------------------------------------------
 
@@ -252,6 +306,15 @@ class SessionStore:
         session_dir = self.session_dir(session_id)
         if not session_dir.exists():
             raise FileNotFoundError(f"Session '{session_id}' not found")
+        self.rewind_recovery_failed = False
+        self.rewind_recovery_interrupted = False
+        try:
+            self.reconcile_rewind_intent(session_id)
+        except (OSError, TypeError, ValueError):
+            self.rewind_recovery_failed = True
+            logger.warning(
+                "Failed to reconcile checkpoint restore for %s", session_id, exc_info=True
+            )
         return self._load_transcript(session_dir), self._load_metadata(session_dir)
 
     def get_metadata(self, session_id: str) -> dict[str, Any]:
@@ -348,6 +411,180 @@ class SessionStore:
         return {}
 
     # -- ui-events.jsonl (append-only normalized UIEvents) ------------------
+
+    def begin_rewind_intent(
+        self,
+        session_id: str,
+        *,
+        marker: UIEvent | Mapping[str, Any],
+        messages: list[dict[str, Any]],
+        ready: bool = True,
+    ) -> None:
+        """Durably stage conversation state and its rewind marker.
+
+        The record is written before live context mutation. If the process
+        exits anywhere between context replacement, transcript save, and
+        marker append, :meth:`load` completes the same transaction first.
+        """
+        session_dir = self.session_dir(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        marker_record = (
+            dict(marker) if isinstance(marker, Mapping) else marker.model_dump(mode="json")
+        )
+        safe_messages: list[dict[str, Any]] = []
+        for message in messages:
+            sanitized = _sanitize_message(message)
+            if not isinstance(sanitized, dict):
+                raise TypeError("checkpoint restore intent contains an invalid message")
+            # Match transcript persistence exactly: provider system prompts
+            # and developer context are reconstructed at request time and
+            # must not leak into this temporary private transaction file.
+            if sanitized.get("role") in {"system", "developer"}:
+                continue
+            redacted = scrub_value(sanitized)
+            if not isinstance(redacted, dict):
+                raise TypeError("checkpoint restore intent contains an invalid message")
+            safe_messages.append(redacted)
+        _write_private_json(
+            session_dir / REWIND_INTENT_FILENAME,
+            {
+                "schema": 1,
+                "session_id": session_id,
+                "marker": marker_record,
+                "messages": safe_messages,
+                "ready": ready,
+            },
+        )
+
+    def arm_rewind_intent(self, session_id: str) -> None:
+        """Allow a staged combined restore to reconcile after code succeeds."""
+        path = self.session_dir(session_id) / REWIND_INTENT_FILENAME
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or raw.get("session_id") != session_id:
+            raise ValueError("checkpoint restore intent has invalid session identity")
+        if raw.get("cancelled") is True:
+            raise ValueError("checkpoint restore intent was cancelled")
+        raw["ready"] = True
+        _write_private_json(path, raw)
+
+    def cancel_rewind_intent(self, session_id: str) -> None:
+        """Neutralize a staged intent after a live combined-restore rollback."""
+        path = self.session_dir(session_id) / REWIND_INTENT_FILENAME
+        if not path.exists():
+            return
+        # Cancellation is written before unlink so a failed unlink cannot
+        # resurrect the abandoned restore on the next process start.
+        _write_private_json(
+            path,
+            {"schema": 1, "session_id": session_id, "cancelled": True},
+        )
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError:
+            # The durable cancelled marker is sufficient; load() will remove
+            # it without applying the abandoned restore.
+            logger.warning("Could not remove cancelled rewind intent %s", path, exc_info=True)
+            return
+        _fsync_directory(path.parent)
+
+    def reconcile_rewind_intent(self, session_id: str) -> bool:
+        """Finish a staged restore transaction; return whether one existed."""
+        session_dir = self.session_dir(session_id)
+        path = session_dir / REWIND_INTENT_FILENAME
+        if not path.exists():
+            return False
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or raw.get("session_id") != session_id:
+            raise ValueError("checkpoint restore intent has invalid session identity")
+        if raw.get("cancelled") is True:
+            path.unlink(missing_ok=True)
+            try:
+                _fsync_directory(session_dir)
+            except OSError:
+                # If the unlink is lost across a crash, the durable cancelled
+                # record is harmless and will be removed again on next load.
+                logger.warning("Could not fsync cancelled rewind intent removal", exc_info=True)
+            return True
+        if raw.get("ready", True) is not True:
+            # A process exit during the code half of a combined restore must
+            # never consume the conversation retry target on startup. The
+            # workspace journal/manifests retain the partial code evidence.
+            path.unlink(missing_ok=True)
+            try:
+                _fsync_directory(session_dir)
+            except OSError:
+                logger.warning("Could not fsync unready rewind intent removal", exc_info=True)
+            self.rewind_recovery_interrupted = True
+            return True
+        messages = raw.get("messages")
+        marker = raw.get("marker")
+        if not isinstance(messages, list) or not all(isinstance(item, dict) for item in messages):
+            raise ValueError("checkpoint restore intent has invalid messages")
+        if not isinstance(marker, dict) or marker.get("kind") != "rewind_marker":
+            raise ValueError("checkpoint restore intent has invalid marker")
+        event_id = marker.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            raise ValueError("checkpoint restore intent marker lacks event_id")
+
+        metadata = self._load_metadata(session_dir)
+        metadata = {
+            **metadata,
+            "session_id": session_id,
+            "created": metadata.get("created", datetime.now(UTC).isoformat()),
+            "turn_count": sum(1 for message in messages if message.get("role") == "user"),
+            "incremental": True,
+            "rewind_reconciled": True,
+        }
+        self.save(session_id, messages, metadata)
+        marker_exists = any(
+            record.get("event_id") == event_id for record in self.read_events(session_id)
+        )
+        if not marker_exists:
+            self.append_event_critical(session_id, marker)
+            marker_exists = any(
+                record.get("event_id") == event_id for record in self.read_events(session_id)
+            )
+        if not marker_exists:
+            # Keep the intent: the next startup/retry can safely append the
+            # same event id after the event log is repaired.
+            raise OSError("checkpoint restore marker was not readable after append")
+        path.unlink()
+        try:
+            _fsync_directory(session_dir)
+        except OSError:
+            # Transcript and unique marker were both re-read before unlink.
+            # A crash may resurrect the intent, but replay is idempotent by
+            # event id; do not wedge the live runtime after the path vanished.
+            logger.warning("Could not fsync rewind intent removal", exc_info=True)
+        self.rewind_recovery_failed = False
+        return True
+
+    def append_event_critical(self, session_id: str, event: UIEvent | Mapping[str, Any]) -> None:
+        """Durably append one transaction-critical event or raise."""
+        record = dict(event) if isinstance(event, Mapping) else event.model_dump(mode="json")
+        session_dir = self.session_dir(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        path = session_dir / EVENTS_FILENAME
+        flags = os.O_APPEND | os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        os.fchmod(descriptor, 0o600)
+        payload = (json.dumps(record, ensure_ascii=False, default=_json_default) + "\n").encode(
+            "utf-8"
+        )
+        try:
+            size = os.fstat(descriptor).st_size
+            if size and os.pread(descriptor, 1, size - 1) != b"\n":
+                # Isolate the transaction marker from an interrupted final
+                # JSONL record. Readers skip the malformed prior line while
+                # the newly appended marker remains independently parseable.
+                _write_all(descriptor, b"\n")
+            _write_all(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(session_dir)
 
     def append_event(self, session_id: str, event: UIEvent | Mapping[str, Any]) -> None:
         """Append one normalized UIEvent to the session's ui-events.jsonl.
@@ -531,14 +768,23 @@ class IncrementalSaver:
 
     async def maybe_save(self) -> bool:
         """Save if the context grew since the last save. Returns True on save."""
+        return await self._save(force=False)
+
+    async def force_save(self) -> bool:
+        """Persist the context even when rewind made its message count shrink."""
+        return await self._save(force=True)
+
+    def mark_saved_message_count(self, count: int) -> None:
+        """Align the debounce watermark after external intent reconciliation."""
+        self._last_message_count = max(0, count)
+
+    async def _save(self, *, force: bool) -> bool:
         context = self.session.coordinator.get("context")
         if context is None or not hasattr(context, "get_messages"):
             return False
         messages = await context.get_messages()
-        if len(messages) <= self._last_message_count:
+        if not force and len(messages) <= self._last_message_count:
             return False
-        self._last_message_count = len(messages)
-
         try:
             existing = self.store.get_metadata(self.session_id)
         except FileNotFoundError:
@@ -552,6 +798,10 @@ class IncrementalSaver:
             "incremental": True,
         }
         self.store.save(self.session_id, messages, metadata)
+        # Advance the debounce watermark only after both transcript and
+        # metadata reached their atomic save seam. A failed write must remain
+        # retryable on the next tool completion or forced checkpoint save.
+        self._last_message_count = len(messages)
         logger.debug("Incremental save: %d messages", len(messages))
         return True
 
@@ -576,6 +826,7 @@ __all__ = [
     "EVENTS_FILENAME",
     "LEGACY_EVENTS_FILENAME",
     "METADATA_FILENAME",
+    "REWIND_INTENT_FILENAME",
     "TRANSCRIPT_FILENAME",
     "IncrementalSaver",
     "SessionStore",

@@ -75,7 +75,8 @@ def test_bundle_use_current_clear_roundtrip(tmp_path: Path, monkeypatch) -> None
     used = runner.invoke(main, ["bundle", "use", "git+https://x/b.git"])
     assert used.exit_code == 0
     assert (
-        bundle_admin.read_scope(paths.global_settings)["bundle"]["active"] == "git+https://x/b.git"
+        bundle_admin.read_scope(paths.global_settings)["tui"]["bundle"]["active"]
+        == "git+https://x/b.git"
     )
 
     cleared = runner.invoke(main, ["bundle", "clear"])

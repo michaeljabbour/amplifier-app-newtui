@@ -298,6 +298,7 @@ async def test_publish_attention_emits_attention_recorded_on_the_real_hooks_bus(
     coordinator, drive the method, observe what actually arrives."""
     runtime = await _started_runtime(offline_env["project"], mode="auto")
     received: list[dict] = []
+    legacy_projection: list[dict] = []
     try:
         hooks = runtime._initialized.coordinator.hooks
         hooks.register(
@@ -305,6 +306,12 @@ async def test_publish_attention_emits_attention_recorded_on_the_real_hooks_bus(
             lambda _event, data: received.append(dict(data)) or None,
             priority=500,
             name="test-attention-recorded-listener",
+        )
+        hooks.register(
+            "notify:turn-complete",
+            lambda _event, data: legacy_projection.append(dict(data)) or None,
+            priority=500,
+            name="test-no-legacy-attention-projection",
         )
         payload = {
             "event_id": "sess-1:error:occ-1",
@@ -321,6 +328,7 @@ async def test_publish_attention_emits_attention_recorded_on_the_real_hooks_bus(
         # intact as a subset, not byte-exact equality with the envelope.
         assert len(received) == 1
         assert payload.items() <= received[0].items()
+        assert legacy_projection == []
     finally:
         await runtime.cleanup()
 
@@ -333,4 +341,33 @@ async def test_publish_attention_before_start_is_a_safe_no_op() -> None:
 
     runtime = RealRuntime(bundle=None, resume_id=None, provider_override=None, model_override=None)
     await runtime.publish_attention({"event_id": "x"})  # must not raise
+    await runtime.publish_attention_acknowledged({"event_id": "x"})  # must not raise
     assert runtime.session_dir() is None
+
+
+@pytest.mark.asyncio
+async def test_publish_attention_acknowledged_emits_correlated_hook_event(
+    offline_env,  # noqa: F811 -- pytest fixture param, shadowing the re-export import above
+) -> None:
+    runtime = await _started_runtime(offline_env["project"], mode="auto")
+    received: list[dict] = []
+    try:
+        hooks = runtime._initialized.coordinator.hooks
+        hooks.register(
+            "attention:acknowledged",
+            lambda _event, data: received.append(dict(data)) or None,
+            priority=500,
+            name="test-attention-acknowledged-listener",
+        )
+        payload = {
+            "event_id": "sess-1:error:occ-1",
+            "session_id": "sess-1",
+            "reason": "error",
+            "acknowledged": True,
+            "acknowledged_at": 456.0,
+        }
+        await runtime.publish_attention_acknowledged(payload)
+        assert len(received) == 1
+        assert payload.items() <= received[0].items()
+    finally:
+        await runtime.cleanup()

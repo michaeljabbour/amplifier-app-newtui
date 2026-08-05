@@ -26,7 +26,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterable
 from time import monotonic
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -64,6 +64,8 @@ class QueuedMessage(BaseModel):
 
     message_id: str
     text: str
+    attachments: tuple[Any, ...] = ()
+    draft: Any | None = None
     kind: Literal["steer", "next_turn"] = "steer"
     created_at: float = 0.0
 
@@ -124,7 +126,12 @@ class SteeringQueue(_ListenerMixin):
             return tuple(m for m in self._pending if m.kind == "next_turn")
 
     def enqueue(
-        self, text: object, *, kind: Literal["steer", "next_turn"] = "steer"
+        self,
+        text: object,
+        *,
+        kind: Literal["steer", "next_turn"] = "steer",
+        attachments: Iterable[Any] = (),
+        draft: Any | None = None,
     ) -> QueuedMessage:
         """Queue a steer or next-turn message; raises ``ValueError`` when
         full or empty after sanitizing.
@@ -133,7 +140,13 @@ class SteeringQueue(_ListenerMixin):
         ``this.queued = text``): a second ``next_turn`` enqueue REPLACES
         the queued one, so the footer badge is only ever ``· q1``.
         """
-        clean = _clean_multiline(text)
+        # A next-turn message is a user draft, so silently truncating it would
+        # turn a successful-looking queue action into data loss.  Detect the
+        # bound before mutation and let the composer restore its rich capsule.
+        clean = _clean_multiline(text, MAX_ITEM_CHARS + 1)
+        if kind == "next_turn" and len(clean) > MAX_ITEM_CHARS:
+            raise ValueError(f"queued text exceeds {MAX_ITEM_CHARS:,} character limit")
+        clean = clean[:MAX_ITEM_CHARS]
         if not clean.strip():
             raise ValueError("queued text cannot be empty")
         with self._lock:
@@ -144,6 +157,8 @@ class SteeringQueue(_ListenerMixin):
             message = QueuedMessage(
                 message_id=f"q-{self._next_id}",
                 text=clean,
+                attachments=tuple(attachments),
+                draft=draft,
                 kind=kind,
                 created_at=self._clock(),
             )
@@ -175,6 +190,30 @@ class SteeringQueue(_ListenerMixin):
         if popped is not None:
             self._notify()
         return popped
+
+    def restore_next_turn_message(self, message: QueuedMessage) -> bool:
+        """Put a rejected auto-drain capsule back without rebuilding it.
+
+        ``finish_turn_queues`` removes the item before the async runtime can
+        pass its checkpoint/recovery preflight.  A rejection at that boundary
+        means the runtime never accepted the prompt, so the *same* immutable
+        object (including paste/image sidecars) must become recallable again.
+
+        Return ``False`` rather than replacing a newer next-turn message.  In
+        normal UI flow no newer item can appear in this tiny hand-off window,
+        but preserving one is safer than silently applying the single-slot
+        replacement rule during error recovery.
+        """
+        if message.kind != "next_turn":
+            raise ValueError("only a next-turn message can be restored")
+        with self._lock:
+            if any(item.kind == "next_turn" for item in self._pending):
+                return False
+            if len(self._pending) >= MAX_QUEUE_ITEMS:
+                return False
+            self._pending.append(message)
+        self._notify()
+        return True
 
     def drain_steers(self) -> tuple[QueuedMessage, ...]:
         """Remove and return all leftover steers (turn ended before they

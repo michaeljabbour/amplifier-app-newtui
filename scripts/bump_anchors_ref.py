@@ -1,4 +1,4 @@
-"""Bump the foundation ref the anchors include tracks, in lockstep.
+"""Synchronize every outer Anchors include with the reviewed source lock.
 
 The anchors include appears in THREE live files that must never drift
 (``kernel.updater.pin_files``): repo-root ``bundle.md``, the byte-identical
@@ -6,17 +6,16 @@ packaged ``tui.md``, and the packaged ``anchors.md`` pointer. This rewrites
 the ref across all three atomically, then re-asserts byte-identity and lockstep
 before writing anything — so a partial rewrite can't ship.
 
-Policy (see ``docs/DEVELOPMENT.md`` → "Anchors pin lifecycle"): anchors tracks
-foundation ``@main`` (floating). A bare 40-hex SHA was tried and abandoned —
-GitHub stops serving a non-tip SHA once foundation advances, which broke clean
-installs (#96). So the default and recommended ref is ``main``; pass a tag once
-foundation publishes tagged releases that ship ``bundles/anchors`` (Option B).
-Pinning a bare SHA is refused unless ``--allow-sha`` is given.
+Policy (see ``docs/DEVELOPMENT.md`` → "Anchors ref lifecycle"): Anchors is a
+full commit SHA. The Foundation source handler pinned by this app now supports
+non-tip SHA checkout from a cold cache, removing the historical ``@main``
+exception. Nested sources are pinned separately by
+``data/anchors-source-lock.json``; therefore this script refuses to write a ref
+that disagrees with that reviewed lock.
 
 Usage:
-    uv run python scripts/bump_anchors_ref.py            # -> main (default)
-    uv run python scripts/bump_anchors_ref.py v2.2.0     # -> a release tag
-    uv run python scripts/bump_anchors_ref.py --check     # report, change nothing
+    uv run python scripts/bump_anchors_ref.py          # sync to reviewed lock
+    uv run python scripts/bump_anchors_ref.py --check  # verify, change nothing
 
 This is a repo-maintenance script (like ``scripts/regen_screenshot.py``); it
 rewrites repo source only and does NOT commit. Rewriting a ref inside an
@@ -38,6 +37,7 @@ from amplifier_app_tui.kernel.updater import (  # noqa: E402
     pin_files,
     read_anchors_ref,
 )
+from amplifier_app_tui.kernel.source_lock import ANCHORS_COMMIT  # noqa: E402
 
 
 def _rewrite_ref(text: str, new_ref: str) -> str:
@@ -53,9 +53,13 @@ def _rewrite_ref(text: str, new_ref: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("ref", nargs="?", default="main", help="foundation ref (default: main)")
+    parser.add_argument(
+        "ref",
+        nargs="?",
+        default=ANCHORS_COMMIT,
+        help="full Foundation commit (must match anchors-source-lock.json)",
+    )
     parser.add_argument("--check", action="store_true", help="report only; change nothing")
-    parser.add_argument("--allow-sha", action="store_true", help="permit a bare 40-hex SHA")
     args = parser.parse_args(argv)
 
     files = pin_files(REPO_ROOT)
@@ -69,16 +73,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: pin copies already drifted: {sorted(refs)}", file=sys.stderr)
         return 1
 
-    if args.check:
-        return 0
-
-    if _is_sha(args.ref) and not args.allow_sha:
+    if not _is_sha(args.ref):
         print(
-            f"ERROR: refusing to pin a bare SHA ({args.ref[:8]}) — GitHub stops serving "
-            "non-tip SHAs and this broke clean installs (#96). Pass --allow-sha to override.",
+            f"ERROR: Anchors must use a full 40-hex commit SHA, got {args.ref!r}",
             file=sys.stderr,
         )
         return 1
+    if args.ref != ANCHORS_COMMIT:
+        print(
+            f"ERROR: requested {args.ref[:8]} but the reviewed recursive lock names "
+            f"{ANCHORS_COMMIT[:8]}; update anchors-source-lock.json first",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.check:
+        if refs != {ANCHORS_COMMIT}:
+            print("ERROR: outer Anchors refs do not match the recursive lock", file=sys.stderr)
+            return 1
+        print(f"outer Anchors refs match recursive lock @{ANCHORS_COMMIT[:8]}")
+        return 0
 
     if refs == {args.ref}:
         print(f"already tracking @{args.ref} — nothing to do")

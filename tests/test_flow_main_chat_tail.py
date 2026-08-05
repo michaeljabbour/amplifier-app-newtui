@@ -71,6 +71,36 @@ def _answer_texts(app: TuiApp) -> list[str]:
 
 
 @pytest.mark.asyncio
+async def test_root_live_stream_uses_reducer_owned_main_and_turn_label() -> None:
+    """D6 AC4 production seam: app → LiveTail carries main + real turn id.
+
+    Run at the narrow golden width so the label cannot depend on the wide
+    lane/plan layout. Child identity remains on its lane row/focus banner.
+    """
+
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    async with app.run_test(size=(40, 24)) as pilot:
+        await seed_done(pilot, app)
+        _start_turn(app)
+        producer, turn = app.reducer.root_stream_identity
+        assert producer == "main"
+        assert turn > 0
+        app.reducer.handle(
+            ev.StreamBlockStart(
+                session_id=ROOT,
+                ts=1.1,
+                request_id="root-r1",
+                block_index=0,
+                block_type="text",
+            )
+        )
+        await pilot.pause()
+
+        assert app.live_tail.identity_label == f"main · t{turn}"
+        assert f"main · t{turn} · responding" in app.live_tail._reveal_hint()
+
+
+@pytest.mark.asyncio
 async def test_child_stream_paints_lane_tail_only_never_the_main_chat() -> None:
     """A streaming child feeds the lanes panel's ┆ tail; the main
     transcript's LiveTail stays untouched (no lane mode to mirror into)."""

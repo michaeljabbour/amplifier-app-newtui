@@ -241,6 +241,10 @@ class CommandContext(Protocol):
         """``/compact``: compact context, optionally focused on ``focus``."""
         ...
 
+    def manage_goal(self, args: str) -> None:
+        """``/goal``: inspect, clear, or start Amplifier's native goal loop."""
+        ...
+
     def clear_context(self) -> None:
         """``/clear``: clear the transcript view AND the conversation
         context together (D3) — not persisted session history (resume
@@ -271,9 +275,17 @@ class CommandContext(Protocol):
         """``/mcp``: list / add / remove MCP servers (mcp.json)."""
         ...
 
+    def run_mcp_prompt(self, server: str, prompt: str, args: str) -> None:
+        """Run one live native MCP prompt as a generated full turn."""
+        ...
+
     def load_bundle(self, args: str) -> None:
-        """``/bundle``: list deferred overlays, or ``load <name>`` composes one
-        into the running session on demand (fast-boot deferral)."""
+        """``/bundle``: list live-loadable bundles, or compose a registered,
+        deferred, local, or direct bundle target into the running session."""
+        ...
+
+    def load_module(self, args: str) -> None:
+        """``/module load ID [SOURCE]``: mount an additive tool/hook now."""
         ...
 
     def manage_config(self, args: str) -> None:

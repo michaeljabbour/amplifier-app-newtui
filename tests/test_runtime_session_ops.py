@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from amplifier_app_tui.kernel.runtime import RealRuntime
+from amplifier_app_tui.kernel.goal import GoalCommandResult
 from amplifier_app_tui.kernel.session_ops import ModelListing, StatusInfo
 
 
@@ -46,6 +47,9 @@ class FakeContext:
         self.cleared = True
         self._messages = []
 
+    async def add_message(self, message: dict[str, Any]) -> None:
+        self._messages.append(message)
+
 
 class FakeSkillsTool:
     """``load_skill`` tool surface used by list_skills / load_skill."""
@@ -69,6 +73,11 @@ class FakeCoordinator:
 
     def get(self, name: str) -> Any:
         return self._mounts.get(name)
+
+    def get_capability(self, name: str) -> object | None:
+        if name == "observability.events":
+            return ("orchestrator:goal_progress",)
+        return None
 
 
 def _runtime(coord: Any | None) -> RealRuntime:
@@ -107,12 +116,18 @@ NONE_GUARDS: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
     ("set_effort", ("high",), (False, "session still starting")),
     ("compact", ("",), (False, "session still starting")),
     ("clear_context", (), (False, 0)),
+    (
+        "manage_goal",
+        ("finish",),
+        GoalCommandResult(False, "error", "Goal unavailable: session still starting."),
+    ),
     ("status", (), StatusInfo()),
     ("list_tools", (), ()),
     ("list_agents", (), ()),
     ("list_skills", (), ()),
     ("load_skill", ("brainstorming",), (False, "session still starting")),
     ("mcp_tools", (), ()),
+    ("load_module", ("tool-extra", ""), (False, "session still starting")),
 )
 
 
@@ -147,9 +162,26 @@ def test_set_model_delegates_and_refreshes_footer_model() -> None:
     ok, detail = asyncio.run(runtime.set_model("m2"))
     assert ok
     assert provider.default_model == "m2"
-    assert detail == "anthropic · m2"
+    assert detail.startswith("anthropic · m2 · delegated routing unchanged (")
+    assert "root/delegates may diverge" in detail
+    assert "pending restart" not in detail
     # The wrapper keeps its footer copy live (provider-qualified).
     assert runtime.model_name == "anthropic/m2"
+
+
+def test_set_model_explicit_provider_refreshes_footer_with_selected_model_only() -> None:
+    runtime = _runtime(
+        FakeCoordinator(
+            providers={
+                "a": FakeProvider("a1", ("a1",)),
+                "b": FakeProvider("b1", ("b1", "shared")),
+            }
+        )
+    )
+    ok, detail = asyncio.run(runtime.set_model("b shared"))
+    assert ok and detail.startswith("b · shared · delegated routing unchanged (")
+    assert "root/delegates may diverge" in detail
+    assert runtime.model_name == "b/shared"
 
 
 def test_get_and_set_effort_delegate() -> None:
@@ -169,9 +201,67 @@ def test_compact_and_clear_delegate() -> None:
 
     context2 = FakeContext([{"role": "user"}, {"role": "assistant"}])
     runtime2 = _runtime(FakeCoordinator(context=context2))
+    runtime2._initialized.coordinator.session_state["goal"] = {"condition": "finish"}  # type: ignore[union-attr]
     ok, count = asyncio.run(runtime2.clear_context())
     assert ok and count == 2
     assert context2.cleared is True
+    assert runtime2._initialized.coordinator.session_state["goal"] is None  # type: ignore[union-attr]
+
+
+def test_manage_goal_snapshots_mentions_and_submits_through_normal_turn() -> None:
+    coordinator = FakeCoordinator()
+    runtime = _runtime(coordinator)
+    submitted: list[tuple[str, str | None]] = []
+
+    async def expand(text: str) -> str:
+        return f"expanded::{text}"
+
+    async def submit(
+        text: str,
+        _attachments: tuple[Any, ...] = (),
+        *,
+        _expanded_prompt: str | None = None,
+        _on_admitted: Any = None,
+    ) -> str:
+        submitted.append((text, _expanded_prompt))
+        _on_admitted()
+        return "done"
+
+    runtime._expand_mentions = expand  # type: ignore[method-assign]
+    runtime.submit = submit  # type: ignore[method-assign]
+
+    result = asyncio.run(runtime.manage_goal("--max-turns 3 all tests pass"))
+
+    assert result.ok and result.action == "set" and result.cap == 3
+    assert submitted == [("all tests pass", "expanded::all tests pass")]
+    assert coordinator.session_state["goal"]["condition"] == "expanded::all tests pass"
+
+
+@pytest.mark.parametrize("admitted", [False, True])
+def test_manage_goal_rolls_back_only_before_prompt_admission(admitted: bool) -> None:
+    coordinator = FakeCoordinator()
+    runtime = _runtime(coordinator)
+
+    async def submit(
+        _text: str,
+        _attachments: tuple[Any, ...] = (),
+        *,
+        _expanded_prompt: str | None = None,
+        _on_admitted: Any = None,
+    ) -> str:
+        del _expanded_prompt
+        if admitted:
+            _on_admitted()
+        raise RuntimeError("boom")
+
+    runtime.submit = submit  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(runtime.manage_goal("finish"))
+    if admitted:
+        assert coordinator.session_state["goal"] is not None
+    else:
+        assert coordinator.session_state["goal"] is None
 
 
 class _FakeDiscovery:
@@ -245,3 +335,5 @@ def test_list_and_load_skill_delegate() -> None:
     assert [s.name for s in skills] == ["brainstorming"]
     ok, body = asyncio.run(runtime.load_skill("brainstorming"))
     assert ok and body == "body of brainstorming"
+    context: FakeContext = runtime._initialized.coordinator.get("context")  # type: ignore[union-attr]
+    assert context._messages[-1]["metadata"]["source"] == "hook"

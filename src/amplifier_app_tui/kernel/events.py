@@ -176,6 +176,30 @@ class OrchestratorComplete(_Envelope):
     status: Literal["success", "cancelled", "incomplete"] = "success"
 
 
+class GoalProgress(_Envelope):
+    """Native ``loop-streaming`` goal-loop progress.
+
+    The schema is emitted by Amplifier's orchestrator.  The TUI preserves
+    its fields for durable replay and only renders them; it never evaluates
+    the goal or decides whether another turn should run.
+    """
+
+    kind: Literal["goal_progress"] = "goal_progress"
+    orchestrator: str = ""
+    state: str = ""
+    turn: int = 0
+    continuations: int = 0
+    cap: int | None = None
+    reason: str | None = None
+    reasons: tuple[str, ...] = ()
+    stall_detail: str | None = None
+    summary: str | None = None
+    distinct_blockers: int = 0
+    stall_verdict: str | None = None
+    condition: str | None = None
+    schema_version: int = 0
+
+
 # --------------------------------------------------------------------------
 # Turn / execution lifecycle
 # --------------------------------------------------------------------------
@@ -196,6 +220,8 @@ class PromptSubmit(_Envelope):
     kind: Literal["prompt_submit"] = "prompt_submit"
     prompt: str = ""
     mode: str = ""
+    workspace_checkpoint_id: str = ""
+    """Opaque kernel file-checkpoint id cut before prompt execution."""
 
 
 class PromptComplete(_Envelope):
@@ -456,6 +482,13 @@ class ContextCompacted(_Envelope):
     before_messages: int = 0
     after_messages: int = 0
     strategy_level: int = 0
+    budget: int = 0
+    """Effective provider-derived request budget used for this pass."""
+    target_tokens: int = 0
+    """The compactor's post-pass target within :attr:`budget`."""
+    messages_removed: int = 0
+    messages_truncated: int = 0
+    user_messages_stubbed: int = 0
 
 
 UIEvent = Annotated[
@@ -469,6 +502,7 @@ UIEvent = Annotated[
     | ContentBlockStart
     | ContentBlockEnd
     | OrchestratorComplete
+    | GoalProgress
     | PromptSubmit
     | PromptComplete
     | ExecutionStart
@@ -855,10 +889,55 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 turn_count=_int(payload, "turn_count"),
                 status=status if status in _ORCH_STATUSES else "incomplete",  # type: ignore[arg-type]
             )
+        case "orchestrator:goal_progress":
+            state = _str(payload, "state")
+            raw_reasons = payload.get("reasons")
+            # The native payload carries the cumulative evaluator history and
+            # fully-expanded condition on EVERY progress event. Persisting
+            # both in ui-events.jsonl would grow an unlimited goal O(n^2) and
+            # repeatedly copy @file contents. Canonical hooks logging retains
+            # the raw payload; the UI log keeps only the last three reasons on
+            # terminal states and never duplicates expanded condition text.
+            reasons: tuple[str, ...] = ()
+            if (
+                state != "continuing"
+                and isinstance(raw_reasons, Sequence)
+                and not isinstance(raw_reasons, str)
+            ):
+                reasons = tuple(str(reason) for reason in raw_reasons[-3:])
+            raw_cap = payload.get("cap")
+            cap = _int(payload, "cap") if raw_cap is not None else None
+            return GoalProgress(
+                **env,
+                orchestrator=_str(payload, "orchestrator"),
+                state=state,
+                turn=_int(payload, "turn"),
+                continuations=_int(payload, "continuations"),
+                cap=cap if cap and cap > 0 else None,
+                reason=str(payload["reason"]) if payload.get("reason") is not None else None,
+                reasons=reasons,
+                stall_detail=(
+                    str(payload["stall_detail"])
+                    if payload.get("stall_detail") is not None
+                    else None
+                ),
+                summary=str(payload["summary"]) if payload.get("summary") is not None else None,
+                distinct_blockers=_int(payload, "distinct_blockers"),
+                stall_verdict=(
+                    str(payload["stall_verdict"])
+                    if payload.get("stall_verdict") is not None
+                    else None
+                ),
+                condition=None,
+                schema_version=_int(payload, "schema_version"),
+            )
         # -- Turn lifecycle --------------------------------------------------
         case "prompt:submit":
             return PromptSubmit(
-                **env, prompt=_str(payload, "prompt", "text"), mode=_str(payload, "mode")
+                **env,
+                prompt=_str(payload, "prompt", "text"),
+                mode=_str(payload, "mode"),
+                workspace_checkpoint_id=_str(payload, "workspace_checkpoint_id"),
             )
         case "prompt:complete":
             return PromptComplete(**env, response=_str(payload, "response"))
@@ -899,6 +978,11 @@ def normalize(event_name: str, data: Mapping[str, Any] | None) -> UIEvent | None
                 before_messages=_int(payload, "before_messages"),
                 after_messages=_int(payload, "after_messages"),
                 strategy_level=_int(payload, "strategy_level"),
+                budget=_int(payload, "budget"),
+                target_tokens=_int(payload, "target_tokens"),
+                messages_removed=_int(payload, "messages_removed"),
+                messages_truncated=_int(payload, "messages_truncated"),
+                user_messages_stubbed=_int(payload, "user_messages_stubbed"),
             )
         # -- Session lifecycle -------------------------------------------------
         case "session:start":
@@ -1039,6 +1123,7 @@ __all__ = [
     "ContextInjected",
     "ExecutionEnd",
     "ExecutionStart",
+    "GoalProgress",
     "Notification",
     "OrchestratorComplete",
     "ParsedEvent",

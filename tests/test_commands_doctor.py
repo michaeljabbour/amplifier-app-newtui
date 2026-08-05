@@ -32,6 +32,10 @@ from amplifier_app_tui.commands.doctor import (
     run_checks,
     run_standalone,
 )
+from amplifier_app_tui.install_contract import (
+    SOURCE_INSTALL_COMMAND,
+    SOURCE_INSTALL_LAUNCH_COMMAND,
+)
 from amplifier_app_tui.commands.improve import ApprovalTally
 from amplifier_app_tui.kernel import updater
 from amplifier_app_tui.kernel.session_factory import MountReport
@@ -173,7 +177,7 @@ def test_check_path_not_found_anywhere_suggests_reinstall_for_real_executable(
         search_dirs=(tmp_path / "nowhere",),
     )
     assert not result.ok
-    assert f"uv tool install {APP_INSTALL_URI}" in result.message
+    assert SOURCE_INSTALL_LAUNCH_COMMAND in result.message
     assert "uv tool update-shell" in result.message
 
 
@@ -205,6 +209,12 @@ def test_check_platform_flags_native_windows() -> None:
     assert not result.ok
     assert "WSL2" in result.message
     assert "wsl --install" in result.message
+
+
+def test_check_platform_flags_unclaimed_posix_system() -> None:
+    result = check_platform("FreeBSD", "amd64")
+    assert not result.ok
+    assert "outside the supported platform matrix" in result.message
 
 
 def test_check_platform_flags_32_bit() -> None:
@@ -242,7 +252,7 @@ def test_check_python_uv_flags_old_python_with_upgrade_command() -> None:
     assert not result.ok
     assert "3.9.0" in result.message and "3.12" in result.message
     assert "uv python install 3.12" in result.message
-    assert APP_INSTALL_URI in result.message
+    assert SOURCE_INSTALL_COMMAND in result.message
 
 
 def test_check_python_uv_flags_missing_uv_with_install_command() -> None:
@@ -250,7 +260,7 @@ def test_check_python_uv_flags_missing_uv_with_install_command() -> None:
     result = check_python_uv(facts)
     assert not result.ok
     assert "uv not found" in result.message
-    assert "astral.sh/uv/install.sh" in result.message
+    assert SOURCE_INSTALL_COMMAND in result.message
 
 
 def test_check_python_uv_flags_both_independently() -> None:
@@ -405,14 +415,15 @@ def test_detect_permissions_never_raises() -> None:
     assert isinstance(facts, PermissionFacts)
 
 
-# -- cross-check: doctor's hardcoded install URI matches updater's ------------
+# -- cross-check: every install surface shares one contract -------------------
 
 
 def test_app_install_uri_matches_kernel_updater_repo_url() -> None:
-    """``commands/`` may not import ``kernel/`` (layering), so the install URI
-    is a separate literal here -- pin it equal to updater's so the two can
-    never quietly drift (D1/AC3's "same package and executable names")."""
+    """The pure top-level contract keeps commands and kernel guidance identical."""
     assert APP_INSTALL_URI == f"git+{updater.APP_REPO_URL}"
+    assert SOURCE_INSTALL_COMMAND in updater.self_update_hint(
+        updater.AppIdentity("0.1.0", "abc1234", "git")
+    )
 
 
 # -- run_checks wiring: the three new dimensions actually surface findings ----
@@ -597,6 +608,23 @@ def test_run_checks_end_to_end(tmp_path: Path) -> None:
     assert "settings parse" in report.healthy_summary
 
 
+def test_run_checks_includes_composed_launch_preflight() -> None:
+    report = run_checks(
+        settings_paths=(),
+        package="amplifier-app-tui",
+        executable="python3",
+        additional_checks=(
+            CheckResult(
+                name="launch-preflight",
+                ok=False,
+                message="launch blocked: provider failed to import · run init",
+            ),
+        ),
+    )
+    assert report.finding_count == 1
+    assert report.findings[0].text == "launch blocked: provider failed to import · run init"
+
+
 def test_render_text_matches_mockup_row_shapes() -> None:
     report = DoctorReport(
         checks=(
@@ -636,6 +664,21 @@ def test_run_standalone_exit_codes(tmp_path: Path) -> None:
     )
     assert code == 0
     assert "0 findings · nothing changed yet" in printed[0]
+
+
+def test_run_standalone_fails_when_composed_preflight_fails(tmp_path: Path) -> None:
+    printed: list[str] = []
+    code = run_standalone(
+        settings_paths=(tmp_path / "settings.yaml",),
+        package="amplifier-app-tui",
+        executable="python3",
+        additional_checks=(
+            CheckResult(name="launch-preflight", ok=False, message="launch blocked: bad source"),
+        ),
+        echo=printed.append,
+    )
+    assert code == 1
+    assert "launch blocked: bad source" in printed[0]
 
 
 # --------------------------------------------------------------------------

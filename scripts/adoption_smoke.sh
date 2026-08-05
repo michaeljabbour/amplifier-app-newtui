@@ -9,9 +9,8 @@
 #   2. ruff format --check .           formatting
 #   3. pyright src/                    types
 #   4. pytest -q                       the offline unit/flow/golden suite
-#   5. forge capability tier           real-PTY boot of the shipped binary via
-#                                      scripts/forge_capability.sh — self-skipping when
-#                                      forge or its daemon is unavailable
+#   5. forge capability tier           required real-PTY boot of the shipped binary via
+#                                      scripts/forge_capability.sh --require
 #   6. adoption_gate.py check          the stage ledger parses and every row is legal
 #   7. adoption_gate.py rollback       the MECHANICAL half of the documented rollback
 #                                      path still holds (command shapes, the pinned
@@ -24,7 +23,6 @@
 #
 # Usage:
 #   scripts/adoption_smoke.sh                   # full smoke
-#   scripts/adoption_smoke.sh --no-forge        # skip the real-PTY tier
 #
 # Record the exit status and the tested commit in docs/adoption/stages.tsv. A red smoke
 # is entry/exit evidence of failure, not a formality to re-run until green.
@@ -32,13 +30,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-RUN_FORGE=1
-for arg in "$@"; do
-  case "$arg" in
-    --no-forge) RUN_FORGE=0 ;;
-    *) echo "unknown option: $arg" >&2; exit 2 ;;
-  esac
-done
+if [[ "$#" -ne 0 ]]; then
+  echo "adoption smoke accepts no options; the required Forge tier cannot be bypassed" >&2
+  exit 2
+fi
 
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "adoption smoke @ ${COMMIT}"
@@ -58,12 +53,8 @@ uv run pyright src/
 step "pytest -q"
 uv run pytest -q
 
-if [[ "$RUN_FORGE" == "1" ]]; then
-  step "forge capability tier (self-skipping)"
-  scripts/forge_capability.sh
-else
-  echo "--- forge capability tier: skipped (--no-forge) ---"
-fi
+step "forge capability tier (required demo PTY; real provider remains opt-in)"
+scripts/forge_capability.sh --require
 
 step "adoption ledger check"
 python3 scripts/adoption_gate.py check

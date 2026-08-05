@@ -71,7 +71,7 @@ def test_status_spans_include_mode_and_cost() -> None:
     assert "high" in text
     assert "2" in text  # agent count
     assert "auto compact" in text
-    assert "on · 80% · 200,000 token window · estimated accounting" in text
+    assert "on · 80% · 200,000 token fallback · estimated accounting" in text
 
 
 def test_status_spans_show_the_full_untruncated_bundle_value() -> None:
@@ -380,7 +380,7 @@ def test_session_resume_spans_shows_the_exact_command() -> None:
     summary = SessionSummary(session_id="abc123def456" + "0" * 20, name="auth", bundle="tui")
     spans = session_resume_spans(summary)
     text = _text(spans)
-    assert "Resume ready" in text
+    assert "Resume selected" in text
     assert "amplifier-tui resume abc123de" in text
     command_spans = [sp for sp in spans if sp.text.strip() == "amplifier-tui resume abc123de"]
     assert command_spans, "the command must appear as its own unambiguous span"
@@ -388,13 +388,14 @@ def test_session_resume_spans_shows_the_exact_command() -> None:
     assert command_spans[0].bold is True
 
 
-def test_session_resume_spans_states_the_read_only_contract() -> None:
-    """S2 gap 2: the keyboard path must say, in the UI, that it is not an
-    in-place resume -- it stays a fresh out-of-process command."""
+def test_session_resume_spans_states_the_shutdown_and_relaunch_contract() -> None:
+    """S2 AC4: the keyboard path completes a clean runtime switch; the
+    copied command remains only a fallback."""
     summary = SessionSummary(session_id="deadbeef" * 4, name="auth")
     text = _text(session_resume_spans(summary))
-    assert "read-only" in text
-    assert "new terminal" in text
+    assert "runtime closes cleanly" in text
+    assert "session reopens" in text
+    assert "command copied as fallback" in text
 
 
 def test_session_resume_spans_ok_state_has_no_warning_glyph() -> None:

@@ -164,6 +164,9 @@ class AppCommandContext:
     def compact_context(self, focus: str) -> None:
         self._app.session_ops.compact_context(focus)
 
+    def manage_goal(self, args: str) -> None:
+        self._app.session_ops.manage_goal(args)
+
     def clear_context(self) -> None:
         self._app.session_ops.clear_context()
 
@@ -185,8 +188,14 @@ class AppCommandContext:
     def manage_mcp(self, args: str) -> None:
         self._app.session_ops.manage_mcp(args)
 
+    def run_mcp_prompt(self, server: str, prompt: str, args: str) -> None:
+        self._app.session_ops.run_mcp_prompt(server, prompt, args)
+
     def load_bundle(self, args: str) -> None:
         self._app.session_ops.load_bundle(args)
+
+    def load_module(self, args: str) -> None:
+        self._app.session_ops.load_module(args)
 
     def manage_config(self, args: str) -> None:
         self._app.manage_config(args)

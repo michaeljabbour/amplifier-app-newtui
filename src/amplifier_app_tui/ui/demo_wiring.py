@@ -252,11 +252,11 @@ class DemoRuntimeAdapter(RuntimeAdapter):
         self._prompt_alias[text] = key
         await self._runtime.run_turn(key, prompt=text, queued=queued)
 
-    async def submit_queued(self, text: str) -> None:
+    async def submit_queued(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
         """Queue-drained turn: no scripted mode notice (mockup
         ``drainQueue`` runs without ``setMode``), so the ``queued
         message picked up`` notice stays visible (spec §5)."""
-        await self.submit(text, queued=True)
+        await self.submit(text, attachments, queued=True)
 
     async def interrupt(self) -> bool:
         """Esc while running: DemoRuntime breaks at the next step boundary

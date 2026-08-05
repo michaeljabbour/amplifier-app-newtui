@@ -1,13 +1,11 @@
 """Guard: no floating (branch-tracking) git dependency ships unpinned.
 
-Compliance B9 gap 1, item 3: "add a test that FAILS if an unpinned
-dependency is introduced in future, with the anchors exception explicitly
-allow-listed and justified in one place." :data:`ALLOWED_FLOATING_REFS` is
-that one place -- every other git dependency this app ships with must
-resolve to a release tag or a content-verified commit SHA.
+Compliance B9 gap 1, item 3: fail if an unpinned dependency is introduced.
+The former Anchors ``@main`` exception is gone: the outer bundle is a full
+SHA and its recursively floating descriptors are translated through the
+reviewed packaged source lock.
 
-Scope, deliberately: the app's DEFAULT dependency surface -- what a clean
-install actually fetches without the user opting into anything further:
+Scope: every git source the app itself selects or recommends:
 
 - the packaged bundle's ``includes`` / ``providers[].source`` /
   ``tools[].source`` (incl. nested ``tool-skills`` skill-source entries) /
@@ -16,62 +14,50 @@ install actually fetches without the user opting into anything further:
   bundle is covered automatically, not just today's known list;
 - ``pyproject.toml``'s ``[tool.uv.sources]`` git overrides;
 - ``.github/workflows/*.yml`` action refs (``uses: owner/repo@ref``).
+- :data:`amplifier_app_tui.kernel.setup.PROVIDER_SOURCES`, whose selected URI
+  is persisted into user settings by setup/provider-add; and
+- :data:`amplifier_app_tui.kernel.config.ROUTING_MATRIX_BUNDLE_URI`, composed
+  when routing is opted in; and
+- the official README/install/settings/user-guide examples users are invited
+  to copy into live configuration.
 
-Explicitly OUT of scope, and why: :data:`amplifier_app_tui.kernel.setup.
-PROVIDER_SOURCES` (a catalog of OPTIONAL provider modules offered by
-``amplifier-tui setup`` / ``provider add`` -- nothing a clean install
-fetches on its own, and it deliberately mirrors amplifier-app-cli's own
-``DEFAULT_PROVIDER_SOURCES`` convention of floating ``@main`` for the same
-reason: these are living integrations a user opts into, not a pin this repo
-owns) and :data:`amplifier_app_tui.kernel.config.ROUTING_MATRIX_BUNDLE_URI`
-(the routing-matrix overlay, composed only when a user opts into
-``routing.enabled`` -- donor parity with amplifier-app-cli's own
-``WELL_KNOWN_BUNDLES``). Both are catalogs of choices, not shipped defaults;
-pinning them is a judgment call left for a future pass if/when they grow
-their own reproducibility requirements.
+The latter two are optional at runtime, but they are still source choices
+this app owns. A user making the same choice twice must not receive different
+code merely because a branch advanced.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from amplifier_app_tui.kernel import updater
+from amplifier_app_tui.kernel.config import ROUTING_MATRIX_BUNDLE_URI
+from amplifier_app_tui.kernel.setup import PROVIDER_SOURCES
+from amplifier_app_tui.kernel.source_lock import (
+    ANCHORS_COMMIT,
+    LOCKED_GIT_REFS,
+    pin_git_uri,
+    source_lock_path,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# -- the ONE allow-listed float, justified in this ONE place ----------------
-
-ALLOWED_FLOATING_REFS: dict[str, str] = {
-    "git+https://github.com/microsoft/amplifier-foundation@main"
-    "#subdirectory=bundles/anchors/bundle.md": (
-        "issue #96: a bare-SHA pin here was tried and reverted -- the "
-        "bundle loader's fetch cannot resolve a non-tip SHA once foundation "
-        "advances, so clean installs failed with 'Include Failed (skipping): "
-        "amplifier-foundation'. Foundation's release tags (through v2.1.2, "
-        "re-verified 2026-08-04 via the GitHub contents API -- see "
-        "docs/DEVELOPMENT.md 'Anchors ref lifecycle') do not ship "
-        "bundles/anchors -- only @main does -- so @main is the only "
-        "fetchable source today. Mitigated two ways: (1) kernel/updater.py's "
-        "anchors_status() live-compares the cached commit against the "
-        "remote tip and surfaces staleness in `doctor` / `update "
-        "--check-only` (never a silent float); (2) "
-        "scripts/verify_anchors_constraint.py re-checks whether THIS "
-        "specific constraint (tags lack bundles/anchors) still holds, so a "
-        "future foundation release that finally ships it is caught instead "
-        "of discovered by accident. Re-run that script before ever removing "
-        "this allow-list entry; do not just re-pin a bare SHA (that is "
-        "exactly what #96 reverted)."
-    ),
-}
+# There are intentionally no app-owned floating exceptions. Keep the mapping
+# so future reviewers have one explicit location for a narrowly justified
+# exception, but adding one must include a substantive reason and test evidence.
+ALLOWED_FLOATING_REFS: dict[str, str] = {}
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _TAG_RE = re.compile(r"^v\d+(?:\.[\w-]+)*$")  # vX.Y.Z-style release tags
 _GIT_URI_RE = re.compile(r"^git\+https://\S+?@([^\s#]+)(?:#.*)?$")
+_GIT_URI_IN_TEXT_RE = re.compile(r"(git\+https://[^\s`\"']+?@([^\s#`\"']+)(?:#[^\s`\"']*)?)")
 
 
 def _is_pinned_ref(ref: str) -> bool:
@@ -138,7 +124,6 @@ def test_bundle_git_sources_are_pinned_or_allow_listed() -> None:
 def test_allow_list_entries_are_justified_and_still_relevant() -> None:
     """The allow-list is the one place a float is excused; guard it from
     silently drifting out of sync with what it excuses."""
-    assert ALLOWED_FLOATING_REFS, "expected exactly the anchors float while it exists"
     for uri, reason in ALLOWED_FLOATING_REFS.items():
         assert len(reason.strip()) > 40, f"allow-listed float has no real justification: {uri!r}"
     texts = "\n".join(p.read_text(encoding="utf-8") for p in updater.pin_files(REPO_ROOT))
@@ -149,6 +134,30 @@ def test_allow_list_entries_are_justified_and_still_relevant() -> None:
             "covered is gone) rather than leaving a stale, unused excuse that "
             "could silently cover for a NEW, different float later."
         )
+
+
+def test_recursive_anchors_source_lock_is_full_sha_and_matches_outer_pin() -> None:
+    """The runtime lock is a shipped artifact, not an in-memory convention."""
+    assert source_lock_path().is_file()
+    assert LOCKED_GIT_REFS
+    assert all(_SHA_RE.fullmatch(ref) for ref in LOCKED_GIT_REFS.values())
+    foundation = "git+https://github.com/microsoft/amplifier-foundation"
+    assert LOCKED_GIT_REFS[foundation] == ANCHORS_COMMIT
+    refs = {
+        updater.read_anchors_ref(path.read_text(encoding="utf-8"))
+        for path in updater.pin_files(REPO_ROOT)
+    }
+    assert refs == {ANCHORS_COMMIT}
+
+
+def test_every_reviewed_recursive_repository_pins_branch_and_implicit_refs() -> None:
+    """Both ``@main`` and Anchors' one ref-less source become exact commits."""
+    for repository, commit in LOCKED_GIT_REFS.items():
+        for raw in (repository, f"{repository}@main", f"{repository}@main#subdirectory=x"):
+            pinned = pin_git_uri(raw)
+            assert f"@{commit}" in pinned
+            assert not pinned.endswith("@main")
+        assert pin_git_uri(f"{repository}@v1.2.3") == f"{repository}@v1.2.3"
 
 
 def test_no_bundle_git_source_is_a_bare_branch_other_than_the_allowed_float() -> None:
@@ -185,6 +194,117 @@ def test_pyproject_uv_sources_are_pinned_to_a_sha() -> None:
         f"pyproject.toml [tool.uv.sources] has an unpinned git rev: {offenders!r} "
         "-- pin `rev` to a full 40-hex commit SHA."
     )
+
+
+def test_optional_app_owned_sources_are_pinned_to_a_sha() -> None:
+    """Routing/provider setup choices are reproducible, not moving branches.
+
+    They are not fetched by an untouched default boot, but once selected the
+    app persists or composes these exact URIs. That makes their immutability
+    an app-owned contract just like the default bundle's sources.
+    """
+    sources = {"routing-matrix": ROUTING_MATRIX_BUNDLE_URI, **PROVIDER_SOURCES}
+    offenders: dict[str, str] = {}
+    for name, uri in sources.items():
+        match = _GIT_URI_RE.match(uri)
+        if match is None or not _SHA_RE.match(match.group(1)):
+            offenders[name] = uri
+    assert not offenders, (
+        "optional routing/provider catalog source(s) are not pinned to a full commit SHA: "
+        f"{offenders!r}"
+    )
+
+
+def test_user_facing_git_source_examples_are_pinned() -> None:
+    """Copy/paste configuration is an app-owned source choice too."""
+    paths = (
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "docs" / "INSTALL.md",
+        REPO_ROOT / "docs" / "SETTINGS.md",
+        REPO_ROOT / "docs" / "USER-GUIDE.md",
+    )
+    offenders: list[str] = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for uri, ref in _GIT_URI_IN_TEXT_RE.findall(text):
+            if uri in ALLOWED_FLOATING_REFS or _is_pinned_ref(ref):
+                continue
+            offenders.append(f"{path.relative_to(REPO_ROOT)}: {uri}")
+    assert not offenders, (
+        "floating git source in user-facing copy/paste documentation: "
+        f"{offenders!r} -- pin it or document a narrowly reviewed exception"
+    )
+
+
+@pytest.mark.asyncio
+async def test_foundation_resolves_a_non_tip_full_sha_from_a_cold_cache(tmp_path: Path) -> None:
+    """The runtime dependency must support the bundle's full-SHA pins.
+
+    Foundation versions before 1a408839 passed a SHA to ``git clone
+    --branch``.  The bundle pinning guard above therefore gave a false sense
+    of safety: every clean install failed before the first provider mounted.
+    Exercise the installed handler against a local two-commit repository so
+    this compatibility boundary stays network-free and deterministic.
+    """
+    from amplifier_foundation.paths.resolution import parse_uri
+    from amplifier_foundation.sources.git import GitSourceHandler
+
+    remote = tmp_path / "module"
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(remote)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for key, value in (("user.name", "TUI test"), ("user.email", "tui@example.invalid")):
+        subprocess.run(
+            ["git", "-C", str(remote), "config", key, value],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    (remote / "pyproject.toml").write_text("[project]\nname='fixture'\nversion='0'\n")
+    payload = remote / "payload.txt"
+    payload.write_text("first\n")
+    subprocess.run(
+        ["git", "-C", str(remote), "add", "."],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(remote), "commit", "-m", "first"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    pinned = subprocess.run(
+        ["git", "-C", str(remote), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    payload.write_text("second\n")
+    subprocess.run(
+        ["git", "-C", str(remote), "commit", "-am", "second"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    resolved = await GitSourceHandler().resolve(
+        parse_uri(f"git+file://{remote}@{pinned}"), tmp_path / "cold-cache"
+    )
+    checked_out = subprocess.run(
+        ["git", "-C", str(resolved.source_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert checked_out == pinned
+    assert (resolved.active_path / "payload.txt").read_text() == "first\n"
 
 
 # -- CI workflow action versions ---------------------------------------------

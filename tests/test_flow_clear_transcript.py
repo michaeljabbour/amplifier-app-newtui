@@ -15,11 +15,14 @@ fences delayed events, exactly per AC1-AC5.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from amplifier_app_tui.kernel import events as ev
 from amplifier_app_tui.model.blocks import EvidenceBlock
 from amplifier_app_tui.model.evidence import EvidenceLink
+from amplifier_app_tui.ui import app_support
 from amplifier_app_tui.ui.app import TuiApp
 from amplifier_app_tui.ui.composer import ComposerInput
 from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
@@ -41,6 +44,13 @@ async def _run_clear(pilot, app: TuiApp) -> None:
     await wait_for(pilot, lambda: not app.transcript.blocks)
 
 
+async def _start_active_clear(pilot, app: TuiApp) -> None:
+    """Request /clear during a turn and wait for its interrupt fence."""
+    await type_text(pilot, "/clear")
+    await pilot.press("enter")
+    assert await wait_for(pilot, lambda: app.session_ops.clear_pending)
+
+
 @pytest.mark.asyncio
 async def test_clear_idle_empties_the_view_and_keeps_composer_focus() -> None:
     """AC1/AC2 idle: /clear removes every row, shows a brief confirmation,
@@ -57,6 +67,244 @@ async def test_clear_idle_empties_the_view_and_keeps_composer_focus() -> None:
         assert app.composer.query_one(ComposerInput).has_focus
         assert app.notice_slot.current is not None
         assert "view cleared" in app.notice_slot.current
+        assert app.ledger.checkpoints == ()
+        assert app.reducer.turn_base == 0
+        assert app._checkpoint_drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_clear_rebases_next_checkpoint_and_restore_to_empty_context() -> None:
+    """After /clear, the next prompt is t1/before-turn 0 and is restorable."""
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    app.adapter.clear_context = _fake_clear_context
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        await _run_clear(pilot, app)
+
+        await type_text(pilot, "first after clear")
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: len(app.ledger.checkpoints) == 1 and not app.turn_active,
+        )
+        checkpoint = app.ledger.checkpoints[0]
+        assert checkpoint.id == "t1"
+        assert checkpoint.turn_id == 1
+        assert checkpoint.before_turn_id == 0
+        assert checkpoint.label == "first after clear"
+
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert app.rewind.current == checkpoint
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: not app.fork_pending)
+
+        assert app.ledger.checkpoints == ()
+        assert app.composer.text == "first after clear"
+
+
+@pytest.mark.asyncio
+async def test_prompt_entered_during_delayed_clear_is_kept_then_sends_afterward() -> None:
+    """A late clear result cannot erase a prompt entered on the next UI tick."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _delayed_clear_context() -> tuple[bool, int]:
+        started.set()
+        await release.wait()
+        return (True, 4)
+
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    app.adapter.clear_context = _delayed_clear_context
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+
+        await type_text(pilot, "/clear")
+        await pilot.press("enter")
+        assert await wait_for(pilot, started.is_set)
+        assert app.session_ops.clear_pending
+
+        await type_text(pilot, "keep this after clear")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: app.composer.text == "keep this after clear")
+        assert len(app.ledger.checkpoints) == 1  # only the pre-clear seed
+        assert "context clear in progress" in app.notice_slot.current
+
+        release.set()
+        assert await wait_for(pilot, lambda: not app.session_ops.clear_pending)
+        assert app.transcript.blocks == ()
+        assert app.ledger.checkpoints == ()
+        assert app.composer.text == "keep this after clear"
+
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: len(app.ledger.checkpoints) == 1 and not app.turn_active,
+        )
+        checkpoint = app.ledger.checkpoints[0]
+        assert checkpoint.id == "t1"
+        assert checkpoint.before_turn_id == 0
+        assert checkpoint.label == "keep this after clear"
+
+
+@pytest.mark.parametrize("submit_key", ["enter", "shift+enter"])
+@pytest.mark.asyncio
+async def test_input_during_active_clear_is_kept_not_steered_or_queued(
+    submit_key: str,
+) -> None:
+    """An active-turn clear owns admission until the interrupted turn closes.
+
+    Enter would normally steer and Shift+Enter would normally queue while a
+    turn is active.  Once /clear has installed its pending fence, both paths
+    must restore the exact draft instead so the confirmed clear cannot erase
+    input typed after the command.
+    """
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    app.adapter.clear_context = _fake_clear_context
+
+    async def _accept_interrupt() -> bool:
+        return True
+
+    app.adapter.interrupt = _accept_interrupt
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        app.reducer.handle(ev.PromptSubmit(session_id=ROOT, prompt="still running", ts=1.0))
+        await pilot.pause()
+
+        await _start_active_clear(pilot, app)
+        await type_text(pilot, "keep this through active clear")
+        await pilot.press(submit_key)
+        assert await wait_for(
+            pilot,
+            lambda: app.composer.text == "keep this through active clear",
+        )
+        assert app.adapter.steering.pending_steers == ()
+        assert app.adapter.steering.pending_next_turn == ()
+        assert "context clear in progress" in app.notice_slot.current
+
+        app.reducer.handle(ev.PromptComplete(session_id=ROOT, response="stopped", ts=2.0))
+        assert await wait_for(pilot, lambda: not app.session_ops.clear_pending)
+        assert app.transcript.blocks == ()
+        assert app.composer.text == "keep this through active clear"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_restore_cannot_race_a_delayed_clear() -> None:
+    """Clear and rewind are mutually exclusive context mutations."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    restore_called = False
+
+    async def _delayed_clear_context() -> tuple[bool, int]:
+        started.set()
+        await release.wait()
+        return (True, 4)
+
+    async def _unexpected_restore(*_args, **_kwargs):
+        nonlocal restore_called
+        restore_called = True
+        raise AssertionError("restore crossed the clear fence")
+
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    app.adapter.clear_context = _delayed_clear_context
+    app.adapter.restore_checkpoint = _unexpected_restore
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        checkpoint = app.ledger.checkpoints[-1]
+
+        await type_text(pilot, "/clear")
+        await pilot.press("enter")
+        assert await wait_for(pilot, started.is_set)
+
+        app_support.handle_restore(app, checkpoint.id, "both")
+        await pilot.pause()
+        assert not restore_called
+        assert not app.fork_pending
+        assert app.notice_slot.current == "context clear in progress · rewind unavailable"
+
+        release.set()
+        assert await wait_for(pilot, lambda: not app.session_ops.clear_pending)
+        assert app.transcript.blocks == ()
+
+
+@pytest.mark.asyncio
+async def test_clear_cannot_race_an_inflight_manual_compaction() -> None:
+    """The two context mutators never run concurrently from slash commands."""
+    compact_started = asyncio.Event()
+    compact_release = asyncio.Event()
+    clear_called = False
+
+    async def _delayed_compact(_focus: str = "") -> tuple[bool, str]:
+        compact_started.set()
+        await compact_release.wait()
+        return (True, "4 → 1 messages")
+
+    async def _unexpected_clear() -> tuple[bool, int]:
+        nonlocal clear_called
+        clear_called = True
+        raise AssertionError("clear crossed the compaction fence")
+
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    app.adapter.compact = _delayed_compact
+    app.adapter.clear_context = _unexpected_clear
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+
+        await type_text(pilot, "/compact tests")
+        await pilot.press("enter")
+        assert await wait_for(pilot, compact_started.is_set)
+
+        await type_text(pilot, "/clear")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not clear_called
+        assert not app.session_ops.clear_pending
+        assert app.notice_slot.current == "context compaction in progress · clear unavailable"
+
+        compact_release.set()
+        assert await wait_for(
+            pilot,
+            lambda: app.notice_slot.current == "compacted · 4 → 1 messages",
+        )
+
+
+@pytest.mark.asyncio
+async def test_prompt_entered_during_manual_compaction_is_kept_then_sends() -> None:
+    """Manual compaction owns admission without eating the next prompt."""
+    compact_started = asyncio.Event()
+    compact_release = asyncio.Event()
+
+    async def _delayed_compact(_focus: str = "") -> tuple[bool, str]:
+        compact_started.set()
+        await compact_release.wait()
+        return (True, "4 → 1 messages")
+
+    app = TuiApp(DemoRuntimeAdapter(instant=True))
+    app.adapter.compact = _delayed_compact
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+
+        await type_text(pilot, "/compact tests")
+        await pilot.press("enter")
+        assert await wait_for(pilot, compact_started.is_set)
+
+        await type_text(pilot, "send after compaction")
+        await pilot.press("enter")
+        assert await wait_for(pilot, lambda: app.composer.text == "send after compaction")
+        assert app.notice_slot.current == "context compaction in progress · message kept"
+
+        compact_release.set()
+        assert await wait_for(
+            pilot,
+            lambda: app.notice_slot.current == "compacted · 4 → 1 messages",
+        )
+        await pilot.press("enter")
+        assert await wait_for(
+            pilot,
+            lambda: (
+                app.ledger.checkpoints[-1].label == "send after compaction" and not app.turn_active
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -66,6 +314,11 @@ async def test_clear_mid_stream_fences_stale_events_but_new_turns_still_render()
     afterward, but a genuinely new turn renders completely normally."""
     app = TuiApp(DemoRuntimeAdapter(instant=True))
     app.adapter.clear_context = _fake_clear_context
+
+    async def _accept_interrupt() -> bool:
+        return True
+
+    app.adapter.interrupt = _accept_interrupt
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.reducer.handle(ev.PromptSubmit(session_id=ROOT, prompt="write a poem", ts=1.0))
@@ -75,21 +328,13 @@ async def test_clear_mid_stream_fences_stale_events_but_new_turns_still_render()
         await pilot.pause()
         assert app.transcript.blocks
 
-        await _run_clear(pilot, app)
-        assert app.transcript.blocks == ()
+        await _start_active_clear(pilot, app)
+        assert app.turn_active
 
-        # The app's 1s working-line heartbeat (ui/app.py's _working_timer
-        # -> reducer.tick) pulses the pre-clear turn's spinner OUTSIDE
-        # handle()'s dispatch, so it does not get the free _StaleTurnHost
-        # swap every other mutation gets — it is fenced by its own
-        # generation check inside _update_working(). Firing it directly
-        # proves that deterministically rather than racing the real
-        # 1s timer (which is what made this assertion CI-flaky: the bug
-        # this guards was only reachable once a real second elapsed).
+        # Clear first interrupts and waits for PromptComplete; it never mutates
+        # the live context concurrently with a provider turn. The in-flight
+        # tail may settle internally, then the confirmed clear removes it all.
         app.reducer.tick(10.0)
-        assert app.transcript.blocks == ()
-
-        # The stale turn's belated tail must not resurrect anything.
         app.reducer.handle(
             ev.ContentBlockEnd(
                 session_id=ROOT,
@@ -99,8 +344,10 @@ async def test_clear_mid_stream_fences_stale_events_but_new_turns_still_render()
             )
         )
         app.reducer.handle(ev.PromptComplete(session_id=ROOT, response="Roses are red.", ts=3.0))
-        await pilot.pause()
+        assert await wait_for(pilot, lambda: not app.session_ops.clear_pending)
         assert app.transcript.blocks == ()
+        assert not app.turn_active
+        assert app.ledger.checkpoints == ()
 
         # A brand new turn renders completely normally in the cleared view.
         app.reducer.handle(ev.PromptSubmit(session_id=ROOT, prompt="try again", ts=4.0))
@@ -115,6 +362,11 @@ async def test_clear_while_tool_running_fences_the_delayed_result() -> None:
     trace of its belated result in the view."""
     app = TuiApp(DemoRuntimeAdapter(instant=True))
     app.adapter.clear_context = _fake_clear_context
+
+    async def _accept_interrupt() -> bool:
+        return True
+
+    app.adapter.interrupt = _accept_interrupt
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         app.reducer.handle(ev.PromptSubmit(session_id=ROOT, prompt="run the tests", ts=1.0))
@@ -129,8 +381,8 @@ async def test_clear_while_tool_running_fences_the_delayed_result() -> None:
         )
         await pilot.pause()
 
-        await _run_clear(pilot, app)
-        assert app.transcript.blocks == ()
+        await _start_active_clear(pilot, app)
+        assert app.turn_active
 
         app.reducer.handle(
             ev.ToolPost(
@@ -142,8 +394,11 @@ async def test_clear_while_tool_running_fences_the_delayed_result() -> None:
                 ts=3.0,
             )
         )
-        await pilot.pause()
+        app.reducer.handle(ev.PromptComplete(session_id=ROOT, response="done", ts=4.0))
+        assert await wait_for(pilot, lambda: not app.session_ops.clear_pending)
         assert app.transcript.blocks == ()
+        assert not app.turn_active
+        assert app.ledger.checkpoints == ()
 
 
 @pytest.mark.asyncio

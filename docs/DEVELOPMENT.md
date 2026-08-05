@@ -114,6 +114,7 @@ dot -Tsvg docs/diagrams/tui-amplifier-integration.dot -o docs/diagrams/tui-ampli
 | widgets & reducer | `tests/test_ui_*.py` | per-widget + Textual Pilot headless driving |
 | end-to-end flows | `tests/test_flow_*.py` | scripted turns via `DemoRuntime` (approval, interrupt, lanes, rewind, steer/queue…) |
 | real lifecycle | `tests/test_runtime_offline.py` | genuine foundation lifecycle with fake modules mounted via `file://` bundles |
+| CLI/TUI/serve parity | `tests/test_cli_tui_serve_*` | one offline bundle across the real one-shot CLI, threaded TUI adapter, and serve protocol: identity, resume resolution, tool events, durable logging |
 | two-process contention | `tests/test_session_control_multiprocess.py` | spawns `tests/helpers/serve_process.py` under `sys.executable` so two REAL processes contend over one session directory (single-writer, takeover, lease expiry, reattach after `kill -9`, live attach, identity). Deterministic without sleeps: every step is a barrier on a specific stdout record, and lease expiry is driven by a clock file the test writes rather than a real timer |
 
 | renderer | `tests/test_golden_widths.py` | golden width matrix |
@@ -160,7 +161,7 @@ The app's capabilities (orchestrator, provider, tools, agents) come from its **b
 not from code:
 
 - `bundle.md` at the repo root is a **thin wrapper**: it `includes:` foundation's `anchors`
-  bundle (tracked at `amplifier-foundation@main` — see "Anchors ref lifecycle" below) and
+  bundle at a reviewed full commit (see "Anchors ref lifecycle" below) and
   overlays only a default provider, `tool-mcp`, and `tool-team-pulse`. The packaged copy at
   `src/amplifier_app_tui/data/bundles/tui.md` must stay **byte-identical** (compare
   with `diff` after editing).
@@ -177,51 +178,57 @@ not from code:
 ## Anchors ref lifecycle
 
 The wrapper composes foundation's `anchors` bundle via an `includes:` entry. That include
-tracks **`amplifier-foundation@main` (a floating ref)** — not a static pin. Background and
-policy (issue #53):
+is a **full 40-hex commit SHA**. The old `@main` exception is retired:
 
-- **Why not a bare SHA.** A pinned 40-hex SHA was tried and abandoned: GitHub stops serving a
-  non-tip SHA once foundation advances, so clean installs failed with "Include Failed
-  (skipping): amplifier-foundation" and booted degraded (#96). Foundation's release **tags**
-  (`v2.1.x`) do **not** ship `bundles/anchors` — only `@main` carries it — so `@main` is the
-  only fetchable source today, and it matches how the shared registry resolves `anchors`.
-  **Re-verified 2026-08-04** (compliance B9 gap-closure pass): foundation has published no
-  tag since the prior 2026-08-02 check (`v2.1.0`/`v2.1.1`/`v2.1.2` via `git ls-remote --tags`);
-  the latest, `v2.1.2`, still 404s on the `bundles/anchors` contents-API path, `@main` still
-  200s. The constraint is unchanged and re-pinning a bare SHA was rejected again for the same
-  reason #96 reverted it the first time. Re-run `scripts/verify_anchors_constraint.py` to
-  redo this check against the live repo — do that before ever touching this include.
-- **How updates flow.** Tracking `@main` means composition changes (roster, behaviors) *and*
-  anchors' internal module/behavior fixes all arrive on the next fetch. `amplifier-tui
-  update` refreshes the runtime cache (`--force` runs `uv cache clean` for a true re-fetch).
-  This is the "bump" — there is no static SHA to hand-edit on the happy path.
-- **How staleness surfaces (instead of silence).** Anchors is *included*, and foundation's
-  per-bundle `check_bundle_status` deliberately skips included-bundle URIs, so its freshness
-  was previously invisible. `kernel/updater.py:anchors_status()` checks it directly (an
-  offline-safe `git ls-remote` compare against the local cache) and both `amplifier-tui
-  update --check-only` and `amplifier-tui doctor` now report `anchors up to date` /
-  `anchors is behind upstream …` / `… check unavailable (offline)`. Offline degrades to a
-  neutral note — never a false "stale" finding.
+- **Why a SHA works now.** Foundation versions before commit `1a408839` passed a SHA to
+  `git clone --branch`, which caused the #96 cold-install failure. This app pins Foundation
+  at `dea5bd8f` or later; its handler clones then checks out the requested commit. The
+  repository gate exercises a non-tip SHA with an empty cache, and the 2026-08-05 audit also
+  cold-loaded the real Anchors commit from GitHub.
+- **Recursive lock.** The immutable outer file still contains nested `@main` and implicit
+  default-branch sources. `data/anchors-source-lock.json` records the reviewed full SHA for
+  every repository in that graph plus the outer bundle's SHA-256. `kernel/source_lock.py`
+  applies it at Foundation's include and module resolver seams and to source strings nested
+  in module config (notably skill sources). Explicit user `sources` overrides win.
+- **How updates flow.** `amplifier-tui update` refreshes user-selected floating bundles, but
+  it does not silently advance the packaged Anchors graph. A new app release deliberately
+  reviews and bumps the lock, synchronizes all three outer copies, and runs the cold-cache
+  gate.
+- **How status surfaces.** `kernel/updater.py:anchors_status()` recognizes a full SHA as
+  pinned and reports that there is no automatic update. This is deliberate reproducibility,
+  not a stale-cache condition.
 - **Three copies, kept in lockstep.** The anchors include ref appears in **three** live files
   (`kernel/updater.py:pin_files`): repo-root `bundle.md`, the byte-identical packaged
   `tui.md`, and the packaged `anchors.md` pointer. Anti-drift is enforced by
   `tests/test_kernel_session_config.py` (byte-identity + a three-way ref-match).
-- **Changing the tracked ref.** Use `uv run python scripts/bump_anchors_ref.py <ref>` — it
-  rewrites all three copies atomically and re-verifies byte-identity + lockstep before writing
-  (defaults to `main`; idempotent). It **refuses a bare SHA** without `--allow-sha`. When
-  foundation ships tagged releases that carry `bundles/anchors`, switch to
-  `scripts/bump_anchors_ref.py vX.Y.Z` for reproducible boots (issue #53 Option B).
-- **Re-checking whether a tag now ships anchors.** `uv run python
-  scripts/verify_anchors_constraint.py` re-runs the exact GitHub-API check above (latest
-  release tag vs. `bundles/anchors` contents-API 200/404) against the live repo and exits
-  non-zero if the answer has flipped, so this doesn't rely on a human remembering to
-  re-poke GitHub. It is a manual/maintenance check (network required), not part of the
-  default offline test gate.
-- **Guarding every OTHER dependency.** `tests/test_no_floating_dependencies.py` fails the
+- **Changing the ref.** First review and update `anchors-source-lock.json` (including the
+  outer bundle hash and every recursive repository), then run `uv run python
+  scripts/bump_anchors_ref.py`. The script synchronizes all three outer copies atomically,
+  refuses branches/tags, and refuses any SHA that disagrees with the recursive lock.
+- **Guarding the whole app-owned graph.** `tests/test_no_floating_dependencies.py` fails the
   build if any git dependency in the packaged bundle, `pyproject.toml`'s `[tool.uv.sources]`,
-  or a CI workflow's `uses:` step ever floats a branch instead of a tag/commit SHA. The
-  anchors include above is the ONE allow-listed, justified exception (see that file's
-  `ALLOWED_FLOATING_REFS`) — every other dependency in this repo is pinned.
+  the optional provider catalog, the opt-in routing overlay, or a CI workflow's `uses:` step
+  ever floats a branch instead of a tag/commit SHA. The recursive lock has no floating
+  exception; focused source-lock tests cover branch, implicit-ref, nested-config and explicit
+  user-override behavior.
+
+## Optional source pin lifecycle
+
+`kernel/setup.py::PROVIDER_SOURCES` and
+`kernel/config.py::ROUTING_MATRIX_BUNDLE_URI` are optional choices, but the app persists or
+composes their URIs when selected, so they use full commit SHAs rather than moving branches.
+Check all nine upstream `main` tips without writing anything, or deliberately rewrite stale
+pins for the next reviewed app release:
+
+```sh
+uv run python scripts/bump_optional_source_refs.py
+uv run python scripts/bump_optional_source_refs.py --write
+uv run pytest -q tests/test_no_floating_dependencies.py tests/test_bump_optional_source_refs.py
+```
+
+The bump helper resolves every remote before writing either source file and refuses an
+ambiguous replacement. It does not commit. Review the source diff and run the focused gate;
+the ordinary app/source release is what distributes the new immutable catalog.
 
 ## Adoption gates (replacing amplifier-app-cli)
 

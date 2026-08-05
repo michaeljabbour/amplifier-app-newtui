@@ -2,8 +2,8 @@
 //
 // Source of truth: "Amplifier TUI Feedback — Consolidated Implementation Brief
 // (Compliance Update 2026-08-02)". Scope = every item whose Compliance line reads
-// Partial or Open, EXCLUDING D6 (PR #190, implemented + verified live, awaiting
-// user merge approval). Each item's dated compliance note IS its remaining scope.
+// Partial or Open. D6 was initially held behind PR #190's human merge gate; it
+// has since merged. Each item's dated compliance note was its remaining scope.
 //
 // Node shapes (attractor convention):
 //   box          = LLM implement node (internally: BranchSetup -> Implement -> Gate -> Commit -> OpenPR)
@@ -25,8 +25,8 @@ digraph compliance_2026_08_02 {
   edge [fontname="Helvetica", fontsize=9, color="#555555"];
 
   // ───────────────────────── HUMAN GATES (diamonds) ─────────────────────────
-  gate_190 [shape=diamond, style=filled, fillcolor="#FDECEC", color="#9F1F1F",
-    label="GATE\nMerge PR #190 (D6)\nchild-agent stream dedup\n— awaiting your approval"];
+  gate_190 [shape=parallelogram, style=filled, fillcolor="#EAF6EE", color="#246B35",
+    label="D6 prerequisite\nPR #190 merged\nchild-agent stream dedup"];
   gate_D1  [shape=diamond, style=filled, fillcolor="#FFF6E5", color="#8A5700",
     label="GATE — D1 decision\nexecutable rename:\namplifier  vs  amplifier-tui\n(adjacent to #187)"];
   gate_B5  [shape=diamond, style=filled, fillcolor="#FFF6E5", color="#8A5700",
@@ -83,9 +83,9 @@ digraph compliance_2026_08_02 {
   // ─────────────────────────── DEPENDENCIES ────────────────────────────────
   start -> {B2 S4 S5 D3 S2 S3 S7 D2 B7 S6 D7probe B3 B6 B9} [color="#246B35"];
 
-  // #190 merge gate blocks the two items that build on the authoritative-stream work
+  // #190 was the prerequisite for the two items that build on authoritative streams.
   gate_190 -> B1 [label="D6 note: B1 emphasis lives in\nthe authoritative region (#190)"];
-  gate_190 -> D5 [label="D5 is PARTIAL·PENDING #190;\nrest of D5 = preview expand + coalesce"];
+  gate_190 -> D5 [label="D5 followed #190;\nrest = preview expand + coalesce"];
 
   // D1 rename is blocked on the executable-name decision
   gate_D1 -> D1 [label="AC4: rename needs a\ndocumented deprecation/alias path"];

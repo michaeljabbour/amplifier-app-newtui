@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from time import monotonic
 
 from textual import events
@@ -67,6 +68,38 @@ later intentional repeat or any intervening edit still works normally.
 
 _MODE_CLASSES = ("mode-chat", "mode-plan", "mode-brainstorm", "mode-build", "mode-auto")
 _FILE_MENTION_RE = re.compile(r"(?<!\S)@([^\s@]*)$")
+_IMAGE_PLACEHOLDER_RE = re.compile(r"\[Image #(\d+)\]")
+
+
+@dataclass
+class ComposerDraft:
+    """Lossless composer representation retained across ownership changes.
+
+    Paste payloads and image attachments live beside the visible text, so
+    preserving only ``Composer.text`` would restore broken placeholders.  The
+    containers are swapped wholesale and restored after submit/cancel.  The
+    same capsule also lets a pre-prompt checkpoint return a submitted rich
+    prompt with its compact paste stub instead of flattening it into the full
+    payload.
+    """
+
+    text: str
+    pastes: dict[str, str]
+    paste_seq: int
+    attachments: list[tuple[str, ImageAttachment]]
+    image_seq: int
+
+    @property
+    def has_sidecars(self) -> bool:
+        """Whether exact restoration needs more than the expanded text."""
+        return bool(self.pastes or self.attachments)
+
+    @property
+    def sidecar_bytes(self) -> int:
+        """Bytes retained outside the visible composer text."""
+        paste_bytes = sum(len(payload.encode("utf-8")) for payload in self.pastes.values())
+        image_bytes = sum(len(image.data) for _, image in self.attachments)
+        return paste_bytes + image_bytes
 
 
 def _cursor_offset(text: str, location: tuple[int, int]) -> int:
@@ -167,6 +200,10 @@ class ComposerInput(TextArea):
         if composer is None:
             await super()._on_key(event)
             return
+        if event.key != "escape":
+            # Double-Esc is a chord, not a loose time window. Any intervening
+            # composer activity disarms it before that activity is routed.
+            composer.post_message(Composer.Activity())
         if composer.mention_open and event.key in ("up", "down"):
             event.stop()
             event.prevent_default()
@@ -267,6 +304,7 @@ class ComposerInput(TextArea):
         if composer is None or not event.text:
             await super()._on_paste(event)
             return
+        composer.post_message(Composer.Activity())
         if self._is_duplicate_paste(event.text):
             event.stop()
             event.prevent_default()
@@ -349,9 +387,15 @@ class Composer(Horizontal):
         """Idle Enter: send *text* as a new user turn, with any staged
         clipboard images whose ``[Image #N]`` token survives in *text*."""
 
-        def __init__(self, text: str, attachments: tuple[ImageAttachment, ...] = ()) -> None:
+        def __init__(
+            self,
+            text: str,
+            attachments: tuple[ImageAttachment, ...] = (),
+            draft: ComposerDraft | None = None,
+        ) -> None:
             self.text = text
             self.attachments = attachments
+            self.draft = draft
             super().__init__()
 
     class PasteImage(Message):
@@ -360,16 +404,40 @@ class Composer(Horizontal):
     class Steer(Message):
         """Running Enter: steer the current turn with *text*."""
 
-        def __init__(self, text: str) -> None:
+        def __init__(
+            self,
+            text: str,
+            attachments: tuple[ImageAttachment, ...] = (),
+            draft: ComposerDraft | None = None,
+        ) -> None:
             self.text = text
+            self.attachments = attachments
+            self.draft = draft
             super().__init__()
 
     class QueueMessage(Message):
         """Shift+Enter (or alt+enter): queue *text* as the full next turn."""
 
+        def __init__(
+            self,
+            text: str,
+            attachments: tuple[ImageAttachment, ...] = (),
+            draft: ComposerDraft | None = None,
+        ) -> None:
+            self.text = text
+            self.attachments = attachments
+            self.draft = draft
+            super().__init__()
+
+    class DecisionAnswer(Message):
+        """A free-text answer captured with precedence over steer/submit."""
+
         def __init__(self, text: str) -> None:
             self.text = text
             super().__init__()
+
+    class SubmissionBlocked(Message):
+        """Enter was pressed while a checkpoint restore owns session state."""
 
     class OpenPalette(Message):
         """Composer text starts with ``/`` — open/refilter the palette."""
@@ -383,6 +451,9 @@ class Composer(Horizontal):
 
     class EscPressed(Message):
         """Esc in the composer; the app resolves it via ``ESC_CHAIN``."""
+
+    class Activity(Message):
+        """Non-Esc composer input disarms an in-progress double-Esc chord."""
 
     class NavKey(Message):
         """↑/↓ on an EMPTY composer — the app routes it to an open,
@@ -427,6 +498,7 @@ class Composer(Horizontal):
         super().__init__(id=id, classes=classes)
         self.kitty_protocol = kitty_protocol
         self.running: bool = False
+        self.submission_blocked: bool = False
         self._mode: ModeProfile = get_mode(DEFAULT_MODE)
         self._palette_open = False
         self._mention_filter_active = False
@@ -439,9 +511,11 @@ class Composer(Horizontal):
         self._attachments: list[tuple[str, ImageAttachment]] = []  # (placeholder, image)
         self._image_seq = 0
         self._history: list[str] = []
+        self._history_drafts: list[ComposerDraft | None] = []
         self._history_index: int | None = None
-        self._history_draft = ""
+        self._history_live_draft: ComposerDraft | None = None
         self._suggestion: str | None = None
+        self._decision_draft: ComposerDraft | None = None
 
     def compose(self):
         yield self._badge
@@ -479,6 +553,20 @@ class Composer(Horizontal):
         self._attachments.clear()
         self._image_seq = 0
 
+    def remember_and_clear_draft(self) -> bool:
+        """Move the visible draft into Up-arrow history, then clear it.
+
+        This is the non-destructive half of Claude-style double Escape: a
+        non-empty draft is never mistaken for a rewind command, and one Up
+        immediately restores exactly what Escape parked.
+        """
+        text = self._input.text
+        if not text:
+            return False
+        self._remember_prompt(self._expand(text), draft=self._snapshot_draft())
+        self.clear()
+        return True
+
     def add_image(self, attachment: ImageAttachment) -> None:
         """Stage a clipboard image and insert its ``[Image #N]`` placeholder
         (deleting the placeholder before submit drops the image)."""
@@ -492,7 +580,8 @@ class Composer(Horizontal):
     def _staged_attachments(self, text: str) -> tuple[ImageAttachment, ...]:
         """Images whose placeholder survives in *text* (spec: a deleted
         ``[Image #N]`` token drops that attachment)."""
-        return tuple(image for placeholder, image in self._attachments if placeholder in text)
+        expanded = self._expand(text)
+        return tuple(image for placeholder, image in self._attachments if placeholder in expanded)
 
     def register_paste(self, text: str) -> str | None:
         """Retain a long paste and return its stub; ``None`` to insert
@@ -517,6 +606,7 @@ class Composer(Horizontal):
     def insert_text(self, text: str) -> None:
         """Insert *text* at the cursor (key pass-through from overlay
         strips — e.g. typing while the lanes panel holds focus)."""
+        self.post_message(self.Activity())
         self.end_history_navigation()
         self._input.insert(text)
 
@@ -535,16 +625,72 @@ class Composer(Horizontal):
         self._input.load_text(text)
         self._input.cursor_location = _cursor_location(text, len(text))
 
-    def set_draft(self, text: str) -> None:
+    def set_draft(
+        self,
+        text: str,
+        attachments: Iterable[ImageAttachment] = (),
+        *,
+        compact_long_paste: bool = False,
+    ) -> None:
         """Load *text* as the whole draft, cursor at the end.
 
         The prompt-stash recall seam (``/unstash``): unlike
         :meth:`insert_text`, this replaces the buffer wholesale and ends any
         history browsing, mirroring the composer's own ``_load_history_text``.
         """
+        images = tuple(attachments)
+        placeholders = sorted(
+            {match.group(0) for match in _IMAGE_PLACEHOLDER_RE.finditer(text)},
+            key=lambda item: int(item.removeprefix("[Image #").removesuffix("]")),
+        )
         self.end_history_navigation()
-        self._input.load_text(text)
-        self._input.cursor_location = _cursor_location(text, len(text))
+        self._pastes = {}
+        self._paste_seq = 0
+        self._attachments = list(zip(placeholders, images, strict=False))
+        self._image_seq = max(
+            (int(match.group(1)) for match in _IMAGE_PLACEHOLDER_RE.finditer(text)),
+            default=0,
+        )
+        display_text = text
+        if compact_long_paste:
+            # Resumed/legacy checkpoints do not have the original UI capsule.
+            # Rebuild a compact, still-lossless representation instead of
+            # filling the six-line composer with an already-expanded paste.
+            # Exact in-process restores use ``restore_draft`` below.
+            display_text = self.register_paste(text) or text
+        self._load_history_text(display_text, clear_sidecars=False)
+
+    def restore_draft(self, draft: ComposerDraft) -> None:
+        """Restore an exact rich capsule after a downstream send rejection."""
+        self.end_history_navigation()
+        self._load_draft(draft)
+
+    @property
+    def capturing_decision(self) -> bool:
+        """Whether Enter currently answers a deferred decision."""
+        return self._decision_draft is not None
+
+    def begin_decision_capture(self) -> None:
+        """Park the current draft losslessly and open an empty answer buffer."""
+        if self._decision_draft is not None:
+            return
+        self._decision_draft = self._snapshot_draft()
+        self._pastes = {}
+        self._paste_seq = 0
+        self._attachments = []
+        self._image_seq = 0
+        self.set_draft("")
+        self.add_class("answering-decision")
+
+    def end_decision_capture(self) -> None:
+        """Discard the answer buffer and restore the exact parked draft."""
+        draft = self._decision_draft
+        if draft is None:
+            return
+        self._decision_draft = None
+        self.end_history_navigation()
+        self._load_draft(draft)
+        self.remove_class("answering-decision")
 
     def seed_history(self, prompts: Iterable[str]) -> None:
         """Load persisted user prompts so resumed sessions keep ↑ history."""
@@ -561,11 +707,11 @@ class Composer(Horizontal):
         if not self._history:
             return False
         if self._history_index is None:
-            self._history_draft = self._input.text
+            self._history_live_draft = self._snapshot_draft()
             self._history_index = len(self._history) - 1
         elif self._history_index > 0:
             self._history_index -= 1
-        self._load_history_text(self._history[self._history_index])
+        self._load_history_entry(self._history_index)
         return True
 
     def history_next(self) -> bool:
@@ -574,16 +720,17 @@ class Composer(Horizontal):
             return False
         if self._history_index < len(self._history) - 1:
             self._history_index += 1
-            self._load_history_text(self._history[self._history_index])
+            self._load_history_entry(self._history_index)
         else:
-            draft = self._history_draft
+            draft = self._history_live_draft
             self.end_history_navigation()
-            self._load_history_text(draft)
+            if draft is not None:
+                self._load_draft(draft)
         return True
 
     def end_history_navigation(self) -> None:
         self._history_index = None
-        self._history_draft = ""
+        self._history_live_draft = None
 
     @property
     def suggestion(self) -> str | None:
@@ -664,25 +811,68 @@ class Composer(Horizontal):
         if not text:
             self.post_message(self.EnterEmpty())
             return
+        if self.capturing_decision:
+            # Decision capture owns Enter even while a turn is running.  Do
+            # not clear/remember here: the app keeps the answer editable if
+            # queue resolution fails and restores the parked draft on success.
+            self.post_message(self.DecisionAnswer(text))
+            return
+        if self.submission_blocked:
+            # Keep the exact live buffer in place. The restore completion
+            # path stashes it into Up-arrow history before returning the
+            # selected prompt to the composer.
+            self.post_message(self.SubmissionBlocked())
+            return
+        # Submitted prompt history is text-only. Retaining image/paste
+        # sidecars across the 500-entry ring could pin gigabytes of clipboard
+        # bytes. The app separately keeps rich state only for the bounded,
+        # currently restorable checkpoint window.
+        draft = self._snapshot_draft()
+        attachments = self._staged_attachments(raw)
         self._remember_prompt(text)
         if self.running:
-            # Steering is text-only (images ride a fresh submit only).
-            self.post_message(self.Steer(text))
+            self.post_message(self.Steer(text, attachments, draft))
         else:
-            self.post_message(self.Submit(text, self._staged_attachments(raw)))
+            self.post_message(self.Submit(text, attachments, draft))
         self.clear()
 
     def handle_queue(self) -> None:
-        text = self._expand(self._input.text).strip()
+        if self.capturing_decision:
+            # Every send chord answers the active decision; Shift/Alt+Enter
+            # must never leak the answer into the next-turn queue.
+            self.handle_enter()
+            return
+        if self.submission_blocked:
+            self.post_message(self.SubmissionBlocked())
+            return
+        raw = self._input.text
+        text = self._expand(raw).strip()
         if not text:
             return
+        draft = self._snapshot_draft()
+        attachments = self._staged_attachments(raw)
         self._remember_prompt(text)
-        self.post_message(self.QueueMessage(text))
+        self.post_message(self.QueueMessage(text, attachments, draft))
         self.clear()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         event.stop()
         text = self._input.text
+        if self.capturing_decision:
+            # Slash-leading answers are literal answers, not commands.  File
+            # mentions and history ghosts are likewise suspended while the
+            # composer has this one explicit purpose.
+            if self._palette_open:
+                self._palette_open = False
+                self.post_message(self.PaletteFilterCleared())
+            if self._mention_filter_active:
+                self._mention_filter_active = False
+                self.mention_open = False
+                self.post_message(FileMentionIntent("clear"))
+            if self._suggestion is not None:
+                self._suggestion = None
+                self.post_message(self.HistorySuggested(None))
+            return
         if text.startswith("/"):
             self._palette_open = True
             # Mockup onInput: the live filter is the TRIMMED value, so
@@ -708,15 +898,59 @@ class Composer(Horizontal):
 
     # -- internals ---------------------------------------------------------------
 
-    def _remember_prompt(self, text: str) -> None:
+    def _remember_prompt(self, text: str, *, draft: ComposerDraft | None = None) -> None:
         prompt = text.strip()
-        if not prompt or (self._history and self._history[-1] == prompt):
+        if not prompt:
             return
+        if self._history and self._history[-1] == prompt:
+            self._history_drafts[-1] = draft
+            return
+        if draft is not None:
+            # Double Escape promises one lossless, immediately recallable
+            # draft, not an unbounded archive of binary sidecars.
+            self._history_drafts = [None for _ in self._history_drafts]
         self._history.append(prompt)
+        self._history_drafts.append(draft)
         if len(self._history) > MAX_PROMPT_HISTORY:
-            del self._history[: len(self._history) - MAX_PROMPT_HISTORY]
+            excess = len(self._history) - MAX_PROMPT_HISTORY
+            del self._history[:excess]
+            del self._history_drafts[:excess]
 
-    def _load_history_text(self, text: str) -> None:
+    def _snapshot_draft(self) -> ComposerDraft:
+        visible = self._input.text
+        expanded = self._expand(visible)
+        return ComposerDraft(
+            text=visible,
+            pastes={stub: payload for stub, payload in self._pastes.items() if stub in visible},
+            paste_seq=self._paste_seq,
+            attachments=[
+                (placeholder, image)
+                for placeholder, image in self._attachments
+                if placeholder in expanded
+            ],
+            image_seq=self._image_seq,
+        )
+
+    def _load_draft(self, draft: ComposerDraft) -> None:
+        self._pastes = dict(draft.pastes)
+        self._paste_seq = draft.paste_seq
+        self._attachments = list(draft.attachments)
+        self._image_seq = draft.image_seq
+        self._load_history_text(draft.text, clear_sidecars=False)
+
+    def _load_history_entry(self, index: int) -> None:
+        draft = self._history_drafts[index]
+        if draft is None:
+            self._load_history_text(self._history[index])
+        else:
+            self._load_draft(draft)
+
+    def _load_history_text(self, text: str, *, clear_sidecars: bool = True) -> None:
+        if clear_sidecars:
+            self._pastes = {}
+            self._paste_seq = 0
+            self._attachments = []
+            self._image_seq = 0
         self._input.load_text(text)
         self._input.cursor_location = _cursor_location(text, len(text))
 
@@ -730,6 +964,7 @@ class Composer(Horizontal):
 
 __all__ = [
     "Composer",
+    "ComposerDraft",
     "ComposerInput",
     "MAX_INPUT_HEIGHT",
     "ModeBadge",

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-08-05",
+  "anchors": {
+    "commit": "dea5bd8fe11a7617dbcfc61c47f9f4f2fdc0b134",
+    "bundle_sha256": "0998761a48a2efe56d8162472c7b92d5220a7743e3be7737cd5849b0ada0b7a6"
+  },
+  "repositories": {
+    "git+https://github.com/microsoft/amplifier-foundation": "dea5bd8fe11a7617dbcfc61c47f9f4f2fdc0b134",
+    "git+https://github.com/microsoft/amplifier-bundle-context-intelligence": "89bb6e00d172b40992ae9e79f12312213eddfa68",
+    "git+https://github.com/microsoft/amplifier-bundle-filesystem": "873b988f433036858361550a3b49cc5964601f81",
+    "git+https://github.com/microsoft/amplifier-bundle-modes": "0ab29aeda4abb6f9e55009c9d521a3afed979643",
+    "git+https://github.com/microsoft/amplifier-bundle-recipes": "b6ee26d3a3d59a99f75c362855be7a89d7762fb0",
+    "git+https://github.com/microsoft/amplifier-bundle-skills": "cfa9f2a6f82002114c1bdfb7278978411d404982",
+    "git+https://github.com/microsoft/amplifier-module-context-simple": "6fd3f6f0b19789f8ffa8629c8b7c9c81312818a2",
+    "git+https://github.com/microsoft/amplifier-module-hooks-approval": "4ee093eafd2d60ab10692a22363e86c7b25d02ce",
+    "git+https://github.com/microsoft/amplifier-module-hooks-logging": "a4efafc834938ea53006808313e840b1136cb296",
+    "git+https://github.com/microsoft/amplifier-module-hooks-status-context": "1b9e0ac001188360e635ac78c8d57719b7700f80",
+    "git+https://github.com/microsoft/amplifier-module-hooks-streaming-ui": "e7b1aed6083d95f219474962c75097aec463f85d",
+    "git+https://github.com/microsoft/amplifier-module-hooks-todo-reminder": "5bd0f4d5c3e9db521e7d954df3f869c26f0e2a80",
+    "git+https://github.com/microsoft/amplifier-module-loop-streaming": "e5438b4c99977b6dd8b01962fd9ab33b92d93aa7",
+    "git+https://github.com/microsoft/amplifier-module-tool-bash": "44637eb4523eb1bc0c6bac51243c6b3fceaaca5c",
+    "git+https://github.com/microsoft/amplifier-module-tool-filesystem": "355fa417ca37ea6475a2d7a4aea6ff037f800eea",
+    "git+https://github.com/microsoft/amplifier-module-tool-search": "2885b34c6e1d7af7f54f07b5d6402071515a2e2c",
+    "git+https://github.com/microsoft/amplifier-module-tool-todo": "483c5a878bbbe2d6fd33ab81a54c9bd6a28be4a9",
+    "git+https://github.com/microsoft/amplifier-module-tool-web": "58552f41b8e6683a5d26960b4a32ca42ec4fe1d1"
+  }
+}

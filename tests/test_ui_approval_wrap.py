@@ -20,6 +20,7 @@ LONG_OPTIONS = (
 async def test_wrapped_options_stack_fullwidth_and_stay_on_screen() -> None:
     app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=(80, 24)) as pilot:
+        app.set_mode_by_id("chat")  # interactive postures mount approval UI
         app.present_approval("t1", "Which approach should I take?", LONG_OPTIONS)
         await pilot.pause()
         await pilot.pause()
@@ -45,6 +46,7 @@ async def test_wrapped_options_stack_fullwidth_and_stay_on_screen() -> None:
 async def test_few_short_options_stay_on_one_row() -> None:
     app = TuiApp(DemoRuntimeAdapter(instant=True))
     async with app.run_test(size=(140, 24)) as pilot:
+        app.set_mode_by_id("chat")  # interactive postures mount approval UI
         app.present_approval("t1", "ok?", ("Allow once", "Allow always", "Deny"))
         await pilot.pause()
         await pilot.pause()

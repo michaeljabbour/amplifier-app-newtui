@@ -27,7 +27,11 @@ from amplifier_app_tui.kernel import serve as serve_module
 from amplifier_app_tui.kernel.approval import ALLOW_ONCE, DENY
 from amplifier_app_tui.kernel.compaction import CompactionConfig
 from amplifier_app_tui.kernel.cost import CostTracker, PricingTable
-from amplifier_app_tui.kernel.events import ContentBlockEnd, ProviderResponseUsage
+from amplifier_app_tui.kernel.events import (
+    ContentBlockEnd,
+    ContextCompacted,
+    ProviderResponseUsage,
+)
 from amplifier_app_tui.kernel.serve import serve, serve_loop
 from amplifier_app_tui.kernel.steering import StepBoundaryBridge
 from amplifier_app_tui.model.queues import NeedsYouQueue, QueuedMessage, SteeringQueue
@@ -595,16 +599,55 @@ async def test_serve_pushes_context_state_per_provider_response() -> None:
     assert last["schema_version"] == 1
     assert last["session_id"] == "meter-01"
     assert last["model"] == "anthropic/claude-sonnet-4"
-    assert last["context_tokens"] == 1200 + 340 + 800 + 100  # last response, not a sum
+    assert last["context_tokens"] == 1200 + 340 + 100  # cache_read is inside gross input
     assert last["input_tokens"] == 1200
     assert last["output_tokens"] == 340
     assert last["cache_read"] == 800
     assert last["cache_write"] == 100
     assert last["context_window"] == 200_000
     assert last["window_source"] == "compaction"
-    assert last["context_pct"] == round(2440 / 200_000 * 100)  # 1
+    assert last["context_pct"] == round(1640 / 200_000 * 100)  # 1
     assert Decimal(last["cost_usd"]) == _C1 + _C2
     assert last["cost_estimated"] is False
+
+    stdin.close()
+    assert await server == 0
+
+
+async def test_serve_context_meter_ignores_child_compaction_and_learns_root_budget() -> None:
+    runtime = _FakeUsageRuntime()
+    stdin, out = _PipeStdin(), _Capture()
+    server = asyncio.create_task(
+        serve_loop(runtime, source=cast("IO[str]", stdin), out=cast("IO[str]", out))  # type: ignore[arg-type]
+    )
+
+    stdin.feed({"op": "context.get"})
+    await _wait_until(lambda: len(_context_states(out)) == 1)
+    runtime.queue.put_nowait(
+        ContextCompacted(
+            session_id="child",
+            parent_id=runtime.session_id,
+            after_tokens=482_000,
+            budget=963_104,
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert len(_context_states(out)) == 1
+
+    runtime.queue.put_nowait(
+        ContextCompacted(
+            session_id=runtime.session_id,
+            after_tokens=482_452,
+            budget=963_104,
+            target_tokens=481_552,
+            strategy_level=3,
+        )
+    )
+    await _wait_until(lambda: len(_context_states(out)) == 2)
+    learned = _context_states(out)[-1]
+    assert learned["context_tokens"] == 482_452
+    assert learned["context_window"] == 963_104
+    assert learned["context_pct"] == 50
 
     stdin.close()
     assert await server == 0
@@ -636,7 +679,7 @@ async def test_serve_context_get_op_pulls_current_state() -> None:
     await _wait_until(lambda: len(_context_states(out)) >= 4)
 
     pull = _context_states(out)[-1]
-    assert pull["context_tokens"] == 2440
+    assert pull["context_tokens"] == 1640
     assert pull["context_pct"] == 1
     assert pull["context_window"] == 200_000
     assert Decimal(pull["cost_usd"]) == _C1 + _C2

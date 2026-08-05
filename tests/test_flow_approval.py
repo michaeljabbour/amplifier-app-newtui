@@ -98,10 +98,30 @@ async def test_approval_bar_replaces_composer_arrows_and_confirm() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ctrl_y_parks_live_ticket_into_needs_you_answerable_later() -> None:
-    """Issue #41: ctrl-y on the live approval bar parks the ticket into
-    the needs-you queue WITHOUT resolving it (deny-and-continue), hands
-    the composer back, and the parked decision is answerable later."""
+async def test_auto_mode_defers_approval_without_mounting_a_blocking_bar() -> None:
+    adapter = DemoRuntimeAdapter(instant=True)
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        assert app.mode_id == "auto"
+
+        app.present_approval("auto-ticket", "Run a gated tool?", APPROVAL_OPTIONS)
+        await pilot.pause()
+
+        assert app.approval_bar is None
+        assert app.composer.display
+        assert adapter.needs_you.pending_count == 1
+        item = adapter.needs_you.pending[0]
+        assert item.question == "Run a gated tool?"
+        assert item.choices == APPROVAL_OPTIONS
+        assert app.notice_slot.current == (
+            "auto deferred decision · current call denied · work continues"
+        )
+
+
+@pytest.mark.asyncio
+async def test_ctrl_y_parks_live_ticket_and_denies_current_call_to_continue() -> None:
+    """Ctrl-y parks the decision, denies this call, and keeps work moving."""
     adapter = DemoRuntimeAdapter(instant=True)
     app = TuiApp(adapter)
     async with app.run_test(size=SIZE) as pilot:
@@ -112,11 +132,13 @@ async def test_ctrl_y_parks_live_ticket_into_needs_you_answerable_later() -> Non
         # owns the keyboard, so the global show_needs_you chord is
         # suppressed and the key reaches the bar's park handler.
         await pilot.press("ctrl+y")
-        assert await wait_for(pilot, lambda: app.approval_bar is None)
+        assert await wait_for(
+            pilot,
+            lambda: app.approval_bar is None and rules(app) >= 2 and not app.turn_active,
+        )
 
-        # Parked, not resolved: the composer is back, one decision is
-        # waiting, and the underlying approval future is still pending
-        # (no choice was sent to the runtime).
+        # The composer is back, one decision is waiting, and the denied tool
+        # call returned to the model so the scripted turn reached close-out.
         assert app.composer.display is True
         assert adapter.needs_you.pending_count == 1
         assert app.footer_bar.state.waiting == 1
@@ -125,10 +147,9 @@ async def test_ctrl_y_parks_live_ticket_into_needs_you_answerable_later() -> Non
         assert item.question == PYTEST_APPROVAL_PROMPT
         # The live options travel through as the answerable chips.
         assert item.choices == APPROVAL_OPTIONS
-        # The turn never shipped a close-out: the deny path did not run
-        # and no second turn rule was cut (the ticket future is still
-        # open, deny-and-continue timing out later).
-        assert not any(b.cmd == DENY_BLOCKED_CMD for b in blocks_of(app, "blocked"))
+        blocked = blocks_of(app, "blocked")[-1]
+        assert blocked.cmd == DENY_BLOCKED_CMD
+        assert blocks_of(app, "turn_rule")[-1].label == build_denied_spec().rule_label
 
         # Answerable later: ctrl-y now opens the needs-you listing (the
         # bar is gone, so the global chord is live again); acting on the

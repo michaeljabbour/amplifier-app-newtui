@@ -28,6 +28,7 @@ from amplifier_app_tui.kernel.cost import CostTracker, restore_session_cost
 from amplifier_app_tui.kernel.persistence import SessionStore
 from amplifier_app_tui.kernel.rewind import RewindError
 from amplifier_app_tui.kernel.runtime import (
+    _kept_turns_before,
     _kept_turns_for,
     restored_ui_events,
 )
@@ -154,6 +155,7 @@ def _ledger(turn_ids: list[int]) -> OutcomeLedger:
             TurnTelemetry(secs=1.0, tokens_down=10, cost=Decimal("0.01")),
             TurnOutcome(kind="answer"),
             turn_id=turn_id,
+            restore_turn_id=index - 1,
             message_index=index,
             label=f"turn {turn_id}",
         )
@@ -166,6 +168,21 @@ def test_kept_turns_for_is_the_checkpoint_ordinal() -> None:
     assert _kept_turns_for(ledger, "t2") == 2
     assert _kept_turns_for(ledger, "t3") == 3
     assert _kept_turns_for(ledger, "t9") == 0  # unknown -> no marker written
+
+
+def test_kept_turns_before_is_zero_based_and_distinguishes_unknown() -> None:
+    ledger = _ledger([1, 2, 3])
+    assert _kept_turns_before(ledger, "t1") == 0
+    assert _kept_turns_before(ledger, "t2") == 1
+    assert _kept_turns_before(ledger, "t3") == 2
+    assert _kept_turns_before(ledger, "t9") is None
+
+
+def test_kept_turns_before_uses_full_ledger_when_picker_is_retention_capped() -> None:
+    ledger = _ledger(list(range(1, 106)))
+    assert ledger.checkpoints[0].id == "t6"
+    assert _kept_turns_before(ledger, "t6") == 5
+    assert _kept_turns_before(ledger, "t105") == 104
 
 
 # --------------------------------------------------------------------------
@@ -335,6 +352,20 @@ class _FakeInitialized:
         self.coordinator = _FakeCoordinator(context)
 
 
+class _ForceSaver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def force_save(self) -> bool:
+        self.calls += 1
+        return True
+
+
+class _FailingSaver:
+    async def force_save(self) -> bool:
+        raise OSError("disk full")
+
+
 @pytest.mark.asyncio
 async def test_real_runtime_fork_writes_a_rewind_marker(tmp_path: Path) -> None:
     from amplifier_app_tui.kernel.runtime import RealRuntime
@@ -356,6 +387,61 @@ async def test_real_runtime_fork_writes_a_rewind_marker(tmp_path: Path) -> None:
     # And that marker really drops the discarded turn on the next read.
     typed = restored_ui_events(store, SID)
     assert all(not isinstance(e, ev.RewindMarker) for e in typed)
+
+
+@pytest.mark.asyncio
+async def test_real_runtime_restore_before_first_prompt_persists_zero_turn_marker(
+    tmp_path: Path,
+) -> None:
+    from amplifier_app_tui.kernel.runtime import RealRuntime
+
+    runtime = RealRuntime()
+    store = SessionStore(base_dir=tmp_path)
+    context = _FakeContext()
+    saver = _ForceSaver()
+    runtime._store = store  # type: ignore[assignment]
+    runtime._saver = saver  # type: ignore[assignment]
+    runtime._initialized = _FakeInitialized(context)  # type: ignore[assignment]
+    ledger = _ledger([1, 2, 3])
+    for event in [*_turn("A", ts=1.0), *_turn("B", ts=2.0), *_turn("C", ts=3.0)]:
+        store.append_event(SID, event)
+
+    outcome = await runtime.restore_checkpoint("t1", ledger, scope="conversation")
+
+    assert context.messages == []
+    assert ledger.checkpoints == ()
+    assert outcome.summary == "conversation before turn 1"
+    assert outcome.conversation_restored is True
+    assert outcome.partial is False
+    assert saver.calls == 1
+    markers = [record for record in store.read_events(SID) if record.get("kind") == "rewind_marker"]
+    assert markers[-1]["kept_turns"] == 0
+    assert _prompts(restored_ui_events(store, SID)) == []
+
+
+@pytest.mark.asyncio
+async def test_restore_intent_reconciles_even_when_incremental_save_fails(
+    tmp_path: Path,
+) -> None:
+    from amplifier_app_tui.kernel.runtime import RealRuntime
+
+    runtime = RealRuntime()
+    store = SessionStore(base_dir=tmp_path)
+    context = _FakeContext()
+    first_turn_messages = list(context.messages[:2])
+    runtime._store = store  # type: ignore[assignment]
+    runtime._saver = _FailingSaver()  # type: ignore[assignment]
+    runtime._initialized = _FakeInitialized(context)  # type: ignore[assignment]
+    ledger = _ledger([1, 2, 3])
+
+    outcome = await runtime.restore_checkpoint("t2", ledger, scope="conversation")
+
+    assert context.messages == first_turn_messages
+    assert [checkpoint.id for checkpoint in ledger.checkpoints] == ["t1"]
+    assert outcome.summary == "conversation before turn 2"
+    assert outcome.partial is False
+    markers = [record for record in store.read_events(SID) if record.get("kind") == "rewind_marker"]
+    assert markers[-1]["kept_turns"] == 1
 
 
 @pytest.mark.asyncio

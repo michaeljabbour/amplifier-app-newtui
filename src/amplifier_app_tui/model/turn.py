@@ -5,9 +5,10 @@ Turn identity (ADR-0007 resolution 4): the app assigns ``turn_id`` at
 context (resume history base + recorded ledger turns — rewound
 automatically when a confirmed fork trims the ledger, spec §9). Steers
 never increment it (leftover steers are discarded at turn end); queued
-messages DO. Every turn rule records a :class:`Checkpoint`
-stamped onto the TurnRule block at emit time — rewind resolves
-checkpoints by id, never by string matching rendered labels.
+messages DO. Every user prompt opens a :class:`Checkpoint` *before* the
+turn executes. The completed turn rule is later stamped with that same
+checkpoint id — rewind resolves checkpoints by id, never by string matching
+rendered labels.
 """
 
 from __future__ import annotations
@@ -18,6 +19,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .formatting import format_tokens_k
+
+MAX_VISIBLE_CHECKPOINTS = 100
+"""Maximum recent pre-prompt checkpoints offered by the restore picker."""
 
 
 class _FrozenModel(BaseModel):
@@ -111,22 +115,39 @@ class TurnOutcome(_FrozenModel):
 
 
 class Checkpoint(_FrozenModel):
-    """One rewind target recorded at every turn rule (DESIGN-SPEC §9).
+    """One pre-prompt rewind target (DESIGN-SPEC §9).
 
     - ``id``: ``t1``, ``t2``, … (stamped on the TurnRule block at emit).
-    - ``turn_id``: 1-indexed user-message turn in the live context (the
-      fork point foundation's ``fork_session[_in_memory]`` slices at).
+    - ``turn_id``: 1-indexed final user-message position occupied by this
+      turn (including persistent mid-turn injections).
+    - ``restore_turn_id``: number of user-message turns that existed before
+      this prompt. Zero restores the empty session-start context.
     - ``message_index``: transcript message index at the rule — the trim
       point the backend fork restores to.
     - ``cost_at``: cumulative session spend when the checkpoint was cut.
-    - ``label``: human description shown in the rewind picker.
+    - ``label``: original prompt shown/restored by the rewind picker.
+    - ``workspace_id``: opaque id of the kernel-owned file checkpoint. It
+      deliberately does not reuse display ``tN`` ids after a rewind.
     """
 
     id: str
     turn_id: int = Field(ge=0)
+    restore_turn_id: int | None = Field(default=None, ge=0)
     message_index: int = Field(ge=0)
     cost_at: Decimal = Field(default=Decimal("0"), ge=0)
     label: str = ""
+    workspace_id: str = ""
+
+    @property
+    def before_turn_id(self) -> int:
+        """Conversation boundary immediately before this prompt.
+
+        Legacy checkpoints lack ``restore_turn_id``; their natural boundary
+        is one turn before the historical post-turn fork point.
+        """
+        if self.restore_turn_id is not None:
+            return self.restore_turn_id
+        return max(0, self.turn_id - 1)
 
 
 class LedgerTurn(_FrozenModel):
@@ -149,6 +170,7 @@ class OutcomeLedger:
 
     def __init__(self) -> None:
         self._turns: list[LedgerTurn] = []
+        self._pending: Checkpoint | None = None
 
     @property
     def turns(self) -> tuple[LedgerTurn, ...]:
@@ -195,10 +217,45 @@ class OutcomeLedger:
 
     @property
     def checkpoints(self) -> tuple[Checkpoint, ...]:
-        return tuple(turn.checkpoint for turn in self._turns)
+        # The durable workspace store retains the same 100-item window. Keep
+        # the UI/model list aligned so an old turn rule cannot advertise a
+        # file checkpoint whose private manifest has already expired. The
+        # complete turn ledger remains intact for telemetry and replay math.
+        completed_limit = MAX_VISIBLE_CHECKPOINTS - (1 if self._pending is not None else 0)
+        completed = tuple(turn.checkpoint for turn in self._turns[-completed_limit:])
+        return (*completed, self._pending) if self._pending is not None else completed
 
     def next_checkpoint_id(self) -> str:
         return f"t{len(self._turns) + 1}"
+
+    def begin_turn(
+        self,
+        *,
+        turn_id: int,
+        restore_turn_id: int,
+        message_index: int,
+        label: str,
+        cost_at: Decimal,
+        workspace_id: str = "",
+    ) -> Checkpoint:
+        """Cut and expose a checkpoint before its prompt starts running.
+
+        A pending checkpoint makes even the first in-flight turn undoable.
+        :meth:`record_turn` consumes the same object after close-out, retaining
+        the id selected by an interrupt-then-restore flow.
+        """
+        if self._pending is not None:
+            raise RuntimeError(f"checkpoint {self._pending.id} is still pending")
+        self._pending = Checkpoint(
+            id=self.next_checkpoint_id(),
+            turn_id=turn_id,
+            restore_turn_id=restore_turn_id,
+            message_index=message_index,
+            cost_at=cost_at,
+            label=label,
+            workspace_id=workspace_id,
+        )
+        return self._pending
 
     def record_turn(
         self,
@@ -209,21 +266,37 @@ class OutcomeLedger:
         message_index: int,
         label: str = "",
         cost_at: Decimal | None = None,
+        restore_turn_id: int | None = None,
+        workspace_id: str = "",
     ) -> LedgerTurn:
-        """Record a completed turn, cutting its checkpoint at the same time.
+        """Record a completed turn, finalizing its pre-prompt checkpoint.
 
         ``cost_at`` is the cumulative SESSION cost at the rule (mockup
         ``cp.cost = this.cost`` — the footer $ at that moment, including
         any pre-session baseline). Falls back to recorded-turn spend when
         the caller has no session baseline.
         """
-        checkpoint = Checkpoint(
-            id=self.next_checkpoint_id(),
-            turn_id=turn_id,
-            message_index=message_index,
-            cost_at=self.spend + telemetry.cost if cost_at is None else cost_at,
-            label=label,
-        )
+        pending = self._pending
+        if pending is not None:
+            checkpoint = pending.model_copy(
+                update={
+                    "turn_id": turn_id,
+                    "message_index": message_index,
+                    "label": label or pending.label,
+                    "workspace_id": workspace_id or pending.workspace_id,
+                }
+            )
+            self._pending = None
+        else:
+            checkpoint = Checkpoint(
+                id=self.next_checkpoint_id(),
+                turn_id=turn_id,
+                restore_turn_id=restore_turn_id,
+                message_index=message_index,
+                cost_at=self.spend + telemetry.cost if cost_at is None else cost_at,
+                label=label,
+                workspace_id=workspace_id,
+            )
         turn = LedgerTurn(
             turn_id=turn_id, telemetry=telemetry, outcome=outcome, checkpoint=checkpoint
         )
@@ -234,6 +307,8 @@ class OutcomeLedger:
         for turn in self._turns:
             if turn.checkpoint.id == checkpoint_id:
                 return turn.checkpoint
+        if self._pending is not None and self._pending.id == checkpoint_id:
+            return self._pending
         return None
 
     def clear(self) -> None:
@@ -246,6 +321,7 @@ class OutcomeLedger:
         transcript-derived ``turn_base`` offset.
         """
         self._turns.clear()
+        self._pending = None
 
     def trim_to(self, checkpoint_id: str) -> None:
         """Drop ledger turns after *checkpoint_id* (post-fork, confirm-then-trim).
@@ -256,13 +332,29 @@ class OutcomeLedger:
         for index, turn in enumerate(self._turns):
             if turn.checkpoint.id == checkpoint_id:
                 del self._turns[index + 1 :]
+                self._pending = None
                 return
+        if self._pending is not None and self._pending.id == checkpoint_id:
+            return
+        raise KeyError(f"unknown checkpoint: {checkpoint_id}")
+
+    def trim_before(self, checkpoint_id: str) -> None:
+        """Drop the selected pre-prompt checkpoint and everything after it."""
+        for index, turn in enumerate(self._turns):
+            if turn.checkpoint.id == checkpoint_id:
+                del self._turns[index:]
+                self._pending = None
+                return
+        if self._pending is not None and self._pending.id == checkpoint_id:
+            self._pending = None
+            return
         raise KeyError(f"unknown checkpoint: {checkpoint_id}")
 
 
 __all__ = [
     "Checkpoint",
     "LedgerTurn",
+    "MAX_VISIBLE_CHECKPOINTS",
     "OutcomeKind",
     "OutcomeLedger",
     "TurnOutcome",

@@ -29,6 +29,7 @@ outside the chain:
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from decimal import Decimal
@@ -56,13 +57,15 @@ from ..model.lanes import TERMINAL_LANE_STATES, LaneRegistry
 from ..model.modes import ModeProfile, cycle_mode, get_mode
 from ..model.native_modes import ActiveNativeModes, posture_conflict_notice
 from ..model.prompt_stash import PromptStash, stash_list_spans
+from ..model.queues import QueuedMessage
 from ..model.turn import OutcomeLedger
 from . import app_support, keymap, notifications, transcript_render
 from .approval_bar import ApprovalBar
 from .chrome import APP_TITLE_NAME, TitleBar, write_terminal_title
-from .sessions_strip import SessionsStrip
+from .sessions_strip import ResumeSessionRequest, SessionsStrip
 from .command_context import AppCommandContext
-from .composer import Composer
+from .composer import Composer, ComposerDraft
+from .decision_capture import DecisionCaptureStrip
 from .evidence_panel import EvidencePanel
 from .footer import FooterBar
 from .history_recall import HistoryRecallStrip
@@ -83,7 +86,7 @@ from .reducer import TranscriptReducer
 from .rewind_strip import RewindStrip
 from .runtime_adapter import RuntimeAdapter
 from .session_ops_controller import SessionOpsController
-from .session_ops_view import session_detail_spans, session_resume_spans, sessions_spans
+from .session_ops_view import resume_command_for, session_detail_spans, sessions_spans
 from .splash import BootSplash
 from .themes import DEFAULT_THEME, THEME_NAME_PREFIX, THEME_TOKENS, register_themes, theme_id
 from .transcript import (
@@ -100,6 +103,8 @@ from .transcript import (
     TranscriptView,
 )
 
+logger = logging.getLogger(__name__)
+
 
 _NOTIFY_TITLE = "Amplifier"
 """Notification title for every desktop rung (kept short: OSC 777 title
@@ -115,7 +120,21 @@ _NOTIFY_BODY: dict[notifications.AttentionReason, str] = {
 message through instead (see :meth:`TuiApp._notify_attention`)."""
 
 
-class TuiApp(App[None]):
+MAX_CHECKPOINT_DRAFT_BYTES = 64 * 1024 * 1024
+"""Maximum aggregate paste/image payload retained for rich checkpoint restore.
+
+The durable ledger still owns every visible checkpoint.  This cache only keeps
+the optional in-process UI capsule that can reconstruct compact paste stubs and
+image placeholders exactly; once the byte budget is exhausted, restore falls
+back to the ledger/context representation instead of pinning unbounded binary
+clipboard data in memory.
+"""
+
+CONTEXT_SNAPSHOT_TIMEOUT_S = 30.0
+"""Bound branch/fork snapshots so a broken store cannot fence the UI forever."""
+
+
+class TuiApp(App[ResumeSessionRequest]):
     """The Amplifier full-screen TUI (v3 Cohesive)."""
 
     CSS = """
@@ -164,6 +183,12 @@ class TuiApp(App[None]):
     #bottom-strip { width: 100%; height: auto; }
     #bottom-strip > #lanes-panel { width: 1fr; }
     #bottom-strip > #plan-panel { width: 37; }  /* = plan_panel.PLAN_PANEL_WIDTH */
+    /* S7: at narrow widths the plan remains an interactive surface instead
+       of collapsing to a dead footer count. Stack it below the lane summary
+       so both children keep the full row and the plan can scroll internally. */
+    #bottom-strip.plan-narrow { layout: vertical; }
+    #bottom-strip.plan-narrow > #lanes-panel { width: 100%; }
+    #bottom-strip.plan-narrow > #plan-panel { width: 100%; }
     """
 
     BINDINGS = app_support.global_bindings()
@@ -207,6 +232,8 @@ class TuiApp(App[None]):
             schedule_flush=self.set_timer,
         )
         self.turn_active = False
+        self._turn_idle = asyncio.Event()
+        self._turn_idle.set()
         # Current reasoning-effort tier for the footer indicator (HGT effort
         # cycle). None = unset/default -> the footer omits the segment; a
         # value appears once ctrl+b cycles or /effort <level> sets it.
@@ -236,9 +263,27 @@ class TuiApp(App[None]):
         self._selection_timer: Any = None  # copy-on-select debounce
         self._last_selection_copied = ""  # suppress duplicate auto-copies
         self._turn_queues_pending = False  # drain queues once end-of-turn events settle
+        # Rich prompt UI state is not part of the provider/context payload.
+        # Keep only paste/image-bearing capsules, addressed by the same tN id
+        # as the pre-prompt checkpoint, so an in-process restore can recover
+        # compact paste stubs and image sidecars exactly. Plain prompts and
+        # resumed legacy checkpoints continue to restore from ledger text.
+        self._checkpoint_drafts: dict[str, ComposerDraft] = {}
+        # Admission fence for the small interval between scheduling a runtime
+        # submit and reducing its PromptSubmit event.  Without it, a manual
+        # send can race a turn-end queue drain: both predict the same tN rich
+        # checkpoint key and the runtime rejects one after its UI capsule has
+        # already been consumed.
+        self._submit_accepting = False
+        # Identity token paired with the public-ish boolean above. A completed
+        # turn can start draining its queued successor before the older submit
+        # coroutine's ``finally`` resumes; the token prevents that older worker
+        # from clearing the successor's admission fence.
+        self._submit_admission: object | None = None
         self._turn_started_at: float | None = None  # attention-bell elapsed basis
         self.esc_sequence = app_support.EscSequence()
         self.approval_bar: ApprovalBar | None = None
+        self._pending_custom_decision: str | None = None
         self.steer_echoes: dict[str, str] = {}  # steer message_id → ↳ echo block id
         self._lanes_fanout_open = False  # active-lane edge for the auto-open
         self._lane_focus_intro_shown = (
@@ -265,6 +310,7 @@ class TuiApp(App[None]):
         self.queued_strip = QueuedStrip(id="queued-strip")
         self.file_mentions = FileMentionStrip(id="file-mentions")
         self.history_recall = HistoryRecallStrip(id="history-recall")
+        self.decision_capture = DecisionCaptureStrip(id="decision-capture")
         self.composer = Composer(kitty_protocol=kitty_protocol, id="composer")
         self.footer_bar = FooterBar(id="footer-bar")
 
@@ -285,6 +331,7 @@ class TuiApp(App[None]):
         yield self.queued_strip
         yield self.file_mentions
         yield self.history_recall
+        yield self.decision_capture
         with Container(id="composer-slot"):
             yield self.composer
         yield self.footer_bar
@@ -355,24 +402,43 @@ class TuiApp(App[None]):
         rung 1 is Textual's driver-safe ``App.bell``; rung 2 is an OSC 777
         desktop notification written through the same sanctioned driver
         path the terminal title uses, only when the window is unfocused on
-        a capable terminal. Rung 3 (off-machine push) is the mounted
-        ``hooks-notify-push`` module's job and is not routed through this
-        record (see ``ui/notifications.py`` module docstring).
+        a capable terminal. Off-machine push is the app-owned kernel
+        destination's job; the runtime feeds it from this same normalized
+        record event (see ``kernel.runtime.RealRuntime.publish_attention``).
 
         ``occasion`` is *reason*'s stable idempotency handle -- the
         finishing turn's id, or the parked decision's id -- so a re-render
         or a repeated kernel-side ping for the SAME occasion dedupes (AC3)
-        instead of re-notifying. ``AMPLIFIER_NOTIFY`` gates the whole
-        ladder, including whether a record is minted at all;
-        ``notification_rungs`` owns the rung policy.
+        instead of re-notifying. ``AMPLIFIER_NOTIFY`` gates delivery, not
+        state: a muted session still mints the durable record consumed by
+        resume and ambient control surfaces. ``notification_rungs`` owns the
+        delivery policy.
         """
-        if not notifications.attention_needed(reason, elapsed_s):
+        if not notifications.attention_transition_needed(reason, elapsed_s):
             return
         record, is_new = self._attention.note(
             self.adapter.session_id, reason, occasion, detail=detail
         )
         if not is_new:
             return  # AC3: same transition already notified (re-render/reconnect/re-ping)
+        if reason == "awaiting_clarification" and self.adapter.session_dir is not None:
+            # B8: make the same durable event id resolvable to the exact
+            # pending decision. This is a pointer only (no answer text or
+            # secret) and is best-effort: correlation persistence must never
+            # break the local question UI or its notification ladder.
+            try:
+                from ..kernel.ambient.reply import CorrelationTable
+
+                session_dir = self.adapter.session_dir
+                CorrelationTable().bind_clarification(
+                    event_id=record.event_id,
+                    session_id=self.adapter.session_id,
+                    decision_id=occasion,
+                    session_dir=session_dir,
+                    project=session_dir.parent.parent.name,
+                )
+            except Exception:  # noqa: BLE001 -- ambient persistence is non-critical
+                logger.warning("ambient clarification correlation failed", exc_info=True)
         rungs = notifications.notification_rungs(reason, elapsed_s, focused=self._terminal_focused)
         body = detail.strip() or _NOTIFY_BODY[reason]
         notifications.fire_attention_ladder(
@@ -391,16 +457,18 @@ class TuiApp(App[None]):
         where the destination supports it (B7, issue #47 -- AC5).
 
         OSC 777/desktop is ours to rewrite, so acknowledging best-effort
-        clears it; the bell already rang and has nothing to retract;
-        off-machine ntfy push has no acknowledgement channel here at all
-        (a different device's notification tray, fired by the mounted
-        ``hooks-notify-push`` module -- see ``ui/notifications.py`` module
-        docstring). A destination failure is logged, never raised, and
+        clears it; the bell already rang and has nothing to retract. The
+        correlated hook event lets the app-owned ntfy destination clear the
+        exact sequence it published. A destination failure is contained and
         never blocks the session.
         """
-        if self._attention.acknowledge(self.adapter.session_id) is None:
+        record = self._attention.acknowledge(self.adapter.session_id)
+        if record is None:
             return  # nothing was open -- an idle resume/ack is a no-op
         notifications.clear_desktop_notification(self._driver)
+        self.adapter.publish_attention_acknowledged(
+            notifications.attention_acknowledgement_payload(record)
+        )
 
     def on_unmount(self) -> None:
         # A quit during a running turn must not leave a frozen spinner in the
@@ -451,10 +519,10 @@ class TuiApp(App[None]):
             # neither call below can observe a half-initialized adapter, and
             # their relative order is inconsequential -- each binds a
             # DIFFERENT, independent piece of module/instance state and
-            # neither reads the other's output. A resume/second window is a
-            # fresh process (``amplifier-tui resume SESSION_ID``), so there is
-            # no in-place session switch that could leave either bound to a
-            # stale value.
+            # neither reads the other's output. A resume/second window gets a
+            # fresh adapter after this app fully unmounts
+            # (``ResumeSessionRequest`` -> ``_launch_tui``), so there is no
+            # in-place switch that could leave either bound to a stale value.
             #
             # Session identity is resolved by now (RuntimeAdapter.start()'s own
             # contract); bind it for transcript_render's render-failure log
@@ -469,6 +537,7 @@ class TuiApp(App[None]):
             self._attention.bind(self.adapter.session_dir)
             self.file_mentions.set_files(await self.adapter.workspace_files())
             self._register_skill_commands(await self.adapter.list_skills())
+            self._register_mcp_prompt_commands(await self.adapter.mcp_prompts())
             # A resumed fork child carries a primed directive; run it as the
             # first turn (the reachable stand-in for app-cli's background fork).
             app_support.run_pending_directive(self)
@@ -506,19 +575,168 @@ class TuiApp(App[None]):
         self._turn_queues_pending = False
         app_support.finish_turn_queues(self)
 
-    def submit_prompt(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
+    def cancel_turn_queue_drain(self) -> None:
+        """Cancel one stale close-out drain without consuming queued input.
+
+        A partial/failed restore deliberately keeps the next-turn message for
+        the user.  The interrupted turn's close-out token must not survive and
+        fire on the next unrelated runtime event.
+        """
+        self._turn_queues_pending = False
+
+    def _remember_checkpoint_draft(self, draft: ComposerDraft | None) -> str | None:
+        """Associate one rich composer capsule with the imminent checkpoint."""
+        if draft is None or not draft.has_sidecars:
+            return None
+        checkpoint_id = self.ledger.next_checkpoint_id()
+        self._checkpoint_drafts[checkpoint_id] = draft
+        self._prune_checkpoint_draft_budget()
+        return checkpoint_id if checkpoint_id in self._checkpoint_drafts else None
+
+    def checkpoint_draft(self, checkpoint_id: str) -> ComposerDraft | None:
+        """Return the exact rich representation retained for *checkpoint_id*."""
+        return self._checkpoint_drafts.get(checkpoint_id)
+
+    def reconcile_checkpoint_drafts(self) -> None:
+        """Mirror the visible checkpoint window and enforce its byte budget."""
+        retained = {checkpoint.id for checkpoint in self.ledger.checkpoints}
+        self._checkpoint_drafts = {
+            checkpoint_id: draft
+            for checkpoint_id, draft in self._checkpoint_drafts.items()
+            if checkpoint_id in retained
+        }
+        self._prune_checkpoint_draft_budget()
+
+    def _prune_checkpoint_draft_budget(self) -> None:
+        """Evict oldest rich capsules until aggregate sidecars fit in memory."""
+        retained_bytes = sum(draft.sidecar_bytes for draft in self._checkpoint_drafts.values())
+        while self._checkpoint_drafts and retained_bytes > MAX_CHECKPOINT_DRAFT_BYTES:
+            oldest_id = next(iter(self._checkpoint_drafts))
+            oldest = self._checkpoint_drafts.pop(oldest_id)
+            retained_bytes -= oldest.sidecar_bytes
+
+    def _restore_unaccepted_prompt(
+        self,
+        text: str,
+        attachments: tuple[Any, ...],
+        draft: ComposerDraft | None,
+    ) -> bool:
+        """Return a pre-admission rejection to the composer without data loss.
+
+        A supervisor may already have started typing while a slow preflight was
+        running.  Park that newer draft in the lossless one-entry history seam
+        before restoring the rejected prompt; never overwrite fresh text.
+        """
+        parked_newer = self.composer.remember_and_clear_draft()
+        if draft is not None:
+            self.composer.restore_draft(draft)
+        else:
+            self.composer.set_draft(text, attachments, compact_long_paste=True)
+        self.composer.focus_input()
+        return parked_newer
+
+    def _restore_unaccepted_queue(self, queued: QueuedMessage, detail: str) -> None:
+        """Put one consumed, pre-admission queue capsule back losslessly."""
+        restored = self.adapter.steering.restore_next_turn_message(queued)
+        if restored:
+            self.queued_strip.show_queued(queued.text)
+            self.show_notice(f"{detail} · queued message kept")
+        elif not self.composer.text:
+            if queued.draft is not None:
+                self.composer.restore_draft(queued.draft)
+            else:
+                self.composer.set_draft(
+                    queued.text,
+                    queued.attachments,
+                    compact_long_paste=True,
+                )
+            self.show_notice(f"{detail} · message restored to composer")
+        else:
+            # A newer queue item and a live draft can only be created
+            # programmatically during this narrow hand-off.  Do not overwrite
+            # either; make the exceptional collision loud.
+            self.log.error(f"queued submit rejected; capsule could not be restored: {detail}")
+            self.show_notice(f"{detail} · queued message could not be restored")
+        self._refresh_footer()
+
+    def submit_prompt(
+        self,
+        text: str,
+        attachments: tuple[Any, ...] = (),
+        draft: ComposerDraft | None = None,
+    ) -> None:
         if self._splash is not None:
             # Mid-boot submits used to vanish silently (the runtime isn't
             # up yet) — keep the supervisor's words instead of eating them.
-            self.composer.insert_text(text)
+            if draft is not None:
+                self.composer.restore_draft(draft)
+            else:
+                self.composer.insert_text(text)
             self.show_notice("session still starting · message kept in the composer")
             return
-        self.run_worker(self._submit_prompt(text, attachments), exclusive=False)
+        if self.session_ops.context_operation_pending:
+            operation = self.session_ops.context_operation_label
+            parked_newer = self._restore_unaccepted_prompt(text, attachments, draft)
+            suffix = " · newer draft parked in history" if parked_newer else ""
+            self.show_notice(f"{operation} in progress · message kept{suffix}")
+            return
+        if self.fork_pending:
+            # Restore owns the live context/checkpoint lineage. Keep a direct
+            # programmatic submit visible instead of racing it on the runtime
+            # loop; ordinary keyboard submits are held inside Composer before
+            # they clear the draft.
+            if not self.composer.text and draft is not None:
+                self.composer.restore_draft(draft)
+            elif not self.composer.text:
+                self.composer.set_draft(text, attachments, compact_long_paste=True)
+            elif text != self.composer.text:
+                separator = "\n" if not self.composer.text.endswith("\n") else ""
+                self.composer.insert_text(f"{separator}{text}")
+            self.show_notice("checkpoint restore in progress · message kept")
+            return
+        if self._submit_admission is not None or self.turn_active:
+            parked_newer = self._restore_unaccepted_prompt(text, attachments, draft)
+            suffix = " · newer draft parked in history" if parked_newer else ""
+            self.show_notice(f"turn already starting or running · message kept{suffix}")
+            return
+        admission = object()
+        self._submit_admission = admission
+        self._submit_accepting = True
+        checkpoint_id = self._remember_checkpoint_draft(draft)
+        self.run_worker(
+            self._submit_prompt(text, attachments, draft, checkpoint_id, admission),
+            exclusive=False,
+        )
 
-    async def _submit_prompt(self, text: str, attachments: tuple[Any, ...]) -> None:
+    def submit_or_queue_generated_prompt(self, text: str) -> None:
+        """Schedule a generated full prompt without turning it into a steer."""
+
+        if self._submit_admission is not None or self.turn_active:
+            self._queue_message(text, (), None)
+            return
+        self.submit_prompt(text)
+
+    async def _submit_prompt(
+        self,
+        text: str,
+        attachments: tuple[Any, ...],
+        draft: ComposerDraft | None = None,
+        checkpoint_id: str | None = None,
+        admission: object | None = None,
+    ) -> None:
         try:
             await self.adapter.submit(text, attachments)
         except Exception as error:  # noqa: BLE001 — a turn error must not tear down the app
+            if admission is not None and self._submit_admission is admission:
+                # No PromptSubmit has reached the reducer, so this is a true
+                # pre-admission failure regardless of exception type.  Restore
+                # the exact rich prompt and remove its predicted tN mapping.
+                if checkpoint_id is not None:
+                    self._checkpoint_drafts.pop(checkpoint_id, None)
+                parked_newer = self._restore_unaccepted_prompt(text, attachments, draft)
+                suffix = " · newer draft parked in history" if parked_newer else ""
+                self.show_notice(f"turn failed before start · message kept · {error}{suffix}")
+                return
             # ``run_worker`` defaults to ``exit_on_error=True``: an exception
             # raised by ``submit`` (provider auth expiry, network drop mid-turn)
             # used to crash the whole TUI. Surface it and keep the session live.
@@ -542,6 +760,60 @@ class TuiApp(App[None]):
                 else f"submit-error-{time.monotonic()}"
             )
             self._notify_attention("error", occasion=occasion, detail=str(error))
+        finally:
+            # PromptSubmit normally clears this in turn_started().  Adapters
+            # that return/cancel without one must not strand the admission
+            # fence and make every later prompt look concurrent.
+            if admission is not None and self._submit_admission is admission:
+                self._submit_admission = None
+                self._submit_accepting = False
+
+    def submit_queued_message(self, queued: QueuedMessage) -> None:
+        """Start one consumed queue capsule through an exception-safe worker."""
+        if self.session_ops.context_operation_pending:
+            operation = self.session_ops.context_operation_label
+            self._restore_unaccepted_queue(queued, f"{operation} in progress")
+            return
+        if self._submit_admission is not None or self.turn_active:
+            self._restore_unaccepted_queue(queued, "turn already starting or running")
+            return
+        admission = object()
+        self._submit_admission = admission
+        self._submit_accepting = True
+        self.run_worker(self._submit_queued_message(queued, admission), exclusive=False)
+
+    async def _submit_queued_message(self, queued: QueuedMessage, admission: object) -> None:
+        """Submit an auto-drained item without losing it at preflight.
+
+        Checkpoint and rewind recovery errors reject the prompt *before* the
+        runtime accepts it.  Put the exact immutable queue capsule back so an
+        Alt-Up recall still has every paste and image sidecar.  Later provider
+        errors may occur after acceptance, so they are surfaced and contained
+        without automatically duplicating the turn.
+        """
+        draft = queued.draft if isinstance(queued.draft, ComposerDraft) else None
+        checkpoint_id = self._remember_checkpoint_draft(draft)
+        try:
+            await self.adapter.submit_queued(queued.text, queued.attachments)
+        except Exception as error:  # noqa: BLE001 — queue failures must not tear down the app
+            if self._submit_admission is admission:
+                if checkpoint_id is not None:
+                    self._checkpoint_drafts.pop(checkpoint_id, None)
+                self._restore_unaccepted_queue(queued, f"queued turn failed before start · {error}")
+                return
+            self.log.error(f"queued turn failed: {error}")
+            self.show_notice(f"queued turn failed · {error}")
+            turn_id = self.ledger.turns[-1].turn_id if self.ledger.turns else None
+            occasion = (
+                f"queued-submit-error-{turn_id}"
+                if turn_id is not None
+                else f"queued-submit-error-{time.monotonic()}"
+            )
+            self._notify_attention("error", occasion=occasion, detail=str(error))
+        finally:
+            if self._submit_admission is admission:
+                self._submit_admission = None
+                self._submit_accepting = False
 
     # -- ReducerHost ---------------------------------------------------------------
 
@@ -563,6 +835,16 @@ class TuiApp(App[None]):
     def splash_active(self) -> bool:
         """True while the boot splash is up (SessionOpsController host surface)."""
         return self._splash is not None
+
+    @property
+    def submit_pending(self) -> bool:
+        """True between scheduling a prompt and reducing PromptSubmit."""
+        return self._submit_admission is not None
+
+    @property
+    def context_restore_pending(self) -> bool:
+        """True while checkpoint restore/fork owns the mutable context."""
+        return self.fork_pending
 
     @property
     def session_cost(self) -> Decimal:
@@ -616,8 +898,14 @@ class TuiApp(App[None]):
             self.evidence_panel.close()
             self._evidence_panel_target = None
         self.transcript.clear_view()
+        self.reducer.context_cleared()
         self.reducer.bump_generation()
+        self._checkpoint_drafts.clear()
         self.composer.focus_input()
+
+    async def wait_for_turn_idle(self) -> None:
+        """Wait for PromptComplete after a clear-request interrupt."""
+        await self._turn_idle.wait()
 
     def show_notice(self, text: str, duration: float | None = None) -> None:
         # The approval bar owns both input and its explanatory notice. A late
@@ -662,9 +950,12 @@ class TuiApp(App[None]):
             ok, _detail = await self.adapter.set_native_mode(mode_id)
             if ok:
                 self._auto_native_mode = mode_id
+                self.refresh_skill_commands(await self.adapter.list_skills())
         elif self._auto_native_mode is not None:
-            await self.adapter.set_native_mode(None)
-            self._auto_native_mode = None
+            ok, _detail = await self.adapter.set_native_mode(None)
+            if ok:
+                self._auto_native_mode = None
+                self.refresh_skill_commands(await self.adapter.list_skills())
 
     def show_native_modes(self) -> None:
         """``/modes``: the bundle-composed catalog + this app's postures."""
@@ -737,9 +1028,13 @@ class TuiApp(App[None]):
     async def _activate_native_mode(self, name: str | None) -> None:
         if name is None:
             # /mode off — clear the whole stack (single upstream slot → clear).
-            await self.adapter.set_native_mode(None)
+            ok, detail = await self.adapter.set_native_mode(None)
+            if not ok:
+                self.show_notice(detail or "could not clear native modes")
+                return
             self._auto_native_mode = None
             self._native_modes = self._native_modes.clear()
+            self.refresh_skill_commands(await self.adapter.list_skills())
             self._refresh_footer()
             self.show_notice("mode off · native (bundle)")
             return
@@ -749,6 +1044,7 @@ class TuiApp(App[None]):
         if ok:
             self._auto_native_mode = None  # explicit choice — never auto-cleared
             self._native_modes = self._native_modes.add(name)
+            self.refresh_skill_commands(await self.adapter.list_skills())
             self._refresh_footer()
             self.show_notice(f"mode {name} · native (bundle)")
             conflict = posture_conflict_notice(self._mode.id, self._native_modes)
@@ -771,6 +1067,7 @@ class TuiApp(App[None]):
         ok, detail = await self.adapter.set_native_mode(remaining.primary)
         if ok:
             self._native_modes = remaining
+            self.refresh_skill_commands(await self.adapter.list_skills())
             self._refresh_footer()
             promoted = remaining.primary
             tail = f" · now {promoted}" if promoted else ""
@@ -804,10 +1101,9 @@ class TuiApp(App[None]):
         """``/sessions``: open the interactive picker (S2 compliance gap 2).
 
         An empty roster shows a notice instead of an empty strip (mirrors
-        ``open_rewind_strip`` on zero checkpoints). Selecting a row does
-        NOT resume in-place (the stored-session roster has always been
-        read-only here) -- it opens that session's full-id detail via
-        :meth:`on_sessions_strip_session_activated`.
+        ``open_rewind_strip`` on zero checkpoints). Enter opens a row's
+        full-id detail via :meth:`on_sessions_strip_session_activated`;
+        ``r`` requests a clean shutdown-and-resume of the highlighted row.
         """
         summaries = await self.adapter.session_summaries()
         if not summaries:
@@ -864,36 +1160,52 @@ class TuiApp(App[None]):
         )
 
     def branch_session(self, name: str) -> None:
-        if self.session_ops._ops_starting():
+        if not self.session_ops.begin_context_snapshot():
             return
         self.run_worker(self._branch_session(name.strip()), exclusive=False)
 
     async def _branch_session(self, name: str) -> None:
-        ok, detail = await self.adapter.branch_session(name)
-        if ok:
-            self.show_notice(
-                f"branch created · {detail[:12]} · resume: amplifier-tui resume {detail[:8]}"
-            )
-        else:
-            self.show_notice(detail)
+        try:
+            async with asyncio.timeout(CONTEXT_SNAPSHOT_TIMEOUT_S):
+                ok, detail = await self.adapter.branch_session(name)
+            if ok:
+                self.show_notice(
+                    f"branch created · {detail[:12]} · resume: amplifier-tui resume {detail[:8]}"
+                )
+            else:
+                self.show_notice(detail)
+        except TimeoutError:
+            self.show_notice("branch snapshot confirmation timed out")
+        except Exception as error:  # noqa: BLE001 — snapshot failure stays in the TUI
+            self.show_notice(f"branch failed · {error}")
+        finally:
+            self.session_ops.finish_context_snapshot()
 
     def fork_session(self, directive: str) -> None:
         if not directive.strip():
             self.show_notice("usage: /fork <directive>")
             return
-        if self.session_ops._ops_starting():
+        if not self.session_ops.begin_context_snapshot():
             return
         self.run_worker(self._fork_session(directive.strip()), exclusive=False)
 
     async def _fork_session(self, directive: str) -> None:
-        ok, detail = await self.adapter.fork_with_directive(directive)
-        if ok:
-            self.show_notice(
-                f"fork primed · {detail[:12]} · resume runs the directive: "
-                f"amplifier-tui resume {detail[:8]}"
-            )
-        else:
-            self.show_notice(detail)
+        try:
+            async with asyncio.timeout(CONTEXT_SNAPSHOT_TIMEOUT_S):
+                ok, detail = await self.adapter.fork_with_directive(directive)
+            if ok:
+                self.show_notice(
+                    f"fork primed · {detail[:12]} · resume runs the directive: "
+                    f"amplifier-tui resume {detail[:8]}"
+                )
+            else:
+                self.show_notice(detail)
+        except TimeoutError:
+            self.show_notice("fork snapshot confirmation timed out")
+        except Exception as error:  # noqa: BLE001 — snapshot failure stays in the TUI
+            self.show_notice(f"fork failed · {error}")
+        finally:
+            self.session_ops.finish_context_snapshot()
 
     # -- session tags (/tag add|rm|list|sessions) ---------------------------
 
@@ -974,9 +1286,9 @@ class TuiApp(App[None]):
         points at it (the same split ``/ledger`` and ``/doctor`` use:
         block for the listing, notice for the pointer).
         """
-        from ..commands.skills import alias_collision_spans, register_skill_commands_reporting
+        from ..commands.skills import alias_collision_spans, sync_skill_commands_reporting
 
-        plan = register_skill_commands_reporting(self._commands, skills)
+        plan = sync_skill_commands_reporting(self._commands, skills)
         if plan.collisions:
             self.append_block(
                 Answer(id=self.allocator.next_id(), spans=alias_collision_spans(plan.collisions))
@@ -984,6 +1296,36 @@ class TuiApp(App[None]):
             count = len(plan.collisions)
             noun = "collision" if count == 1 else "collisions"
             self.show_notice(f"{count} skill alias {noun} · printed to scrollback")
+
+    def refresh_skill_commands(self, skills: tuple[Any, ...]) -> None:
+        """Reconcile slash aliases after live native capability composition."""
+
+        self._register_skill_commands(skills)
+
+    def _register_mcp_prompt_commands(self, prompts: tuple[Any, ...]) -> None:
+        """Reconcile namespaced slash commands with mounted MCP prompts."""
+
+        from ..commands.mcp_prompts import (
+            mcp_prompt_collision_spans,
+            sync_mcp_prompt_commands_reporting,
+        )
+
+        plan = sync_mcp_prompt_commands_reporting(self._commands, prompts)
+        if plan.collisions:
+            self.append_block(
+                Answer(
+                    id=self.allocator.next_id(),
+                    spans=mcp_prompt_collision_spans(plan.collisions),
+                )
+            )
+            count = len(plan.collisions)
+            noun = "collision" if count == 1 else "collisions"
+            self.show_notice(f"{count} MCP prompt command {noun} · printed to scrollback")
+
+    def refresh_mcp_prompt_commands(self, prompts: tuple[Any, ...]) -> None:
+        """Reconcile slash commands after a live MCP/runtime mutation."""
+
+        self._register_mcp_prompt_commands(prompts)
 
     def manage_directories(self, kind: str, args: str) -> None:
         from .directory_admin import manage
@@ -996,6 +1338,17 @@ class TuiApp(App[None]):
         self.run_worker(manage(self, args), exclusive=False)
 
     def turn_started(self) -> None:
+        # PromptSubmit is the runtime's admission acknowledgement.  From this
+        # point onward, an exception belongs to an accepted turn and must not
+        # duplicate its prompt back into the composer/queue.
+        self._submit_admission = None
+        self._submit_accepting = False
+        self.session_ops.goal_admitted()
+        self._turn_idle.clear()
+        # ``OutcomeLedger.begin_turn`` has now applied its 100-checkpoint
+        # visibility window. Mirror that bound for rich UI capsules while
+        # retaining the imminent checkpoint captured just before submission.
+        self.reconcile_checkpoint_drafts()
         self.turn_active = True
         self._turn_started_at = time.monotonic()
         self.composer.running = True
@@ -1009,6 +1362,7 @@ class TuiApp(App[None]):
 
     def turn_finished(self) -> None:
         self.turn_active = False
+        self._turn_idle.set()
         self.composer.running = False
         self.title_bar.running = False
         if self._working_timer is not None:
@@ -1119,7 +1473,8 @@ class TuiApp(App[None]):
 
     def stream_opened(self, block_type: str) -> None:
         self.transcript.set_streaming(True)
-        self.live_tail.open_stream(block_type)
+        producer, turn = self.reducer.root_stream_identity
+        self.live_tail.open_stream(block_type, producer=producer, turn=turn)
 
     def stream_delta(self, text: str) -> None:
         self.live_tail.feed(text)
@@ -1206,6 +1561,14 @@ class TuiApp(App[None]):
 
     def present_approval(self, ticket_id: str, prompt: str, options: tuple[str, ...]) -> None:
         """Show the inline approval bar for one ticket (spec §7)."""
+        if self.mode_id == "auto":
+            # Auto is unattended progress: park the human choice, deny only
+            # this blocked call, and immediately hand control back to the
+            # model. Interactive postures still mount the bottom decision bar.
+            self.adapter.defer_approval(ticket_id, prompt, tuple(options))
+            self.show_notice("auto deferred decision · current call denied · work continues")
+            self._refresh_footer()
+            return
         self.call_later(app_support.mount_approval, self, ticket_id, prompt, tuple(options))
 
     def on_approval_bar_resolved(self, message: ApprovalBar.Resolved) -> None:
@@ -1222,11 +1585,11 @@ class TuiApp(App[None]):
 
     def on_approval_bar_deferred(self, message: ApprovalBar.Deferred) -> None:
         """ctrl-y on the approval bar: park the live ticket into the
-        needs-you queue WITHOUT answering it (deny-and-continue), then
+        needs-you queue and deny the current call so the run continues, then
         hand the composer back. The decision stays retro-answerable via
         ctrl-y — answering it later becomes a next-turn instruction
-        (ADR-0007 resolution 5). No journal ask is recorded: the ticket
-        was deferred, not decided.
+        (ADR-0007 resolution 5). No journal ask is recorded: the human
+        deferred rather than choosing an approval option.
         """
         message.stop()
         bar = self.approval_bar
@@ -1242,7 +1605,7 @@ class TuiApp(App[None]):
         # already handles); the demo runtime parks directly in the base
         # adapter. Either way the footer badge reflects the deferral.
         self.adapter.defer_approval(message.ticket_id, prompt, options)
-        self.show_notice("decision deferred to queue · answer later with ctrl-y")
+        self.show_notice("decision deferred · current call denied · work continues")
         self._refresh_footer()
 
     # -- composer semantics -----------------------------------------------------------
@@ -1250,14 +1613,7 @@ class TuiApp(App[None]):
     def on_composer_submit(self, message: Composer.Submit) -> None:
         message.stop()
         text = message.text
-        pending_custom = getattr(self, "_pending_custom_decision", "")
-        if pending_custom and text and not text.startswith("/"):
-            # A free-text answer to a needs-you question (donor custom option):
-            # answer the parked decision instead of starting a turn.
-            self._pending_custom_decision = ""
-            close_file_mentions(self)
-            app_support.apply_decision(self, pending_custom, text)
-            self._refresh_footer()
+        if app_support.apply_pending_custom_answer(self, text):
             return
         # Persist for cross-session ↑ recall (mirrors the composer's own
         # in-memory ring; the adapter scrubs + dedups + caps). Base/demo
@@ -1286,7 +1642,7 @@ class TuiApp(App[None]):
             self.show_notice(f"unknown command: {name}{hint} · / lists commands")
             self._refresh_footer()
             return
-        self.submit_prompt(text, message.attachments)
+        self.submit_prompt(text, message.attachments, message.draft)
 
     def on_composer_paste_image(self, message: Composer.PasteImage) -> None:
         message.stop()
@@ -1312,6 +1668,18 @@ class TuiApp(App[None]):
 
     def on_composer_steer(self, message: Composer.Steer) -> None:
         message.stop()
+        if self.session_ops.context_operation_pending:
+            operation = self.session_ops.context_operation_label
+            parked_newer = self._restore_unaccepted_prompt(
+                message.text,
+                message.attachments,
+                message.draft,
+            )
+            suffix = " · newer draft parked in history" if parked_newer else ""
+            self.show_notice(f"{operation} in progress · message kept{suffix}")
+            return
+        if app_support.apply_pending_custom_answer(self, message.text):
+            return
         self.adapter.record_prompt(message.text)
         close_file_mentions(self)
         # Mockup onKeyDown: an open palette match runs BEFORE the steer
@@ -1332,12 +1700,36 @@ class TuiApp(App[None]):
                 app_support.echo_lane_steer(self, record.session_id, message.text)
                 return
         if self.adapter.steering.pending_steers:
-            self._queue_message(message.text)  # second steer queues (spec §5)
+            self._queue_message(
+                message.text,
+                message.attachments,
+                message.draft,
+            )  # second steer queues (spec §5)
+            return
+        if message.attachments:
+            # Step-boundary steering is text-only. Never emit image
+            # placeholders after discarding their bytes: keep the exact rich
+            # draft and teach the full-turn queue chord instead.
+            if message.draft is not None:
+                self.composer.restore_draft(message.draft)
+            self.show_notice("images need a full turn · draft kept · shift+enter queues")
             return
         app_support.echo_steer(self, message.text)
 
     def on_composer_queue_message(self, message: Composer.QueueMessage) -> None:
         message.stop()
+        if self.session_ops.context_operation_pending:
+            operation = self.session_ops.context_operation_label
+            parked_newer = self._restore_unaccepted_prompt(
+                message.text,
+                message.attachments,
+                message.draft,
+            )
+            suffix = " · newer draft parked in history" if parked_newer else ""
+            self.show_notice(f"{operation} in progress · message kept{suffix}")
+            return
+        if app_support.apply_pending_custom_answer(self, message.text):
+            return
         self.adapter.record_prompt(message.text)
         close_file_mentions(self)
         # Mockup onKeyDown: every Enter — shift held or not — runs an open
@@ -1350,14 +1742,35 @@ class TuiApp(App[None]):
             self._refresh_footer()
             return
         if not self.turn_active:
-            self.submit_prompt(message.text)
+            self.submit_prompt(message.text, message.attachments, message.draft)
             return
-        self._queue_message(message.text)
+        self._queue_message(message.text, message.attachments, message.draft)
 
-    def _queue_message(self, text: str) -> None:
+    def on_composer_decision_answer(self, message: Composer.DecisionAnswer) -> None:
+        """Decision capture outranks running-turn steer/queue semantics."""
+        message.stop()
+        app_support.apply_pending_custom_answer(self, message.text)
+
+    def on_composer_submission_blocked(self, message: Composer.SubmissionBlocked) -> None:
+        message.stop()
+        self.show_notice("checkpoint restore in progress · message kept")
+
+    def _queue_message(
+        self,
+        text: str,
+        attachments: tuple[Any, ...] = (),
+        draft: Any | None = None,
+    ) -> None:
         try:
-            self.adapter.steering.enqueue(text, kind="next_turn")
+            self.adapter.steering.enqueue(
+                text,
+                kind="next_turn",
+                attachments=attachments,
+                draft=draft,
+            )
         except ValueError as error:
+            if draft is not None:
+                self.composer.restore_draft(draft)
             self.show_notice(str(error))
             return
         self.queued_strip.show_queued(text)
@@ -1462,7 +1875,13 @@ class TuiApp(App[None]):
 
     def on_composer_esc_pressed(self, message: Composer.EscPressed) -> None:
         message.stop()
+        if app_support.close_custom_decision_capture(self):
+            return
         app_support.handle_esc(self)
+
+    def on_composer_activity(self, message: Composer.Activity) -> None:
+        message.stop()
+        self.esc_sequence.reset()
 
     def on_composer_cycle_mode_requested(self, message: Composer.CycleModeRequested) -> None:
         message.stop()
@@ -1594,7 +2013,7 @@ class TuiApp(App[None]):
         # strand focus on the hidden strip (spec §12).
         self._restore_keyboard()
         self._refresh_footer()
-        app_support.handle_fork(self, message.checkpoint_id)
+        app_support.handle_restore(self, message.checkpoint_id, message.scope)
 
     def on_rewind_strip_type_through(self, message: RewindStrip.TypeThrough) -> None:
         # Mockup: the composer input keeps focus while rewindOpen — a
@@ -1612,8 +2031,8 @@ class TuiApp(App[None]):
 
     def on_sessions_strip_session_activated(self, message: SessionsStrip.SessionActivated) -> None:
         """A session row was activated (Enter or click) -- S2 gap 1 + 2:
-        show its full-id detail rather than an in-place resume (the
-        stored-session roster has always been read-only here), and
+        show its full-id detail (``r``/the trailing glyph is the distinct
+        resume action), and
         best-effort copy the full id via the app's existing clipboard
         helper (OSC 52 + OS tool where available; the detail block below
         is the reliable fallback -- terminal clipboard access is
@@ -1632,13 +2051,14 @@ class TuiApp(App[None]):
         self.append_block(Answer(id=self.allocator.next_id(), spans=session_detail_spans(summary)))
 
     def on_sessions_strip_resume_requested(self, message: SessionsStrip.ResumeRequested) -> None:
-        """``r``, or a click on a row's resume glyph -- S2 gap 2: post the
-        session's exact ready-to-run ``amplifier-tui resume SESSION_ID``
-        command rather than an in-place teardown (the stored-session
-        roster stays read-only, same as :meth:`on_sessions_strip_session_
-        activated` above) -- and best-effort copy that command (not the
-        bare id) to the clipboard, so pasting it into a new terminal just
-        works."""
+        """``r``, or a click on a row's resume glyph -- Samuel S2 AC4.
+
+        Close the picker, reject rows the canonical resume resolver also
+        considers unresumable, then exit with a typed request. Textual's
+        shutdown completes (including adapter cleanup) before ``_launch_tui``
+        constructs the selected session's fresh runtime. The exact CLI
+        command is copied as a fallback, but the key action itself resumes.
+        """
         message.stop()
         summary = next(
             (s for s in self.sessions_strip.summaries if s.session_id == message.session_id),
@@ -1649,10 +2069,14 @@ class TuiApp(App[None]):
         self._refresh_footer()
         if summary is None:
             return
-        from .session_ops_view import resume_command_for
+        from ..kernel.session_manager import RESUMABLE_STATES
 
+        if summary.state not in RESUMABLE_STATES:
+            state = summary.state.replace("_", " ")
+            self.show_notice(f"cannot resume · session is {state} · enter opens details")
+            return
         self.copy_to_clipboard(resume_command_for(summary))
-        self.append_block(Answer(id=self.allocator.next_id(), spans=session_resume_spans(summary)))
+        self.exit(ResumeSessionRequest(summary.session_id))
 
     def on_sessions_strip_closed(self, message: SessionsStrip.Closed) -> None:
         message.stop()
@@ -1660,10 +2084,14 @@ class TuiApp(App[None]):
         self._refresh_footer()
 
     def on_open_rewind(self, message: OpenRewind) -> None:
+        checkpoints = self.ledger.checkpoints
         index = next(
-            (i for i, c in enumerate(self.ledger.checkpoints) if c.id == message.checkpoint_id),
+            (i for i, c in enumerate(checkpoints) if c.id == message.checkpoint_id),
             None,
         )
+        if message.checkpoint_id is not None and index is None:
+            self.show_notice("checkpoint expired · only the latest 100 are retained")
+            return
         self.open_rewind_strip(index)
 
     def on_copy_code_fence(self, message: CopyCodeFence) -> None:
@@ -1772,22 +2200,28 @@ class TuiApp(App[None]):
 
     def on_needs_you_list_decision_taken(self, message: NeedsYouList.DecisionTaken) -> None:
         message.stop()
+        if self.session_ops.context_operation_pending:
+            self.show_notice(
+                f"{self.session_ops.context_operation_label} in progress · decision kept"
+            )
+            return
         # Decision rows/chips stop their Click events (a row click must not
         # double-fire through the app's generic transcript-click handler),
         # so restore the keyboard here: transcript clicks never strand it
         # (DESIGN-SPEC §12; the composer keeps focus through every click).
         self._restore_keyboard()
+        app_support.close_custom_decision_capture(self, decision_id=message.item_id, notice=False)
         app_support.apply_decision(self, message.item_id, message.choice)
 
     def on_needs_you_list_custom_answer_requested(
         self, message: NeedsYouList.CustomAnswerRequested
     ) -> None:
         message.stop()
-        # Donor "Type your own answer": route the NEXT composer submit into
-        # this decision's answer instead of a turn (see on_composer_submit).
-        self._pending_custom_decision = message.item_id
-        self._restore_keyboard()
-        self.show_notice("type your answer, then enter to submit · esc to cancel")
+        app_support.begin_custom_decision_capture(self, message.item_id)
+
+    def on_queued_strip_recall_requested(self, message: QueuedStrip.RecallRequested) -> None:
+        message.stop()
+        app_support.recall_queued_message(self)
 
     def on_click(self, event: events.Click) -> None:
         """Transcript clicks never strand the keyboard (DESIGN-SPEC §12).
@@ -1909,6 +2343,9 @@ class TuiApp(App[None]):
         # like the evidence block -- not a stray transcript click.
         self.call_after_refresh(self._focus_needs_you)
 
+    def action_recall_queued(self) -> None:
+        app_support.recall_queued_message(self)
+
     def _focus_needs_you(self) -> None:
         widgets = self.query(NeedsYouList)
         if widgets:
@@ -1956,13 +2393,10 @@ class TuiApp(App[None]):
         S7 gap 1: Enter/Space already activated ``_PlanOverflowControl``
         once it had focus, but nothing gave a keyboard-only user a way to
         REACH it -- Tab is not a general focus chain here (mention/approval
-        claim it; shift+tab is cycle_mode), and the composer intentionally
-        keeps focus so typing always steers (S6's FocusHeader made the
-        same call, documented in its own docstring). This follows the
-        app's real idiom instead of Tab order: a dedicated global chord
-        that acts on the panel directly, exactly like ctrl+n's
-        action_plan_drilldown right above -- so the composer never loses
-        focus mid-typing. No-op notices mirror that action's own shape.
+        claim it; shift+tab is cycle_mode). The dedicated chord focuses the
+        actual control and toggles it in one action, leaving the reversible
+        ``Show less`` selected for Enter/Space. Esc returns to the composer.
+        No-op notices mirror the sibling ctrl+n action's shape.
         """
         if not self.plan_panel.display:
             self.show_notice("no plan panel to expand")
@@ -1970,7 +2404,9 @@ class TuiApp(App[None]):
         if not self.plan_panel.overflow_control.display:
             self.show_notice("plan · nothing hidden to expand")
             return
+        self.plan_panel.overflow_control.focus()
         expanded = self.plan_panel.toggle_expand()
+        self.call_after_refresh(self.plan_panel.overflow_control.scroll_visible)
         self.show_notice(plan_overflow_notice(expanded))
 
     def action_palette_up(self) -> None:
@@ -1983,6 +2419,11 @@ class TuiApp(App[None]):
         app_support.handle_esc(self)
 
     def open_rewind_strip(self, index: int | None) -> None:
+        if self.session_ops.context_operation_pending:
+            self.show_notice(
+                f"{self.session_ops.context_operation_label} in progress · rewind unavailable"
+            )
+            return
         checkpoints = self.ledger.checkpoints
         if not checkpoints:
             self.show_notice("no rewind checkpoints yet")
@@ -2019,11 +2460,17 @@ class TuiApp(App[None]):
         self.append_block(UserLine(id=self.allocator.next_id(), text=text, mode=self._mode.id))
 
     def context_usage(self) -> ContextUsage:
-        window = self.adapter.compaction.max_tokens
-        memory = min(self.reducer.memory_tokens, window)
-        tools = min(self.reducer.tool_tokens, window - memory)
+        window = self.reducer.context_window or self.adapter.compaction.max_tokens
+        used = self.reducer.context_tokens
+        if used is None:
+            # Compatibility estimate before the native context module has
+            # emitted a provider-derived budget/occupancy pair.
+            used = self.reducer.total_tokens + self.reducer.memory_tokens + self.reducer.tool_tokens
+        used = min(used, window)
+        memory = min(self.reducer.memory_tokens, used)
+        tools = min(self.reducer.tool_tokens, used - memory)
         return ContextUsage(
-            conversation=min(self.reducer.total_tokens, window - memory - tools),
+            conversation=used - memory - tools,
             tools=tools,
             memory=memory,
             window=window,
@@ -2065,6 +2512,8 @@ class TuiApp(App[None]):
     def footer_context(self) -> keymap.Context:
         if self.approval_bar is not None:
             return "approval"
+        if self._pending_custom_decision:
+            return "needs_you"
         if self.transcript.focused_lane is not None:
             return "lane_focus"
         if self.palette.is_open:

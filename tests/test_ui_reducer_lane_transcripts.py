@@ -149,8 +149,20 @@ def test_respawn_resets_the_lane_transcript() -> None:
     reducer.handle(
         ev.ContentBlockEnd(**_child_env("s1", 2.0), block_type="text", block={"text": "old work"})
     )
+    reducer.handle(
+        ev.AgentCompleted(
+            **_env(2.5),
+            agent="researcher",
+            sub_session_id="s1",
+            parent_session_id=SID,
+            success=True,
+            result="first pass done",
+        )
+    )
+    reducer.handle(ev.PromptComplete(**_env(3.0), response="first pass done"))
     # Replayed turn reuses the sub-session id (the lanes.register reopen
-    # rule) — the focus transcript must restart with it.
+    # rule) — after the prior prompt has closed and its pre-prompt
+    # checkpoint has been finalized, the focus transcript must restart.
     _start_and_delegate(reducer, "researcher", "s1", "second brief")
     blocks = reducer.lane_transcript("s1")
     assert blocks is not None

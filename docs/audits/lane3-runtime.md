@@ -100,7 +100,7 @@ tui owns the screen and normalizes every hook payload into a `UIEvent` queue
 | Canonical hook event log (`events.jsonl`) | foundation `hooks-logging` | `hooks-logging` native (`bundle.md:15-16`, `108-109`) | PARITY | — | — |
 | App UIEvent log (append-only, replay/cost/evidence) | `ui/ui_events.py` | `kernel/persistence.py:49,301-341`; `kernel/events.py` | PARITY | — | tui splits `ui-events.jsonl` from canonical `events.jsonl` (schema safety) |
 | Context-intelligence telemetry hook (multi-dest + legacy) | composed via settings | `kernel/config.py:510-605` (`inject_telemetry_config`); `docs/SETTINGS.md:83-131` | PARITY | — | mounts upstream sink, never reimplements (issue #51) |
-| Notifications — ntfy push | `bundle-notify`/`hooks-notify-push` via `config.notifications` | `bundle.md:76-79`; `AMPLIFIER_NTFY_TOPIC` | PARITY | — | function parity; config surface PARTIAL (see §1) |
+| Notifications — ntfy push | App-owned normalized attention sink via `config.notifications` | `kernel/attention_push.py`; `AMPLIFIER_NTFY_TOPIC` | PARITY | — | durable event identity + correlated clear; live mobile smoke remains release evidence |
 | Notifications — desktop OSC / bell ladder | `hooks-notify` (OSC-777/BEL to stdout) | native 3-rung ladder `docs/SETTINGS.md:164-186`; `AMPLIFIER_NOTIFY` | TUI-BETTER | — | driver-safe; raw-escape hooks-notify is suppressed to protect the TUI |
 | Cost history / spend accounting | `cost_history.py`; streaming-ui estimator | `kernel/cost.py` (Decimal end-to-end, unpriced floor marking) | TUI-BETTER | — | — |
 | Banner / effective-config UX (function) | `banners/`, `console.py`, `effective_config.format_banner_line` | `kernel/runtime.py:92-110`; UI header | PARITY | — | aesthetic differences out of scope |

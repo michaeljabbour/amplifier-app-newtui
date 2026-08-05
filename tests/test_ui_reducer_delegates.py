@@ -7,6 +7,7 @@ from amplifier_app_tui.model.blocks import (
     BlockIdAllocator,
     DelegateSummaryBlock,
     TodoItem,
+    ToolLine,
     TranscriptBlock,
 )
 from amplifier_app_tui.model.lanes import LaneRegistry
@@ -24,6 +25,8 @@ class FakeHost:
         self.stream_events: list[tuple[str, str]] = []
         self.plan_changes: list[tuple[TodoItem, ...]] = []
         self.attention_errors: list[tuple[str, str]] = []
+        self.approvals: list[tuple[str, tuple[str, ...]]] = []
+        self.lane_repaints = 0
 
     def append_block(self, block: TranscriptBlock) -> None:
         self.blocks.append(block)
@@ -50,13 +53,13 @@ class FakeHost:
         pass
 
     def lanes_changed(self) -> None:
-        pass
+        self.lane_repaints += 1
 
     def plan_changed(self, items: tuple[TodoItem, ...]) -> None:
         self.plan_changes.append(items)
 
     def approval_opened(self, prompt: str, options: tuple[str, ...]) -> None:
-        pass
+        self.approvals.append((prompt, options))
 
     def decision_deferred(self, message: str, decision_id: str = "") -> None:
         pass
@@ -560,6 +563,88 @@ def test_attention_lane_still_counted_active_and_ticks_elapsed() -> None:
     assert reducer.lanes.active_count == 1
     reducer.tick(10.0)
     assert reducer.lanes.get("s1").lane.elapsed > 0  # not frozen like a terminal state
+
+
+def test_normalized_child_approval_marks_only_its_lane_and_keeps_global_control() -> None:
+    """D5 AC1/AC2: the normalized envelope is the routing authority.
+
+    A child's pending approval becomes that lane's orange attention row,
+    while the same event still opens the one global answer control. No
+    click/focus change and no second approval-state registry are involved.
+    """
+
+    reducer, host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "researcher", "s1", 1.0)
+    _spawn(reducer, "coder", "s2", 1.0)
+    event = ev.normalize(
+        "approval:required",
+        {
+            "event_id": "approval-s2",
+            "session_id": "s2",
+            "parent_id": SID,
+            "ts": 2.0,
+            "prompt": "Run deployment smoke?",
+            "options": ["Allow once", "Allow always", "Deny"],
+        },
+    )
+    assert isinstance(event, ev.ApprovalRequired)
+    reducer.handle(event)
+
+    lane_1 = reducer.lanes.get("s1")
+    lane_2 = reducer.lanes.get("s2")
+    assert lane_1 is not None and lane_1.lane.state == "booting"
+    assert lane_2 is not None and lane_2.lane.state == "attention"
+    assert lane_2.lane.activity == "approval needed · Run deployment smoke?"
+    assert host.approvals == [("Run deployment smoke?", ("Allow once", "Allow always", "Deny"))]
+    assert host.lane_repaints > 0
+    chronology = reducer.lane_transcript("s2")
+    assert chronology is not None
+    approval_row = chronology[-1]
+    assert isinstance(approval_row, ToolLine)
+    assert approval_row.status == "blocked"
+    assert approval_row.summary == lane_2.lane.activity
+
+
+def test_child_approval_grant_clears_attention_and_denial_marks_exact_lane_blocked() -> None:
+    """Each concurrent lane owns the state implied by its own approval event."""
+
+    reducer, _host = make_reducer()
+    _start(reducer)
+    _spawn(reducer, "researcher", "s1", 1.0)
+    _spawn(reducer, "coder", "s2", 1.0)
+    reducer.handle(
+        ev.ApprovalRequired(
+            **_child_env2("s2", 2.0),
+            prompt="Run deployment smoke?",
+            options=("Allow once", "Deny"),
+        )
+    )
+    reducer.handle(
+        ev.ApprovalGranted(
+            **_child_env2("s2", 2.1),
+            prompt="Run deployment smoke?",
+            choice="Allow once",
+        )
+    )
+    lane_2 = reducer.lanes.get("s2")
+    assert lane_2 is not None and lane_2.lane.state == "working"
+    assert lane_2.lane.activity == "approval granted · Allow once"
+
+    reducer.handle(
+        ev.ApprovalDenied(
+            **_child_env2("s1", 2.2),
+            prompt="Push release?",
+            command="git push origin main",
+            reason="denied by user",
+            continuation="continuing locally",
+        )
+    )
+    lane_1 = reducer.lanes.get("s1")
+    lane_2 = reducer.lanes.get("s2")
+    assert lane_1 is not None and lane_1.lane.state == "attention"
+    assert lane_1.lane.activity == "blocked · git push origin main"
+    assert lane_2 is not None and lane_2.lane.state == "working"
 
 
 def test_cancelled_turn_settles_lane_state_matching_delegate_row() -> None:

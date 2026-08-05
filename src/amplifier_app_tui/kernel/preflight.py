@@ -157,6 +157,7 @@ async def run_preflight(
     provider_override: str | None = None,
     model_override: str | None = None,
     verify_live: bool = False,
+    strict: bool = False,
 ) -> PreflightReport:
     """Resolve mounts/providers for *bundle* and prove the priority provider works.
 
@@ -169,9 +170,12 @@ async def run_preflight(
     itself.
 
     ``verify_live`` opts into the networked models-list check (see
-    ``preflight_verify`` module docstring); the CLI wires this to ``True``
-    only for ``--dry-run`` (``main.py``). A ``preflight.verify_live: true``
-    setting has the same effect on every launch.
+    ``preflight_verify`` module docstring). A ``preflight.verify_live: true``
+    setting has the same effect on every launch. ``strict`` is the bounded,
+    fail-closed diagnostic tier used for an explicit model override,
+    ``--dry-run``, and ``doctor``: it forces that live check, refuses an
+    inconclusive dependency import, and cannot be disabled by the normal
+    ``preflight.verify_provider`` startup escape hatch.
     """
     try:
         resolved = await resolve_config(
@@ -224,14 +228,15 @@ async def run_preflight(
     # offline/network boundary, and the import-failure degrade rule.
     settings_verify_provider, settings_verify_live = _preflight_settings(resolved.settings)
     entry = _priority_provider_entry(resolved.mount_plan)
-    if entry is not None and settings_verify_provider:
+    if entry is not None and (settings_verify_provider or strict):
         module_id = str(entry.get("module") or "")
         entry_config = entry.get("config") if isinstance(entry.get("config"), dict) else {}
         verification = await verify_provider(
             module_id=module_id,
             config=dict(entry_config or {}),
             model=model_name,
-            live_verify=verify_live or settings_verify_live,
+            live_verify=strict or verify_live or settings_verify_live,
+            strict=strict,
             live_timeout=DEFAULT_LIVE_TIMEOUT,
         )
         if not verification.ok:

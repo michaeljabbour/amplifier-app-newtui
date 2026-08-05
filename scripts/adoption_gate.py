@@ -7,7 +7,7 @@ only thing that reads it mechanically, so the negative rules cannot be waved thr
 
   * a stage cannot be promoted while ANY release-blocking defect is open, no matter how
     much of its usage window has elapsed (AC2);
-  * amplifier-app-cli cannot be replaced until stage 4 promotes, which by the same rule
+  * amplifier-app-cli cannot be replaced until stage 5 promotes, which by the same rule
     requires zero unresolved release-blockers (AC5);
   * a placeholder is not a person. `TBD`, `?`, `unknown`, an empty cell and friends are
     refused by name - they can never fill a stage-3 seat, own a stage, or stand in for
@@ -26,8 +26,8 @@ Commands:
   check                validate every ledger row; exit 0 when clean
   status               one line per stage: owner, decision, window progress, blockers
   promote <stage>      may stage <stage> be promoted? exit 0 = yes, 1 = blocked
-                       `promote 4` IS the replacement gate (AC5): clearing it is what
-                       authorizes stage 5, the retirement of amplifier-app-cli.
+                       `promote 5` IS the replacement gate (AC5): stage 4 authorizes the
+                       final observation window; stage 5 authorizes deprecation.
   rollback             verify the MECHANICAL half of the documented rollback path:
                        command shapes, the pinned-commit target, and the side-by-side
                        coexistence claim. The walk-through stays human - it says so.
@@ -114,6 +114,27 @@ PLACEHOLDERS = frozenset(
 # Wrappers a hand-editor reaches for when writing a blank: <name>, [TBD], (unknown), `?`.
 _PLACEHOLDER_WRAPPERS = "<>[](){}\"'`*_ \t"
 
+# A value can be non-empty and still name a role rather than a person. Keep this
+# person-specific: ``is_recorded`` is also used for evidence such as "team-wide smoke",
+# where role words are perfectly legitimate. Parenthetical instructions are removed before
+# comparison, so ``stage-3 seats (see feedback.tsv)`` cannot masquerade as an owner.
+PERSON_ROLE_PLACEHOLDERS = frozenset(
+    {
+        "daily driver",
+        "daily drivers",
+        "maintainer",
+        "participants",
+        "repo maintainer",
+        "stage seats",
+        "team",
+        "team wide",
+        "team-wide",
+        "three additional daily drivers",
+        "users",
+    }
+)
+_STAGE_SEATS = re.compile(r"\Astage[- ]?\d+ seats?\Z")
+
 
 def is_placeholder(value: str) -> bool:
     """True when `value` is a stand-in rather than a real name / commit / piece of evidence.
@@ -131,6 +152,28 @@ def is_placeholder(value: str) -> bool:
 def is_recorded(value: str) -> bool:
     """Inverse of :func:`is_placeholder`, for the many `if actually filled in` reads."""
     return not is_placeholder(value)
+
+
+def _person_token(value: str) -> str:
+    """Normalize a would-be person's name while discarding trailing instructions."""
+    token = value.replace("\u00a0", " ").strip()
+    token = re.sub(r"\s*\([^)]*\)\s*$", "", token)
+    token = token.strip(_PLACEHOLDER_WRAPPERS)
+    return " ".join(token.split()).casefold()
+
+
+def is_named_person(value: str) -> bool:
+    """True only when ``value`` is neither a blank nor a role label."""
+    if is_placeholder(value):
+        return False
+    token = _person_token(value)
+    return token not in PERSON_ROLE_PLACEHOLDERS and not bool(_STAGE_SEATS.fullmatch(token))
+
+
+def _person_refusal(value: str) -> str:
+    if is_placeholder(value):
+        return f"{value!r} is a placeholder, not a named person"
+    return f"{value!r} is a role label, not a named person"
 
 
 # --- commit shape and resolution --------------------------------------------
@@ -362,18 +405,17 @@ def _evidence_reasons(row: Stage, resolve: CommitResolver | None) -> list[str]:
 
 
 def _stage_3_reasons(ledger: Ledger, resolve: CommitResolver | None) -> list[str]:
-    """AC3: three NAMED daily drivers, each on a known build, each dispositioned."""
+    """AC3: three named drivers with reproducible, dispositioned feedback records."""
     reasons: list[str] = []
     seats = ledger.seats()
-    named = [s for s in seats if is_recorded(s.participant)]
+    named = [s for s in seats if is_named_person(s.participant)]
 
     # Name the unfilled seats individually. "2 of 3 named" tells you the shortfall;
     # "seat-3 is unfilled" tells you what to go do about it.
     for seat in seats:
-        if is_placeholder(seat.participant):
+        if not is_named_person(seat.participant):
             reasons.append(
-                f"{seat.seat} is unfilled: participant {seat.participant!r} is a placeholder, "
-                "not a named person"
+                f"{seat.seat} is unfilled: participant {_person_refusal(seat.participant)}"
             )
     if len(named) < STAGE_3_MIN_SEATS:
         reasons.append(
@@ -391,8 +433,14 @@ def _stage_3_reasons(ledger: Ledger, resolve: CommitResolver | None) -> list[str
                 reasons.append(problem)
         if seat.disposition == "untriaged":
             reasons.append(f"{seat.seat} ({seat.participant}) feedback is still untriaged")
+        if not is_recorded(seat.date):
+            reasons.append(f"{seat.seat} ({seat.participant}) has no feedback date recorded")
         if not is_recorded(seat.completion_evidence):
             reasons.append(f"{seat.seat} ({seat.participant}) has no completion evidence")
+        if not is_recorded(seat.friction):
+            reasons.append(f"{seat.seat} ({seat.participant}) has no friction report recorded")
+        if not is_recorded(seat.disposition_ref):
+            reasons.append(f"{seat.seat} ({seat.participant}) has no disposition reference")
     return reasons
 
 
@@ -407,10 +455,15 @@ def _validate_stages(ledger: Ledger, problems: list[str], resolve: CommitResolve
 
     for row in ledger.stages:
         where = f"stages.tsv stage {row.stage}"
-        if is_placeholder(row.owner):
+        if not is_named_person(row.owner):
             problems.append(
-                f"{where}: owner {row.owner!r} is a placeholder, not a named person - "
+                f"{where}: owner {_person_refusal(row.owner)} - "
                 "every stage needs someone accountable for the record"
+            )
+        if row.min_window_days < 1:
+            problems.append(
+                f"{where}: min_window_days is {row.min_window_days}; every stage requires at "
+                "least one day"
             )
         if row.decision not in DECISIONS:
             problems.append(f"{where}: decision {row.decision!r} not in {list(DECISIONS)}")
@@ -489,6 +542,25 @@ def _validate_promoted_rows(
             for reason in _stage_3_reasons(ledger, resolve):
                 problems.append(f"{where}: promoted but {reason}")
 
+        # A hand-edited ``promoted`` decision must not erase an already-known blocker.
+        # A blocker opened later does not retroactively invalidate a prior promotion, but
+        # it still blocks every future promotion through ``promote_reasons``. Unknown
+        # blocker dates are conservative: the record cannot prove they post-date the gate.
+        if is_recorded(row.end_date) and _valid_date(row.end_date):
+            promoted_on = date.fromisoformat(row.end_date)
+            for blocker in ledger.open_release_blockers():
+                if not is_recorded(blocker.opened) or not _valid_date(blocker.opened):
+                    problems.append(
+                        f"{where}: promoted while open release-blocking defect {blocker.id} "
+                        "has no valid opened date, so the record cannot prove it came later"
+                    )
+                    continue
+                if date.fromisoformat(blocker.opened) <= promoted_on:
+                    problems.append(
+                        f"{where}: promoted while release-blocking defect {blocker.id} was "
+                        f"open (opened {blocker.opened} on or before {row.end_date})"
+                    )
+
 
 def _validate_blockers(ledger: Ledger, problems: list[str]) -> None:
     for row in ledger.blockers:
@@ -512,7 +584,7 @@ def _placeholder_seat_problem(row: Feedback) -> str | None:
     validation error rather than a promote-time refusal: it cannot ride along inside a
     ledger nobody happened to re-gate.
     """
-    if is_recorded(row.participant):
+    if is_named_person(row.participant):
         return None
     filled = [
         name
@@ -607,7 +679,7 @@ def promote_reasons(
     reasons.extend(_evidence_reasons(row, resolve))
 
     # AC2 - independent of elapsed time, and deliberately repo-wide: a release-blocking
-    # defect open anywhere stops the whole train, including the stage-4 replacement gate.
+    # defect open anywhere stops the whole train, including the stage-5 replacement gate.
     for blocker in ledger.open_release_blockers():
         reasons.append(f"open release-blocking defect {blocker.id} (stage {blocker.stage})")
 
@@ -631,10 +703,13 @@ CLI_SCRIPT_NAME = "amplifier"
 COMMIT_PLACEHOLDER = "<tested_commit>"
 ROLLBACK_HEADING = "## Rollback path"
 ADR_PATH = Path("docs") / "decisions" / "ADR-0008-console-script-name.md"
-UPDATER_PATH = Path("src") / "amplifier_app_tui" / "kernel" / "updater.py"
+INSTALL_CONTRACT_PATH = Path("src") / "amplifier_app_tui" / "install_contract.py"
 
 _CLI_RESTORE_RE = re.compile(r"^uv tool install (git\+\S+?)\s*$", re.MULTILINE)
-_PINNED_RESTORE_RE = re.compile(r"^uv tool install --force (git\+\S+?)@(\S+?)\s*$", re.MULTILINE)
+_PINNED_RESTORE_RE = re.compile(
+    r'^bash -o pipefail -c "curl .*? -fsSL (\S+) \| bash -s -- --ref (\S+)"\s*$',
+    re.MULTILINE,
+)
 _APP_REPO_URL_RE = re.compile(r'^APP_REPO_URL\s*=\s*"([^"]+)"', re.MULTILINE)
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
@@ -675,18 +750,28 @@ def _check_pinned_restore(readme: str, repo: Path) -> Check:
     label = "pinned-build rollback command is well-formed"
     matches = _PINNED_RESTORE_RE.findall(readme)
     if not matches:
-        return Check(FAIL, label, "no `uv tool install --force git+...@<commit>` line documented")
+        return Check(
+            FAIL, label, "no fail-closed source installer with `--ref <commit>` documented"
+        )
     url, pin = matches[0]
-    canonical = _APP_REPO_URL_RE.findall(_read(repo / UPDATER_PATH))
+    canonical = _APP_REPO_URL_RE.findall(_read(repo / INSTALL_CONTRACT_PATH))
     if not canonical:
-        return Check(FAIL, label, f"cannot read APP_REPO_URL from {UPDATER_PATH}")
-    if url != f"git+{canonical[0]}":
-        return Check(FAIL, label, f"documented {url} is not this app's own URL git+{canonical[0]}")
+        return Check(FAIL, label, f"cannot read APP_REPO_URL from {INSTALL_CONTRACT_PATH}")
+    expected_url = (
+        canonical[0].replace("https://github.com/", "https://raw.githubusercontent.com/")
+        + "/main/scripts/install.sh"
+    )
+    if url != expected_url:
+        return Check(FAIL, label, f"documented {url} is not this app's installer {expected_url}")
     if pin != COMMIT_PLACEHOLDER:
         return Check(FAIL, label, f"pin placeholder is {pin!r}, expected {COMMIT_PLACEHOLDER!r}")
     if "tested_commit" not in {f.name for f in fields(Stage)}:
         return Check(FAIL, label, "the ledger has no tested_commit column to pin from")
-    return Check(PASS, label, f"{url}@{COMMIT_PLACEHOLDER} pins the ledger's tested_commit column")
+    return Check(
+        PASS,
+        label,
+        f"{url} --ref {COMMIT_PLACEHOLDER} pins the ledger's tested_commit column",
+    )
 
 
 def _check_no_console_script_collision(repo: Path) -> Check:
@@ -877,7 +962,7 @@ def _cmd_status(ledger: Ledger, today: date) -> int:
         print(
             f"{row.stage}\t{row.owner}\t{row.decision}\t{_window(row, today)}\t{row.tested_commit}"
         )
-    unfilled = [s.seat for s in ledger.seats() if is_placeholder(s.participant)]
+    unfilled = [s.seat for s in ledger.seats() if not is_named_person(s.participant)]
     print(f"stage-3 seats unfilled: {', '.join(unfilled) if unfilled else 'none'}")
     label = ", ".join(b.id for b in open_blockers) if open_blockers else "none"
     print(f"open release-blockers: {label}")

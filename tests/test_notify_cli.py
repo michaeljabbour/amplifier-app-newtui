@@ -76,6 +76,19 @@ def test_notify_set_bad_bool_errors_nonzero(tmp_path: Path, monkeypatch) -> None
     assert "invalid value" in result.output
 
 
+def test_notify_show_reports_push_removed_by_global_suppression(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _redirect(monkeypatch, tmp_path)
+    _clean_env(monkeypatch)
+    set_result = CliRunner().invoke(main, ["notify", "set", "suppress", "true"])
+    assert set_result.exit_code == 0
+    shown = CliRunner().invoke(main, ["notify", "show"])
+    assert shown.exit_code == 0
+    assert "suppress all   : True" in shown.output
+    assert "enabled  : False (globally suppressed)" in shown.output
+
+
 def test_notify_set_push_priority_persists(tmp_path: Path, monkeypatch) -> None:
     paths = _redirect(monkeypatch, tmp_path)
     result = CliRunner().invoke(main, ["notify", "set", "push.priority", "high", "--project"])

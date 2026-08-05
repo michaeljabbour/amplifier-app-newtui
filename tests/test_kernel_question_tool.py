@@ -27,6 +27,7 @@ from amplifier_app_tui.kernel.question import (
     QuestionOption,
     QuestionPrompt,
     QuestionTool,
+    format_deferred_output,
     format_output,
     parse_questions,
 )
@@ -103,6 +104,13 @@ def test_format_output_marks_unanswered() -> None:
     assert "continue with the user's answers in mind" in text
 
 
+def test_format_deferred_output_tells_auto_to_continue() -> None:
+    text = format_deferred_output([QuestionPrompt(question="Pick a target?")])
+    assert '"Pick a target?"' in text
+    assert "Auto mode is continuing" in text
+    assert "do not wait or repeat" in text
+
+
 def test_trust_classifies_question_as_read() -> None:
     assert classify_tool("question") is CapabilityClass.READ
     # auto-allowed wherever tools run; brainstorm ("no tools") denies it.
@@ -161,6 +169,40 @@ async def test_execute_round_trip_multiple_select() -> None:
     assert result.error is None
     assert '"Which colors do you want?"="Yellow, Blue"' in result.output
     assert "Red" not in result.output  # only what the user selected
+
+
+@pytest.mark.asyncio
+async def test_execute_auto_defers_and_returns_without_waiting() -> None:
+    queue = NeedsYouQueue()
+    tool = QuestionTool(queue, mode=lambda: "auto")
+
+    result = await asyncio.wait_for(
+        tool.execute(
+            {
+                "questions": [
+                    {
+                        "question": "Which direction?",
+                        "options": [{"label": "Local"}, {"label": "Upstream"}],
+                    }
+                ]
+            }
+        ),
+        timeout=1,
+    )
+
+    assert result.success is True
+    assert "Auto mode is continuing" in result.output
+    item = queue.pending[0]
+    assert item.reason == "Auto continues while this waits"
+    queue.answer(item.decision_id, "Local")
+
+    # Auto's late answer is delivered exactly once at the next model boundary.
+    bridge = StepBoundaryBridge("root", SteeringQueue(), needs_you=queue)
+    injected = await bridge.handle_event("provider:request", {"session_id": "root"})
+    assert injected.action == "inject_context"
+    assert "Local" in str(injected.context_injection)
+    again = await bridge.handle_event("provider:request", {"session_id": "root"})
+    assert again.action == "continue"
 
 
 @pytest.mark.asyncio

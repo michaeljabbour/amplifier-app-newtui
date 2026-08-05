@@ -64,6 +64,8 @@ _PROXIED: tuple[str, ...] = (
     "list_skills",
     "load_skill",
     "mcp_tools",
+    "mcp_prompts",
+    "execute_mcp_prompt",
     "update_session_directory",
     "fork",
 )
@@ -86,7 +88,10 @@ class FakeBroker:
         self.head: FakeTicket | None = None
         self.answers: list[tuple[str, str]] = []
         self.answered = threading.Event()
+        self.defers: list[str] = []
+        self.deferred = threading.Event()
         self.raise_key_error = False
+        self.raise_defer_error: Exception | None = None
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         self.listeners.append(listener)
@@ -97,6 +102,12 @@ class FakeBroker:
         self.answered.set()
         if self.raise_key_error:
             raise KeyError(ticket_id)
+
+    def defer(self, ticket_id: str) -> None:
+        self.defers.append(ticket_id)
+        self.deferred.set()
+        if self.raise_defer_error is not None:
+            raise self.raise_defer_error
 
 
 class FakeEvidence:
@@ -170,6 +181,7 @@ class FakeRealRuntime:
         self.cleanup_called = threading.Event()
         self.next_model_name: str | None = None
         self.project_dir = Path("/fake/project")
+        self.restore_result = object()
 
     def record(self, name: str, args: tuple[Any, ...]) -> None:
         self.calls.append((name, args, threading.get_ident()))
@@ -195,6 +207,10 @@ class FakeRealRuntime:
         if self.next_model_name is not None:
             self.model_name = self.next_model_name
         return SENTINELS["set_model"]
+
+    async def restore_checkpoint(self, checkpoint_id: str, ledger: Any, *, scope: str) -> object:
+        self.record("restore_checkpoint", (checkpoint_id, ledger, scope))
+        return self.restore_result
 
     def directory_entries(self, kind: str) -> object:
         # Sync on the real runtime — the adapter wraps it in a coroutine.
@@ -437,13 +453,20 @@ PROXIES: tuple[tuple[str, tuple[Any, ...], str, bool], ...] = (
     ("list_skills", (), "list_skills", True),
     ("load_skill", ("s",), "load_skill", True),
     ("mcp_tools", (), "mcp_tools", True),
+    ("mcp_prompts", (), "mcp_prompts", True),
+    (
+        "execute_mcp_prompt",
+        ("github", "triage", "#42"),
+        "execute_mcp_prompt",
+        True,
+    ),
     ("update_directory", ("allowed", "add", "/p"), "update_session_directory", True),
     ("fork", ("cp-1", _LEDGER), "fork", False),
 )
 
 
 def test_proxy_table_is_complete() -> None:
-    assert len(PROXIES) == 20  # spec §4 T9: all twenty proxies
+    assert len(PROXIES) == 22  # spec §4 T9: all listed proxies
 
 
 @pytest.mark.asyncio
@@ -470,6 +493,42 @@ async def test_proxies_run_on_runtime_thread(
     assert thread_ident != threading.get_ident()
 
 
+@pytest.mark.asyncio
+async def test_restore_marshals_immutable_absolute_ledger_snapshot(booted: Booted) -> None:
+    from amplifier_app_tui.kernel.rewind import RestoreLedgerSnapshot
+    from amplifier_app_tui.model.turn import OutcomeLedger, TurnOutcome, TurnTelemetry
+
+    ledger = OutcomeLedger()
+    for turn_id in range(1, 106):
+        ledger.record_turn(
+            TurnTelemetry(secs=1, tokens_down=1),
+            TurnOutcome(kind="answer"),
+            turn_id=turn_id,
+            restore_turn_id=turn_id - 1,
+            message_index=turn_id,
+            workspace_id=f"workspace-{turn_id}",
+        )
+    before = ledger.turn_count
+
+    result = await booted.adapter.restore_checkpoint("t103", ledger, "conversation")
+
+    assert result is booted.fake.restore_result
+    assert ledger.turn_count == before
+    recorded = [item for item in booted.fake.calls if item[0] == "restore_checkpoint"]
+    assert len(recorded) == 1
+    _, (checkpoint_id, snapshot, scope), thread_id = recorded[0]
+    assert checkpoint_id == "t103"
+    assert scope == "conversation"
+    assert isinstance(snapshot, RestoreLedgerSnapshot)
+    assert snapshot.kept_turns_before == 102
+    assert snapshot.checkpoint_by_id("t103").workspace_id == "workspace-103"  # type: ignore[union-attr]
+    assert snapshot.visible_workspace_ids_before[0] == "workspace-1"
+    assert snapshot.visible_workspace_ids_before[-1] == "workspace-102"
+    assert snapshot.confirmed is False
+    assert booted.adapter._thread is not None
+    assert thread_id == booted.adapter._thread.ident
+
+
 # ---------------------------------------------------------------------------
 # T10 — before boot, every proxy answers neutrally without a runtime
 # ---------------------------------------------------------------------------
@@ -493,6 +552,12 @@ PREBOOT_NEUTRALS: tuple[tuple[str, tuple[Any, ...], Any], ...] = (
     ("list_skills", (), ()),
     ("load_skill", ("s",), (False, "session still starting")),
     ("mcp_tools", (), ()),
+    ("mcp_prompts", (), ()),
+    (
+        "execute_mcp_prompt",
+        ("github", "triage", "#42"),
+        (False, "session still starting"),
+    ),
     ("directory_entries", ("allowed",), ()),
     ("update_directory", ("allowed", "add", "/p"), (False, "session still starting")),
 )
@@ -557,7 +622,7 @@ async def test_directory_entries_wraps_sync_read(booted: Booted) -> None:
 
 
 # ---------------------------------------------------------------------------
-# T13/T14 — answer_approval hops into the runtime loop; KeyError swallowed
+# T13/T14 — approval actions hop into the runtime loop; stale errors swallowed
 # ---------------------------------------------------------------------------
 
 
@@ -574,6 +639,26 @@ async def test_answer_approval_swallows_keyerror(booted: Booted) -> None:
     booted.adapter.answer_approval("gone", "deny")
     assert await asyncio.to_thread(booted.fake.broker.answered.wait, 5.0)
     # The runtime loop survived the KeyError: a later proxy still works.
+    result = await asyncio.wait_for(booted.adapter.interrupt(), timeout=5)
+    assert result is SENTINELS["interrupt"]
+
+
+@pytest.mark.asyncio
+async def test_defer_approval_hops_into_runtime_loop(booted: Booted) -> None:
+    booted.adapter.defer_approval("t1", "visible prompt", ("Allow", "Deny"))
+    assert await asyncio.to_thread(booted.fake.broker.deferred.wait, 5.0)
+    assert booted.fake.broker.defers == ["t1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [KeyError("gone"), ValueError("duplicate"), RuntimeError("closing")],
+)
+async def test_defer_approval_swallows_stale_errors(booted: Booted, error: Exception) -> None:
+    booted.fake.broker.raise_defer_error = error
+    booted.adapter.defer_approval("gone", "visible prompt", ("Deny",))
+    assert await asyncio.to_thread(booted.fake.broker.deferred.wait, 5.0)
     result = await asyncio.wait_for(booted.adapter.interrupt(), timeout=5)
     assert result is SENTINELS["interrupt"]
 

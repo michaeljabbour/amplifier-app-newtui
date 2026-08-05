@@ -5,6 +5,10 @@
 **Status:** Proposed — design only, no code lands with this doc.
 **Evidence rev:** `ac854ef` (read-only checkout of `origin/main` at `/Users/michaeljabbour/dev/tui-wt/base`).
 
+> Dependency update (2026-08-05): companion issue #49 landed in PR #94 and is closed.
+> References below to being blocked by #49 preserve the original implementation sequence;
+> they no longer describe the current Forge substrate.
+
 > When this doc is accepted it should be promoted to the repo plans convention:
 > `docs/plans/2026-07-22-self-improvement-loop.md`, with a **Status** banner, and
 > registered in `docs/plans/README.md` (see `docs/plans/README.md:1-14`). It is

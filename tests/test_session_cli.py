@@ -361,6 +361,59 @@ def test_launch_tui_prints_hint_on_exit(monkeypatch: pytest.MonkeyPatch) -> None
     assert printed == ["feedface5678"]
 
 
+def test_launch_tui_relaunches_after_typed_session_resume_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Samuel S2 AC4 launch seam: the picker result is consumed only after
+    the old Textual app returns, then a fresh real adapter receives the
+    selected full id. The final shell hint belongs to the resumed app, not
+    the session that was just closed."""
+    import amplifier_app_tui.ui.app as app_mod
+    import amplifier_app_tui.ui.runtime_adapter as adapter_mod
+    import amplifier_app_tui.ui.term_probe as probe_mod
+    from amplifier_app_tui.ui.sessions_strip import ResumeSessionRequest
+
+    adapter_resume_ids: list[str | None] = []
+
+    class FakeAdapter:
+        def __init__(
+            self,
+            *,
+            bundle: str | None = None,
+            resume_id: str | None = None,
+            provider_override: str | None = None,
+            model_override: str | None = None,
+        ) -> None:
+            del bundle, provider_override, model_override
+            adapter_resume_ids.append(resume_id)
+            self.session_id = resume_id or "initial-session"
+
+    results = iter((ResumeSessionRequest("selected-session-full-id"), None))
+
+    class FakeApp:
+        def __init__(
+            self, adapter: object, *, kitty_protocol: bool, initial_mode: str | None = None
+        ) -> None:
+            del adapter, kitty_protocol, initial_mode
+            self.return_code = 0
+
+        async def run_async(self) -> ResumeSessionRequest | None:
+            return next(results)
+
+    monkeypatch.setattr(adapter_mod, "RealRuntimeAdapter", FakeAdapter)
+    monkeypatch.setattr(app_mod, "TuiApp", FakeApp)
+    monkeypatch.setattr(probe_mod, "patch_legacy_alt_named_keys", lambda: None)
+    monkeypatch.setattr(probe_mod, "probe_kitty_protocol", lambda: False)
+
+    printed: list[str] = []
+    monkeypatch.setattr(main_mod, "_print_resume_hint", lambda sid: printed.append(sid))
+
+    code = asyncio.run(main_mod._launch_tui(demo=False))
+    assert code == 0
+    assert adapter_resume_ids == [None, "selected-session-full-id"]
+    assert printed == ["selected-session-full-id"]
+
+
 # -- continue (most-recent shortcut) ---------------------------------------
 
 

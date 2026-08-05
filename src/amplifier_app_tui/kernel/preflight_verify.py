@@ -34,12 +34,15 @@ response, etc." -- so from preflight's vantage point it must be treated
 as potentially networked). ``kernel.setup.list_provider_models`` already
 treats it exactly this way (a mandatory timeout, "app-cli has none, but a
 TUI must not sit on a wedged socket"). So: the static/default tier never
-calls it; the live tier does, opt-in only (``live_verify=True``, wired to
-``--dry-run`` -- see ``kernel/preflight.py``), bounded by ``live_timeout``.
-A live check also doubles as an authentic credential-acceptance probe (an
-invalid key surfaces as a real 401 from ``list_models()``), so there is
-no separate networked "is this key accepted" probe for check 2 -- it
-would just re-pay the same round trip for the same signal.
+calls it; the live tier does, opt-in only (``live_verify=True``), bounded
+by ``live_timeout``. Strict diagnostics (``strict=True``) additionally
+fail closed when the returned catalog is empty: that result cannot prove
+an explicit model override is valid, and a doctor command must not call
+an inconclusive probe "ready". A live check also doubles as an authentic
+credential-acceptance probe (an invalid key surfaces as a real 401 from
+``list_models()``), so there is no separate networked "is this key
+accepted" probe for check 2 -- it would just re-pay the same round trip
+for the same signal.
 
 The import-failure boundary
 ----------------------------
@@ -65,6 +68,14 @@ ambiguity in the onboarding wizard by *not* installing and tolerating
 "not available" rather than blocking ("app-cli shells out to
 ``uv pip install -e``; persisting ``source:`` ... is enough, because the
 next session boot has foundation install it properly").
+
+That self-healing allowance is intentionally disabled for strict
+diagnostics. ``doctor``/``--dry-run`` must describe what is verifiably
+ready *now*, and an explicit model override must be rejected before
+alternate-screen takeover when its provider cannot even be imported.
+Those bounded strict paths therefore fail an inconclusive transitive
+dependency import with an installation remediation; ordinary launches
+retain the self-healing behavior above.
 
 Never leak a secret
 --------------------
@@ -271,17 +282,18 @@ async def _check_model(
     model: str,
     *,
     live_verify: bool,
+    strict: bool,
     live_timeout: float,
     secrets: tuple[str, ...],
 ) -> ProviderVerification:
     """Check 3: selected-model availability -- see module docstring boundary.
 
-    Static/default tier: a blank ``model`` means the provider's own
-    default applies (nothing to check); a non-blank one is, by
-    definition, a real selection -- confirming it EXISTS requires asking
-    the provider, which only the live tier does.
+    Static/default tier never calls the provider. The live tier checks a
+    non-blank selected model. Strict live diagnostics also query when the
+    model is blank, because the catalog call is the bounded readiness /
+    credential-acceptance signal in that case.
     """
-    if not model or not live_verify:
+    if not live_verify or (not model and not strict):
         return ProviderVerification(ok=True)
 
     try:
@@ -290,7 +302,7 @@ async def _check_model(
         return ProviderVerification(
             ok=False,
             error=f"provider '{module_id}' timed out listing models after {live_timeout:g}s",
-            remediation="check network connectivity to the provider, or drop --dry-run to skip this check",
+            remediation="check network connectivity and provider credentials, then retry",
         )
     except Exception as error:  # noqa: BLE001 -- report it; the user explicitly opted into this probe
         return ProviderVerification(
@@ -301,7 +313,14 @@ async def _check_model(
 
     known = {str(getattr(item, "id", "")) for item in (models or [])}
     known.discard("")
-    if known and model not in known:
+    if strict and not known:
+        selected = f" selected model '{model}'" if model else " provider readiness"
+        return ProviderVerification(
+            ok=False,
+            error=f"provider '{module_id}' returned no models; cannot verify{selected}",
+            remediation="verify the credential and endpoint, or configure a provider model that can be listed",
+        )
+    if model and known and model not in known:
         preview = ", ".join(sorted(known)[:8]) + ("..." if len(known) > 8 else "")
         return ProviderVerification(
             ok=False,
@@ -317,6 +336,7 @@ async def verify_provider(
     config: dict[str, Any],
     model: str,
     live_verify: bool = False,
+    strict: bool = False,
     live_timeout: float = DEFAULT_LIVE_TIMEOUT,
 ) -> ProviderVerification:
     """Mount *module_id* for real and run all three checks against it.
@@ -324,19 +344,32 @@ async def verify_provider(
     Never raises: every failure mode comes back as a
     :class:`ProviderVerification` with ``ok=False`` and an actionable
     remediation, or ``ok=True`` when the check is inconclusive and
-    degrades (see module docstring). Whatever mounting creates is always
-    cleaned up (:func:`_cleanup`), even on failure.
+    degrades (see module docstring). ``strict=True`` disables the
+    transitive-import degradation and requires a non-empty live model
+    catalog whenever ``live_verify`` is enabled. Whatever mounting creates
+    is always cleaned up (:func:`_cleanup`), even on failure.
     """
     try:
         module = _import_provider_module(module_id)
     except Exception as error:  # noqa: BLE001 -- classify below, never propagate
-        if _degrades_gracefully(module_id, error):
-            logger.debug(
-                "preflight: %s not importable yet (%s); deferring to the real launch's install pass",
-                module_id,
-                error,
+        dependency_can_self_heal = _degrades_gracefully(module_id, error)
+        if dependency_can_self_heal:
+            if not strict:
+                logger.debug(
+                    "preflight: %s not importable yet (%s); deferring to the real launch's install pass",
+                    module_id,
+                    error,
+                )
+                return ProviderVerification(ok=True)
+            missing = str(getattr(error, "name", "") or error)
+            return ProviderVerification(
+                ok=False,
+                error=f"provider '{module_id}' cannot import dependency '{missing}'",
+                remediation=(
+                    "run `amplifier-tui` once without --model so normal startup can install "
+                    "provider dependencies; if it persists, run `amplifier-tui update --force`"
+                ),
             )
-            return ProviderVerification(ok=True)
         return ProviderVerification(
             ok=False,
             error=f"provider '{module_id}' module failed to import: {error}",
@@ -375,6 +408,7 @@ async def verify_provider(
             instance,
             model,
             live_verify=live_verify,
+            strict=strict,
             live_timeout=live_timeout,
             secrets=secrets,
         )

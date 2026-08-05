@@ -16,7 +16,7 @@ from amplifier_app_tui.kernel.context_meter import (
     ContextMeter,
 )
 from amplifier_app_tui.kernel.cost import CostTracker, PricingTable
-from amplifier_app_tui.kernel.events import ProviderResponseUsage
+from amplifier_app_tui.kernel.events import ContextCompacted, ProviderResponseUsage
 
 WINDOW = 200_000
 
@@ -56,14 +56,31 @@ def test_context_tokens_is_last_response_not_accumulated() -> None:
     meter = _meter()
     meter.record(_usage(input_tokens=1000, output_tokens=200))
     meter.record(_usage(input_tokens=1200, output_tokens=340, cache_read=800, cache_write=100))
-    # Donor parity: the LAST response's summed tokens, not a session sum.
-    assert meter.context_tokens == 1200 + 340 + 800 + 100
+    # Canonical input is gross: cache_read is already inside it. Cache
+    # creation is separate, so only cache_write is added.
+    assert meter.context_tokens == 1200 + 340 + 100
     snap = meter.snapshot(session_id="s1", model="m", window=WINDOW)
-    assert snap["context_tokens"] == 2440
+    assert snap["context_tokens"] == 1640
     assert snap["input_tokens"] == 1200
     assert snap["output_tokens"] == 340
     assert snap["cache_read"] == 800
     assert snap["cache_write"] == 100
+
+
+def test_native_compaction_supplies_provider_budget_and_request_view() -> None:
+    meter = _meter()
+    meter.record_compaction(
+        ContextCompacted(
+            after_tokens=482_452,
+            budget=963_104,
+            target_tokens=481_552,
+            strategy_level=3,
+        )
+    )
+    snap = meter.snapshot(session_id="s1", model="m", window=300_000)
+    assert snap["context_tokens"] == 482_452
+    assert snap["context_window"] == 963_104
+    assert snap["context_pct"] == 50
 
 
 def test_pct_is_rounded_ratio_against_window() -> None:

@@ -21,18 +21,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
+
+from .clipboard import ImageAttachment
 
 logger = logging.getLogger(__name__)
 
 
 class RewindError(RuntimeError):
     """The fork could not be performed; nothing was trimmed."""
+
+
+class RewindRecoveryPendingError(RewindError):
+    """A durable restore intent must reconcile before another user turn."""
 
 
 @runtime_checkable
@@ -44,9 +52,13 @@ class CheckpointLike(Protocol):
     @property
     def turn_id(self) -> int: ...
     @property
+    def before_turn_id(self) -> int: ...
+    @property
     def cost_at(self) -> Decimal: ...
     @property
     def label(self) -> str: ...
+    @property
+    def workspace_id(self) -> str: ...
 
 
 @runtime_checkable
@@ -57,6 +69,7 @@ class LedgerLike(Protocol):
     def checkpoints(self) -> tuple[Any, ...]: ...
     def checkpoint_by_id(self, checkpoint_id: str) -> Any | None: ...
     def trim_to(self, checkpoint_id: str) -> None: ...
+    def trim_before(self, checkpoint_id: str) -> None: ...
 
 
 class ForkOutcome(BaseModel):
@@ -70,6 +83,77 @@ class ForkOutcome(BaseModel):
     forked_from_turn: int
     message_count: int
     in_memory: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRestore:
+    """A validated, non-mutating conversation slice ready to commit."""
+
+    checkpoint_id: str
+    session_id: str
+    boundary: int
+    messages: tuple[dict[str, Any], ...]
+
+
+CodeRestoreStatus = Literal[
+    "not_requested",
+    "restored",
+    "unchanged",
+    "partial",
+    "already_restored",
+    "unavailable",
+]
+
+
+class CheckpointRestoreOutcome(BaseModel):
+    """Structured result shared by kernel, adapter, and app-loop commit."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
+
+    scope: Literal["both", "conversation", "code"]
+    summary: str
+    conversation_restored: bool = False
+    code_status: CodeRestoreStatus = "not_requested"
+    partial: bool = False
+    prompt_attachments: tuple[ImageAttachment, ...] = ()
+
+
+class RestoreLedgerSnapshot:
+    """Immutable app-loop checkpoint data safe to marshal to runtime thread.
+
+    ``trim_before`` confirms only this snapshot. The real UI ledger is trimmed
+    on the app loop after :class:`CheckpointRestoreOutcome` returns.
+    """
+
+    def __init__(
+        self,
+        checkpoint: CheckpointLike,
+        kept_turns_before: int,
+        visible_workspace_ids_before: tuple[str, ...] = (),
+    ) -> None:
+        self._checkpoint = checkpoint
+        self.kept_turns_before = kept_turns_before
+        self.visible_workspace_ids_before = visible_workspace_ids_before
+        self.confirmed = False
+
+    @property
+    def checkpoints(self) -> tuple[CheckpointLike, ...]:
+        return (self._checkpoint,)
+
+    @property
+    def turns(self) -> tuple[Any, ...]:
+        return ()
+
+    def checkpoint_by_id(self, checkpoint_id: str) -> CheckpointLike | None:
+        return self._checkpoint if self._checkpoint.id == checkpoint_id else None
+
+    def trim_to(self, checkpoint_id: str) -> None:
+        if self.checkpoint_by_id(checkpoint_id) is None:
+            raise KeyError(f"unknown checkpoint: {checkpoint_id}")
+        self.confirmed = True
+
+    def trim_before(self, checkpoint_id: str) -> None:
+        self.trim_to(checkpoint_id)
 
 
 class RewindController:
@@ -212,11 +296,126 @@ class RewindController:
             in_memory=True,
         )
 
+    def prepare_restore_before_in_memory(
+        self,
+        checkpoint: CheckpointLike | str,
+        *,
+        messages: Sequence[dict[str, Any]],
+        parent_id: str | None = None,
+    ) -> PreparedRestore:
+        """Validate and slice conversation state without mutating it.
+
+        Foundation's fork primitive is reused for every non-empty boundary.
+        Its public slicing contract is 1-indexed, so session start (before the
+        first prompt) is the one TUI-owned special case.
+        """
+        target = self.resolve(checkpoint)
+        boundary = target.before_turn_id
+        if boundary < 0:
+            raise RewindError(f"checkpoint {target.id} has an invalid boundary")
+
+        session_id = str(uuid.uuid4())
+        restored: list[dict[str, Any]]
+        if boundary == 0:
+            restored = []
+        else:
+            fork_fn = self._fork_in_memory_fn
+            if fork_fn is None:
+                from amplifier_foundation.session.fork import fork_session_in_memory
+
+                fork_fn = fork_session_in_memory
+            try:
+                result = fork_fn(
+                    list(messages),
+                    turn=boundary,
+                    parent_id=parent_id,
+                    handle_orphaned_tools="complete",
+                )
+            except ValueError as exc:
+                raise RewindError(f"in-memory restore at {target.id} failed: {exc}") from exc
+            restored = list(result.messages or [])
+            session_id = result.session_id
+
+        return PreparedRestore(
+            checkpoint_id=target.id,
+            session_id=session_id,
+            boundary=boundary,
+            messages=tuple(dict(message) for message in restored),
+        )
+
+    def _validate_prepared_restore(self, plan: PreparedRestore) -> CheckpointLike:
+        """Resolve *plan* again before either half of the commit."""
+        target = self.resolve(plan.checkpoint_id)
+        if target.before_turn_id != plan.boundary:
+            raise RewindError(f"checkpoint {target.id} changed while preparing restore")
+        return target
+
+    async def apply_prepared_restore(
+        self,
+        plan: PreparedRestore,
+        *,
+        set_messages: Callable[[list[dict[str, Any]]], Awaitable[None]],
+    ) -> None:
+        """Apply prepared messages without trimming the ledger yet."""
+        target = self._validate_prepared_restore(plan)
+        try:
+            await set_messages([dict(message) for message in plan.messages])
+        except Exception as exc:  # noqa: BLE001 — context rejected the restore
+            raise RewindError(f"context restore at {target.id} failed: {exc}") from exc
+
+    def confirm_prepared_restore(self, plan: PreparedRestore) -> ForkOutcome:
+        """Trim the ledger after every selected surface has committed."""
+        target = self._validate_prepared_restore(plan)
+        self.ledger.trim_before(target.id)
+        return ForkOutcome(
+            checkpoint_id=target.id,
+            session_id=plan.session_id,
+            session_dir=None,
+            forked_from_turn=plan.boundary,
+            message_count=len(plan.messages),
+            in_memory=True,
+        )
+
+    async def commit_prepared_restore(
+        self,
+        plan: PreparedRestore,
+        *,
+        set_messages: Callable[[list[dict[str, Any]]], Awaitable[None]],
+    ) -> ForkOutcome:
+        """Commit a prepared slice, then trim the ledger on confirmation."""
+        await self.apply_prepared_restore(plan, set_messages=set_messages)
+        return self.confirm_prepared_restore(plan)
+
+    async def restore_before_in_memory(
+        self,
+        checkpoint: CheckpointLike | str,
+        *,
+        messages: Sequence[dict[str, Any]],
+        set_messages: Callable[[list[dict[str, Any]]], Awaitable[None]],
+        parent_id: str | None = None,
+    ) -> ForkOutcome:
+        """Restore the live conversation to immediately before a prompt.
+
+        The ledger drops the selected pre-prompt checkpoint and every later
+        turn only after the context accepts the prepared replacement.
+        """
+        plan = self.prepare_restore_before_in_memory(
+            checkpoint,
+            messages=messages,
+            parent_id=parent_id,
+        )
+        return await self.commit_prepared_restore(plan, set_messages=set_messages)
+
 
 __all__ = [
+    "CheckpointRestoreOutcome",
     "CheckpointLike",
+    "CodeRestoreStatus",
     "ForkOutcome",
+    "PreparedRestore",
     "LedgerLike",
     "RewindController",
     "RewindError",
+    "RewindRecoveryPendingError",
+    "RestoreLedgerSnapshot",
 ]

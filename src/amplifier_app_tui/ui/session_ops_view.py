@@ -55,7 +55,7 @@ def model_listing_spans(listing: ModelListing) -> tuple[Segment, ...]:
     """``/model`` (no arg): current model + the provider's advertised set."""
     if not listing.provider:
         return (Segment(text="  no provider mounted\n", style_token="dimmer"),)
-    spans = _header("Model", f"provider {listing.provider} · /model <name> switches")
+    spans = _header("Model", f"provider {listing.provider} · /model [provider] <name> switches")
     current = listing.current or "(provider default)"
     if listing.available:
         for model in listing.available:
@@ -98,11 +98,11 @@ def status_spans(
             if compaction.compact_threshold is not None
             else ""
         )
-        compaction_label = f"on{threshold} · {compaction.max_tokens:,} token window"
+        compaction_label = f"on{threshold} · {compaction.max_tokens:,} token fallback"
     elif compaction.auto_compact is False:
-        compaction_label = f"off · {compaction.max_tokens:,} token window"
+        compaction_label = f"off · {compaction.max_tokens:,} token fallback"
     else:
-        compaction_label = f"bundle default · {compaction.max_tokens:,} token window"
+        compaction_label = f"bundle default · {compaction.max_tokens:,} token fallback"
     compaction_label += f" · {compaction.accounting} accounting"
     rows: tuple[tuple[str, str], ...] = (
         ("bundle", bundle or "—"),
@@ -273,18 +273,14 @@ def resume_command_for(summary: SessionSummary) -> str:
 
 
 def session_resume_spans(summary: SessionSummary) -> tuple[Segment, ...]:
-    """Keyboard-resume block for one session (S2 compliance gap 2).
+    """Fallback copy for one keyboard-selected resume (Samuel S2 AC4).
 
-    ``/sessions`` has always been read-only here: switching sessions is a
-    fresh ``amplifier-tui resume SESSION_ID`` process, never an in-place
-    teardown of the one currently running (the picker's own docstring;
-    :func:`sessions_spans`'s header note). That contract is NOT changed by
-    this block -- it exists so a keyboard-only user reaches the SAME
-    resume path a mouse user gets from reading the id off the detail view
-    and typing it in by hand, without leaving the keyboard or transcribing
-    an 8-char id. Posting this block also best-effort copies the command
-    to the clipboard (``TuiApp.copy_to_clipboard``), mirroring how
-    :func:`session_detail_spans` copies the bare id.
+    ``r`` now completes the switch itself: the current Textual app shuts
+    down, then the composition root relaunches a fresh runtime with the
+    selected full session id. The equivalent CLI command is still copied
+    before exit, so this pure renderer remains useful to any surface that
+    wants to explain or expose that fallback without duplicating the
+    command string.
 
     A damaged session (``state != "ok"``) still gets its command line --
     the CLI's own resume path already reports a clear, distinct exit code
@@ -296,7 +292,7 @@ def session_resume_spans(summary: SessionSummary) -> tuple[Segment, ...]:
     command = resume_command_for(summary)
     spans = [
         Segment(text="\u00b7 ", style_token="blue"),
-        Segment(text="Resume ready", style_token="bright", bold=True),
+        Segment(text="Resume selected", style_token="bright", bold=True),
         Segment(text=f"  {summary.short_id}\n", style_token="dim"),
         Segment(text="  command  ", style_token="dim"),
         Segment(text=f"{command}\n", style_token="bright", bold=True),
@@ -312,8 +308,8 @@ def session_resume_spans(summary: SessionSummary) -> tuple[Segment, ...]:
         spans.append(Segment(text=f"{STATE_EXPLANATIONS[summary.state]}\n", style_token="dim"))
     spans.append(
         Segment(
-            text="  /sessions stays read-only \u2014 run the command above in a new terminal"
-            " (or after quitting) to switch into it; nothing here is torn down\n",
+            text="  current runtime closes cleanly, then this session reopens"
+            " \u00b7 command copied as fallback\n",
             style_token="dimmer",
         )
     )

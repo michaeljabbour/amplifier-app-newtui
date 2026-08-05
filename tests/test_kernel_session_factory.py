@@ -452,3 +452,20 @@ async def test_cleanup_runs_unregister_handles_then_session(tmp_path: Path) -> N
     assert calls == ["second", "first"]  # reverse order
     assert session.cleaned
     assert initialized.unregister_handles == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_awaits_async_unregister_handles(tmp_path: Path) -> None:
+    session, resolved = healthy_setup(tmp_path)
+    initialized = await create_initialized_session(SessionRequest(resolved=resolved))
+    calls: list[str] = []
+
+    async def async_unregister() -> None:
+        calls.append("async")
+
+    initialized.unregister_handles.append(async_unregister)
+
+    await initialized.cleanup()
+
+    assert calls == ["async"]
+    assert session.cleaned

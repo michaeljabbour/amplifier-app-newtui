@@ -54,7 +54,10 @@ def capture_launch(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
         return None
 
     async def fake_preflight(
-        bundle: str | None, provider: str | None, model: str | None
+        bundle: str | None,
+        provider: str | None,
+        model: str | None,
+        **_kwargs: object,
     ) -> PreflightReport:
         del bundle, provider, model
         return _OK_REPORT
@@ -107,6 +110,49 @@ def test_launch_threads_all_overrides_with_bundle(capture_launch: dict[str, obje
         "provider": "anthropic",
         "model": "claude-sonnet-5",
     }
+
+
+def test_doctor_composes_real_launch_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Standalone doctor cannot report green when the next launch is blocked."""
+    from amplifier_app_tui.commands import doctor as doctor_module
+    from amplifier_app_tui.kernel import updater
+
+    async def fake_anchors() -> object:
+        return None
+
+    async def fake_preflight(
+        bundle: str | None,
+        provider: str | None,
+        model: str | None,
+        **kwargs: object,
+    ) -> PreflightReport:
+        assert (bundle, provider, model) == (None, None, None)
+        assert kwargs == {"strict": True}
+        return PreflightReport(
+            ok=False,
+            error="provider-anthropic failed to import",
+            remediation="run `amplifier-tui update --force`",
+        )
+
+    captured: dict[str, object] = {}
+
+    def fake_standalone(**kwargs: object) -> int:
+        captured.update(kwargs)
+        return 1
+
+    monkeypatch.setattr(updater, "anchors_status", fake_anchors)
+    monkeypatch.setattr(main_mod, "_run_preflight", fake_preflight)
+    monkeypatch.setattr(doctor_module, "run_standalone", fake_standalone)
+
+    result = CliRunner().invoke(main, ["doctor"])
+    assert result.exit_code == 1
+    checks = captured["additional_checks"]
+    assert isinstance(checks, tuple)
+    assert len(checks) == 1
+    check = checks[0]
+    assert not check.ok
+    assert "provider-anthropic failed to import" in check.message
+    assert "amplifier-tui update --force" in check.message
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +212,9 @@ def test_preflight_failure_stops_before_launch_without_importing_textual(
     async def fake_gate() -> int | None:
         return None
 
-    async def fake_preflight(bundle, provider, model) -> PreflightReport:  # noqa: ANN001
+    async def fake_preflight(bundle, provider, model, **kwargs) -> PreflightReport:  # noqa: ANN001
         del bundle, provider, model
+        assert kwargs == {"strict": False}
         return PreflightReport(
             ok=False,
             error="no provider configured",
@@ -186,21 +233,78 @@ def test_preflight_failure_stops_before_launch_without_importing_textual(
     assert "amplifier-tui init" in result.stderr
 
 
+def test_explicit_invalid_model_fails_strictly_before_screen_takeover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launched: list[object] = []
+
+    async def fake_launch(**kwargs: object) -> int:
+        launched.append(kwargs)
+        return 0
+
+    async def fake_gate() -> int | None:
+        return None
+
+    async def fake_preflight(
+        bundle: str | None,
+        provider: str | None,
+        model: str | None,
+        *,
+        strict: bool = False,
+    ) -> PreflightReport:
+        assert (bundle, provider, model) == (None, "anthropic", "definitely-not-a-model")
+        assert strict is True
+        return PreflightReport(
+            ok=False,
+            error="model 'definitely-not-a-model' is not available for provider 'anthropic'",
+            remediation="pick a listed model",
+        )
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+    monkeypatch.setattr(main_mod, "_first_run_gate", fake_gate)
+    monkeypatch.setattr(main_mod, "_run_preflight", fake_preflight)
+
+    result = CliRunner().invoke(
+        main,
+        ["--provider", "anthropic", "--model", "definitely-not-a-model"],
+    )
+    assert result.exit_code == 1
+    assert launched == []
+    assert "definitely-not-a-model" in result.stderr
+
+
 def test_preflight_success_proceeds_to_launch(
     capture_launch: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[object, object, object]] = []
+    calls: list[tuple[object, object, object, dict[str, object]]] = []
     real_fake = main_mod._run_preflight
 
-    async def spying_preflight(bundle, provider, model):  # noqa: ANN001
-        calls.append((bundle, provider, model))
-        return await real_fake(bundle, provider, model)
+    async def spying_preflight(bundle, provider, model, **kwargs):  # noqa: ANN001
+        calls.append((bundle, provider, model, kwargs))
+        return await real_fake(bundle, provider, model, **kwargs)
 
     monkeypatch.setattr(main_mod, "_run_preflight", spying_preflight)
     result = CliRunner().invoke(main, ["--bundle", "custom", "-p", "anthropic", "-m", "claude-x"])
     assert result.exit_code == 0
-    assert calls == [("custom", "anthropic", "claude-x")]
+    assert calls == [("custom", "anthropic", "claude-x", {"strict": True})]
     assert capture_launch["bundle"] == "custom"
+
+
+def test_ordinary_launch_without_model_stays_non_strict(
+    capture_launch: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, object]] = []
+    real_fake = main_mod._run_preflight
+
+    async def spying_preflight(bundle, provider, model, **kwargs):  # noqa: ANN001
+        calls.append(kwargs)
+        return await real_fake(bundle, provider, model, **kwargs)
+
+    monkeypatch.setattr(main_mod, "_run_preflight", spying_preflight)
+    result = CliRunner().invoke(main, [])
+    assert result.exit_code == 0
+    assert calls == [{"strict": False}]
+    assert capture_launch["model"] is None
 
 
 def test_demo_skips_preflight_entirely(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -232,8 +336,11 @@ def test_help_lists_dry_run_flag() -> None:
 
 
 def test_dry_run_reports_and_exits_zero_without_launching(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
     async def fake_preflight(bundle, provider, model, **kwargs) -> PreflightReport:  # noqa: ANN001
-        del bundle, provider, model, kwargs
+        del bundle, provider, model
+        calls.append(kwargs)
         return _OK_REPORT
 
     async def boom_gate() -> int | None:
@@ -253,6 +360,7 @@ def test_dry_run_reports_and_exits_zero_without_launching(monkeypatch: pytest.Mo
     assert "claude-x" in result.stdout
     assert "DRY RUN" in result.stdout
     assert "nothing was launched" in result.stdout
+    assert calls == [{"strict": True}]
 
 
 def test_dry_run_failure_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,5 +1,13 @@
 # app-cli → tui parity audit (2026-07-23)
 
+> **Current implementation status (2026-08-05):** Use
+> [feedback-status-2026-08-05.md](feedback-status-2026-08-05.md) for the complete
+> 23-story acceptance ledger and
+> [b7-b9-boundary-2026-08-05.md](b7-b9-boundary-2026-08-05.md) for the final
+> notification/source-lock boundary proof. The lane counts below are a dated
+> donor-parity snapshot at commit `e6b50cd`, retained for chronology rather
+> than presented as current implementation status.
+
 A three-lane, read-only audit comparing Microsoft's **amplifier-app-cli** (donor/reference)
 against **amplifier-app-tui** (this repo, clean main @ `e6b50cd`, 1814 tests green), to
 answer one question: **can tui fully supplant app-cli** — every function, capability, and
@@ -98,7 +106,9 @@ baseline gaps are **closed in code**, and found eight fresh divergences: one new
 donor capability (`/goal`), one new donor policy (fail-loud module activation),
 and six rows pass 1 recorded as `MISSING` but never filed as tracked gaps.
 
-**The run stops after three consecutive clean passes, or when the owner ends it.** That
+**The run stops after three consecutive clean passes, or when a named owner ends it.**
+`end-run "Michael Jabbour" "reason"` refuses placeholders at write time; validation and
+`should-continue` also reject a hand-edited unsigned `owner-ended` row. That
 counter is over *read-only re-audits*, and it is deliberately not the transfer pipeline's
 per-gap fix-retry budget (also 3, also bounded, entirely unrelated) — see the side-by-side
 table in [pipelines/README.md](../../pipelines/README.md#owner-gated-parity-loop-continuous-re-audit).
@@ -119,8 +129,11 @@ is a *decision process*, not a mandate to copy every app-cli behavior:
 **A disposition needs a real owner.** `TBD`, `owner`, `team`, `unknown`, `?`, blank and
 their relatives are refused at write time and read back as `unattributed` — which blocks
 exactly like `pending` — if hand-edited into the file. The list lives in one place
-(`PLACEHOLDER_OWNERS` in `parity_loop.py`); `parity_loop.py validate` audits the whole gate
-file for decisions nobody signed. A decision nobody signed is not a decision.
+(`PLACEHOLDER_OWNERS` in `parity_loop.py`); `parity_loop.py validate` audits both gate
+decisions and owner-ended pass rows for actions nobody signed. A decision nobody signed is
+not a decision. Gene transfer rechecks an `accepted` disposition both when selecting the
+queue head and immediately before its first code-changing node, so a direct ledger edit
+cannot bypass this boundary.
 
 ### 19 gaps await a human
 

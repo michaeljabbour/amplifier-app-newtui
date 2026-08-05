@@ -58,13 +58,20 @@ class FakeProvider:
     async def list_models(self):
         from amplifier_core import ModelInfo
 
-        return [ModelInfo(id="fake-model", display_name="Fake Model")]
+        return [
+            ModelInfo(id="fake-model", display_name="Fake Model"),
+            ModelInfo(id="fake-routed", display_name="Fake Routed Model"),
+        ]
 
     async def complete(self, request=None, **kwargs):
+        model = str(self.config.get("default_model") or "fake-model")
+        content = "Hello from the fake provider."
+        if model != "fake-model":
+            content = f"Hello from the fake provider via {model}."
         return {
-            "content": "Hello from the fake provider.",
+            "content": content,
             "usage": {"input_tokens": 12, "output_tokens": 7},
-            "model": "fake-model",
+            "model": model,
         }
 
     def parse_tool_calls(self, response):
@@ -154,6 +161,67 @@ class FakeLoop:
         submit_result = await hooks.emit("prompt:submit", {"prompt": prompt})
         await coordinator.process_hook_result(submit_result, "prompt:submit", "prompt")
         await context.add_message({"role": "user", "content": prompt})
+
+        if prompt == "__B9_ROUTING_FALLBACK_PROBE__":
+            # Drive the app's REAL SessionSpawner and Foundation preference
+            # resolver from inside the mounted offline runtime.  The first
+            # glob is deliberately unresolvable; Foundation must advance to
+            # the second preference, promote the already-mounted fake
+            # provider, and pass ``fake-routed`` into the child session.
+            # This is a trigger only -- no routing algorithm is copied into
+            # the fake orchestrator.
+            from types import SimpleNamespace
+
+            spawn = coordinator.get_capability("session.spawn")
+            root_id = str(coordinator.config.get("root_session_id") or "offline-root")
+            parent = SimpleNamespace(
+                coordinator=coordinator,
+                config=dict(coordinator.config),
+                session_id=root_id,
+            )
+            result = await spawn(
+                agent_name="routing-probe",
+                instruction="routing child probe",
+                parent_session=parent,
+                provider_preferences=[
+                    {"provider": "fake", "model": "missing-model-*"},
+                    {"provider": "fake", "model": "fake-routed"},
+                ],
+                tool_inheritance={"exclude_tools": ["tool-fake"]},
+                self_delegation_depth=0,
+            )
+            final = f"routing-fallback={result['output']}"
+            await context.add_message({"role": "assistant", "content": final})
+            await hooks.emit(
+                "content_block:end",
+                {
+                    "block_type": "text",
+                    "block_index": 0,
+                    "total_blocks": 1,
+                    "block": {"type": "text", "text": final},
+                },
+            )
+            await hooks.emit(
+                "orchestrator:complete",
+                {"orchestrator": "loop-fake", "turn_count": 1, "status": "success"},
+            )
+            return final
+
+        if prompt == "__B9_LIVE_CANCELLATION_PROBE__":
+            # Stay cooperatively live until the actual amplifier-core token
+            # is cancelled by RealRuntime.interrupt().  AmplifierSession
+            # observes that same token after execute() returns and emits the
+            # real cancel:completed lifecycle event.
+            import asyncio
+
+            while not coordinator.cancellation.is_cancelled:
+                await asyncio.sleep(0.01)
+            final = "cancelled-by-core-token"
+            await hooks.emit(
+                "orchestrator:complete",
+                {"orchestrator": "loop-fake", "turn_count": 1, "status": "cancelled"},
+            )
+            return final
 
         request_result = await hooks.emit(
             "provider:request", {"provider": "fake", "model": "fake-model"}
@@ -724,6 +792,63 @@ async def test_offline_resume_restores_transcript_and_turn_base(offline_env) -> 
         await resumed.cleanup()
 
 
+@pytest.mark.asyncio
+async def test_offline_resume_persists_interrupted_tool_result_repairs(offline_env) -> None:
+    """A resumed orphan is repaired once at the durable app boundary.
+
+    Provider-only repair can make the first request pass and the second fail
+    when its synthetic result was never written back. The TUI persists the
+    uncertainty placeholder before mounting the restored context.
+    """
+    from amplifier_app_tui.kernel.persistence import SessionStore
+
+    store = SessionStore(project_dir=offline_env["project"])
+    session_id = "resumeorphan01"
+    store.save(
+        session_id,
+        [
+            {"role": "user", "content": "delegate this"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "toolu_missing",
+                        "name": "delegate",
+                        "input": {"task": "work"},
+                    }
+                ],
+            },
+        ],
+        {"bundle": "offline", "session_id": session_id},
+    )
+
+    resumed = RealRuntime(
+        bundle="offline",
+        resume_id=session_id[:8],
+        project_dir=offline_env["project"],
+        mode=lambda: "chat",
+    )
+    await resumed.start()
+    try:
+        assert resumed._initialized is not None
+        context = resumed._initialized.coordinator.get("context")
+        live = await context.get_messages()
+        repair = next(message for message in live if message.get("tool_call_id") == "toolu_missing")
+        assert repair["role"] == "tool"
+        assert "may have executed" in repair["content"]
+        persisted, _metadata = store.load(session_id)
+        assert any(message.get("tool_call_id") == "toolu_missing" for message in persisted)
+        notices = _notifications(resumed)
+        assert any(
+            "Resume repaired 1 interrupted tool result" in message
+            and "may have executed" in message
+            for message in notices
+        )
+    finally:
+        await resumed.cleanup()
+
+
 def _resume_bundle_project(
     offline_workspace: dict[str, Path],
     name: str,
@@ -879,6 +1004,7 @@ def test_apply_hook_suppression_strips_and_notifies() -> None:
     plan = {
         "hooks": [
             {"module": "hooks-streaming-ui"},
+            {"module": "hooks-notify-push", "config": {"listen_event": "orchestrator:complete"}},
             {"module": "hooks-approval"},
             {"module": "hooks-logging"},
             {"module": "hooks-mode"},
@@ -889,7 +1015,7 @@ def test_apply_hook_suppression_strips_and_notifies() -> None:
 
     # hooks-logging is NOT suppressed: the app's UIEvent log moved to
     # ui-events.jsonl, so hooks-logging owns the canonical events.jsonl.
-    assert removed == ["hooks-streaming-ui"]
+    assert removed == ["hooks-notify-push", "hooks-streaming-ui"]
     assert plan["hooks"] == [
         {"module": "hooks-approval"},
         {"module": "hooks-logging"},
@@ -939,6 +1065,7 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
             "hooks-streaming-ui",
             "hooks-todo-display",
             "hooks-notify",
+            "hooks-notify-push",
         }
     )
     # hooks-logging is NOT suppressed: it owns the canonical events.jsonl;
@@ -960,6 +1087,15 @@ def test_suppressed_hooks_setting_defaults_and_union() -> None:
     assert "hooks-custom" in resolved
     assert "" not in resolved
     assert _SUPPRESSED_HOOKS_DEFAULT <= resolved
+
+    # The app-owned normalized sink replaces this legacy producer, so no
+    # settings value may re-enable it through a user/deferred overlay.
+    assert "hooks-notify-push" in suppressed_hooks_setting(
+        {"config": {"notifications": {"suppress": True}}}
+    )
+    assert "hooks-notify-push" in suppressed_hooks_setting(
+        {"config": {"notifications": {"suppress": False}}}
+    )
 
 
 def test_resume_bundle_plan_defaults_to_stored() -> None:
@@ -1118,7 +1254,11 @@ def test_set_model_refreshes_the_footer_model_name() -> None:
     async def run() -> None:
         runtime = RealRuntime()
         runtime.model_name = "anthropic/m1"
-        provider = SimpleNamespace(default_model="m1", config={"default_model": "m1"})
+        provider = SimpleNamespace(
+            default_model="m1",
+            config={"default_model": "m1"},
+            list_models=lambda: [SimpleNamespace(id="m1"), SimpleNamespace(id="m2")],
+        )
         coordinator = SimpleNamespace(
             get=lambda point: {"providers": {"anthropic": provider}}.get(point),
             session_state={},
@@ -1126,14 +1266,33 @@ def test_set_model_refreshes_the_footer_model_name() -> None:
         runtime._initialized = SimpleNamespace(coordinator=coordinator)  # type: ignore[assignment]
 
         ok, detail = await runtime.set_model("m2")
-        assert ok and detail == "anthropic · m2"
+        assert ok and detail.startswith("anthropic · m2 · delegated routing unchanged (")
+        assert "root/delegates may diverge" in detail
         assert provider.default_model == "m2"
         assert runtime.model_name == "anthropic/m2"
+
+        # Explicit provider form carries two input tokens but the footer
+        # must display the selected model only, not ``provider/model arg``.
+        other = SimpleNamespace(
+            default_model="other-1",
+            config={"default_model": "other-1", "priority": 2},
+            priority=2,
+            list_models=lambda: [SimpleNamespace(id="other-1"), SimpleNamespace(id="shared")],
+        )
+        provider.priority = 1
+        provider.config["priority"] = 1
+        coordinator.get = lambda point: {"providers": {"anthropic": provider, "other": other}}.get(
+            point
+        )
+        ok, detail = await runtime.set_model("other shared")
+        assert ok and detail.startswith("other · shared · delegated routing unchanged (")
+        assert "root/delegates may diverge" in detail
+        assert runtime.model_name == "other/shared"
 
         # a failed switch must not clobber the live name
         ok, _detail = await runtime.set_model("")
         assert not ok
-        assert runtime.model_name == "anthropic/m2"
+        assert runtime.model_name == "other/shared"
 
     asyncio.run(run())
 

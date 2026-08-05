@@ -12,9 +12,10 @@ from pathlib import Path
 
 import yaml
 from click.testing import CliRunner
+from rich.console import Console
 
 from amplifier_app_tui.kernel import bundle_admin
-from amplifier_app_tui.main import main
+from amplifier_app_tui.main import _manage_matrix_target, main
 
 
 def _seed_matrix(home: Path, name: str, roles: dict) -> None:
@@ -247,6 +248,115 @@ def test_routing_manage_select(tmp_path: Path, monkeypatch) -> None:
     assert "Available Matrices" in result.output
     assert "active routing matrix → economy" in result.output
     assert bundle_admin.read_scope(paths.global_settings)["routing"]["matrix"] == "economy"
+
+
+def test_routing_manage_select_accepts_displayed_number(tmp_path: Path, monkeypatch) -> None:
+    """A bare row number is a complete selection, matching the visible table."""
+    paths = _redirect(monkeypatch, tmp_path)
+    _seed_matrix(tmp_path / "home", "anthropic", _roles())
+    _seed_matrix(tmp_path / "home", "runpod", _roles())
+    _seed_providers(paths, [{"module": "provider-anthropic"}])
+
+    result = CliRunner().invoke(main, ["routing", "manage"], input="1\nd\n")
+
+    assert result.exit_code == 0, result.output
+    assert "[1/name] select matrix" in result.output
+    assert "active routing matrix → anthropic" in result.output
+    assert bundle_admin.read_scope(paths.global_settings)["routing"]["matrix"] == "anthropic"
+
+
+def test_routing_manage_select_accepts_exact_name(tmp_path: Path, monkeypatch) -> None:
+    """A matrix name such as the bug report's ``runpod`` selects directly."""
+    paths = _redirect(monkeypatch, tmp_path)
+    _seed_matrix(tmp_path / "home", "anthropic", _roles())
+    _seed_matrix(tmp_path / "home", "runpod", _roles())
+    _seed_providers(paths, [{"module": "provider-anthropic"}])
+
+    result = CliRunner().invoke(main, ["routing", "manage"], input="runpod\nd\n")
+
+    assert result.exit_code == 0, result.output
+    assert "active routing matrix → runpod" in result.output
+    assert bundle_admin.read_scope(paths.global_settings)["routing"]["matrix"] == "runpod"
+
+
+def test_routing_manage_view_accepts_name_after_shortcut(tmp_path: Path, monkeypatch) -> None:
+    paths = _redirect(monkeypatch, tmp_path)
+    _seed_matrix(tmp_path / "home", "anthropic", _roles())
+    _seed_providers(paths, [{"module": "provider-anthropic"}])
+
+    result = CliRunner().invoke(main, ["routing", "manage"], input="v anthropic\nd\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Matrix: anthropic" in result.output
+
+
+def test_routing_manage_control_letter_name_remains_selectable(tmp_path: Path, monkeypatch) -> None:
+    """A legal matrix named like a control uses ``:done`` as the escape hatch."""
+    paths = _redirect(monkeypatch, tmp_path)
+    _seed_matrix(tmp_path / "home", "d", _roles())
+    _seed_providers(paths, [{"module": "provider-anthropic"}])
+
+    result = CliRunner().invoke(main, ["routing", "manage"], input="d\n:done\n")
+
+    assert result.exit_code == 0, result.output
+    assert "active routing matrix → d" in result.output
+    assert bundle_admin.read_scope(paths.global_settings)["routing"]["matrix"] == "d"
+
+
+def test_routing_manage_numeric_name_has_unambiguous_explicit_form(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Bare digits pick a displayed row; ``select`` can force a numeric name."""
+    paths = _redirect(monkeypatch, tmp_path)
+    _seed_matrix(tmp_path / "home", "2", _roles())
+    _seed_matrix(tmp_path / "home", "anthropic", _roles())
+    _seed_providers(paths, [{"module": "provider-anthropic"}])
+
+    result = CliRunner().invoke(
+        main,
+        ["routing", "manage"],
+        input="2\nselect 2\nd\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "active routing matrix → anthropic" in result.output
+    assert "active routing matrix → 2" in result.output
+    assert bundle_admin.read_scope(paths.global_settings)["routing"]["matrix"] == "2"
+
+
+def test_routing_manage_rejects_ambiguous_casefold_name() -> None:
+    console = Console(record=True, width=120)
+
+    selected = _manage_matrix_target(
+        console,
+        "FoO",
+        ["FOO", "foo"],
+        prompt="matrix number or name",
+    )
+
+    assert selected is None
+    assert "ambiguous matrix name: FoO" in console.export_text()
+    assert (
+        _manage_matrix_target(
+            console,
+            "FOO",
+            ["FOO", "foo"],
+            prompt="matrix number or name",
+        )
+        == "FOO"
+    )
+
+
+def test_routing_manage_invalid_number_does_not_write(tmp_path: Path, monkeypatch) -> None:
+    paths = _redirect(monkeypatch, tmp_path)
+    _seed_matrix(tmp_path / "home", "anthropic", _roles())
+    _seed_providers(paths, [{"module": "provider-anthropic"}])
+
+    result = CliRunner().invoke(main, ["routing", "manage"], input="99\nd\n")
+
+    assert result.exit_code == 0, result.output
+    assert "out of range: 1-1" in result.output
+    assert "routing" not in bundle_admin.read_scope(paths.global_settings)
 
 
 def test_routing_manage_view_details(tmp_path: Path, monkeypatch) -> None:

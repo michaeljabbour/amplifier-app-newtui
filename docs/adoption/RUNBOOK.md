@@ -18,7 +18,8 @@ and are worth knowing before you type:
 1. **A placeholder is not a person.** `TBD`, `-`, `?`, `unknown`, `N/A`, `<name>`, an empty
    cell, and a cell containing only whitespace are all the same answer: nobody. They can
    never fill a stage-3 seat, own a stage, or stand in for entry/exit evidence. The full
-   list is `PLACEHOLDERS` in the gate script — one list, checked everywhere.
+   blank list is `PLACEHOLDERS` in the gate script. Person fields additionally reject role
+   labels such as `team`, `daily drivers`, and `stage-3 seats`; a role is not a named person.
 2. **`tested_commit` must be a real commit.** 7–40 hex characters, and — when git can be
    consulted — an object that actually exists in this clone. `latest main` and a typo are
    both refused.
@@ -33,18 +34,17 @@ once, and it never edits your file.
 **Stage 1 owner: MJ Jabbour. Stage 2 owner: Brian Krabach.** The owner *is* the daily
 driver, so the owner runs all of this.
 
-### 1. Install the candidate build and record it
+### 1. Record and install the exact candidate build
 
 ```sh
-uv tool install --reinstall git+https://github.com/michaeljabbour/amplifier-app-tui
-amplifier-tui version                       # confirm what you actually got
+tested_commit=$(git rev-parse HEAD)         # full SHA from the reviewed candidate clone
+sh ./scripts/install.sh --ref "$tested_commit"
+amplifier-tui version                       # must report this tested_commit
 ```
 
-From a clone of this repo, get the exact commit you are about to run:
-
-```sh
-git rev-parse --short HEAD                  # this is your tested_commit
-```
+Record that full SHA as `tested_commit`. Do not install floating `main` and then
+record whichever clone happens to be nearby; the evidence must identify the code
+the participant actually ran.
 
 ### 2. Prove the build before you start the window
 
@@ -159,9 +159,9 @@ Send them exactly this:
 
 ```sh
 # 1. install the build you are being asked to try
-uv tool install --reinstall git+https://github.com/michaeljabbour/amplifier-app-tui
+bash -o pipefail -c "curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/michaeljabbour/amplifier-app-tui/main/scripts/install.sh | bash -s -- --ref <tested_commit>"
 
-# 2. confirm what you got, and tell the owner this sha
+# 2. confirm the version output reports that exact full sha
 amplifier-tui version
 
 # 3. use it as your primary Amplifier interface for at least one full working day
@@ -230,8 +230,21 @@ not a drill.
 python3 scripts/adoption_gate.py promote 4
 ```
 
-That command *is* the replacement gate. Exit 0 is the only thing that authorizes retiring
-amplifier-app-cli, and it cannot return 0 while any `release-blocking` row is open.
+Exit 0 authorizes **starting** the final replacement observation; it is not itself the
+deprecation decision. Record the stage-5 candidate commit, today's `start_date`, and the
+clear stage-4 result in `entry_evidence`. Keep both `amplifier-tui` and `amplifier`
+available, use the TUI as the documented default for at least one full working day, and file
+every defect in `blockers.tsv`.
+
+After the window, record the `end_date` and concrete replacement-observation evidence, then
+run the actual final gate:
+
+```sh
+python3 scripts/adoption_gate.py promote 5
+```
+
+Only exit 0 authorizes marking amplifier-app-cli deprecated. The command independently
+rechecks the one-day window, evidence, stage order, and every open `release-blocking` row.
 
 Promotion through stage 5 marks app-cli **deprecated**, not removed. Removal is a separate,
 separately-announced decision — see [Rollout messaging](README.md#rollout-messaging).
@@ -250,7 +263,7 @@ read-only.
 | 2 | Brian Krabach | Same question, independently. Stage 2 is not a rubber stamp on stage 1 — a second daily driver exists precisely to catch what the first one had learned to work around. |
 | 3 | MJ Jabbour | *Is every seat's friction genuinely dispositioned?* Each report gets `fixed`, `deferred`, `wont-fix`, or `duplicate` with a reference. Deferring is allowed; leaving it `untriaged` is not. |
 | 4 | MJ Jabbour | *Can the whole team default to this and still get out?* Requires the rollback drill walked and amplifier-app-cli demonstrably usable throughout. If anyone was told "just use the TUI, the CLI is gone," stage 4 failed and re-runs. |
-| 5 | MJ Jabbour | *Is deprecating amplifier-app-cli the right call now?* `promote 4` clearing is necessary, not sufficient. Deprecated is not removed; do not let the promotion imply it. |
+| 5 | MJ Jabbour | *Is deprecating amplifier-app-cli the right call now?* `promote 4` starts the final observation; `promote 5` clearing is necessary, not sufficient. Deprecated is not removed; do not let the promotion imply it. |
 
 Any owner may record `held` or `rolled-back` on a clear gate. That is the point of having a
 person in the loop.
@@ -264,7 +277,7 @@ person in the loop.
 amplifier
 
 # roll back to the last known-good TUI build
-uv tool install --force git+https://github.com/michaeljabbour/amplifier-app-tui@<tested_commit>
+bash -o pipefail -c "curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/michaeljabbour/amplifier-app-tui/main/scripts/install.sh | bash -s -- --ref <tested_commit>"
 ```
 
 Then **record it**. File the cause in `blockers.tsv` as `release-blocking`/`open` and set the

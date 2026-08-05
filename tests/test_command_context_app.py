@@ -73,6 +73,20 @@ async def test_data_surfaces_delegate_to_the_composition_root() -> None:
         assert len(set(ids)) == 3
 
 
+def test_context_usage_prefers_native_root_occupancy_and_provider_budget() -> None:
+    app = TuiApp(RuntimeAdapter())
+    app.reducer.total_tokens = 900_000  # session-wide root + child output
+    app.reducer.memory_tokens = 40_000
+    app.reducer.tool_tokens = 20_000
+    app.reducer.context_tokens = 482_452
+    app.reducer.context_window = 963_104
+
+    usage = app.context_usage()
+    assert usage.window == 963_104
+    assert usage.used == 482_452
+    assert usage.used_pct == 50
+
+
 @pytest.mark.asyncio
 async def test_echo_and_post_block_reach_the_transcript() -> None:
     """``echo_user_line`` and ``post_block`` land real blocks; the id is

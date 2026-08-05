@@ -5,12 +5,13 @@
 (`kernel/ambient/`), together with the thin voice adapter it deliberately sequenced last. Two
 items remain genuinely out of reach here and are marked as such rather than faked: a **real
 Teams/Outlook connector** (E8 — needs Microsoft Graph credentials, tenant consent and network)
-and a **network listener** for the reply channel (E7 — the security core is built and tested;
-no reachable service ships). Speech capture and synthesis are device capabilities and are
+and a **remotely reachable reply deployment** (E7 now has a session-owned loopback listener,
+but no TLS identity/tunnel, remote enrollment lifecycle, or service owner). Speech capture and synthesis are device capabilities and are
 likewise not built. See **"Implementation status"** below for the per-extension verdict.
 **Built on:** B6 session-control contract (PR #203 — merged to `main`) · B7 attention
-contract (PR #229 — merged to `main`) · E1 authorization (PR #230 — open; consumed, not owned)
-**Author:** compliance worker · **Date:** 2026-08-03 · **Updated:** 2026-08-04
+contract (PR #229 — merged to `main`) · E1 authorization (PR #230 — merged to `main`;
+consumed, not owned)
+**Author:** compliance worker · **Date:** 2026-08-03 · **Updated:** 2026-08-05
 **Slug:** `voice-first-ambient-delegation`
 
 > **Citation honesty.** Every `file:line` cite into `kernel/session_control.py`,
@@ -22,26 +23,27 @@ contract (PR #229 — merged to `main`) · E1 authorization (PR #230 — open; c
 > `AttentionRecord` / `AttentionCenter` / `attention_push_payload` are real, and
 > `kernel/attention_store.py` provides the durable cross-process store — so **E4 and E5 were
 > already delivered** and collapsed to "verify and consume", exactly as this document
-> predicted for E5. E1 is being delivered by PR #230 (`kernel/session_authz.py`), which is
-> **open, unmerged**, so the implementation *consumes* it optionally and degrades cleanly in
-> its absence. Every other cite below was re-checked against the tree at `332ee11`.
+> predicted for E5. E1 subsequently landed in PR #230 (`kernel/session_authz.py`, merge
+> `d81eb29`), so the implementation now consumes the shipped policy home. Its explicitly
+> unverified fallback remains a compatibility boundary for older checkouts. Every other cite
+> below was re-checked against the tree at `332ee11`.
 
 ---
 
-## Implementation status (2026-08-04)
+## Implementation status (2026-08-05)
 
 Everything below was **re-verified against the tree** before building; three of the eight
 extensions had changed state since this document was written, and one was reassigned.
 
 | ID | Verdict | Where |
 |---|---|---|
-| **E1** — authenticated principal → `Actor` | **Owned elsewhere; consumed here.** `kernel/session_authz.py` (PR #230, open) is the policy home; it deliberately chose the `session:<sid>` + `read`/`write`/`control` vocabulary this document specifies, so a grant minted by §1 maps across with no translation. This track does **not** build or edit it. | `kernel/ambient/principal.py` — consumes it if importable, degrades to an explicitly *unverified* `LocalPrincipal` if not, and enforces the security rule that matters: **an unverified `human` claim arriving over a non-local method is downgraded to `unknown`**, so it cannot outrank anything. The downgrade is recorded in the audit provenance rather than being silent. |
+| **E1** — authenticated principal → `Actor` | **Owned elsewhere; merged and consumed here.** `kernel/session_authz.py` (PR #230, merge `d81eb29`) is the policy home; it deliberately chose the `session:<sid>` + `read`/`write`/`control` vocabulary this document specifies, so a grant minted by §1 maps across with no translation. This track does **not** build or edit it. | `kernel/ambient/principal.py` — consumes it when available, degrades to an explicitly *unverified* `LocalPrincipal` for compatibility with older checkouts, and enforces the security rule that matters: **an unverified `human` claim arriving over a non-local method is downgraded to `unknown`**, so it cannot outrank anything. The downgrade is recorded in the audit provenance rather than being silent. |
 | **E2** — grant store + `source.*`/`grant.*` audit | **Built.** | `kernel/ambient/grants.py`. Deny-by-default; **consulted at use, never cached** (`GrantStore` holds no in-memory grants — a revoke written by another process lands on the very next call); no wildcards (a selector-less `source:*` grant is rejected at creation); `read` never implies `send`; minting restricted to first-party surfaces. Additive audit actions land in the **same** `control-audit.jsonl` via the new `SessionControl.note_ambient`, whose vocabulary is closed and separate from the control actions — an ambient caller can add to the account, never forge a `lease.granted`. |
 | **E3** — structured, editable interpretation payload | **Built.** | `kernel/ambient/interpretation.py`. Typed record keyed by the B6 handoff id, with `propose`/`amend`/`confirm`/`cancel`. Gating reuses B6 **unchanged** (`pause` → `authorize()` denies every write → `claim_handoff`). `amend` mints a new id and never mutates; expiry is `cancel` **and resumes**, so a forgotten voice request cannot wedge a session; `cancel` and expiry are audited alongside `confirm`. The handoff's `note` field is left empty — the doc's "do not JSON-stuff `note`" rule is asserted by a test. |
 | **E4** — push payload carries `event_id` | **Already delivered** by B7 (PR #229): `attention_push_payload()` in `ui/notifications.py`, emitted as an `attention:recorded` hook event. Nothing to build. | The ambient layer adds a **stricter** payload on top (`ambient_push_payload`): pointer-only, built from a literal allowlist, no `body` at all. |
 | **E5** — durable cross-process attention records | **Already delivered** by B7 (PR #229): `kernel/attention_store.py` + `AttentionCenter.bind()`. As this document predicted, E5 collapsed to "verify, then consume". | Consumed by `kernel/ambient/reply.py`, which acknowledges an answered record cross-process. |
 | **E6** — cross-project session discovery | **Built, as a read-side scan** — the cheap option this document recommended, and the recommendation holds. | `kernel/ambient/discovery.py`. See "Why a scan and not an index" in that module: the projection cannot drift because it *is* the truth re-read, an index would be a second write contract to keep in sync, and the failure mode of a stale index is the worst one available (a fleet view that confidently reports a stuck session as running). `SessionDiscovery` caches each row on its session directory's mtime, so steady-state re-reads collapse to O(changed). An unreadable session degrades to a **partial row, never an exception**. |
-| **E7** — authenticated inbound reply channel | **Split, honestly.** The **security core is built and tested**; **no network listener ships, and none can be verified here.** | `kernel/ambient/reply.py`. Built: HMAC-SHA256 envelope authentication over a canonical string with constant-time compare, replay rejection (nonce + freshness window), device enrollment with `0600` secrets that never reach a log or an audit entry, correlation `event_id` → session → handoff, re-entry via `handoff.claim`, and attention acknowledgement. `accept()` is transport-agnostic on purpose, so a future HTTPS handler adds a transport without moving the security core. **v1 default is reply-on-open** (`pending_for_open`) — one-tap-to-the-right-place, zero new network surface — exactly as §3 option (c) proposed. **The ntfy reply-topic option (a) remains rejected**: a world-readable channel must never be a write path. |
+| **E7** — authenticated inbound reply channel | **Locally executable; remote deployment remains external.** | `kernel/ambient/reply.py` provides HMAC-SHA256 envelope authentication over a canonical string with constant-time compare; durable nonce replay rejection and content-free delivery outcomes (`0600`); device enrollment whose secrets never reach logs/audit; `event_id` → exact session + decision correlation; optional `handoff.claim`; verbatim hand-off to an explicit `ReplySubmissionPort` and exact-decision delivery through `NeedsYouReplySubmissionPort`; acknowledgement only after submission; and an HTTP listener that rejects every non-loopback bind. `kernel/ambient/reply_listener.py` now gives each live TUI session ownership of an ephemeral listener, publishes its chosen port in a private per-session discovery record, prunes stale owners, and removes its own record/socket during shutdown. Listener/discovery failures degrade safely without blocking session boot. `TuiApp` binds newly parked clarification records to the exact decision. A phone-reachable path still needs TLS/tunnel deployment, remote enrollment, and an operational owner. **The ntfy reply-topic option remains rejected**: a world-readable channel must never be a write path. |
 | **E8** — Teams/Outlook connectors | **Genuinely external. Not built, and deliberately not faked.** | `kernel/ambient/sources.py` ships the **port** a real connector must implement, plus a **working local implementation** (`LocalFileSource`, real files on disk) and the enforcement wrapper (`GrantedSource`) that consults E2 at use and attributes every read/send. A real connector needs a Graph app registration, tenant-granted delegated scopes, an interactive consent flow, and live network access — none of which exist offline, and every one of which is a place a guess would be silently wrong. When it is built, the work is the Graph client and its consent flow; the permission check, the audit trail, the confirmation echo and the redaction policy are already done and do not move. |
 
 **The voice adapter itself** (`kernel/ambient/voice.py`) is built, and is thin by
@@ -55,13 +57,14 @@ sequences follow-ons across sessions (`FollowOnPlan`) stopping on the first `con
 **Also not built, and not buildable here:** speech capture, wake-word detection, ASR and TTS
 are device capabilities. The adapter's boundary is therefore **already-transcribed text in,
 speakable text out**; a real voice client owns the microphone and the speaker. There is no
-mobile client either — E7's reply-on-open path and the pointer-only push payload are the seams
-one would attach to.
+mobile client either — E7's reply-on-open and signed loopback paths plus the pointer-only push
+payload are the seams one would attach to.
 
 **Open questions now answered by the implementation:** Q2 (where the ambient layer runs) — it
 runs **in-process, over the filesystem**, like every other kernel contract, so a daemon remains
-possible without a rewrite. Q3 (is reply-on-open acceptable for v1) — **yes, shipped as the
-default**, with the authenticated core built behind it. Q4 (grant scope) — **per-user for
+possible without a rewrite. Q3 (is reply-on-open acceptable for v1) — **yes, retained as the
+zero-network default**, with a signed loopback quick-reply path proven alongside it. Q4
+(grant scope) — **per-user for
 `source:*`**, as proposed. Q1 (Teams/Outlook API specifics) and Q5 (unattended voice mode)
 remain **open and unverified**.
 
@@ -153,7 +156,7 @@ document:
 
 B6 named B8 as the layer that closes that gap. This document accepts that assignment (E1).
 
-### B7 — attention contract (PR #202; **open, not yet merged to `main`**)
+### B7 — attention contract (PR #202; **merged to `main`**, then hardened by PR #229)
 
 Published shape, quoted from the PR:
 
@@ -175,10 +178,13 @@ class AttentionCenter:
     def current(self, session_id) -> AttentionRecord | None: ...
 ```
 
-`note()` is idempotent in `(session_id, reason, occasion)`. **The boundary B7 documented
-honestly:** off-machine ntfy push is fired by an external hook off the raw kernel event, is
-not routed through `AttentionRecord`, and has **no acknowledgement channel back to the TUI**.
-§3 is written against that constraint rather than around it.
+`note()` is idempotent in `(session_id, reason, occasion)`. **The boundary B7 originally
+documented honestly:** off-machine ntfy push was fired by an external hook off the raw kernel
+event and had no acknowledgement channel back to the TUI. The 2026-08-05 working-tree closure
+replaces that producer with an app-owned consumer of `attention:recorded` and
+`attention:acknowledged`; a deterministic ntfy sequence ID derived from `event_id` drives both
+publish and the documented clear operation. §3 retains the original constraint as design
+history.
 
 ### Neighbouring facts on `main`
 
@@ -187,9 +193,9 @@ not routed through `AttentionRecord`, and has **no acknowledgement channel back 
   (`:345`); `ui-events.jsonl` is the append-only normalized event ledger (`:49`, `:301-344`).
 - Local notification text is already sanitized and capped at 80/240 chars
   (`ui/notifications.py:80-81`, `:171-203`).
-- Off-machine push is owned by the mounted `hooks-notify-push` module and "lives outside the
-  app kernel entirely" (`ui/notifications.py:8-13`, `:45-46`). **The ntfy topic is a secret
-  and public topics are world-readable** (`docs/SETTINGS.md:215`).
+- Off-machine push is owned by `kernel/attention_push.py`, consumes normalized attention
+  events, and never listens to raw completion. **The ntfy topic is a secret and public topics
+  are world-readable** (`docs/SETTINGS.md`, "Attention notifications").
 
 ---
 
@@ -430,38 +436,43 @@ topic one can.
 - **Correlation key: B7's `event_id`** — stable, derived from `(session_id, reason,
   occasion)`, idempotent by construction, so a re-render or a reconnect cannot mint a second
   identity for the same question.
-- **Re-entry key: B6's handoff ref** — `amplifier-session:<sid>#<handoff>`
-  (`kernel/session_control.py:197-206`), with its runnable `attach_command` (`:220-223`).
+- **Question key: the pending `decision_id`** — the exact `NeedsYouQueue` item the TUI and
+  serve protocol answer.
+- **Blocking re-entry key (when present): B6's handoff ref** —
+  `amplifier-session:<sid>#<handoff>` (`kernel/session_control.py:197-206`), with its runnable
+  `attach_command` (`:220-223`). Auto-mode clarifications do not invent a pause/handoff.
 
 ### The flow
 
 1. Session needs a human → `AttentionCenter.note(session_id, "awaiting_clarification",
    occasion)` → record with `event_id`.
-2. If the question blocks work → also `session.pause(...)` → handoff id + ref
-   (`kernel/session_control.py:838-903`). The ambient layer binds `(event_id ↔ handoff_id)` in
-   its correlation table.
+2. The app binds `(event_id ↔ session_id ↔ decision_id)` in the durable correlation table. If
+   the question blocks work, `session.pause(...)` adds a handoff id + ref
+   (`kernel/session_control.py:838-903`).
 3. Push payload = `event_id` + attach ref + a redacted one-liner (§2). Nothing else.
 4. Reply arrives → the adapter **authenticates the principal** (E1) → resolves `event_id` →
-   finds the handoff → `handoff.claim(handoff_id, actor)`, which clears the pause and grants
-   the lease in one step (`kernel/session_control.py:957-975`) → `submit` carrying that lease
-   and an `idem` key → `AttentionCenter.acknowledge(session_id)`.
+   claims the optional handoff (which clears a pause and grants the lease) → submits the exact
+   signed text to the correlated pending decision → acknowledges the attention record **only
+   after submission succeeds**.
 5. Result: control is back in **the same session**, held by **the same authenticated human**,
-   with the reply attributed in `control-audit.jsonl`. A second reply to the same notification
-   conflicts with `handoff_claimed` rather than double-answering — B6 already guarantees this
-   (`:930-941`).
+   with the reply attributed in `control-audit.jsonl`. A second blocking reply conflicts with
+   `handoff_claimed`; an Auto-mode reply is rejected by the already-settled decision queue.
+   Neither double-answers.
 
 ### The ntfy boundary, stated plainly
 
-B7 documented that push fires from an external hook off the raw kernel event and has no
-acknowledgement channel back. Two distinct consequences follow, and they need different
-answers.
+B7 originally documented that push fired from an external hook off the raw kernel event. The
+2026-08-05 working-tree closure removes that mounted producer and keeps exactly the normalized
+`attention:recorded` and `attention:acknowledged` events. The app-owned sink derives one
+ntfy-safe sequence ID from the stable `event_id`, uses it for publish/update, and issues ntfy's
+documented clear operation for the correlated acknowledgement. Two distinct consequences
+remain useful design history: (a) is closed, while (b) remains an ingress/deployment boundary.
 
-**(a) The notification cannot name what it is about.** Because the hook fires off the raw
-kernel event rather than the `AttentionRecord`, the payload carries no `event_id`. Without
-that, a reply has nothing to correlate *to*. → **E4: route push through the attention record
-so the payload carries `event_id` + attach ref.** Until E4 lands, mobile reply correlation is
-not implementable — not "harder", *not implementable*. This is the cheapest unblocking change
-on the whole track.
+**(a) The notification must name what it is about.** The canonical record carries the original
+`event_id` and session reference; the destination's sequence ID is a deterministic projection
+of that event ID, so E4 has a stable correlation key without teaching the transport to retain
+application state. Mobile reply correlation still resolves the durable original ID through
+the ambient correlation table.
 
 **(b) There is no ingress at all.** ntfy is publish-only from this system's perspective. A
 "quick reply" from a phone would publish to a topic nothing here subscribes to.
@@ -469,17 +480,15 @@ on the whole track.
 | Option | Verdict |
 |---|---|
 | **(a) Subscribe to an ntfy reply topic from a local ambient daemon** | **Rejected.** The topic is a shared secret and a public topic is world-readable (`docs/SETTINGS.md:215`). That makes it an unauthenticated write path into a live session. A world-readable channel must never be a write path — full stop. |
-| **(b) An authenticated HTTPS ingress the mobile adapter posts to** | **The target.** Correct and attributable, but the largest new surface in this document: a reachable service with its own auth and its own operational burden. → **E7**, explicitly out of v1. |
+| **(b) An authenticated HTTPS ingress the mobile adapter posts to** | **Local contract proven; remote deployment open.** E7 now includes a session-owned loopback-only HTTP listener calling the same authenticated channel. It refuses non-loopback binds, publishes an ephemeral port privately, and cleans up with the owning TUI session. A phone-reachable TLS/tunnel, remote enrollment lifecycle, and operations remain external. |
 | **(c) No ingress: push stays notify-only; the reply happens when the user opens the authenticated app**, which reads the pending attention record and offers the interpretation | **Recommended for v1.** Delivers "the notification takes you to the right pending question in the right session" — the whole correlation value — with zero new network surface. It is not *quick* reply; it is *one-tap-to-the-right-place* reply. Say that honestly rather than claiming AC3 in full. |
 
-**E5 — durability.** As published in PR #202, `AttentionCenter` is a UI-layer object in
-`ui/notifications.py` with no documented durable store. A reply arriving in a **different
-process** — a daemon, a re-launched TUI, a bridge — cannot see it. Required: per-session
-durable attention records (an `attention.jsonl` beside `control.json`) so `current(session_id)`
-is answerable cross-process. This is not new invention: it is exactly the move B6 already made
-for control state (`docs/SESSION-CONTROL.md:30-43`), so the pattern is proven in-tree. *If B7
-already persists records and the PR body simply didn't say so, E5 collapses to "confirm and
-document the durability guarantee" — verify before building.*
+**E5 — durability.** The original PR #202 published `AttentionCenter` as a UI-layer object in
+`ui/notifications.py`; PR #229 subsequently added the durable cross-process store in
+`kernel/attention_store.py`. A daemon, re-launched TUI, or bridge can therefore resolve the
+current record by session rather than relying on process memory. This is the same durable-state
+pattern B6 uses for control state (`docs/SESSION-CONTROL.md:30-43`), and the implementation
+status above records E5 as delivered rather than leaving the earlier design question open.
 
 ---
 
@@ -562,13 +571,13 @@ this design needs.
 
 | ID | Gap | Owner | Blocking | Status |
 |---|---|---|---|---|
-| **E1** | Authenticated principal → `Actor`, plus an additive `actor.auth` provenance field. B6 records `kind` as an unverified claim and names B8 as the mapper (`kernel/session_control.py:108-118`; `docs/SESSION-CONTROL.md:155-158`). | new adapter boundary + additive B6 field | **Hard blocker for any networked adapter.** Without it `kind:"human"` is spoofable and B6's human>automation takeover becomes a privilege-escalation path. | **consumed, not owned** (PR #230) |
+| **E1** | Authenticated principal → `Actor`, plus an additive `actor.auth` provenance field. B6 records `kind` as an unverified claim and names B8 as the mapper (`kernel/session_control.py:108-118`; `docs/SESSION-CONTROL.md:155-158`). | new adapter boundary + additive B6 field | **Hard blocker for any networked adapter.** Without it `kind:"human"` is spoofable and B6's human>automation takeover becomes a privilege-escalation path. | **merged and consumed, not owned** (PR #230) |
 | **E2** | Permission-grant store + `source.*` / `grant.*` audit actions. B6's action vocabulary is closed at thirteen session-control actions (`docs/SESSION-CONTROL.md:147-150`). | new ambient store; additive to B6's vocabulary | AC4 | **built** |
 | **E3** | Structured, editable interpretation record + `interpretation.propose/amend/confirm/cancel`. B6's handoff payload is free-text `reason`/`note` (`kernel/session_control.py:868-875`). | ambient layer (gating reuses B6 pause/claim unchanged) | AC1 | **built** |
-| **E4** | Push payload must carry B7's `event_id` + attach ref. Today ntfy fires from an external hook off the raw kernel event, outside the record (PR #202). | `hooks-notify-push` wiring / B7 routing | AC3 — **nothing in §3 works without it** | **delivered by B7** |
+| **E4** | Push payload must carry B7's `event_id` + attach ref. The app-owned sink consumes each new durable record directly and derives the stable ntfy destination identity from its `event_id`; no raw-completion producer remains. | `kernel/attention_push.py` / B7 routing | AC3 — **nothing in §3 works without it** | **delivered locally by B7; live mobile delivery remains release evidence** |
 | **E5** | Durable, cross-process attention records (`attention.jsonl` beside `control.json`). As published, `AttentionCenter` is a UI-layer object; another process cannot read it. **Verify against B7 before building** — may collapse to a documentation fix. | B7 (mirrors B6's proven durability pattern) | AC3 | **delivered by B7** |
 | **E6** | Cross-project session discovery. `SessionStore` enumerates one project (`kernel/persistence.py:345`). Cheap fix: read-side scan, no new write contract. | read-side projection | AC2/AC5 *breadth* (single-project already works) | **built** (scan, as recommended) |
-| **E7** | An authenticated inbound reply channel. ntfy is publish-only; its topic is a shared secret and world-readable when public (`docs/SETTINGS.md:215`). | new service — largest new surface, **explicitly out of v1** | *quick* reply only; reply-on-open needs nothing | **security core built; no listener ships** |
+| **E7** | An authenticated inbound reply channel. ntfy is publish-only; its topic is a shared secret and world-readable when public (`docs/SETTINGS.md:215`). | ambient reply boundary; remote TLS/tunnel deployment remains external | *quick* reply only; reply-on-open needs nothing | **security + submission + durable replay + session-owned/discoverable loopback listener built; no remote/mobile deployment** |
 | **E8** | Teams/Outlook connectors. Shape and permission requirements are specified in §1; **concrete API surfaces, delegated permission scopes and consent flows are deliberately unverified and OPEN** — Open question 1. | new source modules | AC4's Teams/Outlook instance | **port + local impl only — real connector genuinely external** |
 
 ### What needs **no** extension (the thin-adapter proof)
@@ -642,7 +651,7 @@ the right layer (`docs/DEVELOPMENT.md`, test-suite map):
 | Grants cached at session start survive a revoke | design | Consult grants **at use**, never at start — stated as a rule in §1 |
 | Activity scan cost grows with session count | `kernel/persistence.py:345` | mtime-keyed cache; add a write-side index only if measured too slow |
 | A pause parks the session while the human never answers | `kernel/session_control.py:1047-1051` (paused denies all writes) | Interpretations expire; expiry cancels **and resumes**, so a forgotten voice request cannot wedge a session |
-| This doc predates any implementation and cites two very fresh contracts | B6 has landed on `main` (PR #203); B7 (PR #202) is still open, not yet merged | Re-verify every B6/B7 cite before Phase 1; treat E5 as "verify first, then build" |
+| This doc predates implementation and cites contracts that were fresh when written | B6 landed in PR #203; B7 landed in PR #202 and its durability follow-up in PR #229; E1 authorization landed in PR #230 | Keep the dated verification notes, but use the implementation-status table above as the current verdict |
 | Teams/Outlook specifics get invented under delivery pressure | — | They are marked OPEN below and sequenced into Phase 4, behind the permission model that constrains them |
 
 ---
@@ -653,11 +662,11 @@ the right layer (`docs/DEVELOPMENT.md`, test-suite map):
 |---|---|---|---|
 | **AC1** — editable interpretation echo before consequential work | §2 | `session.pause` → `authorize()` denies all writes → `handoff.claim` + `submit(idem)` | **E3** (structured payload) |
 | **AC2** — sequence approved follow-on actions, report status across multiple sessions | §4 | per step: `lease.acquire` → `submit(idem)` → `lease.release`; stop on `control.conflict` | **E6** (cross-project discovery) |
-| **AC3** — mobile notification / quick reply answers a pending clarification and returns control to the same session | §3 | B7 `event_id` as correlation key + B6 handoff ref for re-entry + `acknowledge()` | **E4** (payload carries `event_id`), **E5** (durable records); **E7** only for *quick* reply — v1 ships reply-on-open and says so |
+| **AC3** — mobile notification / quick reply answers a pending clarification and returns control to the same session | §3 | B7 `event_id` as correlation key + exact pending decision id + optional B6 handoff ref + submit-before-acknowledge | **E4/E5 delivered; E7 proves signed loopback HTTP → exact `NeedsYouQueue` decision. A phone-reachable TLS/tunnel deployment is still external** |
 | **AC4** — cross-context access explicit, permissioned, attributable, limited to enabled sources | §1 | B6 `Actor` + `control-audit.jsonl` via `_audit()` | **E1** (authenticated principal), **E2** (grants + audit vocabulary), **E8** (connectors) |
 | **AC5** — open the underlying session; inspect what it did, why it paused, what remains | §4 | `attach_command` → `history.replay` (read-only observer) → optional `lease.acquire` / `handoff.claim` | **none** — works over B6 today |
 | **Design note** — preserve Brian's conversational-delegation and MJ's perceptual-visibility framings, un-collapsed | "The two framings" | §2/§3 are the delegation spine; §1/§4 the visibility spine; both share the B6 audit trail and the B7 attention record | — |
-| **Design note** — voice/mobile clients remain thin adapters | "Architecture" + extension table | The adapter rule plus the reduction test on every capability | 6 of 8 extensions are additive records/wiring; only E7 and E8 are new surfaces, both sequenced last |
+| **Design note** — voice/mobile clients remain thin adapters | "Architecture" + extension table | The adapter rule plus the reduction test on every capability | E7's loopback transport contains no policy; a future remote adapter still calls the same channel. E8 remains external |
 
 ---
 
@@ -668,11 +677,12 @@ the right layer (`docs/DEVELOPMENT.md`, test-suite map):
    required — none of that is asserted here, because none of it was verified. §1 specifies the
    integration **shape** and its permission/attribution requirements; the concrete API work is
    E8 and needs its own investigation before any estimate is believed.
-2. **Where does the ambient layer run?** In-TUI worker vs a local daemon. This decides the shape
-   of E5, E6 and E7, and it is the largest unstated architectural fork in this document.
-3. **Is reply-on-open (§3 option (c)) acceptable for AC3's "quick reply"**, or must the
-   authenticated ingress (E7) land in the same increment? That is the difference between a small
-   increment and a new service.
+2. **The local ambient layer is in-process/filesystem-backed.** The live TUI now owns the
+   loopback listener from post-identity boot through shutdown, with a private per-session port
+   record for same-host adapters. The remaining deployment question is which authenticated
+   TLS/tunnel service owns phone reachability; no public/LAN bind is silently opened here.
+3. **Reply-on-open remains the zero-network default; signed loopback quick reply is proven.**
+   A mobile claim still requires an owned TLS/tunnel and device-enrollment deployment test.
 4. **Grant scope: per-user global or per-project?** This document proposes per-user for
    `source:*` (a mail grant naturally spans sessions), which is the more permissive choice and
    deserves explicit sign-off.

@@ -16,6 +16,7 @@ from amplifier_app_tui.ui.app import TuiApp
 from amplifier_app_tui.ui.app_support import QUEUED_NOTICE, STEER_NOTICE
 from amplifier_app_tui.ui.demo_wiring import DemoRuntimeAdapter
 from amplifier_app_tui.ui.footer import footer_left_text, footer_right_text
+from amplifier_app_tui.ui.queued_strip import RECALL_HINT
 from amplifier_app_tui.ui.transcript import render_block
 
 from .test_flow_helpers import (
@@ -99,7 +100,7 @@ async def test_shift_enter_mid_turn_queues_strip_q1_and_auto_drains() -> None:
         await pilot.pause()
         assert app.queued_strip.display
         assert app.queued_strip.text == (
-            '▹ queued next: "ship the follow-up" · runs when this turn ends'
+            f'▹ queued next: "ship the follow-up" · runs when this turn ends · {RECALL_HINT}'
         )
         assert app.notice_slot.current == QUEUED_NOTICE
         state = app.footer_bar.state
@@ -112,7 +113,7 @@ async def test_shift_enter_mid_turn_queues_strip_q1_and_auto_drains() -> None:
         await pilot.press("shift+enter")
         await pilot.pause()
         assert app.queued_strip.text == (
-            '▹ queued next: "actually, this instead" · runs when this turn ends'
+            f'▹ queued next: "actually, this instead" · runs when this turn ends · {RECALL_HINT}'
         )
         state = app.footer_bar.state
         assert state.queued == 1
@@ -148,6 +149,215 @@ async def test_shift_enter_mid_turn_queues_strip_q1_and_auto_drains() -> None:
         # The drained message is echoed verbatim as the user line (mockup
         # drainQueue: ``this.userLine(next)``) before the scripted turn runs.
         assert any(b.text == "actually, this instead" for b in blocks_of(app, "user_line"))
+
+
+@pytest.mark.asyncio
+async def test_alt_up_recalls_queued_message_then_enter_steers_now() -> None:
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await _start_gated_turn(pilot, app)
+        await type_text(pilot, "interject with this")
+        await pilot.press("shift+enter")
+        await pilot.pause()
+
+        await pilot.press("alt+up")
+        await pilot.pause()
+        assert not adapter.steering.pending_next_turn
+        assert not app.queued_strip.display
+        assert app.footer_bar.state.queued == 0
+        assert app.composer.text == "interject with this"
+        assert app.notice_slot.current == (
+            "queued message recalled · enter steers now · shift+enter requeues"
+        )
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert [message.text for message in adapter.steering.pending_steers] == [
+            "interject with this"
+        ]
+        assert not adapter.steering.pending_next_turn
+        assert [block.text for block in blocks_of(app, "steer_echo")] == ["interject with this"]
+        adapter.release()
+
+
+@pytest.mark.asyncio
+async def test_alt_up_recalls_preserved_queue_after_turn_is_idle() -> None:
+    """A q1 preserved behind a draft must not become unreachable at turn end.
+
+    Queue drain deliberately refuses to overwrite a composer draft.  Once the
+    user parks or clears that draft, the strip's advertised Alt-Up action must
+    still work even though the producing turn has already finished.
+    """
+    adapter = DemoRuntimeAdapter(instant=True)
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await seed_done(pilot, app)
+        adapter.steering.enqueue("recover this turn", kind="next_turn")
+        app.queued_strip.show_queued("recover this turn")
+        app._refresh_footer()
+
+        assert not app.turn_active
+        assert app.footer_bar.state.context == "idle"
+        assert app.footer_bar.state.queued == 1
+
+        await pilot.press("alt+up")
+        await pilot.pause()
+
+        assert not adapter.steering.pending_next_turn
+        assert not app.queued_strip.display
+        assert app.footer_bar.state.queued == 0
+        assert app.composer.text == "recover this turn"
+        assert app.notice_slot.current == (
+            "queued message recalled · enter sends now · shift+enter requeues"
+        )
+
+
+@pytest.mark.asyncio
+async def test_recall_preserves_existing_draft_and_queued_message() -> None:
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await _start_gated_turn(pilot, app)
+        await type_text(pilot, "queued text")
+        await pilot.press("shift+enter")
+        await type_text(pilot, "draft in progress")
+
+        await pilot.press("alt+up")
+        await pilot.pause()
+        assert app.composer.text == "draft in progress"
+        assert [message.text for message in adapter.steering.pending_next_turn] == ["queued text"]
+        assert app.queued_strip.display
+        assert app.notice_slot.current == "composer has a draft · queued message kept"
+        adapter.release()
+
+
+@pytest.mark.asyncio
+async def test_recall_preserves_rich_draft_sidecars_and_queued_message() -> None:
+    """Alt-Up must not flatten or overwrite an in-progress paste/image draft."""
+    from amplifier_app_tui.kernel.clipboard import ImageAttachment
+
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    payload = "\n".join(f"draft row {index}" for index in range(20))
+    image = ImageAttachment(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "image/png")
+    async with app.run_test(size=SIZE) as pilot:
+        await _start_gated_turn(pilot, app)
+        await type_text(pilot, "queued text")
+        await pilot.press("shift+enter")
+
+        stub = app.composer.register_paste(payload)
+        assert stub is not None
+        app.composer.insert_text(f"review {stub} ")
+        app.composer.add_image(image)
+        rich_draft = app.composer.text
+
+        await pilot.press("alt+up")
+        await pilot.pause()
+
+        assert app.composer.text == rich_draft
+        assert payload in app.composer._expand(app.composer.text)
+        assert app.composer._staged_attachments(app.composer.text) == (image,)
+        assert [message.text for message in adapter.steering.pending_next_turn] == ["queued text"]
+        assert app.queued_strip.display
+        assert app.notice_slot.current == "composer has a draft · queued message kept"
+        adapter.release()
+
+
+@pytest.mark.asyncio
+async def test_queued_image_survives_recall_and_can_be_requeued() -> None:
+    from amplifier_app_tui.kernel.clipboard import ImageAttachment
+
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    payload = "\n".join(f"queued row {index}" for index in range(20))
+    image = ImageAttachment(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "image/png")
+    async with app.run_test(size=SIZE) as pilot:
+        await _start_gated_turn(pilot, app)
+        stub = app.composer.register_paste(payload)
+        assert stub is not None
+        app.composer.insert_text(f"inspect {stub} ")
+        app.composer.add_image(image)
+        visible_draft = app.composer.text
+        await pilot.press("shift+enter")
+        await pilot.pause()
+
+        queued = adapter.steering.pending_next_turn[0]
+        assert payload in queued.text
+        assert queued.attachments == (image,)
+        assert queued.draft is not None
+        await pilot.press("alt+up")
+        await pilot.pause()
+        assert app.composer.text == visible_draft
+        assert payload in app.composer._expand(app.composer.text)
+        assert app.composer._staged_attachments(app.composer.text) == (image,)
+
+        # Active-turn steering is text-only: Enter keeps the exact rich draft
+        # and teaches the full-turn queue chord instead of dropping image bytes.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not adapter.steering.pending_steers
+        assert not adapter.steering.pending_next_turn
+        assert app.composer.text == visible_draft
+        assert app.notice_slot.current == (
+            "images need a full turn · draft kept · shift+enter queues"
+        )
+
+        await pilot.press("shift+enter")
+        await pilot.pause()
+        requeued = adapter.steering.pending_next_turn[0]
+        assert requeued.attachments == (image,)
+        assert requeued.draft is not None
+        adapter.release()
+
+
+@pytest.mark.asyncio
+async def test_oversized_queue_rejection_restores_exact_rich_draft() -> None:
+    from amplifier_app_tui.kernel.clipboard import ImageAttachment
+    from amplifier_app_tui.model.queues import MAX_ITEM_CHARS
+
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    payload = "x" * (MAX_ITEM_CHARS + 1)
+    image = ImageAttachment(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "image/png")
+    async with app.run_test(size=SIZE) as pilot:
+        await _start_gated_turn(pilot, app)
+        stub = app.composer.register_paste(payload)
+        assert stub is not None
+        app.composer.insert_text(f"review {stub} ")
+        app.composer.add_image(image)
+        rich_draft = app.composer.text
+
+        await pilot.press("shift+enter")
+        await pilot.pause()
+
+        assert not adapter.steering.pending_next_turn
+        assert app.composer.text == rich_draft
+        assert app.composer._expand(app.composer.text).startswith("review " + payload)
+        assert app.composer._staged_attachments(app.composer.text) == (image,)
+        assert "32,768 character limit" in app.notice_slot.current
+        adapter.release()
+
+
+@pytest.mark.asyncio
+async def test_recall_keeps_queue_while_current_steer_is_waiting() -> None:
+    adapter = GatedDemoAdapter()
+    app = TuiApp(adapter)
+    async with app.run_test(size=SIZE) as pilot:
+        await _start_gated_turn(pilot, app)
+        await type_text(pilot, "first steer")
+        await pilot.press("enter")
+        await type_text(pilot, "next turn unless recalled")
+        await pilot.press("shift+enter")
+
+        await pilot.press("alt+up")
+        await pilot.pause()
+        assert [message.text for message in adapter.steering.pending_steers] == ["first steer"]
+        assert [message.text for message in adapter.steering.pending_next_turn] == [
+            "next turn unless recalled"
+        ]
+        assert app.notice_slot.current == "current steer already waiting · queued message kept"
+        adapter.release()
 
 
 @pytest.mark.asyncio
@@ -194,7 +404,7 @@ async def test_second_steer_queues_full_next_turn_message() -> None:
         await pilot.pause()
         assert len(blocks_of(app, "steer_echo")) == 1  # no second echo
         assert app.queued_strip.text == (
-            '▹ queued next: "second message" · runs when this turn ends'
+            f'▹ queued next: "second message" · runs when this turn ends · {RECALL_HINT}'
         )
         assert app.footer_bar.state.queued == 1
         assert len(adapter.steering.pending_steers) == 1

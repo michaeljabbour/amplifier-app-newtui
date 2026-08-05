@@ -17,10 +17,10 @@ Fail-closed invariants (Rust string-matches "Allow"-family options):
 - Presented options ALWAYS contain the verbatim strings ``Allow once`` /
   ``Allow always`` / ``Deny``.
 - Timeouts resolve to the ticket's default (deny unless stated otherwise).
-- Deferrals are parked directly into the ``NeedsYouQueue`` by governance
-  (classifier denials → ``NeedsYouQueue.defer``), NOT by the broker: a
-  deny-and-continue ticket times out to its default here while the
-  needs-you item stays retro-answerable (ADR-0007 resolution 5).
+- ``defer(ticket_id)`` parks the decision in ``NeedsYouQueue`` and resolves
+  the current approval to ``Deny`` immediately.  That is the actual
+  deny-and-continue contract: the blocked call returns an error to the model
+  now, while the parked decision stays retro-answerable for a later step.
 
 
 "Allow always" persistence is NOT handled here (user directive:
@@ -39,7 +39,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..model.queues import NeedsYouQueue
+from ..model.queues import NeedsYouItem, NeedsYouQueue
 
 from ..model.trust import CapabilityClass, DenialLog
 
@@ -89,13 +89,16 @@ class ApprovalTicket:
     timeout: float
     default: ApprovalDefault
     created_at: float
+    deferred: bool = False
+    decision_id: str = ""
+    """NeedsYouQueue id once deferred; empty if parking was unavailable."""
 
 
 class ApprovalBroker:
     """FIFO approval request broker (kernel ApprovalSystem implementation).
 
-    The inline approval bar answers :attr:`head`. UI listeners fire on
-    every queue change.
+    The inline approval bar answers :attr:`head`; ctrl-y calls :meth:`defer`.
+    UI listeners fire on every queue change.
 
     """
 
@@ -130,8 +133,15 @@ class ApprovalBroker:
     @property
     def head(self) -> ApprovalTicket | None:
         """The ticket the inline approval bar is answering (the oldest
-        pending ticket)."""
-        return self._tickets[0] if self._tickets else None
+        unresolved, non-deferred ticket)."""
+        return next(
+            (
+                ticket
+                for ticket in self._tickets
+                if not ticket.deferred and not ticket.future.done()
+            ),
+            None,
+        )
 
     def add_listener(self, listener: Listener) -> Callable[[], None]:
         self._listeners.append(listener)
@@ -208,6 +218,46 @@ class ApprovalBroker:
         if not ticket.future.done():
             ticket.future.set_result(choice)
 
+    def defer(self, ticket_id: str) -> NeedsYouItem | None:
+        """Park a ticket for later and deny the current call immediately.
+
+        Deferral must never leave the live tool call waiting.  Parking is
+        best-effort (the queue may be absent or full), but resolving the
+        approval to :data:`DENY` is unconditional so the model receives a
+        failed tool result and can continue with independent work.
+
+        Raises ``KeyError`` for an unknown/already-cleaned-up ticket and
+        ``ValueError`` for a duplicate deferral while cleanup is pending.
+        """
+        ticket = self._find(ticket_id)
+        if ticket.deferred:
+            raise ValueError(f"ticket {ticket_id} is already deferred")
+        ticket.deferred = True
+
+        item: NeedsYouItem | None = None
+        if self._needs_you is not None:
+            try:
+                item = self._needs_you.defer(
+                    ticket.prompt,
+                    ticket.detail.rule or "deferred approval",
+                    choices=ticket.options,
+                    highlight=deferral_highlight(
+                        ticket.prompt, ticket.detail.cwd, ticket.detail.command
+                    ),
+                    action=ticket.detail.command or ticket.prompt,
+                )
+            except ValueError:
+                # A full decision queue must degrade to a plain denial, never
+                # back into an invisible approval wait.
+                item = None
+        if item is not None:
+            ticket.decision_id = item.decision_id
+        self._record_deferral(ticket)
+        if not ticket.future.done():
+            ticket.future.set_result(DENY)
+        self._notify()
+        return item
+
     # -- internals -----------------------------------------------------------
 
     def _pop_staged(self, prompt: str) -> ApprovalDetail:
@@ -227,6 +277,15 @@ class ApprovalBroker:
             capability=capability,
             action=ticket.detail.command or ticket.prompt,
             reason="approval timed out · denied by default",
+        )
+
+    def _record_deferral(self, ticket: ApprovalTicket) -> None:
+        if self._denial_log is None:
+            return
+        self._denial_log.record_denial(
+            capability=_capability_or_exec(ticket.detail.capability),
+            action=ticket.detail.command or ticket.prompt,
+            reason="approval deferred · denied for current attempt",
         )
 
     def _find(self, ticket_id: str) -> ApprovalTicket:

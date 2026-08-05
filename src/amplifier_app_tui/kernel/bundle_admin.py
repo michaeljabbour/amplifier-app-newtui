@@ -6,7 +6,8 @@ tui is NOT built on app-cli's classes, so this module reuses the two
 layers that ARE shared:
 
 - **tui's own settings/discovery** (``kernel/config.py``) for the
-  scope files and local bundle search — the same ``bundle.active`` /
+  scope files and local bundle search — canonical ``tui.bundle.active``
+  (with legacy ``bundle.active`` fallback), plus the shared
   ``bundle.added`` / ``bundle.app`` keys the runtime already reads.
 - **amplifier-foundation** (``load_bundle`` / ``check_bundle_status`` /
   ``update_bundle`` / ``walk_include_chains``) for URI resolution,
@@ -28,6 +29,7 @@ import yaml
 
 from .config import (
     SettingsPaths,
+    TUI_SETTINGS_NAMESPACE,
     active_bundle_name,
     added_bundle_uris,
     bundle_search_paths,
@@ -105,28 +107,76 @@ def _bundle_section(data: dict[str, Any]) -> dict[str, Any]:
     return section
 
 
+def _tui_bundle_section(data: dict[str, Any]) -> dict[str, Any]:
+    """Canonical app-owned ``tui.bundle`` section, created as needed."""
+    namespace = data.get(TUI_SETTINGS_NAMESPACE)
+    if not isinstance(namespace, dict):
+        namespace = {}
+        data[TUI_SETTINGS_NAMESPACE] = namespace
+    section = namespace.get("bundle")
+    if not isinstance(section, dict):
+        section = {}
+        namespace["bundle"] = section
+    return section
+
+
+def _prune_tui_bundle(data: dict[str, Any]) -> None:
+    """Drop empty canonical containers after an app preference is removed."""
+    namespace = data.get(TUI_SETTINGS_NAMESPACE)
+    if not isinstance(namespace, dict):
+        return
+    section = namespace.get("bundle")
+    if isinstance(section, dict) and not section:
+        namespace.pop("bundle", None)
+    if not namespace:
+        data.pop(TUI_SETTINGS_NAMESPACE, None)
+
+
 # -- active bundle (bundle use / clear / current) ---------------------------
 
 
 def set_active_bundle(paths: SettingsPaths, name: str, scope: Scope) -> Path:
-    """Write ``bundle.active: <name>`` into *scope* (app-cli ``bundle use``)."""
+    """Write ``tui.bundle.active: <name>`` into *scope*.
+
+    The legacy top-level ``bundle.active`` is preserved for migration and for
+    other Amplifier apps.  TUI reads prefer this canonical namespaced value.
+    """
     path = scope_file(paths, scope)
     data = read_scope(path)
-    _bundle_section(data)["active"] = name
+    _tui_bundle_section(data)["active"] = name
     write_scope(path, data)
     return path
 
 
 def clear_active_bundle(paths: SettingsPaths, scope: Scope) -> bool:
-    """Remove ``bundle.active`` from *scope*; True when something was cleared."""
+    """Clear this app's active bundle at *scope* without clobbering legacy data.
+
+    When a legacy ``bundle.active`` remains, a namespaced ``null`` tombstone
+    masks it so ``bundle clear`` does not make the old value reappear.  With no
+    legacy fallback the canonical key is removed and empty containers are
+    pruned normally.
+    """
     path = scope_file(paths, scope)
     data = read_scope(path)
-    section = data.get("bundle")
-    if not isinstance(section, dict) or "active" not in section:
+    namespace = data.get(TUI_SETTINGS_NAMESPACE)
+    tui_bundle = namespace.get("bundle") if isinstance(namespace, dict) else None
+    namespaced_present = isinstance(tui_bundle, dict) and "active" in tui_bundle
+    namespaced_value = tui_bundle.get("active") if isinstance(tui_bundle, dict) else None
+    legacy_bundle = data.get("bundle")
+    legacy_present = isinstance(legacy_bundle, dict) and "active" in legacy_bundle
+
+    # A canonical null already masks any legacy fallback: effectively clear.
+    if namespaced_present and namespaced_value is None:
         return False
-    del section["active"]
-    if not section:
-        data.pop("bundle", None)
+    if not namespaced_present and not legacy_present:
+        return False
+
+    if legacy_present:
+        _tui_bundle_section(data)["active"] = None
+    else:
+        assert isinstance(tui_bundle, dict)
+        tui_bundle.pop("active", None)
+        _prune_tui_bundle(data)
     write_scope(path, data)
     return True
 

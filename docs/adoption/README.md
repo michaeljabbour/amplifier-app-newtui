@@ -41,9 +41,9 @@ history is the audit trail**, and a promotion is a commit somebody signed off on
 |---|---|---|---|
 | 1 | MJ Jabbour | ≥ 1 day | MJ daily-driver approval |
 | 2 | Brian Krabach | ≥ 1 day | Brian daily-driver approval |
-| 3 | three additional daily drivers (`feedback.tsv` seats) | ≥ 1 day | consolidated feedback, every seat dispositioned |
+| 3 | MJ Jabbour (consolidating three `feedback.tsv` seats) | ≥ 1 day | consolidated feedback, every seat dispositioned |
 | 4 | MJ Jabbour (team-wide default) | ≥ 1 day | documented rollback path + amplifier-app-cli still available |
-| 5 | MJ Jabbour (replacement) | — | ledger shows zero unresolved release-blockers |
+| 5 | MJ Jabbour (replacement) | ≥ 1 day | final observation, then zero-blocker replacement decision |
 
 Owner semantics: the stage owner is accountable for recording the stage — running the
 smoke, filing blockers, and writing the decision. For stages 1 and 2 the owner is also
@@ -77,11 +77,13 @@ read, and the drill is cited in `entry_evidence`.
 day; amplifier-app-cli remained installed and usable throughout (this is a hard
 requirement of stage 4, not a courtesy); no `release-blocking` row is open.
 
-**S5-entry** — `python3 scripts/adoption_gate.py promote 4` exits 0. That command *is*
-the replacement gate.
-**S5-exit** — amplifier-app-cli is marked deprecated in the team's docs and
-amplifier-app-tui is the documented default. Deprecated is not removed; see
-[Rollout messaging](#rollout-messaging) below.
+**S5-entry** — `python3 scripts/adoption_gate.py promote 4` exits 0; the stage-5 row records
+the candidate commit, start date, and the clear stage-4 gate in `entry_evidence`. Both tools
+remain available during a final observation window of at least one full day.
+**S5-exit** — no `release-blocking` row is open after that window; the observation is cited
+in `exit_evidence`; amplifier-app-cli is marked deprecated in the team's docs and
+amplifier-app-tui is the documented default. `python3 scripts/adoption_gate.py promote 5`
+is the final replacement gate. Deprecated is not removed; see [Rollout messaging](#rollout-messaging).
 
 ## Blocking defects — why a window is never enough
 
@@ -93,7 +95,7 @@ and both must hold:
 2. no `release-blocking` row in `blockers.tsv` is `open`.
 
 An open release-blocking defect blocks **every** stage promotion, at any stage,
-regardless of elapsed time — including stage 4, which is the replacement gate. It is
+regardless of elapsed time — including stage 5, which is the replacement gate. It is
 deliberately repo-wide rather than stage-scoped: a reliability defect found by a stage-3
 seat does not stop mattering because the calendar moved on.
 
@@ -143,6 +145,11 @@ wrapping punctuation is stripped — so `<name>`, `[ TBD ]`, `` `?` `` and `"N/A
 same answer: nobody. `-` is deliberately in the list: "not recorded" and "recorded as
 nothing" are the same fact, and splitting them would just create a second, weaker code path.
 
+Person fields have one additional, deliberately separate rule: a role is not a name.
+`PERSON_ROLE_PLACEHOLDERS` and the stage-seat pattern reject values such as `team`, `daily
+drivers`, and `stage-3 seats (see feedback.tsv)` as owners or participants. They remain valid
+inside ordinary evidence text, where phrases such as "team-wide smoke" are meaningful.
+
 **Where it is enforced:**
 
 | Field | Rule |
@@ -168,8 +175,11 @@ then editing one word in the decision column would be the entire bypass.
 So `check` **re-derives every promotion condition against every row that claims to be
 promoted**, every time it runs: real tested commit, real entry and exit evidence, start and
 end dates recorded, the minimum window actually elapsed between them, every earlier stage
-already promoted, and — for stage 3 — three named, dispositioned seats. A promotion that
-was never gated fails `check`, which fails the smoke, which fails the next PR.
+already promoted, no release-blocker already open at the recorded promotion date, and — for
+stage 3 — three named seats with dates, completion evidence, friction reports, dispositions,
+and disposition references. A promotion that was never gated fails `check`, which fails the
+smoke, which fails the next PR. A blocker opened later does not rewrite history, but it still
+blocks every future promotion.
 
 ## Rollback path
 
@@ -190,7 +200,7 @@ amplifier init      # only if ~/.amplifier/keys.env is not already set up
 precisely so this is possible:
 
 ```sh
-uv tool install --force git+https://github.com/michaeljabbour/amplifier-app-tui@<tested_commit>
+bash -o pipefail -c "curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/michaeljabbour/amplifier-app-tui/main/scripts/install.sh | bash -s -- --ref <tested_commit>"
 ```
 
 **Then record it.** A rollback is evidence, not an embarrassment: file the cause in
@@ -295,7 +305,7 @@ look rigorous, which is worse.
 
 | Claim | How |
 |---|---|
-| every stage has a real, named owner | placeholder owner is a hard validation error |
+| every stage has a real, named owner | placeholder or role-only owner is a hard validation error |
 | stage-3 seats hold real, named people | placeholders refused by name, per seat |
 | a seat carrying evidence has a name on it | hard validation error |
 | `tested_commit` is a real build | 7–40 hex, and — when git can be consulted — an object that exists in this clone |
@@ -305,7 +315,7 @@ look rigorous, which is worse.
 | stages promoted in order | checked both at promote time and on the recorded row |
 | a `promoted` row carries the evidence its criteria demand | `check` re-derives the whole gate for every promoted row |
 | no open release-blocking defect | repo-wide, independent of elapsed time (AC2/AC5) |
-| every seat is dispositioned | `untriaged` blocks stage 3 |
+| every seat has a complete feedback record | missing date, completion evidence, friction, disposition, or disposition reference blocks stage 3 |
 | the rollback mechanics hold | see [above](#the-rollback-path-is-verified-not-just-written-down) |
 
 **Left to human judgment, on purpose:**
@@ -359,6 +369,6 @@ The ledger format follows the repo's existing convention (`pipelines/ledger.tsv`
 |---|---|---|
 | AC1 owner, ≥1-day window, entry/exit criteria, recorded decision per stage | `stages.tsv` + [criteria](#entry-and-exit-criteria) | `adoption_gate.py check` — named owner (no placeholders), real `tested_commit`, ordered dates, and the **whole gate re-derived** for any row marked `promoted` |
 | AC2 blocking defects prevent promotion even after the window elapses | [Blocking defects](#blocking-defects--why-a-window-is-never-enough) | `adoption_gate.py promote` — window and blockers are independent conditions |
-| AC3 ≥3 additional daily drivers, feedback consolidated into tracked dispositions | `feedback.tsv`, [participant sheet](RUNBOOK.md#the-participant-sheet) | `adoption_gate.py promote 3` — 3 **named** seats (placeholders refused by seat id), each with a real commit, completion evidence and a non-`untriaged` disposition |
+| AC3 ≥3 additional daily drivers, feedback consolidated into tracked dispositions | `feedback.tsv`, [participant sheet](RUNBOOK.md#the-participant-sheet) | `adoption_gate.py promote 3` — 3 **named** seats (placeholders and role labels refused), each with a real commit, date, completion evidence, friction report, non-`untriaged` disposition, and disposition reference |
 | AC4 team-wide stage has a documented rollback path and continued CLI access | [Rollback path](#rollback-path), S4-exit | `adoption_gate.py rollback` for the mechanical half (command shapes, pinned commit, side-by-side install, no dependency tie); the drill itself stays human and the tool prints which half it skipped |
-| AC5 replacement only after zero unresolved release-blockers | S5-entry | `adoption_gate.py promote 4` — the replacement gate |
+| AC5 replacement only after zero unresolved release-blockers | S5 entry/exit | `adoption_gate.py promote 4` opens the final ≥1-day observation window; `adoption_gate.py promote 5` is the replacement gate and independently rechecks blockers |

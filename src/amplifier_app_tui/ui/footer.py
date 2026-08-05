@@ -120,8 +120,9 @@ class FooterState(BaseModel):
     """True when any usage this session was unpriceable → the total is a
     floor, rendered ``~$1.23`` (never lie in the footer)."""
     context_pct: int | None = None
-    """Context occupancy as a whole-number % of the real window (the same
-    ``compaction.max_tokens`` window ``/context`` meters against). ``None``
+    """Context occupancy as a whole-number % of the best-known real window
+    (provider-derived after native compaction, configured fallback before it).
+    ``None``
     before any usage, or when the window is unknown (donor parity:
     ``model.limit.context ? … : null`` — omit the %, never guess a
     denominator)."""
@@ -138,8 +139,8 @@ class FooterState(BaseModel):
     """Deferred needs-you decisions → orange ``N decisions waiting · ctrl-y``."""
     plan_done: int = Field(default=0, ge=0)
     plan_total: int = Field(default=0, ge=0)
-    """Plan fallback count — non-zero only while the plan panel is hidden
-    (narrow terminal); the footer then carries ``Plan N/M`` (design D2)."""
+    """Plan fallback count — non-zero only if a plan exists while its panel
+    is unavailable. Narrow layouts keep the panel and normally leave this 0."""
     context: Context = "idle"
     """Which hint set the right segment shows."""
     kitty_protocol: bool = True
@@ -219,8 +220,7 @@ then session id, then the model — the model is the identity users
 actually ask about, so it outlives the other decorations (story #4). The
 bundle is no longer part of this ladder (item D4): it doesn't ride the
 footer's left segment at all any more, so there is nothing left here to
-drop. Mode, cost, queue and ``Plan n/m`` never drop — design D2's footer
-fallback only works if the plan count survives."""
+drop. Mode, cost, queue, and any emergency ``Plan n/m`` fallback never drop."""
 
 
 def _fit_drops(state: FooterState, width: int) -> dict[str, bool]:
@@ -236,9 +236,7 @@ def _fit_drops(state: FooterState, width: int) -> dict[str, bool]:
 def footer_left_text_fit(state: FooterState, width: int) -> str:
     """The left segment, decorations dropped until it fits *width* cells.
 
-    Found live in forge at 80 cols: the full segment overflowed and the
-    terminal clipped ``Plan n/m`` — the one part the narrow-width ladder
-    exists to show. ``width <= 0`` (pre-layout) returns the full string.
+    ``width <= 0`` (pre-layout) returns the full string.
     """
     return SEPARATOR.join(_left_parts(state, **_fit_drops(state, width)))
 
