@@ -439,10 +439,15 @@ def test_cli_rejects_unknown_commands_without_raising() -> None:
 
 
 def test_cli_honours_dir_and_today_flags(tmp_path: Path) -> None:
-    # HEAD, because the CLI resolves tested_commit against this repo for real.
-    directory = _write(tmp_path, _stage_1_ready(commit=HEAD))
-    assert gate.main(["promote", "1", "--dir", str(directory), "--today", "2026-08-10"]) == 0
-    assert gate.main(["promote", "1", "--dir", str(directory), "--today", "2026-08-01"]) == 1
+    # A synthetic commit + an injected resolver that resolves it: --dir/--today flag
+    # handling is what this test is about, so nothing here touches real ambient git
+    # (see the "CLI: the end-to-end surface" section for the resolver-branch tests).
+    directory = _write(tmp_path, _stage_1_ready(commit="abc1234"))
+    resolver_factory = _resolves_only("abc1234")
+    ready = ["promote", "1", "--dir", str(directory), "--today", "2026-08-10"]
+    too_soon = ["promote", "1", "--dir", str(directory), "--today", "2026-08-01"]
+    assert gate.main(ready, resolver_factory=lambda: (resolver_factory, "")) == 0
+    assert gate.main(too_soon, resolver_factory=lambda: (resolver_factory, "")) == 1
 
 
 # -- placeholders: a stand-in is refused by name, never merely uncounted ------
@@ -986,11 +991,64 @@ def test_rollback_never_raises_on_a_broken_repo(tmp_path: Path) -> None:
 
 
 # -- CLI: the end-to-end surface ---------------------------------------------
+#
+# `gate.main` resolves commits through an injectable `resolver_factory` (defaulting to
+# the real `commit_resolver`), precisely so these end-to-end tests can assert all three
+# resolver answers explicitly instead of inheriting whatever THIS clone's ambient git
+# happens to be able to do. Without injection, "cannot tell" is exactly what happens on
+# GitHub Actions' default checkout (`actions/checkout`, fetch-depth 1 -> shallow): the
+# resolver honestly returns None, the commit check is skipped, and a test hard-coding
+# `== 1` for a fabricated commit fails there while passing on every full local clone -
+# see the shallow-clone repro in the PR description. Three branches, asserted separately:
 
 
-def test_cli_refuses_a_fabricated_commit_end_to_end(tmp_path: Path) -> None:
+def test_cli_refuses_a_fabricated_commit_end_to_end(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """resolver says the commit does NOT exist -> promote refuses, naming the commit.
+
+    A fabricated tested_commit is a validation error (stronger than a promote-time
+    refusal - it fails `check` too, see test_a_hex_shaped_but_unknown_commit_is_refused_
+    when_git_can_answer), so `promote` itself prints the short "run `check`" pointer;
+    running `check` with the same injected resolver surfaces the message that actually
+    names the fabricated commit.
+    """
     directory = _write(tmp_path, _stage_1_ready(commit=FABRICATED))
-    assert gate.main(["promote", "1", "--dir", str(directory), "--today", "2026-08-10"]) == 1
+    promote_argv = ["promote", "1", "--dir", str(directory), "--today", "2026-08-10"]
+    check_argv = ["check", "--dir", str(directory)]
+
+    assert gate.main(promote_argv, resolver_factory=lambda: (_resolves_only(), "")) == 1
+    assert gate.main(check_argv, resolver_factory=lambda: (_resolves_only(), "")) == 1
+    out = capsys.readouterr().out
+    assert f"tested_commit {FABRICATED!r} is not a commit in this repository" in out
+
+
+def test_cli_does_not_accuse_when_git_cannot_tell(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """resolver says it CANNOT TELL (shallow clone / no git) -> promote does not accuse.
+
+    This is the documented degrade-honest behaviour (`commit_resolver`'s docstring):
+    refusing to answer is not the same as answering "no". A real, correctly-recorded
+    commit must never be reported as fabricated just because this clone is shallow, so
+    the commit check is skipped rather than blocking - and the CLI still says plainly,
+    on stderr, that it could not verify.
+    """
+    directory = _write(tmp_path, _stage_1_ready(commit=FABRICATED))
+    argv = ["promote", "1", "--dir", str(directory), "--today", "2026-08-10"]
+    shallow_note = "shallow clone: commit history is incomplete, resolution would lie"
+    code = gate.main(argv, resolver_factory=lambda: (None, shallow_note))
+    assert code == 0
+    err = capsys.readouterr().err
+    assert "could not verify" in err
+
+
+def test_cli_allows_promotion_when_the_commit_really_resolves(tmp_path: Path) -> None:
+    """resolver says the commit EXISTS -> the commit check does not block."""
+    directory = _write(tmp_path, _stage_1_ready(commit="abc1234"))
+    argv = ["promote", "1", "--dir", str(directory), "--today", "2026-08-10"]
+    code = gate.main(argv, resolver_factory=lambda: (_resolves_only("abc1234"), ""))
+    assert code == 0
 
 
 def test_cli_no_git_falls_back_to_shape_only(tmp_path: Path) -> None:

@@ -928,7 +928,15 @@ def _cmd_rollback(ledger: Ledger, resolve: CommitResolver | None, note: str) -> 
     return 0
 
 
-def main(argv: list[str]) -> int:
+def main(
+    argv: list[str],
+    *,
+    resolver_factory: Callable[[], tuple[CommitResolver | None, str]] = commit_resolver,
+) -> int:
+    """CLI entry point. `resolver_factory` defaults to the real `commit_resolver` (this
+    repo, ambient git); tests inject a fake so their outcome does not depend on whatever
+    the ambient clone (shallow or full) can answer - see tests/test_adoption_gate.py.
+    """
     args = list(argv)
     today = date.today()
     directory: Path | None = None
@@ -951,9 +959,12 @@ def main(argv: list[str]) -> int:
     resolve: CommitResolver | None = None
     note = "commit resolution disabled (--no-git); shape checks still apply"
     if use_git:
-        resolve, note = commit_resolver()
+        resolve, note = resolver_factory()
         if resolve is None:
-            print(f"note: {note}", file=sys.stderr)
+            print(
+                f"note: could not verify commits against real git history ({note})",
+                file=sys.stderr,
+            )
 
     if command == "check":
         return _cmd_check(ledger, resolve)
