@@ -1,8 +1,19 @@
 # Anchors pin lifecycle — design / decision doc
 
 **Issue:** #53 — *Anchors pin lifecycle: automate pin bumps and surface staleness (why-pinned documented)*
-**Status:** proposed (doc is the deliverable; no code changes here)
+**Status:** implemented and superseded by the recursive source-lock policy (2026-08-05)
 **Scope:** how the tui wrapper's pinned `anchors` include gets refreshed, and how pin staleness stops being silent.
+
+> **Current-state note (2026-08-05):** This file is the historical decision
+> record for issue #53, so the evidence and phased plan below intentionally
+> describe the repository as it existed on 2026-07-22. The shipped working-tree
+> implementation has since gone further: all three outer Anchors references are
+> locked to a reviewed full Foundation SHA, `data/anchors-source-lock.json`
+> locks all recursive app-owned sources, `kernel/source_lock.py` applies that
+> lock at composition and activation, and `scripts/bump_anchors_ref.py` plus
+> the cold-cache verifier enforce deliberate updates. See the current
+> **Anchors ref lifecycle** section in `docs/DEVELOPMENT.md`; do not use the
+> older partial-pin or `@main` recommendations below as operational guidance.
 
 All file:line citations below were verified against the read-only `origin/main` checkout at
 `/Users/michaeljabbour/dev/tui-wt/base`.

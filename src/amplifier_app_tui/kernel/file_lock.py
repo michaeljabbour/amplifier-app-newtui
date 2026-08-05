@@ -27,15 +27,16 @@ from pathlib import Path
 
 
 @contextmanager
-def locked(target: Path, *, timeout: float = 5.0, stale_after: float = 30.0) -> Iterator[None]:
+def locked(target: Path, *, timeout: float = 5.0, stale_after: float = 30.0) -> Iterator[bool]:
     """Best-effort inter-process critical section around *target*.
 
     ``target`` need not exist; only a sibling ``<name>.lock`` marker file is
     created/removed. See the module docstring for the stale-break /
-    timeout-proceeds-anyway contract -- callers whose own writes are already
-    safe under a last-writer-wins race (an atomic tmp-write + ``os.replace``,
-    for instance) can treat the lock purely as a contention reducer, not a
-    correctness requirement.
+    timeout-proceeds-anyway contract -- the yielded boolean reports whether
+    the marker was actually acquired. Callers whose own writes are already
+    safe under a last-writer-wins race may ignore it and treat the lock as a
+    contention reducer. Read-modify-write callers must check it and fail
+    closed rather than execute an unlocked mutation.
     """
     lock = target.with_name(target.name + ".lock")
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -63,7 +64,7 @@ def locked(target: Path, *, timeout: float = 5.0, stale_after: float = 30.0) -> 
         acquired = True
         break
     try:
-        yield
+        yield acquired
     finally:
         if acquired:
             with suppress(OSError):

@@ -163,9 +163,9 @@ reopening this ADR, and this ADR does not wait on #187.
   PRs should cite this ADR rather than re-argue the name.
 - **The real want stays alive, in the right venue.** People who want to type `amplifier` and
   get the TUI are asking for (b). Appendix A is ready to file against `microsoft/amplifier`.
-- **The install/update docs stay correct as written.** README's
-  `uv tool install --reinstall git+…/amplifier-app-tui` is the right form precisely because it
-  does *not* pass `--force`; with a unique name it never reaches the collision path.
+- **The install/update docs stay correct as written.** README's canonical source installer
+  resolves and reinstalls `amplifier-app-tui` under its unique executable name. It does not
+  claim the platform's `amplifier` command, so it never reaches the collision path.
 - **If (b) is ever accepted upstream,** this repo's `amplifier-tui` keeps working with no
   change, and the README's "optional: the full Amplifier platform" section becomes the thing
   that needs an edit — not `[project.scripts]`.

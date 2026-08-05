@@ -8,20 +8,21 @@ client can consume without re-deriving them from the raw usage stream.
 Every number comes from a source the in-process TUI already trusts; none is
 fabricated (mirrors ``.ai/oc_donor.md``):
 
-- **tokens (context occupancy)** — the MOST RECENT
+- **tokens (context occupancy)** — the MOST RECENT root
   :class:`~amplifier_app_tui.kernel.events.ProviderResponseUsage` event's
-  summed tokens (``input + output + cache_read + cache_write``). This is the donor
+  gross prompt plus response/cache-creation tokens
+  (``input + output + cache_write``; cache reads are already inside input).
+  Native root compaction can also supply the request-view estimate. This is the donor
   panel's ``last.tokens.*`` sum: a snapshot of how full the context is *after the
   latest provider response*, NOT a session-wide accumulation.
 - **cost** — a :class:`~amplifier_app_tui.kernel.cost.CostTracker` over the same
   usage events, i.e. the exact pricing math the footer/reducer use. Its
   ``session_cost`` already includes any resume-seeded prior spend and its
   ``unpriced`` count drives the ``~$`` floor marker (never lie in the footer).
-- **window (the ``%`` denominator)** — supplied by the caller from
-  ``compaction.max_tokens`` (the app's effective context window — the same source
-  ``ui/app.context_usage()`` and the ``/context`` command use for ``NN% of 200k``).
-  This app has NO provider per-model context-limit registry, so when no window is
-  known the percentage is ``null`` — never guessed (donor
+- **window (the ``%`` denominator)** — learned from native root compaction's
+  provider-derived ``budget`` when available, else supplied by the caller from
+  ``compaction.max_tokens`` as a configured fallback. When no window is known the
+  percentage is ``null`` — never guessed (donor
   ``model.limit.context ? … : null`` parity).
 """
 
@@ -30,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .cost import CostTracker
-from .events import ProviderResponseUsage
+from .events import ContextCompacted, ProviderResponseUsage
 
 CONTEXT_STATE_TYPE = "context.state"
 WINDOW_SOURCE_COMPACTION = "compaction"
@@ -48,11 +49,21 @@ class ContextMeter:
 
     cost: CostTracker = field(default_factory=CostTracker)
     _last: ProviderResponseUsage | None = None
+    _context_tokens: int | None = None
+    _context_window: int | None = None
 
     def record(self, usage: ProviderResponseUsage) -> None:
         """Accumulate one provider response into cost + last-usage occupancy."""
         self.cost.record(usage)
         self._last = usage
+        self._context_tokens = usage.input_tokens + usage.output_tokens + usage.cache_write
+
+    def record_compaction(self, event: ContextCompacted) -> None:
+        """Learn the root request view and provider-derived budget."""
+        if event.after_tokens:
+            self._context_tokens = event.after_tokens
+        if event.budget:
+            self._context_window = event.budget
 
     @property
     def last_usage(self) -> ProviderResponseUsage | None:
@@ -66,10 +77,7 @@ class ContextMeter:
         cache.read + cache.write``; our normalized event folds reasoning into
         ``output_tokens``.
         """
-        usage = self._last
-        if usage is None:
-            return None
-        return usage.input_tokens + usage.output_tokens + usage.cache_read + usage.cache_write
+        return self._context_tokens
 
     def snapshot(
         self,
@@ -81,14 +89,18 @@ class ContextMeter:
     ) -> dict[str, object]:
         """Build the ``context.state`` record (a json-safe dict).
 
-        ``window`` is the context-window size (``compaction.max_tokens``); a
+        ``window`` is the configured fallback. A provider-derived native
+        compaction budget wins once observed. A
         non-positive or ``None`` window yields ``context_window``/``window_source``/
         ``context_pct`` all ``null`` — the honest "window unknowable" case. The
         percentage is whole-number ``round(tokens / window * 100)``, computed only
         when both a token figure and a positive window exist.
         """
         tokens = self.context_tokens
-        usable_window = window if (window is not None and window > 0) else None
+        candidate_window = self._context_window or window
+        usable_window = (
+            candidate_window if (candidate_window is not None and candidate_window > 0) else None
+        )
         pct: int | None = None
         if tokens is not None and usable_window is not None:
             pct = round(tokens / usable_window * 100)

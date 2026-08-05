@@ -60,6 +60,7 @@ _GLOBAL_ACTIONS = frozenset(
         "cycle_permission",
         "cycle_effort",
         "cycle_tail",
+        "recall_queued",
         "toggle_lanes",
         "toggle_thinking",
         "show_ledger",
@@ -115,9 +116,11 @@ class EscSequence:
     """
 
     interrupted_at: float | None = None
+    idle_at: float | None = None
 
     def arm_interrupt(self, now: float) -> None:
         self.interrupted_at = now
+        self.idle_at = None
 
     def consume_backtrack(self, now: float) -> bool:
         interrupted_at = self.interrupted_at
@@ -127,8 +130,17 @@ class EscSequence:
             and 0 <= now - interrupted_at <= keymap.ESC_BACKTRACK_WINDOW_SECONDS
         )
 
+    def arm_idle(self, now: float) -> None:
+        self.idle_at = now
+
+    def consume_idle(self, now: float) -> bool:
+        idle_at = self.idle_at
+        self.idle_at = None
+        return idle_at is not None and 0 <= now - idle_at <= keymap.ESC_BACKTRACK_WINDOW_SECONDS
+
     def reset(self) -> None:
         self.interrupted_at = None
+        self.idle_at = None
 
 
 def global_bindings() -> list[BindingType]:
@@ -250,6 +262,32 @@ def trim_after_checkpoint(view: TranscriptView, checkpoint_id: str) -> None:
     if cut is None:
         return
     for block_id in ids[cut + 1 :]:
+        view.remove_block(block_id)
+
+
+def trim_from_checkpoint(view: TranscriptView, checkpoint_id: str) -> None:
+    """Drop the selected checkpoint's prompt turn and everything after it.
+
+    Pre-prompt restore differs from the legacy post-turn fork: the selected
+    prompt itself is placed back in the composer, so its user line, response,
+    and stamped rule must all leave the transcript.
+    """
+    ids = view.block_ids
+    rule_index: int | None = None
+    for index, block_id in enumerate(ids):
+        block = view.get_block(block_id)
+        if block is not None and block.kind == "turn_rule" and block.checkpoint_id == checkpoint_id:
+            rule_index = index
+            break
+    if rule_index is None:
+        return
+    cut = rule_index
+    for index in range(rule_index, -1, -1):
+        block = view.get_block(ids[index])
+        if block is not None and block.kind == "user_line":
+            cut = index
+            break
+    for block_id in ids[cut:]:
         view.remove_block(block_id)
 
 
@@ -479,12 +517,24 @@ def finish_turn_queues(app: TuiApp) -> None:
     # reads as a bug. The listener drops the ↳ echoes.
     if app.adapter.steering.drain_steers():
         app.show_notice(STEER_DISCARDED_NOTICE)
+    pending = app.adapter.steering.pending_next_turn
+    if pending and app.composer.text:
+        # A checkpoint restore returns the selected prompt to the composer.
+        # Do not immediately run a previously queued message behind that
+        # editable draft: keep it visible so the user can interject, recall,
+        # or discard it deliberately.
+        app.queued_strip.show_queued(pending[0].text)
+        app.show_notice("composer has a draft · queued message kept")
+        return
     queued = app.adapter.steering.consume_next_turn_message()
     if queued is not None:
         app.show_notice("queued message picked up")
         # submit_queued, not submit: a drained turn emits no mode notice
         # (mockup drainQueue has no setMode), so the pickup notice stays.
-        app.run_worker(app.adapter.submit_queued(queued.text), exclusive=False)
+        # The app-owned worker restores this exact capsule when checkpoint or
+        # rewind recovery rejects it before acceptance, and contains later
+        # provider failures so a queue drain can never crash the TUI.
+        app.submit_queued_message(queued)
     remaining = app.adapter.steering.pending_next_turn
     if remaining:
         app.queued_strip.show_queued(remaining[0].text)
@@ -494,6 +544,11 @@ def finish_turn_queues(app: TuiApp) -> None:
 
 def handle_fork(app: TuiApp, checkpoint_id: str) -> None:
     """Rewind fork: backend confirms FIRST, then trim (ADR-0007 §Rewind)."""
+    if app.session_ops.context_operation_pending:
+        app.show_notice(
+            f"{app.session_ops.context_operation_label} in progress · rewind unavailable"
+        )
+        return
     checkpoint = app.ledger.checkpoint_by_id(checkpoint_id)
     if checkpoint is None:
         app.show_notice(f"unknown checkpoint · {checkpoint_id}")
@@ -502,6 +557,33 @@ def handle_fork(app: TuiApp, checkpoint_id: str) -> None:
         return  # one fork at a time — a second Enter must not double-fork
     app.fork_pending = True
     app.run_worker(confirm_fork(app, checkpoint.id, checkpoint.label), exclusive=False)
+
+
+def handle_restore(app: TuiApp, checkpoint_id: str, scope: str) -> None:
+    """Start one pre-prompt checkpoint restore (code, conversation, or both)."""
+    if app.session_ops.context_operation_pending:
+        app.show_notice(
+            f"{app.session_ops.context_operation_label} in progress · rewind unavailable"
+        )
+        return
+    if app.composer.capturing_decision or getattr(app, "_pending_custom_decision", None):
+        app.show_notice("finish or cancel the custom decision answer before restoring")
+        return
+    checkpoint = app.ledger.checkpoint_by_id(checkpoint_id)
+    if checkpoint is None:
+        app.show_notice(f"unknown checkpoint · {checkpoint_id}")
+        return
+    if scope not in {"both", "conversation", "code"}:
+        app.show_notice(f"unknown restore mode · {scope}")
+        return
+    if app.fork_pending:
+        return
+    app.fork_pending = True
+    app.composer.submission_blocked = True
+    app.run_worker(
+        confirm_restore(app, checkpoint.id, checkpoint.label, scope),
+        exclusive=False,
+    )
 
 
 async def confirm_fork(app: TuiApp, checkpoint_id: str, label: str) -> None:
@@ -543,6 +625,7 @@ async def confirm_fork(app: TuiApp, checkpoint_id: str, label: str) -> None:
             app.show_notice(f"fork failed · {error}")
             return
         trim_after_checkpoint(app.transcript, checkpoint_id)
+        app.reconcile_checkpoint_drafts()
         app.show_notice(f"forked from {checkpoint_id} · {label}")
         app.composer.focus_input()
         app.refresh_status()
@@ -551,6 +634,77 @@ async def confirm_fork(app: TuiApp, checkpoint_id: str, label: str) -> None:
         # Deferred turn-end queue duties (see docstring): the queued
         # next-turn message now picks up against the post-fork context.
         app.drain_turn_queues()
+
+
+async def confirm_restore(app: TuiApp, checkpoint_id: str, prompt: str, scope: str) -> None:
+    """Interrupt if needed, restore safely, then update the visible timeline.
+
+    Code restoration is kernel-owned and compare-and-swap guarded. Conversation
+    restoration reuses Amplifier Foundation's native turn slicing, but targets
+    the boundary *before* the selected prompt (including empty context before
+    turn one). The transcript and ledger change only after the kernel confirms.
+    """
+    from ..kernel.rewind import RewindError
+
+    safe_to_drain_queue = False
+    try:
+        if app.turn_active:
+            app.show_notice("interrupting turn to restore checkpoint …")
+            await app.adapter.interrupt()
+            while app.turn_active:
+                await asyncio.sleep(0.05)
+        checkpoint = app.ledger.checkpoint_by_id(checkpoint_id)
+        if checkpoint is None:
+            app.show_notice(f"restore failed · unknown checkpoint {checkpoint_id}")
+            return
+        restore_turn_id = checkpoint.before_turn_id
+        # Capture before ``trim_before`` removes the selected checkpoint from
+        # the live ledger. This app-owned capsule is the only place the compact
+        # paste stub exists; provider context intentionally stores expanded
+        # text and binary image blocks instead.
+        restored_draft = app.checkpoint_draft(checkpoint_id)
+        try:
+            outcome = await app.adapter.restore_checkpoint(checkpoint_id, app.ledger, scope)
+        except (RewindError, OSError, ValueError) as error:
+            app.show_notice(f"restore failed · {error}")
+            return
+
+        if outcome.conversation_restored:
+            # Real adapters restore against an immutable ledger snapshot on
+            # their runtime thread. Commit the actual mutable UI ledger here,
+            # on its owning app loop, only after the kernel confirms.
+            app.ledger.trim_before(checkpoint_id)
+            trim_from_checkpoint(app.transcript, checkpoint_id)
+            app.reducer.turn_base = restore_turn_id
+            if app.composer.text:
+                app.composer.remember_and_clear_draft()
+            if restored_draft is not None:
+                app.composer.restore_draft(restored_draft)
+            else:
+                app.composer.set_draft(
+                    prompt,
+                    outcome.prompt_attachments,
+                    compact_long_paste=True,
+                )
+            app.reconcile_checkpoint_drafts()
+        prefix = "partial restore" if outcome.partial else "restored"
+        app.show_notice(f"{prefix} {scope} · {outcome.summary}")
+        safe_to_drain_queue = not outcome.partial
+        app.composer.focus_input()
+        app.refresh_status()
+    finally:
+        app.composer.submission_blocked = False
+        app.fork_pending = False
+        if safe_to_drain_queue:
+            app.drain_turn_queues()
+        else:
+            # The interrupted turn set a close-out drain token. A partial or
+            # failed restore keeps the queued prompt user-controlled, so that
+            # stale token must not fire on the next unrelated runtime event.
+            app.cancel_turn_queue_drain()
+            pending = app.adapter.steering.pending_next_turn
+            if pending:
+                app.queued_strip.show_queued(pending[0].text)
 
 
 def run_pending_directive(app: TuiApp) -> None:
@@ -572,7 +726,7 @@ def run_pending_directive(app: TuiApp) -> None:
     app.submit_prompt(directive)
 
 
-def apply_decision(app: TuiApp, decision_id: str, answer: str) -> None:
+def apply_decision(app: TuiApp, decision_id: str, answer: str) -> bool:
     """Act on a deferred decision: answer it + log ``Applying decision``.
 
     Scrollback is append-only (mockup §7): the Needs-you listing stays in
@@ -581,11 +735,15 @@ def apply_decision(app: TuiApp, decision_id: str, answer: str) -> None:
     """
     from .needs_you import applying_decision_line
 
+    if app.session_ops.context_operation_pending:
+        app.show_notice(f"{app.session_ops.context_operation_label} in progress · decision kept")
+        return False
+
     try:
         item = app.adapter.needs_you.answer(decision_id, answer)
     except (KeyError, ValueError) as error:
         app.show_notice(str(error))
-        return
+        return False
     narration = app.adapter.decision_narration(answer, item.action) or applying_decision_line(
         answer
     )
@@ -599,6 +757,114 @@ def apply_decision(app: TuiApp, decision_id: str, answer: str) -> None:
     # attention record + its destination indicator where supported.
     app._acknowledge_attention()
     app.refresh_status()
+    return True
+
+
+def begin_custom_decision_capture(app: TuiApp, decision_id: str) -> None:
+    """Give the composer one explicit purpose: answer *decision_id*.
+
+    The visible bottom band is persistent (unlike a four-second notice), and
+    the composer's existing draft is parked losslessly until submit/cancel.
+    """
+    item = next(
+        (
+            pending
+            for pending in app.adapter.needs_you.pending
+            if pending.decision_id == decision_id
+        ),
+        None,
+    )
+    if item is None:
+        app.show_notice("decision is no longer waiting")
+        return
+    # A second custom chip switches targets without nesting draft snapshots.
+    if app._pending_custom_decision and app._pending_custom_decision != decision_id:
+        close_custom_decision_capture(app, notice=False)
+    app._pending_custom_decision = decision_id
+    app.palette.apply_filter(None)
+    from .file_mentions import close_file_mentions
+
+    close_file_mentions(app)
+    app.history_recall.show(None)
+    app.composer.begin_decision_capture()
+    app.decision_capture.show_question(needs_you_display_question(item))
+    app.composer.focus_input()
+    app._refresh_footer()
+
+
+def close_custom_decision_capture(
+    app: TuiApp,
+    *,
+    decision_id: str | None = None,
+    notice: bool = True,
+) -> bool:
+    """Close custom-answer mode and restore the parked composer draft."""
+    pending = app._pending_custom_decision
+    if not pending or (decision_id is not None and pending != decision_id):
+        return False
+    app._pending_custom_decision = None
+    app.decision_capture.close()
+    app.composer.end_decision_capture()
+    app.composer.focus_input()
+    app._refresh_footer()
+    if notice:
+        app.show_notice("custom answer cancelled · decision still waiting")
+    return True
+
+
+def apply_pending_custom_answer(app: TuiApp, text: str) -> bool:
+    """Apply *text* to the captured decision before normal composer routing.
+
+    ``True`` means custom-answer mode owned the input, even if queue resolution
+    failed; callers must not leak that text into submit/steer/queue handling.
+    """
+    decision_id = app._pending_custom_decision
+    if not decision_id:
+        return False
+    if app.session_ops.context_operation_pending:
+        app.show_notice(f"{app.session_ops.context_operation_label} in progress · decision kept")
+        return True
+    from .file_mentions import close_file_mentions
+
+    close_file_mentions(app)
+    if apply_decision(app, decision_id, text):
+        close_custom_decision_capture(app, decision_id=decision_id, notice=False)
+    return True
+
+
+def recall_queued_message(app: TuiApp) -> None:
+    """Recall the visible next-turn message into the composer for steering.
+
+    The queue pop is atomic.  Existing drafts and pending steers win, so this
+    action never overwrites text or creates the misleading second-steer→queue
+    loop the user was trying to escape.
+    """
+    if app._pending_custom_decision:
+        app.show_notice("finish or cancel the decision answer first")
+        return
+    if app.adapter.steering.pending_steers:
+        app.show_notice("current steer already waiting · queued message kept")
+        return
+    if app.composer.text:
+        app.show_notice("composer has a draft · queued message kept")
+        return
+    queued = app.adapter.steering.consume_next_turn_message()
+    if queued is None:
+        app.queued_strip.clear_queued()
+        app.show_notice("no queued message to recall")
+        app._refresh_footer()
+        return
+    app.queued_strip.clear_queued()
+    if queued.draft is not None:
+        app.composer.restore_draft(queued.draft)
+    else:
+        app.composer.set_draft(queued.text, queued.attachments)
+    app.composer.focus_input()
+    app._refresh_footer()
+    action = "steers now" if app.turn_active else "sends now"
+    app.show_notice(
+        f"queued message recalled · enter {action} · {app.composer.queue_hint} requeues"
+    )
 
 
 def _os_clipboard_commands() -> tuple[tuple[str, ...], ...]:
@@ -741,11 +1007,23 @@ def handle_esc(app: TuiApp, *, now: float | None = None) -> None:
             return
     if app.esc_sequence.consume_backtrack(pressed_at):
         app.action_open_rewind()
+        return
+    if app.esc_sequence.consume_idle(pressed_at):
+        if app.composer.text:
+            app.composer.remember_and_clear_draft()
+            app.show_notice("draft moved to history · ↑ restores it")
+        else:
+            app.action_open_rewind()
+        return
+    app.esc_sequence.arm_idle(pressed_at)
 
 
 PLAN_PANEL_MIN_WIDTH = 90
-"""Below this terminal width the plan panel yields; a ``Plan N/M`` count
-falls back to the footer (design D2 responsive ladder)."""
+"""Below this width the plan stacks under lanes and uses the full row.
+
+The earlier responsive ladder hid the only expand/collapse control and left
+narrow users with a passive ``Plan N/M`` footer count, contradicting S7 AC5.
+"""
 
 
 def apply_plan_change(app: TuiApp, items: tuple[TodoItem, ...]) -> None:
@@ -755,17 +1033,23 @@ def apply_plan_change(app: TuiApp, items: tuple[TodoItem, ...]) -> None:
 
 
 def sync_plan_surfaces(app: TuiApp) -> None:
-    """One decision point for the plan's responsive ladder (D2).
+    """Fit the interactive plan at every supported terminal width.
 
-    Wide (≥ 90 cols) with todos → the bottom-strip panel; otherwise the
-    panel hides and the footer carries the count (Task 5). Called on
-    every plan change and on terminal resize.
+    Wide layouts keep lanes and plan side by side. Narrow layouts stack the
+    plan below lanes at full width, preserving its keyboard/click expansion
+    control and bounded internal scrolling (S7 AC1/AC5). Called on every plan
+    change and terminal resize.
     """
     app.plan_panel.update_plan(app.plan_items)
-    if app.plan_items and app.size.width >= PLAN_PANEL_MIN_WIDTH:
+    narrow = app.size.width < PLAN_PANEL_MIN_WIDTH
+    app.query_one("#bottom-strip").set_class(narrow, "plan-narrow")
+    if app.plan_items:
         # Content-fitted width (37 floor, one-third cap) — real plans carry
-        # longer items than the mockup and wrapped at the fixed width.
-        app.plan_panel.styles.width = plan_panel_width(app.plan_items, app.size.width)
+        # longer items than the mockup and wrapped at the fixed width. Narrow
+        # layouts stack the plan, so it owns the full row instead.
+        app.plan_panel.styles.width = (
+            "100%" if narrow else plan_panel_width(app.plan_items, app.size.width)
+        )
         # S7 AC5: bound the (possibly expanded) panel's height to the
         # terminal's actual rows so a long expanded plan can never grow the
         # bottom strip enough to push the composer/footer off-screen —
@@ -803,8 +1087,7 @@ def sync_evidence_panel(app: TuiApp, width: int) -> None:
 
 
 def plan_footer_counts(app: TuiApp) -> tuple[int, int]:
-    """``(done, total)`` for the footer — (0, 0) unless the panel is hidden
-    while todos exist (the count never shows twice; design D2)."""
+    """``(done, total)`` fallback when a plan exists but no panel is visible."""
     if not app.plan_items or app.plan_panel.display:
         return (0, 0)
     return plan_counts(app.plan_items)
@@ -815,8 +1098,9 @@ def footer_state(app: TuiApp) -> FooterState:
     done, total = plan_footer_counts(app)
     # Live context readout (donor sidebar-context parity): context tokens
     # used + true % of the real window, sourced from the app's own
-    # ContextUsage (the same ``compaction.max_tokens`` window ``/context``
-    # meters against). Shown only once real usage exists.
+    # ContextUsage. Once native compaction fires this is the provider-derived
+    # budget and root request-view occupancy; before then it is the configured
+    # fallback estimate. Shown only once real usage exists.
     usage = app.context_usage()
     context_tokens = usage.used or None
     context_pct = usage.used_pct if usage.used > 0 else None
@@ -867,6 +1151,7 @@ __all__ = [
     "apply_plan_change",
     "sync_evidence_panel",
     "confirm_fork",
+    "confirm_restore",
     "echo_lane_steer",
     "echo_steer",
     "finish_turn_queues",
@@ -875,6 +1160,7 @@ __all__ = [
     "go_back_to_parent",
     "handle_esc",
     "handle_fork",
+    "handle_restore",
     "handle_lane_focus_change",
     "mount_approval",
     "needs_you_block",
@@ -884,4 +1170,5 @@ __all__ = [
     "sync_plan_surfaces",
     "sync_steer_echoes",
     "trim_after_checkpoint",
+    "trim_from_checkpoint",
 ]

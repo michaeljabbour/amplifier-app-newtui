@@ -26,11 +26,16 @@ digraph gene_transfer {
 
     // --- loop head: is there work left? (deterministic) ---
     CheckLedger [shape=parallelogram,
-        tool_command="cd $tui_path && test \"$(python3 pipelines/ledger.py earliest)\" = NONE && printf done || printf process"]
+        tool_command="cd $tui_path && result=$(python3 pipelines/ledger.py earliest-transferable 2>&1); case \"$result\" in NONE) printf done;; BLOCKED*) printf '%s\\nblocked' \"$result\";; *) printf process;; esac"]
 
     // --- pick the earliest 'new' issue, capture its acceptance criteria ---
     SelectIssue [shape=box, llm_provider="anthropic", llm_model="claude-opus-4-8",
-        prompt="Run `python3 pipelines/ledger.py earliest` in $tui_path — it prints '<issue> <slug>'. Read that GitHub issue: `gh issue view <issue> -R michaeljabbour/amplifier-app-tui`. Write TWO files under $tui_path/.ai/: (1) gt_current.md — issue number, slug, a one-paragraph capability summary, and the issue's Acceptance section VERBATIM; (2) gt_current.env — exactly two lines `ISSUE=<issue>` and `SLUG=<slug>`. Reset the retry counter: delete .ai/gt_retries if present. $goal"]
+        prompt="Run `python3 pipelines/ledger.py earliest-transferable` in $tui_path — it prints '<issue> <slug>' only after the transfer boundary has checked its provenance and effective owner disposition. Read that GitHub issue: `gh issue view <issue> -R michaeljabbour/amplifier-app-tui`. Write TWO files under $tui_path/.ai/: (1) gt_current.md — issue number, slug, a one-paragraph capability summary, and the issue's Acceptance section VERBATIM; (2) gt_current.env — exactly two lines `ISSUE=<issue>` and `SLUG=<slug>`. Reset the retry counter: delete .ai/gt_retries if present. $goal"]
+
+    // Recheck after selection and immediately before the first code-changing
+    // node. This closes both direct-ledger bypasses and selection/gate races.
+    RecheckOwnerGate [shape=parallelogram,
+        tool_command="cd $tui_path && set -a && . .ai/gt_current.env && set +a && python3 pipelines/ledger.py gate-transfer \"$ISSUE\" >/tmp/gt_owner_gate 2>&1 && printf proceed || { cat /tmp/gt_owner_gate 2>/dev/null; printf blocked; }"]
 
     // --- fresh per-issue branch off main (deterministic) ---
     BranchSetup [shape=parallelogram,
@@ -72,14 +77,18 @@ digraph gene_transfer {
     MarkBlocked [shape=parallelogram,
         tool_command="cd $tui_path && set -a && . .ai/gt_current.env && set +a && python3 pipelines/ledger.py update $ISSUE acknowledged >/dev/null && gh issue comment $ISSUE -b \"Auto gene-transfer could not converge after 3 attempts — needs a human. See branch gene-transfer/$SLUG and .ai/gt_plan.md.\" >/dev/null && git checkout -q main && printf next"]
 
+    owner_gate_blocked [shape=Msquare, label="transfer blocked\n(owner acceptance required)"]
     exit [shape=Msquare]
 
     // --- flow ---
     start -> CheckLedger
     CheckLedger -> exit        [condition="context.tool.last_line=done"]
     CheckLedger -> SelectIssue [condition="context.tool.last_line=process"]
+    CheckLedger -> owner_gate_blocked [condition="context.tool.last_line=blocked"]
 
-    SelectIssue -> BranchSetup
+    SelectIssue -> RecheckOwnerGate
+    RecheckOwnerGate -> BranchSetup [condition="context.tool.last_line=proceed"]
+    RecheckOwnerGate -> owner_gate_blocked [condition="context.tool.last_line=blocked"]
     BranchSetup -> LocateDonor
     LocateDonor -> PlanTransfer
     PlanTransfer -> Implement

@@ -8,6 +8,13 @@
 > `tool-skills`, `hooks-notify-push`, `hook-redaction`). Historical record; the
 > implemented state is documented in ARCHITECTURE.md.
 
+> **Later reproducibility closure (2026-08-05):** The partial-pin warnings and
+> `@main` guidance below describe the migration-era implementation, not the
+> current policy. The wrapper now pins a reviewed full Foundation SHA and the
+> packaged `anchors-source-lock.json` locks every recursive app-owned source;
+> `kernel/source_lock.py` enforces that lock during composition and module
+> activation. Use `docs/DEVELOPMENT.md` as the current operational guide.
+
 > **Execution:** Use the subagent-driven-development workflow to implement this plan.
 > **For execution:** `/execute-plan`
 

@@ -328,6 +328,33 @@ async def test_hidden_root_stream_paints_peek_hint(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_root_stream_identity_labels_hidden_and_revealed_views_at_narrow_width() -> None:
+    """D6 AC4: both live projections name producer + authoritative turn.
+
+    The identity is presentation metadata only: consolidation still emits
+    exactly the streamed model text, never a synthetic label in history.
+    """
+
+    app = TailHarness()
+    async with app.run_test(size=(40, 18)) as pilot:
+        tail = _tail(app)
+        tail.open_stream(block_type="text", producer="main", turn=7)
+        assert tail.identity_label == "main · t7"
+        assert "▸ main · t7 · responding…" in tail._reveal_hint()
+
+        tail.toggle_reveal()
+        tail.feed("one authoritative response")
+        await pilot.pause(THROTTLE_SECONDS * 4)
+        markup = tail._markup()
+        assert markup.startswith("[$dimmer]main · t7[/]\n")
+        assert markup.count("one authoritative response") == 1
+
+        answer = tail.consolidate("b-identity")
+        assert "".join(span.text for span in answer.spans) == "one authoritative response"
+        assert "main · t7" not in "".join(span.text for span in answer.spans)
+
+
+@pytest.mark.asyncio
 async def test_revealed_root_stream_paints_capped_content(monkeypatch) -> None:
     """After reveal, an open stream paints the last few lines of real content."""
     app = TailHarness()

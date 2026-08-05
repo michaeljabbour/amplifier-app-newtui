@@ -40,19 +40,37 @@ async def test_plan_panel_lights_up_mid_turn_and_collapses_when_done() -> None:
 
 
 @pytest.mark.asyncio
-async def test_plan_panel_hides_below_90_cols() -> None:
+async def test_plan_panel_stacks_and_remains_interactive_below_90_cols() -> None:
     adapter = GatedDemoAdapter()
     app = TuiApp(adapter)
-    async with app.run_test(size=(80, 40)) as pilot:
+    async with app.run_test(size=(80, 18)) as pilot:
         await seed_done(pilot, app)
         app.submit_prompt(BUILD_PROMPT)
         assert await wait_for(pilot, lambda: bool(app.plan_items))
-        assert not app.plan_panel.display  # ladder: count-only below 90 cols
-        assert "Plan 0/3" in footer_left_text(app.footer_bar.state)
+        assert app.plan_panel.display
+        assert app.query_one("#bottom-strip").has_class("plan-narrow")
+        assert str(app.plan_panel.styles.width) == "100w"
+        assert "Plan" not in footer_left_text(app.footer_bar.state)
+
+        from amplifier_app_tui.model.blocks import TodoItem
+
+        app.plan_panel.update_plan(
+            tuple(
+                TodoItem(
+                    content=f"narrow task {i}",
+                    status="in_progress" if i == 0 else "pending",
+                )
+                for i in range(20)
+            )
+        )
+        await pilot.press("ctrl+h")
+        await pilot.pause()
+        assert app.plan_panel.expanded
+        assert app.plan_panel.max_scroll_y > 0
+        assert app.composer.region.y + app.composer.region.height <= app.size.height
         adapter.release()
         assert await wait_for(pilot, lambda: not app.turn_active)
-        assert not app.plan_panel.display
-        assert "Plan 3/3" in footer_left_text(app.footer_bar.state)
+        assert app.plan_panel.display
 
 
 @pytest.mark.asyncio
@@ -90,15 +108,12 @@ async def test_expanded_plan_stays_bounded_and_composer_reachable_at_short_heigh
 
 # -- S7 gap 1: ctrl+h is a genuine keyboard-REACH path, not just an -------
 # activate-once-focused affordance. These drive the real TuiApp + keymap
-# dispatch (not the bare PlanPanel widget) so the assertions prove the
-# chord is actually wired end-to-end, and that it never steals keyboard
-# focus from the composer -- the same composer-always-has-focus idiom
-# ctrl+n/ctrl+t/ctrl+g already rely on (and the same reasoning S6's
-# FocusHeader docstring records for not making that header Tab-reachable).
+# dispatch (not the bare PlanPanel widget) so the assertions prove the chord
+# focuses the actual control, toggles it, and provides a return path.
 
 
 @pytest.mark.asyncio
-async def test_ctrl_h_reaches_and_toggles_plan_overflow_without_prior_focus() -> None:
+async def test_ctrl_h_focuses_and_toggles_plan_overflow_without_prior_focus() -> None:
     from amplifier_app_tui.model.blocks import TodoItem
 
     adapter = GatedDemoAdapter()
@@ -120,17 +135,22 @@ async def test_ctrl_h_reaches_and_toggles_plan_overflow_without_prior_focus() ->
         await pilot.press("ctrl+h")
         await pilot.pause()
         assert app.plan_panel.expanded is True  # reached AND toggled in one press
-        assert app.composer.has_focus_within  # ...and never lost focus doing it
-        assert app.focused is not app.plan_panel.overflow_control
+        assert app.focused is app.plan_panel.overflow_control
+        assert app.plan_panel.overflow_label.endswith("Show less")
 
-        # The composer still takes keystrokes -- ctrl+h never stranded focus
-        # on the plan panel the way a literal Tab-to-widget path might.
+        # Enter activates the selected control itself, proving the same
+        # keyboard path named by AC1 rather than only a global-state bypass.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.plan_panel.expanded is False
+        assert app.focused is app.plan_panel.overflow_control
+
+        # Esc is the explicit return to normal typing.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.composer.has_focus_within
         await type_text(pilot, "hi")
         assert app.composer.text == "hi"
-
-        await pilot.press("ctrl+h")
-        await pilot.pause()
-        assert app.plan_panel.expanded is False  # reversible, same chord
         adapter.release()
 
 

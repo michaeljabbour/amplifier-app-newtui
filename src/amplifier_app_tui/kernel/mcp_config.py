@@ -6,16 +6,18 @@ and connects to each at session start. This module is the small
 read/modify/write layer over that file (mirroring app-cli's
 ``McpConfigStore``): atomic writes, never raises on a bad file.
 
-Servers connect when the session mounts tool-mcp, so edits here take
-effect on the NEXT session — ``/mcp`` says so rather than pretending a
-live reload exists (tool-mcp exposes none).
+The runtime persists through this layer, then reconciles the effective
+configuration with the current session. New servers can connect immediately;
+boot-owned aggregate connections remain an explicit restart boundary unless
+the mounted module publishes a per-server ``mcp.reconcile`` capability.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 _KEY = "mcpServers"
 
@@ -39,6 +41,34 @@ def read_servers(path: Path) -> dict[str, Any]:
     """The ``mcpServers`` mapping (name → server spec)."""
     servers = read_config(path).get(_KEY)
     return servers if isinstance(servers, dict) else {}
+
+
+def read_effective_servers(
+    *,
+    project_dir: Path,
+    user_path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    inline: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge the same MCP config scopes the pinned ``tool-mcp`` reads.
+
+    Priority is user < project < ``AMPLIFIER_MCP_CONFIG`` < inline.  The
+    command surface uses this snapshot *before* writing a change so the live
+    reconciler can distinguish a genuinely new server (safe for a targeted
+    connection) from one owned by the boot-time aggregate manager.
+    """
+    merged: dict[str, Any] = {}
+    merged.update(read_servers(user_path or mcp_config_path()))
+    merged.update(read_servers(project_dir / ".amplifier" / "mcp.json"))
+    env = environ if environ is not None else os.environ
+    env_path = env.get("AMPLIFIER_MCP_CONFIG")
+    if env_path:
+        merged.update(read_servers(Path(env_path).expanduser()))
+    if isinstance(inline, Mapping):
+        servers = inline.get("servers")
+        if isinstance(servers, Mapping):
+            merged.update({str(name): spec for name, spec in servers.items()})
+    return merged
 
 
 def _write(path: Path, data: dict[str, Any]) -> None:
@@ -92,6 +122,7 @@ __all__ = [
     "describe_server",
     "mcp_config_path",
     "read_config",
+    "read_effective_servers",
     "read_servers",
     "remove_server",
 ]

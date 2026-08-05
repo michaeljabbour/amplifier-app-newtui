@@ -84,7 +84,9 @@ These are the rules the whole design hangs on. Every one is enforced by tests an
    immutable block state; colors are theme-token *names*, so a theme switch is a repaint.
 6. **Deny-and-continue.** Governance denials never halt a turn; they synthesize a denial
    result and keep going.
-7. **Confirm-then-trim.** Rewind mutates UI state only after the fork backend succeeds.
+7. **Confirm-then-trim, conflict-safe files.** Conversation restore mutates transcript/UI
+   state only after the context backend succeeds; workspace restore uses per-file
+   compare-and-swap and skips conflicts instead of overwriting them.
 8. **The runtime thread never blocks rendering** and vice versa (see §4.3).
 
 ---
@@ -101,11 +103,15 @@ src/amplifier_app_tui/
 │   ├── session_factory.py create_initialized_session(): canonical session bring-up
 │   ├── runtime.py         RealRuntime: boot, submit, hook registration, turn close-out
 │   ├── session_ops.py     live-session ops for /model /effort /compact /clear /status
-│   │                       /tools /agents /skills /mcp (over the coordinator)
+│   │                       /tools /agents /skills (over the coordinator)
+│   ├── skill_activation.py palette skill result → next-turn hook-origin context
+│   ├── bundle_compose.py  safe live additive provider/tool/hook/agent composition
+│   ├── bundle_content.py  prepared bundle instruction/context → next-turn context
+│   ├── live_mcp.py        ownership-aware current-session MCP reconciliation
 │   ├── bundle_admin.py    bundle CLI logic (list/show/use/… over the shared registry)
 │   ├── setup.py           init: provider discovery + keys.env writer
 │   ├── updater.py         update: foundation-backed bundle/module refresh (backs `update`)
-│   ├── mcp_config.py      ~/.amplifier/mcp.json read/modify/write (for /mcp)
+│   ├── mcp_config.py      effective MCP scopes + atomic user-config persistence
 │   ├── events.py          UIEvent union + normalize() — THE normalization boundary
 │   ├── queue_bridge.py    hooks → asyncio.Queue[UIEvent]
 │   ├── governance_hook.py app-side tool:pre approval + path-policy gate (§7.2)
@@ -113,7 +119,8 @@ src/amplifier_app_tui/
 │   ├── approval.py        ApprovalBroker: tickets, timeout→deny, defer to needs-you
 │   ├── steering.py        StepBoundaryBridge: mid-turn context injection
 │   ├── spawner.py         SessionSpawner: in-process subagents + routing preference apply
-│   ├── rewind.py          RewindController: confirm-then-trim forking
+│   ├── rewind.py          RewindController: pre-prompt conversation restore/fork helpers
+│   ├── checkpoints.py     private structured-file preimages + CAS workspace restore
 │   ├── git_yield.py       bounded git diff snapshots → turn yield labels (+ /diff patch)
 │   ├── turn_yield.py      TurnYieldTracker (tests-ran heuristic)
 │   ├── cost.py            CostTracker: Decimal pricing, resume re-seed
@@ -141,7 +148,7 @@ src/amplifier_app_tui/
 ├── data/bundles/tui.md   packaged default bundle (byte-identical to repo bundle.md)
 └── ui/                Textual layer
     ├── app.py             TuiApp composition root
-    ├── app_support.py     esc-chain, approval bar mount, fork confirm, footer state
+    ├── app_support.py     esc-chain, approval bar mount, restore confirm, footer state
     ├── command_context.py AppCommandContext: CommandContext protocol → running app
     ├── runtime_adapter.py RuntimeAdapter seam; RealRuntimeAdapter (thread marshalling)
     ├── demo_wiring.py     DemoRuntimeAdapter
@@ -158,7 +165,8 @@ src/amplifier_app_tui/
     ├── plan_panel.py      ambient Plan N/M checklist strip (todo tool)
     ├── motion.py          shared presentation-only motion primitives for active labels
     └── footer.py / chrome.py / approval_bar.py / rewind_strip.py / needs_you.py /
-        queued_strip.py / notices.py / themes.py / segments.py / term_probe.py
+        queued_strip.py / decision_capture.py / notices.py / themes.py / segments.py /
+        term_probe.py
 ```
 
 ---
@@ -282,11 +290,12 @@ Two events are deliberately **app-synthesized** rather than hook-driven:
 
 `RealRuntime` runs on a dedicated **`real-runtime` daemon thread with its own asyncio loop**,
 so slow hooks and provider I/O can never starve Textual's render loop. Calls *in* (submit,
-interrupt, fork, approval answers) marshal via `run_coroutine_threadsafe`; events *out*
-marshal via `call_soon_threadsafe` onto the app-loop queue. `RuntimeAdapter` is the seam that
-owns the queue plus the shared interaction state (steering queue, needs-you queue, denial
-log) and the call surface (`submit / interrupt / fork / turn_spec / evidence_links / …`).
-`DemoRuntimeAdapter` implements the identical surface in-process.
+interrupt, checkpoint restore, fork, approval answers) marshal via
+`run_coroutine_threadsafe`; events *out* marshal via `call_soon_threadsafe` onto the app-loop
+queue. `RuntimeAdapter` is the seam that owns the queue plus the shared interaction state
+(steering queue, needs-you queue, denial log) and the call surface (`submit / interrupt /
+restore_checkpoint / fork / turn_spec / evidence_links / …`). `DemoRuntimeAdapter`
+implements the identical surface in-process.
 
 ### 4.4 End-to-end flow
 
@@ -318,11 +327,14 @@ TuiApp
 │   ├── TranscriptView #transcript  durable history: selectable archive + widget tail
 │   ├── LiveTail #live-tail         the ONE mutable streaming region (~30 Hz throttle)
 │   └── NoticeSlot #notice-slot     floating transient notices (own layer)
-├── PaletteStrip / LanesPanel / RewindStrip / QueuedStrip     overlay strips,
+├── PaletteStrip / LanesPanel + PlanPanel / RewindStrip / SessionsStrip /
+│   QueuedStrip                       overlay strips,
 │                                   display:none until opened, docked above composer
+├── DecisionCaptureStrip              persistent custom-answer context band
 ├── Container #composer-slot
 │   └── Composer                    swapped for ApprovalBar while an approval is pending
-└── FooterBar #footer-bar           mode · trust · bundle · $cost │ context-sensitive hints
+└── FooterBar #footer-bar           mode · trust · model · session · context · $cost
+                                    │ context-sensitive hints (bundle stays in title)
 ```
 
 `TitleBar` owns the only 260 ms active-turn spinner timer. Each changed frame
@@ -352,6 +364,10 @@ unidirectional loop: events flow down through the reducer; intents flow up as me
 an immutable `Answer` block at `stream_block_end`. Completed streaming lines already use
 the final answer renderer while only the trailing partial line stays mutable; pipe tables
 remain held until their widths are stable, and half-open fences retain code styling.
+The reducer supplies the root tail's `main · tN` identity from the same active `_Turn`
+that owns checkpoint/ledger numbering. Child tails take identity from their containing
+`LaneRecord` row and focused banner. These labels are projection metadata: consolidation
+persists model text only, so identity cannot duplicate or reorder stream content.
 
 **Infinite-history layout.** The newest ~1000 transcript blocks remain independent widgets.
 When history grows beyond that tail, finalized older blocks consolidate into one
@@ -363,8 +379,8 @@ the 16ms streaming frame budget without truncating the conversation.
 **Pure rendering.** Each block kind has a `_render_*` function; `render_block(block, width)`
 returns lines of segments referencing theme variables (via `ui/segments.py`) — which makes
 the renderer golden-testable as plain text at multiple widths, and makes theme switching a
-repaint (themes: slate / graphite / carbon in `ui/themes.py`, the only module containing hex
-values).
+repaint (themes: slate / graphite / carbon / paper in `ui/themes.py`, the only module
+containing hex values).
 
 **Block vocabulary** (`model/blocks.py`, discriminated union on `kind`): `SessionBanner`,
 `UserLine`, `Narration`, `ToolLine` (the collapsible burst digest: *"Read 4 files · ran 6
@@ -393,6 +409,7 @@ It **only posts messages; it never executes anything**:
 | Enter (idle) | `Submit` (with staged image attachments) |
 | Enter (turn running) | `Steer` — text-only mid-turn steering |
 | Shift+Enter (Alt+Enter fallback) | `QueueMessage` — a full next turn |
+| Enter (decision capture) | `DecisionAnswer` — outranks submit, steer, queue, and slash commands |
 | Ctrl+J / Ctrl+Enter | literal newline (app-cli parity + terminal alternate) |
 | Large paste (>10 lines / 800 chars) | collapses to a `[Pasted #N · …]` stub, expanded verbatim at submit |
 | Image path paste / Ctrl+V | `[Image #N]` attachment (off-thread clipboard read) |
@@ -425,6 +442,9 @@ Keymap-as-data: one `Binding` table feeds both Textual bindings and the footer h
 advertised keys can never drift from the real ones; `validate()` rejects duplicate
 key+context claims. Esc resolves through an explicit `ESC_CHAIN`:
 `lane_unfocus → close_palette → close_rewind → close_lanes → interrupt_running`.
+The app-level `EscSequence` adds the temporal chord: with an empty composer, double-Esc
+opens checkpoints; during a turn the first Esc interrupts and the second opens restore;
+an idle draft is cleared into recall history rather than overwritten by the picker.
 The palette (`ui/palette.py`) is a strip docked above the composer (never a modal),
 substring-filtered (not fuzzy), slaved to composer text, and posts `CommandRun` messages
 rather than executing anything itself.
@@ -503,7 +523,8 @@ Two policies share Amplifier's hook/approval mechanism:
   root is always injected into `allowed_write_paths`; configured lists union rather than
   replacing it.
 - The bundle-native stack arrives FROM the composed `anchors` bundle (the packaged tui
-  bundle is a thin wrapper that includes anchors at a pinned SHA):
+  bundle is a thin wrapper that tracks the only fetchable anchors source, Foundation
+  `@main`; every other app-owned dependency is pinned and the exception is guarded):
 
 - **`hooks-mode`** (`tool:pre`, pri −20) reads `session_state["active_mode"]` and, per the
   mode's YAML, allows / warns / confirms / blocks a tool (and sets
@@ -528,11 +549,11 @@ semantics remain one path.
 `ApprovalBroker` implements the kernel `request_approval` contract as a FIFO of structured
 `ApprovalDetail` tickets. The inline `ApprovalBar` (which replaces the composer, and owns
 the keyboard — arrows/tab select, enter confirms, esc denies) answers the head; timeout
-resolves to the default (deny) and lands in the `DenialLog`. Deferrals into the
-`NeedsYouQueue` (where an item stays retro-answerable — answering later injects a next-turn
-user instruction) are driven by governance: classifier denials park needs-you items via
-`decision_deferred` notifications, not by a direct keybinding — `ctrl+y` opens the needs-you
-*list* and is inactive while the approval bar is up. A `min_timeout` floor exists because the kernel's
+resolves to the default (deny) and lands in the `DenialLog`. Ctrl-y on the bar calls
+`ApprovalBroker.defer`: it parks a retro-answerable `NeedsYouQueue` item and immediately
+resolves the current ticket to Deny, so the failed tool result returns to the model and
+work continues. Classifier denials use the same queue without opening a live approval.
+A `min_timeout` floor exists because the kernel's
 
 300-second default was silently denying while users were still reading.
 
@@ -546,7 +567,9 @@ user instruction) are driven by governance: classifier denials park needs-you it
   end — an unconsumed steer must never become a turn the user didn't send.
 - **Queued messages** (shift+enter) occupy a single next-turn slot (a second enqueue
   replaces the first) and *do* increment `turn_id`; steers do not. `turn_id` is app-assigned
-  and monotonic, stamped at prompt submit.
+  and monotonic, stamped at prompt submit. Alt+Up or a click on the queued strip consumes
+  that slot into an empty composer, where Enter can steer it immediately; recall refuses
+  when doing so would overwrite a draft or collide with a pending steer.
 - **Interrupt context** (`kernel/runtime.py`): after an accepted graceful cancel reaches
   the turn boundary, the runtime appends an assistant `<turn_aborted>` marker before the
   end-of-turn save. It persists and remains model-visible on the next request, but resume
@@ -556,17 +579,72 @@ user instruction) are driven by governance: classifier denials park needs-you it
   the `files N · +A/−D` shipped-outcome label and the tests-ran heuristic that enrich
   `PromptComplete`.
 
-### 7.5 Rewind (`kernel/rewind.py`)
+### 7.5 Structured questions (`kernel/question.py`)
 
-Checkpoints are cut once per turn by the `OutcomeLedger` (`model/turn.py`) and stamped onto
-`TurnRule` blocks; rewind resolves strictly by checkpoint id. `RewindController` supports a
-file-based path (foundation `fork_session(…, handle_orphaned_tools="complete")`, run in a
-thread) and an in-memory path (slice live messages, commit via `context.set_messages`). Both
-are **confirm-then-trim**: `ledger.trim_to(checkpoint)` and transcript trimming happen only
-after the backend succeeds; a failed fork leaves everything untouched. Orphaned `tool_use`
-blocks get synthetic error results so the forked history stays provider-valid.
+The host `question` tool uses the shared `NeedsYouQueue`. In interactive postures it waits
+for its own answer, returns that answer as the tool result, and consumes it so the bridge
+cannot inject it twice. In Auto it returns a successful deferred result immediately and
+leaves the item pending; the loop keeps working, and `StepBoundaryBridge` injects a later
+answer exactly once at the next provider request.
 
-### 7.6 Cost & evidence
+### 7.6 Rewind and workspace checkpoints (`kernel/rewind.py`, `kernel/checkpoints.py`)
+
+`OutcomeLedger.begin_turn` cuts and exposes a checkpoint before `session.execute`; the
+reducer finalizes that same object onto the turn's `TurnRule`. Each target records the
+conversation boundary *before* the prompt (`restore_turn_id`), its full prompt label, and an
+opaque `workspace_id`. This makes the first and current in-flight prompts restorable and
+keeps display ids (`t1`, `t2`, …) separate from never-reused workspace identities. The
+picker resolves strictly by checkpoint id, retains the newest 100 targets, navigates prompts
+with ←/→ and the scopes below with ↑/↓:
+
+| Scope | Conversation path | Workspace path |
+|---|---|---|
+| `both` | restore to before the selected prompt | undo selected-and-later tracked edits |
+| `conversation` | restore to before the selected prompt | no change |
+| `code` | no change | undo selected-and-later tracked edits |
+
+Conversation restore uses Foundation's native message slicing and commits through
+`context.set_messages`; the turn-one boundary explicitly sets an empty message list. Only
+after that succeeds do `OutcomeLedger.trim_before`, transcript trimming, and prompt return
+to the composer occur. A durable `RewindMarker`, including the zero-turn case, prevents
+removed turns from reappearing during event replay; `IncrementalSaver.force_save` persists
+the shortened context. If confirmation happens while a turn is active, `app_support`
+requests the normal graceful interrupt and waits for close-out before calling the adapter.
+Opening or navigating the picker has no turn-side effect.
+
+Foundation does not retain filesystem preimages, so `WorkspaceCheckpointStore` supplies a
+separate, TUI-owned boundary. It is registered only on the root session's hook bus and
+watches direct structured tools (`write_file`, `edit_file`, `create_file`, `delete_file`,
+`apply_patch`). At `tool:pre` it resolves known targets and durably writes preimages before
+execution continues; `tool:post`/`tool:error` records the resulting state. Restore builds a
+per-path chain and applies a strict compare-and-swap: current bytes/mode must still equal the
+last tracked after-state. Divergence, later manual edits, or unsafe targets become explicit
+per-file skips/warnings; independent safe files may still restore, so workspace restore is
+best-effort and not an all-files transaction.
+
+Shell/interpreter calls, child sessions/subagents, MCP/external tools, editors and manual
+changes are outside the capture contract. So are outside-workspace and `.git` paths,
+symlinked or hard-linked files, non-regular files, files over 8 MiB, and files with extended
+attributes/ACLs, non-default flags, or unsafe ownership. The store never follows those paths
+or overwrites them during restore. On supported POSIX hosts, capture and mutation walk from
+the canonical workspace root with `O_DIRECTORY|O_NOFOLLOW`, retain the verified parent
+descriptor through leaf stat/open/rename/unlink and directory fsync, and fail closed per path
+when those descriptor-relative primitives are unavailable. A prompt is also bounded to 512
+snapshots / 64 MiB.
+
+Every session store is private, but its lease is keyed by canonical workspace root and
+shared across sessions. A structured root turn holds that lease from the pre-prompt cut
+through finalization; a restore takes the same lease. Contention or a failed durable begin
+rejects the new message before `session.execute`, returning its rich draft to the composer.
+Manifest/index updates, per-file restore journals, conversation rewind intents, and visible
+branch intents make interrupted work restart-completable. A later owner replays them before
+new checkpoint work, and unresolved recovery keeps the send gate closed. The store keeps
+private manifests, content-addressed blobs, pending records, and journals under the
+session's `workspace-checkpoints/` tree, prunes to 100 manifests, and garbage-collects
+unreferenced blobs. There is deliberately no redo graph: this is a conflict-safe convenience
+over known direct edits, not a Git replacement.
+
+### 7.7 Cost & evidence
 
 - **Cost** (`kernel/cost.py`): Decimal end-to-end; provider-reported `cost_usd` is
   authoritative when present, else the live Helicone table (settings `pricing.live`,
@@ -595,29 +673,34 @@ unwinds in `finally`.
 
 On the model side, `LaneRegistry` (`model/lanes.py`) keys lanes by `session_id` and routes by
 `parent_id`, tolerating spawn/start races (idempotent registration; retro-patched depths).
-The UI shows agent activity three ways: compact activity-tree lines in the transcript, the
-`WorkingStatus` pulse ("Coordinating N agents…"), and the `LanesPanel` overlay (one row per
-agent: state glyph · activity · elapsed · tokens · cost), which auto-opens on fan-out.
-Child tool/stream events update the first and third surfaces in place; successful native
-file writes also feed one bounded, expandable, diff-styled `Changed N files` ToolLine.
+The parent view shows a stable delegate lifecycle summary plus the `WorkingStatus` pulse
+("Coordinating N agents…"). The `LanesPanel` overlay is the one live child surface (one row
+per agent: state glyph · activity · elapsed · tokens · cost), and it auto-opens on fan-out.
+Child tool/stream events update their exact lane and focused lane chronology; the parent does
+not replay that content. Pending child approvals and failures place only the affected lane in
+the shared `attention` state, while final/error/attention events bypass progress coalescing.
+Successful native file writes also feed one bounded, expandable, diff-styled `Changed N files`
+ToolLine in the owning chronology.
 
 ---
 
 ## 9. Persistence and resume
 
-`SessionStore` (`kernel/persistence.py`) writes to
+`SessionStore` (`kernel/persistence.py`) and `WorkspaceCheckpointStore` write to
 `~/.amplifier/projects/<project-slug>/sessions/<session-id>/`:
 
-| File | Contents | Writing discipline |
+| Artifact | Contents | Writing discipline |
 |---|---|---|
 | `transcript.jsonl` | user/assistant messages (system/developer skipped) | atomic write + `.backup` recovery |
 | `metadata.json` | session metadata, secrets redacted | atomic write + `.backup` recovery |
 | `ui-events.jsonl` | append-only normalized `UIEvent`s | best-effort, never raises; readers fall back to the pre-rename `events.jsonl`, now owned by `hooks-logging` |
+| `workspace-checkpoints/` | structured-file manifests, content-addressed preimages, pending records, restore journals | directory mode 0700, files 0600, atomic writes; newest 100 manifests retained |
 
 `IncrementalSaver` debounce-saves on `tool:post`, so a crash loses at most one tool call —
-not a turn. What survives restarts: the full conversation, metadata, and the event log —
-which in turn powers cost re-seeding on resume, evidence links, lane replay, and the stored-
-session fork path for rewind.
+not a turn. Workspace preimages have a stronger local timing guarantee: each is fsynced to
+private session storage before the matching structured file tool proceeds. What survives
+restarts: the full conversation, metadata, event log, and retained workspace checkpoints —
+which together power cost re-seeding, evidence links, lane replay, and pre-prompt restore.
 
 On resume the stored events replay through `TranscriptReducer.replay` (behind a
 side-effect-suppressing host proxy), rebuilding the full transcript — tool digests,
@@ -626,6 +709,15 @@ with a prose-only fallback for sessions that have no usable event log. Resume al
 reattaches under the session's **stored** bundle by default (resolved through the normal
 `resolve_config` path); settings `resume.use_active_bundle: true` or an explicit
 `--bundle` attach under the current one instead, and every divergent outcome is announced.
+
+Before that context is mounted, `kernel/session_integrity.py` completes any assistant tool
+call whose result was not durably recorded. It recognizes both top-level `tool_calls` and
+content `tool_call`/`tool_use` blocks, preserves every real result, and inserts an immediate
+`role: tool` uncertainty result only for a genuine orphan. `RealRuntime.start()` atomically
+persists the repaired transcript before model execution and emits a visible warning that
+the tool may have executed and real state must be inspected before retry. This application
+boundary is intentional: provider-side request repair is ephemeral and can make one request
+succeed while the next request rejects the same still-invalid stored transcript.
 
 ---
 
@@ -639,7 +731,7 @@ The suite (~60+ files under `tests/`) is **fully offline** — no credentials, n
 | `commands/` | tested against a `FakeCommandContext` protocol fake — no Textual involved |
 | UI widgets & reducer | per-widget tests + Textual **Pilot** headless driving |
 | Flows (approval, interrupt, lanes, rewind, steer/queue, …) | end-to-end scripted turns via `DemoRuntime` |
-| Real lifecycle | `test_runtime_offline.py`: a genuine foundation lifecycle with fake provider/context/tool/orchestrator modules mounted from temp dirs via `file://` bundle sources — asserts both event channels, the real approval path, steering injection, and persistence output |
+| Real lifecycle | `test_runtime_offline.py`: a genuine foundation lifecycle with fake provider/context/tool/orchestrator modules mounted from temp dirs via `file://` bundle sources — asserts both event channels, the real approval path, steering injection, persistence output, and durable orphan-tool resume repair; `test_session_integrity.py` covers provider transcript shapes and idempotence |
 | Renderer | golden width-matrix (40/80/97/120) plain-text files in `tests/goldens/` (regen via `tests/goldens/regen.py`) |
 | Performance | `test_perf_spike.py` enforces ADR-0007's pure-renderer, live-tail-throttle, and hybrid-history 5k frame budgets |
 

@@ -182,6 +182,12 @@ GATE_WIDTH = 6
 PASSES_HEADER = "# pass\tdate\tcommit\toutcome\tgaps_found\tgap_ids\tnote\n"
 GATES_HEADER = "# gap_id\tslug\tdisposition\towner\tdate\tnote\n"
 
+# New owner-ended rows use an explicit separator so a human's full name is not
+# confused with the beginning of the reason.  `_end_run_owner` still accepts
+# the original `owner=<single-token> <reason>` rows already in an audit record.
+END_OWNER_PREFIX = "owner="
+END_OWNER_SEPARATOR = " | "
+
 
 # ---------------------------------------------------------------------- files
 
@@ -305,12 +311,46 @@ def clean_streak(rows: list[list[str]] | None = None) -> int:
 
 
 def run_ended_by(rows: list[list[str]] | None = None) -> str:
-    """The note from the owner's end-run row, or '' while the run is open."""
+    """The note from a *real owner's* end-run row, or '' while open.
+
+    Owner identity is enforced at read time as well as write time.  A hand-edited
+    `owner-ended` row attributed to `TBD`, `team`, or another placeholder cannot
+    stop the loop.
+    """
     rows = read_passes() if rows is None else rows
     for row in reversed(rows):
-        if outcome_of(row) == OUTCOME_OWNER_ENDED:
+        if outcome_of(row) == OUTCOME_OWNER_ENDED and not is_placeholder_owner(
+            _end_run_owner(row[6])
+        ):
             return row[6]
     return ""
+
+
+def _end_run_owner(note: str) -> str:
+    """Extract the attributed owner from an owner-ended note.
+
+    Current rows are `owner=<full name> | <reason>`.  For backward compatibility,
+    the original `owner=<single-token> <reason>` form reads the first token as the
+    owner.  A malformed note returns an empty owner and therefore fails closed as
+    a placeholder.
+    """
+    if not note.startswith(END_OWNER_PREFIX):
+        return ""
+    payload = note[len(END_OWNER_PREFIX) :]
+    owner, separator, _reason = payload.partition(END_OWNER_SEPARATOR)
+    if separator:
+        return owner.strip()
+    return payload.split(maxsplit=1)[0] if payload.strip() else ""
+
+
+def unattributed_end_rows(rows: list[list[str]] | None = None) -> list[list[str]]:
+    """Owner-ended rows that no identifiable human signed."""
+    rows = read_passes() if rows is None else rows
+    return [
+        row
+        for row in rows
+        if outcome_of(row) == OUTCOME_OWNER_ENDED and is_placeholder_owner(_end_run_owner(row[6]))
+    ]
 
 
 def _next_pass_number(rows: list[list[str]]) -> int:
@@ -337,8 +377,13 @@ def record_pass(commit: str, raw_ids: str = "-", when: str = "", note: str = "")
     return row
 
 
-def end_run(owner: str, reason: str = "") -> list[str]:
-    """Record the owner's decision to end the run (the other AC4 exit)."""
+def end_run(owner: str, reason: str = "") -> list[str] | None:
+    """Record a real owner's decision to end the run (the other AC4 exit).
+
+    Returns ``None`` without writing when the supplied owner is a placeholder.
+    """
+    if is_placeholder_owner(owner):
+        return None
     rows = read_passes()
     row = [
         str(_next_pass_number(rows)),
@@ -347,7 +392,7 @@ def end_run(owner: str, reason: str = "") -> list[str]:
         OUTCOME_OWNER_ENDED,
         "0",
         "-",
-        _field(f"owner={_field(owner)} {reason}"),
+        _field(f"{END_OWNER_PREFIX}{_field(owner)}{END_OWNER_SEPARATOR}{_field(reason)}"),
     ]
     rows.append(row)
     _write(passes_file(), rows, PASSES_HEADER)
@@ -485,6 +530,13 @@ def _dispatch(argv: list[str]) -> int:
 
     if cmd == "end-run" and args:
         row = end_run(args[0], " ".join(args[1:]))
+        if row is None:
+            print(
+                f"placeholder owner refused: {args[0]!r} names nobody who can end "
+                "the parity run; nothing was written.",
+                file=sys.stderr,
+            )
+            return 1
         print(f"pass={row[0]} outcome={OUTCOME_OWNER_ENDED} {row[6]}")
         return 0
 
@@ -535,11 +587,20 @@ def _dispatch(argv: list[str]) -> int:
 
     if cmd == "validate":
         rows = read_gates()
-        bad = unattributed_rows(rows)
-        for row in bad:
+        bad_gates = unattributed_rows(rows)
+        bad_ends = unattributed_end_rows()
+        for row in bad_gates:
             print(f"{row[0]}\t{row[2]}\towner={row[3]!r}\tplaceholder owner — not a decision")
-        if bad:
-            print(f"INVALID gates={len(rows)} unattributed={len(bad)}")
+        for row in bad_ends:
+            print(
+                f"pass={row[0]}\towner-ended\towner={_end_run_owner(row[6])!r}"
+                "\tplaceholder owner — run remains open"
+            )
+        if bad_gates or bad_ends:
+            print(
+                f"INVALID gates={len(rows)} unattributed={len(bad_gates)} "
+                f"owner_ends_unattributed={len(bad_ends)}"
+            )
             return 1
         print(f"VALID gates={len(rows)} unattributed=0")
         return 0

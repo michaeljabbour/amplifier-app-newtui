@@ -321,6 +321,7 @@ async def test_priority_provider_is_verified_with_its_real_module_and_config(
     assert seen["config"] == {"priority": 1, "default_model": "claude-x", "api_key": "sk-x"}
     assert seen["model"] == "claude-x"
     assert seen["live_verify"] is False
+    assert seen["strict"] is False
 
 
 @pytest.mark.asyncio
@@ -393,6 +394,32 @@ async def test_dry_run_live_verify_param_threads_to_verify_provider(
     monkeypatch.setattr(preflight_mod, "verify_provider", fake_verify_provider)
     await run_preflight(None, verify_live=True)
     assert seen["live_verify"] is True
+    assert seen["strict"] is False
+
+
+@pytest.mark.asyncio
+async def test_strict_preflight_forces_live_fail_closed_provider_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def fake_verify_provider(**kwargs: Any) -> ProviderVerification:
+        seen.update(kwargs)
+        return ProviderVerification(ok=True)
+
+    async def fake_resolve_config(bundle, **kwargs) -> ResolvedConfig:  # noqa: ANN001, ARG001
+        return _resolved(
+            providers=[{"module": "provider-anthropic", "config": {}}],
+            # Strict diagnostic truth cannot be disabled by the ordinary-
+            # startup escape hatch.
+            settings={"preflight": {"verify_provider": False}},
+        )
+
+    _patch_resolve_config(monkeypatch, fake_resolve_config)
+    monkeypatch.setattr(preflight_mod, "verify_provider", fake_verify_provider)
+    await run_preflight(None, strict=True)
+    assert seen["live_verify"] is True
+    assert seen["strict"] is True
 
 
 @pytest.mark.asyncio

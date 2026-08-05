@@ -101,6 +101,61 @@ def test_attention_row_as_dict_round_trips_via_from_dict() -> None:
     assert restored == row
 
 
+def test_record_claim_reloads_under_lock_before_deciding_is_new(tmp_path: Path) -> None:
+    first = AttentionStore(tmp_path)
+    second = AttentionStore(tmp_path)
+    row = AttentionRow(
+        session_id="s1",
+        reason="error",
+        event_id="s1:error:same",
+        detail="boom",
+        created_at=5.0,
+    )
+
+    first_result = first.record(row)
+    second_result = second.record(row)
+
+    assert first_result is not None and first_result[3] is True
+    assert second_result is not None and second_result[3] is False
+    assert second_result[2] == row
+
+
+def test_acknowledgement_merges_monotonically_with_a_later_record(tmp_path: Path) -> None:
+    first = AttentionStore(tmp_path)
+    stale = AttentionStore(tmp_path)
+    original = AttentionRow(
+        session_id="s1",
+        reason="error",
+        event_id="s1:error:first",
+        created_at=5.0,
+    )
+    later = AttentionRow(
+        session_id="s1",
+        reason="completion",
+        event_id="s1:completion:second",
+        created_at=6.0,
+    )
+
+    assert first.record(original) is not None
+    acknowledged = first.acknowledge("s1")
+    assert acknowledged is not None and acknowledged[2] is not None
+    assert stale.record(later) is not None
+
+    rows, current = first.load()
+    assert rows[original.event_id].acknowledged is True
+    assert current == {"s1": later.event_id}
+
+
+def test_record_fails_closed_when_the_correctness_lock_is_unavailable(tmp_path: Path) -> None:
+    lock_path = tmp_path / f"{ATTENTION_FILENAME}.lock"
+    lock_path.write_text("held", encoding="utf-8")
+    store = AttentionStore(tmp_path, lock_timeout=0.0, stale_after=60.0)
+    row = AttentionRow(session_id="s1", reason="error", event_id="event-1")
+
+    assert store.record(row) is None
+    assert not (tmp_path / ATTENTION_FILENAME).exists()
+
+
 def test_locked_is_reused_from_session_control_not_reinvented() -> None:
     """B7 gap 1 explicitly asks for reuse of session_control's idiom, not a
     second persistence mechanism -- prove session_control imports the SAME
@@ -121,7 +176,8 @@ def test_file_lock_breaks_a_stale_lock(tmp_path: Path) -> None:
     os.utime(lock_path, (old, old))
 
     acquired_body_ran = False
-    with locked(target, timeout=1.0, stale_after=0.01):
+    with locked(target, timeout=1.0, stale_after=0.01) as acquired:
+        assert acquired is True
         acquired_body_ran = True
     assert acquired_body_ran
     assert not lock_path.exists()  # cleaned up after use

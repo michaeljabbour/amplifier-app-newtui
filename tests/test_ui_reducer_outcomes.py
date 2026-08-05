@@ -325,6 +325,158 @@ def test_context_compaction_is_visible_and_persistent() -> None:
     assert host.notices[-1] == narration.text
 
 
+def test_root_context_compaction_burst_updates_one_row_and_one_notice() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="long turn", ts=1.0))
+    for index, after in enumerate((60_000, 61_000, 62_000), start=1):
+        reducer.handle(
+            ev.ContextCompacted(
+                session_id="root",
+                before_tokens=120_000 + index,
+                after_tokens=after,
+                before_messages=42 + index,
+                after_messages=23,
+                strategy_level=2 if index == 1 else 3,
+                budget=200_000,
+                target_tokens=60_000,
+                ts=1.0 + index,
+            )
+        )
+
+    narrations = [block for block in host.blocks if isinstance(block, Narration)]
+    assert len(narrations) == 1
+    assert narrations[0].text == (
+        "Context compacted ×3 this turn · 120,003 → 62,000 tokens · "
+        "45 → 23 messages · target 60,000 / 200,000 · strategy 3"
+    )
+    assert len(host.notices) == 1
+    assert reducer.context_tokens == 62_000
+    assert reducer.context_window == 200_000
+
+
+def test_child_context_compaction_never_leaks_into_parent_transcript_or_notice() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="delegate", ts=1.0))
+    before = list(host.blocks)
+    reducer.handle(
+        ev.ContextCompacted(
+            session_id="child",
+            parent_id="root",
+            before_tokens=771_480,
+            after_tokens=467_219,
+            strategy_level=3,
+            budget=963_104,
+            target_tokens=481_552,
+            ts=2.0,
+        )
+    )
+    assert host.blocks == before
+    assert host.notices == []
+    assert reducer.context_tokens is None
+    assert reducer.context_window is None
+
+
+def test_root_context_occupancy_excludes_child_usage_after_compaction() -> None:
+    reducer, _host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="fan out", ts=1.0))
+    reducer.handle(
+        ev.ContextCompacted(session_id="root", after_tokens=480_000, budget=960_000, ts=2.0)
+    )
+    reducer.handle(ev.ProviderResponseUsage(session_id="child", output_tokens=100_000, ts=3.0))
+    assert reducer.context_tokens == 480_000
+    reducer.handle(ev.ProviderResponseUsage(session_id="root", output_tokens=2_500, ts=4.0))
+    assert reducer.context_tokens == 482_500
+
+
+def test_goal_progress_continuing_updates_the_live_activity_only() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="finish the goal", ts=1.0))
+    reducer.handle(
+        ev.GoalProgress(
+            session_id="root",
+            orchestrator="loop-streaming",
+            state="continuing",
+            turn=2,
+            cap=5,
+            reason="acceptance proof still missing",
+            ts=2.0,
+        )
+    )
+
+    working = next(block for block in host.blocks if block.kind == "working_status")
+    assert working.activity == "goal · turn 2/5 · acceptance proof still missing"
+    assert not any(isinstance(block, Answer) for block in host.blocks)
+    assert host.notices == []
+
+
+def test_goal_progress_renders_every_terminal_label() -> None:
+    cases = {
+        "achieved": ("Goal met", "green"),
+        "cap_hit": ("Goal unconfirmed · cap reached", "orange"),
+        "stalled": ("Goal not met · stalled", "red"),
+        "cancelled": ("Goal unconfirmed · cancelled", "orange"),
+        "error": ("Goal unconfirmed · evaluation failed", "red"),
+    }
+
+    for state, (label, color) in cases.items():
+        reducer, host = make_reducer()
+        reducer.handle(ev.PromptSubmit(session_id="root", prompt="finish the goal", ts=1.0))
+        reducer.handle(
+            ev.GoalProgress(
+                session_id="root",
+                orchestrator="loop-streaming",
+                state=state,
+                turn=4,
+                cap=6,
+                reason="terminal evaluator reason",
+                summary="terminal evaluator summary",
+                ts=2.0,
+            )
+        )
+
+        answers = [block for block in host.blocks if isinstance(block, Answer)]
+        assert len(answers) == 1, state
+        text = answer_text(answers[0])
+        assert label in text, state
+        assert "turn 4/6 · native loop-streaming" in text, state
+        assert "terminal evaluator summary" in text, state
+        assert "reason · terminal evaluator reason" in text, state
+        assert answers[0].spans[0].style_token == color, state
+        assert host.notices[-1] == f"{label.lower()} · turn 4/6", state
+
+
+def test_foreign_child_goal_progress_cannot_replace_root_goal_activity() -> None:
+    reducer, host = make_reducer()
+    reducer.handle(ev.PromptSubmit(session_id="root", prompt="parent goal", ts=1.0))
+    reducer.handle(
+        ev.GoalProgress(
+            session_id="root",
+            state="continuing",
+            turn=1,
+            reason="parent evaluator reason",
+            ts=2.0,
+        )
+    )
+    before = tuple(host.blocks)
+
+    reducer.handle(
+        ev.GoalProgress(
+            session_id="child",
+            parent_id="root",
+            state="continuing",
+            turn=7,
+            reason="child evaluator reason",
+            ts=3.0,
+        )
+    )
+
+    assert tuple(host.blocks) == before
+    working = next(block for block in host.blocks if block.kind == "working_status")
+    assert working.activity == "goal · turn 1 · parent evaluator reason"
+    assert "child evaluator reason" not in str(host.blocks)
+    assert host.notices == []
+
+
 def test_real_turn_with_unpriceable_usage_marks_rule_cost_estimated() -> None:
     """Never lie: an unknown model with no cost_usd renders ``~$`` not ``$0.00``."""
     reducer, host = make_reducer()

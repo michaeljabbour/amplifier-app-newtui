@@ -24,7 +24,7 @@ artifact; any follow-on implementation is tracked in the linked issue.
 |---|---|
 | [governance — default EXEC posture](2026-07-22-governance-exec-default-posture.md) | 🧭 Decision recorded (PR #55; issue #26 closed) |
 | [lane / subagent todo surfacing](2026-07-22-lane-todo-surfacing.md) | 🧭 Decision recorded (PR #56; issue #36 closed) |
-| [forge-driven capability tier](2026-07-22-forge-capability-tier.md) | 📐 Design merged (PR #57); implementation in progress on `auto/forge-capability-tier-impl` (issue #49 open) |
+| [forge-driven capability tier](2026-07-22-forge-capability-tier.md) | ✅ Implemented (design PR #57; implementation PR #94; issue #49 closed) |
 | [self-improvement loop over skills/harness](2026-07-22-self-improvement-loop.md) | 🧭 Decision recorded (PR #58; issue #50 closed) |
 | [anchors pin lifecycle](2026-07-22-anchors-pin-lifecycle.md) | 🧭 Decision recorded (PR #59; issue #53 closed) |
 | [amplifier-agent eval (spike + decision)](2026-07-22-amplifier-agent-eval.md) | 🧭 Decided — stay core-native (PR #60; issue #54 closed) |

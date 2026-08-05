@@ -194,6 +194,57 @@ class _FakeSession:
         return "all done"
 
 
+class _RecoveringToolSession:
+    """Duck-typed loop contract: failed tool result, fallback, final answer.
+
+    The mounted loop-streaming orchestrator owns the provider retry.  This
+    fixture protects the TUI runtime seam around it: a failed ``tool:post`` is
+    preserved in order and does not synthesize an early close-out before the
+    fallback events arrive.
+    """
+
+    def __init__(self, runtime: RealRuntime) -> None:
+        self._runtime = runtime
+
+    async def execute(self, text: str) -> str:
+        self._runtime.bridge.emit(
+            ToolPre(
+                session_id="sess-recover",
+                tool_name="edit_file",
+                tool_call_id="edit-1",
+                tool_input={"file_path": "/tmp/outside/config.py"},
+            )
+        )
+        self._runtime.bridge.emit(
+            ToolPost(
+                session_id="sess-recover",
+                tool_name="edit_file",
+                tool_call_id="edit-1",
+                result={
+                    "success": False,
+                    "error": {"message": "path is not within allowed write paths"},
+                },
+            )
+        )
+        self._runtime.bridge.emit(
+            ToolPre(
+                session_id="sess-recover",
+                tool_name="bash",
+                tool_call_id="bash-2",
+                tool_input={"command": "python repair_config.py"},
+            )
+        )
+        self._runtime.bridge.emit(
+            ToolPost(
+                session_id="sess-recover",
+                tool_name="bash",
+                tool_call_id="bash-2",
+                result={"success": True, "output": "ok"},
+            )
+        )
+        return "recovered with fallback"
+
+
 async def test_submit_close_out_carries_git_delta_and_tests_ok(git_repo: Path) -> None:
     runtime = RealRuntime(project_dir=git_repo)
     runtime._initialized = SimpleNamespace(  # duck-typed InitializedSession
@@ -212,6 +263,65 @@ async def test_submit_close_out_carries_git_delta_and_tests_ok(git_repo: Path) -
     assert closing.files_changed == 1
     assert closing.diffstat == "+3/−0"
     assert closing.tests_ok is True
+
+
+async def test_checkpoint_begin_failure_rejects_turn_without_ui_close_out() -> None:
+    from amplifier_app_tui.kernel.checkpoints import WorkspaceCheckpointUnavailableError
+
+    executed = False
+
+    class NeverExecute:
+        async def execute(self, text: str) -> str:
+            nonlocal executed
+            executed = True
+            return text
+
+    class FailingStore:
+        def begin(self, checkpoint_id: str, prompt: str) -> None:
+            del checkpoint_id, prompt
+            raise OSError("disk full")
+
+        def finish(self, checkpoint_id: str) -> None:
+            raise AssertionError(f"unexpected finish for {checkpoint_id}")
+
+    runtime = RealRuntime()
+    runtime._initialized = SimpleNamespace(session=NeverExecute(), session_id="sess-fail")
+    runtime._checkpoint_store = FailingStore()
+
+    with pytest.raises(WorkspaceCheckpointUnavailableError, match="message was not sent"):
+        await runtime.submit("keep me")
+
+    assert executed is False
+    assert runtime.queue.empty()
+    assert runtime._executing is False
+
+
+async def test_submit_keeps_failed_tool_and_fallback_before_close_out(tmp_path: Path) -> None:
+    """A recoverable tool failure is an event, not a turn boundary."""
+    runtime = RealRuntime(project_dir=tmp_path)
+    runtime._initialized = SimpleNamespace(
+        session=_RecoveringToolSession(runtime), session_id="sess-recover"
+    )
+
+    response = await runtime.submit("repair the config")
+    assert response == "recovered with fallback"
+
+    events = []
+    while not runtime.queue.empty():
+        events.append(runtime.queue.get_nowait())
+    tools = [event for event in events if isinstance(event, (ToolPre, ToolPost))]
+    assert [(type(event), event.tool_call_id) for event in tools] == [
+        (ToolPre, "edit-1"),
+        (ToolPost, "edit-1"),
+        (ToolPre, "bash-2"),
+        (ToolPost, "bash-2"),
+    ]
+    failed = tools[1]
+    assert isinstance(failed, ToolPost)
+    assert failed.result["success"] is False
+    closing = events[-1]
+    assert isinstance(closing, PromptComplete)
+    assert closing.response == "recovered with fallback"
 
 
 async def test_submit_close_out_defaults_when_not_a_git_repo(tmp_path: Path) -> None:

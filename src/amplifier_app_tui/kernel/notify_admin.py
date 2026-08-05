@@ -37,7 +37,7 @@ from .config import (
     notification_settings,
 )
 
-# Env vars mirrored from ``ui/notifications`` + the hooks-notify-push module.
+# Env vars mirrored from ``ui/notifications`` + the app-owned ntfy destination.
 # Duplicated as literals (kernel must not import ``ui``) -- a stable public
 # contract documented in docs/SETTINGS.md.
 NOTIFY_ENV = "AMPLIFIER_NOTIFY"
@@ -86,7 +86,7 @@ KNOWN_KEYS: tuple[KeySpec, ...] = (
         "suppress",
         "bool",
         ("suppress",),
-        "silence the whole local ladder (bell + desktop)",
+        "silence bell + desktop delivery and remove the ntfy push hook",
     ),
     KeySpec(
         "desktop.enabled",
@@ -166,7 +166,7 @@ def write_topic_to_keys_env(topic: str, amplifier_home: Path) -> Path:
     ntfy topics are secrets, so the topic never touches a settings scope (it
     would be world-readable in a committed settings.yaml). keys.env is the
     single home ``config.load_keys_env`` already sources at boot, so a topic
-    written here is picked up by the push module's ``AMPLIFIER_NTFY_TOPIC``
+    written here is picked up by the app destination's ``AMPLIFIER_NTFY_TOPIC``
     read. Other lines/comments are preserved; the file is written atomically.
     """
     keys_file = amplifier_home / "keys.env"
@@ -275,7 +275,7 @@ def resolved_environ(
     The real boot mutates ``os.environ`` via
     :func:`config.apply_notification_ladder_env`; this returns a throwaway copy
     with the same fold applied, so ``notify show`` / ``notify test`` can reason
-    about the effective ladder without touching the process environment.
+    about the effective app-owned ladder without touching the process environment.
     """
     import os
 

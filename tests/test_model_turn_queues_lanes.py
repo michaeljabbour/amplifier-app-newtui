@@ -13,6 +13,7 @@ from amplifier_app_tui.model.queues import (
     SteeringQueue,
 )
 from amplifier_app_tui.model.turn import (
+    MAX_VISIBLE_CHECKPOINTS,
     OutcomeLedger,
     TurnOutcome,
     TurnTelemetry,
@@ -100,6 +101,76 @@ def test_ledger_trim_to_checkpoint_confirm_then_trim() -> None:
         ledger.trim_to("t9")
 
 
+def test_pre_prompt_checkpoint_is_visible_while_turn_is_running() -> None:
+    ledger = OutcomeLedger()
+    checkpoint = ledger.begin_turn(
+        turn_id=1,
+        restore_turn_id=0,
+        message_index=0,
+        label="change the parser",
+        cost_at=Decimal("0"),
+        workspace_id="opaque-1",
+    )
+    assert ledger.turn_count == 0
+    assert ledger.checkpoints == (checkpoint,)
+    assert checkpoint.before_turn_id == 0
+    assert checkpoint.workspace_id == "opaque-1"
+
+    recorded = ledger.record_turn(
+        _telemetry(),
+        TurnOutcome(kind="shipped", files_changed=1),
+        turn_id=1,
+        message_index=1,
+        label="change the parser",
+    )
+    assert recorded.checkpoint.id == checkpoint.id
+    assert ledger.turn_count == 1
+    assert ledger.checkpoints == (recorded.checkpoint,)
+
+
+def test_trim_before_removes_selected_prompt_and_all_later_turns() -> None:
+    ledger = OutcomeLedger()
+    for turn_id in (1, 2, 3):
+        ledger.record_turn(
+            _telemetry(),
+            TurnOutcome(kind="answer"),
+            turn_id=turn_id,
+            restore_turn_id=turn_id - 1,
+            message_index=turn_id,
+        )
+    ledger.trim_before("t2")
+    assert [checkpoint.id for checkpoint in ledger.checkpoints] == ["t1"]
+
+
+def test_restore_picker_retains_only_latest_hundred_without_trimming_ledger() -> None:
+    ledger = OutcomeLedger()
+    for turn_id in range(1, MAX_VISIBLE_CHECKPOINTS + 6):
+        ledger.record_turn(
+            _telemetry(),
+            TurnOutcome(kind="answer"),
+            turn_id=turn_id,
+            restore_turn_id=turn_id - 1,
+            message_index=turn_id,
+        )
+
+    assert ledger.turn_count == 105
+    assert len(ledger.checkpoints) == MAX_VISIBLE_CHECKPOINTS
+    assert ledger.checkpoints[0].id == "t6"
+    assert ledger.checkpoints[-1].id == "t105"
+    assert ledger.checkpoint_by_id("t1") is not None  # full telemetry ledger survives
+
+    pending = ledger.begin_turn(
+        turn_id=106,
+        restore_turn_id=105,
+        message_index=105,
+        label="latest prompt",
+        cost_at=ledger.spend,
+    )
+    assert len(ledger.checkpoints) == MAX_VISIBLE_CHECKPOINTS
+    assert ledger.checkpoints[0].id == "t7"
+    assert ledger.checkpoints[-1] == pending
+
+
 def test_ledger_cache_hit_is_token_weighted() -> None:
     ledger = OutcomeLedger()
     ledger.record_turn(
@@ -159,6 +230,16 @@ def test_steering_queue_truncates_oversized_text() -> None:
     queue = SteeringQueue()
     message = queue.enqueue("x" * 40_000)
     assert len(message.text) == 32_768
+
+
+def test_next_turn_queue_rejects_oversized_text_without_replacing_existing() -> None:
+    queue = SteeringQueue()
+    queue.enqueue("keep me", kind="next_turn")
+
+    with pytest.raises(ValueError, match="32,768 character limit"):
+        queue.enqueue("x" * 40_000, kind="next_turn")
+
+    assert [message.text for message in queue.pending_next_turn] == ["keep me"]
 
 
 def test_drain_steers_removes_leftovers_for_discard() -> None:

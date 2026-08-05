@@ -103,6 +103,8 @@ def test_init_writes_model_into_config(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 0
     (entry,) = written
     assert entry["config"]["default_model"] == "claude-x"
+    assert _global_settings(tmp_path)["routing"]["matrix"] == "anthropic"
+    assert "routing matrix → anthropic" in result.output
 
 
 def test_init_writes_base_url_too(tmp_path: Path, monkeypatch) -> None:
@@ -180,6 +182,35 @@ def _global_settings(tmp_path: Path) -> dict:
     return yaml.safe_load((_amp_home(tmp_path) / "settings.yaml").read_text()) or {}
 
 
+def test_provider_use_syncs_the_selected_provider_matrix(tmp_path: Path, monkeypatch) -> None:
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(
+        tmp_path,
+        [
+            {
+                "module": "provider-openai",
+                "config": {"priority": 1, "default_model": "gpt-exact"},
+            },
+            {
+                "module": "provider-anthropic",
+                "config": {"priority": 2, "default_model": "claude-exact"},
+            },
+        ],
+    )
+
+    result = CliRunner().invoke(main, ["provider", "use", "anthropic"])
+
+    assert result.exit_code == 0, result.output
+    assert "primary provider → anthropic" in result.output
+    assert "routing matrix → anthropic" in result.output
+    stored = _global_settings(tmp_path)
+    assert stored["routing"]["matrix"] == "anthropic"
+    priorities = {
+        entry["module"]: entry["config"]["priority"] for entry in stored["config"]["providers"]
+    }
+    assert priorities == {"provider-openai": 10, "provider-anthropic": 1}
+
+
 def test_init_console_first_run_adds_provider(tmp_path: Path, monkeypatch) -> None:
     """No providers → straight into the provider console; [a] adds one."""
     path, written = _stub(monkeypatch, tmp_path)
@@ -223,6 +254,20 @@ def test_init_console_routing_select(tmp_path: Path, monkeypatch) -> None:
     assert "Available Matrices" in result.output
     assert "active routing matrix → quality" in result.output
     assert _global_settings(tmp_path)["routing"]["matrix"] == "quality"
+
+
+def test_init_console_routing_selects_bare_matrix_name(tmp_path: Path, monkeypatch) -> None:
+    """The setup dashboard shares the intuitive number/name routing picker."""
+    _stub(monkeypatch, tmp_path)
+    _seed_providers(tmp_path, [{"module": "provider-anthropic", "config": {"priority": 1}}])
+    _seed_matrix(tmp_path, "anthropic")
+    _seed_matrix(tmp_path, "runpod")
+
+    result = CliRunner().invoke(main, ["init"], input="r\nanthropic\nd\nd\n")
+
+    assert result.exit_code == 0, result.output
+    assert "active routing matrix → anthropic" in result.output
+    assert _global_settings(tmp_path)["routing"]["matrix"] == "anthropic"
 
 
 def test_init_console_routing_invalid_selection(tmp_path: Path, monkeypatch) -> None:

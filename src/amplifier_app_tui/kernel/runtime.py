@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from ..model.blocks import UnsupportedBlock
 from ..model.config import SessionConfigState
@@ -29,6 +30,8 @@ from ..model.queues import (
 from ..model.terminal import TerminalSurface
 from ..model.trust import CapabilityClass, DenialLog, TrustDecision
 from .approval import ApprovalBroker
+from .attention_push import NtfyAttentionDestination, resolve_ntfy_attention_config
+from .bundle_admin import list_bundles as list_known_bundles
 from .bundle_admin import read_scope, settings_paths
 from .bundle_summon import (
     LOAD_BUNDLE_TOOL_NAME,
@@ -39,10 +42,12 @@ from .bundle_summon import (
 )
 from .config import (
     DEFAULT_BUNDLE,
+    NOTIFY_PUSH_HOOK,
     BundleNotFoundError,
     ResolvedConfig,
     SettingsPaths,
     active_bundle_name,
+    added_bundle_uris,
     bundle_search_paths,
     deferred_overlay_uris,
     inject_mode_search_paths,
@@ -51,12 +56,17 @@ from .config import (
     inject_telemetry_config,
     load_merged_settings,
     packaged_modes_dir,
-    prepare_overlay_bundle,
+    prepare_live_overlay_bundle,
     provider_priority,
     resolve_config,
     resolve_deferred_bundle,
+    resolve_bundle_name,
 )
-from .clipboard import ClipboardImageInjector, ImageAttachment
+from .clipboard import (
+    ClipboardImageInjector,
+    ImageAttachment,
+    image_attachments_from_message,
+)
 from .compaction import CompactionConfig, CompactionRuntimeBinding, compaction_config
 from .cost import CostTracker, restore_session_cost, start_live_pricing
 from .display import DisplaySystem
@@ -89,6 +99,7 @@ from .directory_permissions import (
 )
 from .governance_hook import GovernanceHook
 from .mention_expansion import MentionBudget, expand_mentions
+from . import goal as goal_bridge
 from . import session_manager, session_ops, tool_cli
 from .git_yield import GitDiffSnapshot, capture_git_diff, capture_git_patch
 from .persistence import IncrementalSaver, SessionStore
@@ -101,6 +112,7 @@ from .reminder_trust import (
 )
 from .turn_yield import TurnYieldTracker
 from .session_factory import InitializedSession, SessionRequest, create_initialized_session
+from .session_integrity import complete_orphaned_tool_results
 from .spawner import SessionSpawner
 from .steering import StepBoundaryBridge
 from .surface_hint import SurfaceHintInjector
@@ -171,7 +183,7 @@ channel. They now mount normally, and the transcript renders their
 blockquote callouts behind a ``▌`` gutter (``ui/live_tail.answer_spans``).
 """
 
-_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-notify"})
+_SUPPRESSED_HOOKS_DEFAULT = _PRINTING_HOOKS | frozenset({"hooks-notify", NOTIFY_PUSH_HOOK})
 """Built-in default set of hook module ids suppressed at mount time.
 
 The line-mode printers write raw ANSI (cursor moves, line erases)
@@ -180,6 +192,11 @@ OSC-777/BEL escape sequences straight to stdout (or the TTY device),
 which corrupts the full-screen Textual TUI the same way the printers
 do — the app rings Textual's own driver-safe bell instead
 (``ui/app_support`` attention-bell policy).
+
+``hooks-notify-push`` is also always suppressed: the app-owned ntfy sink
+consumes normalized attention records and acknowledgements. Allowing a user
+or deferred overlay to re-mount the legacy raw-completion producer would
+duplicate notifications and discard the record correlation boundary.
 
 ``hooks-logging`` used to be listed here as a double-writer of the
 app-owned ``events.jsonl`` — that conflict is gone: the app's UIEvent
@@ -200,11 +217,12 @@ def suppressed_hooks_setting(settings: dict[str, Any]) -> frozenset[str]:
     Junk shapes (missing/non-dict ``hooks``, non-list ``suppress``) fall
     back to the default set alone; blank entries are stripped.
     """
+    baseline = _SUPPRESSED_HOOKS_DEFAULT
     hooks = settings.get("hooks")
     raw = hooks.get("suppress") if isinstance(hooks, dict) else None
     if not isinstance(raw, list):
-        return _SUPPRESSED_HOOKS_DEFAULT
-    return _SUPPRESSED_HOOKS_DEFAULT | {str(item).strip() for item in raw if str(item).strip()}
+        return baseline
+    return baseline | {str(item).strip() for item in raw if str(item).strip()}
 
 
 def restored_history(transcript: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
@@ -327,10 +345,32 @@ def _kept_turns_for(ledger: Any, checkpoint_id: str) -> int:
     kept-turns count the resume-side :func:`drop_rewound_events` truncates
     the replay to.
     """
-    for index, checkpoint in enumerate(ledger.checkpoints):
-        if checkpoint.id == checkpoint_id:
+    for index, turn in enumerate(ledger.turns):
+        if turn.checkpoint.id == checkpoint_id:
             return index + 1
+    if ledger.checkpoint_by_id(checkpoint_id) is not None:
+        return len(ledger.turns) + 1
     return 0
+
+
+def _kept_turns_before(ledger: Any, checkpoint_id: str) -> int | None:
+    """Number of ledger prompt turns before a pre-prompt checkpoint."""
+    explicit = getattr(ledger, "kept_turns_before", None)
+    if isinstance(explicit, int) and ledger.checkpoint_by_id(checkpoint_id) is not None:
+        return explicit
+    # ``ledger.checkpoints`` is intentionally capped to the latest 100 for
+    # the picker, whereas a rewind marker records the absolute surviving
+    # turn count. Walk the complete turn ledger so selecting visible t151
+    # after a long session persists ``kept_turns=150``, not zero.
+    turns = ledger.turns
+    for index, turn in enumerate(turns):
+        if turn.checkpoint.id == checkpoint_id:
+            return index
+    # If it resolves but is not among completed turns, it is the one active
+    # pre-prompt checkpoint.
+    if ledger.checkpoint_by_id(checkpoint_id) is not None:
+        return len(turns)
+    return None
 
 
 def resume_use_active_bundle(settings: dict[str, Any]) -> bool:
@@ -578,12 +618,25 @@ class RealRuntime:
         self._project_dir = project_dir
         self._spawner: SessionSpawner | None = None
         self._initialized: InitializedSession | None = None
+        self._live_mcp: Any | None = None
+        # Same-session extension ledger.  It is seeded from the boot mount
+        # plan, then shared by /bundle and /module so a live module instance is
+        # mounted once and contributes at most one teardown handle.
+        self._live_module_keys: set[str] = set()
+        self._live_bundle_ledger: dict[str, tuple[bool, str]] = {}
+        self._live_load_lock = asyncio.Lock()
         self._executing = False  # a submit() turn is live (fork must refuse)
         self._interrupt_requested = False
         self._resolved: ResolvedConfig | None = None
         self._store: SessionStore | None = None
         self._saver: IncrementalSaver | None = None
+        self._checkpoint_store: Any | None = None
+        self._restoring_checkpoint = False
+        self._rewind_recovery_pending = False
+        self._rewind_recovery_disk_reconciled = False
+        self._workspace_reconcile_pending = False
         self._image_injector: ClipboardImageInjector | None = None
+        self._attention_push: NtfyAttentionDestination | None = None
         self.directory_policy: DirectoryPolicy | None = None
         self._session_settings_path: Path | None = None
         self.bundle_name = ""
@@ -668,6 +721,30 @@ class RealRuntime:
         if self._resume_id:
             session_id = store.find_session(self._resume_id)
             transcript, metadata = store.load(session_id)
+            transcript, tool_repairs = complete_orphaned_tool_results(transcript)
+            if tool_repairs:
+                # Persist before the first resumed model request. Provider-side
+                # request repair is necessarily ephemeral; without this write,
+                # a second request can lose the same synthetic results and be
+                # rejected even though the first repaired request succeeded.
+                try:
+                    store.save(session_id, transcript, metadata)
+                except OSError:
+                    logger.warning(
+                        "Could not persist interrupted-tool resume repair for %s",
+                        session_id,
+                        exc_info=True,
+                    )
+                self.bridge.emit(
+                    Notification(
+                        message=(
+                            f"Resume repaired {len(tool_repairs)} interrupted tool "
+                            "result(s) before model execution. The tools may have "
+                            "executed; inspect actual state before retrying."
+                        ),
+                        level="warning",
+                    )
+                )
             stored_bundle = str(metadata.get("bundle") or "") or None
             # A resumed fork child (/fork, session fork) is primed with a
             # starting directive; surface it for the app to auto-run as the
@@ -725,6 +802,8 @@ class RealRuntime:
             # say so out loud (never a silent drop); /bundle load composes them.
             self.bridge.emit(Notification(message=resolved.deferred_notice))
         self._resolved = resolved
+        self._live_module_keys.clear()
+        self._live_bundle_ledger.clear()
 
         self.compaction = compaction_config(resolved.mount_plan)
         # Live pricing (BACKLOG item 1, behind settings ``pricing.live``,
@@ -752,6 +831,29 @@ class RealRuntime:
                         message=(
                             "Resumed session transcript was unreadable — prior "
                             "history could not be recovered."
+                        ),
+                        level="warning",
+                    )
+                )
+            if store.rewind_recovery_failed:
+                self._rewind_recovery_pending = True
+                self.bridge.emit(
+                    Notification(
+                        message=(
+                            "A pending checkpoint restore could not be fully reconciled — "
+                            "conversation history and scrollback may differ; inspect the "
+                            "session restore record before continuing."
+                        ),
+                        level="warning",
+                    )
+                )
+            if store.rewind_recovery_interrupted:
+                self.bridge.emit(
+                    Notification(
+                        message=(
+                            "A combined checkpoint restore was interrupted before code "
+                            "completed. Conversation history was kept; inspect the workspace "
+                            "restore journal and retry the checkpoint."
                         ),
                         level="warning",
                     )
@@ -818,13 +920,102 @@ class RealRuntime:
             )
         )
         self._initialized = initialized
+        # MCP config changes are reconciled against this exact coordinator.
+        # The helper prefers an upstream public capability and otherwise uses
+        # the audited single-server seam from the pinned tool-mcp version. Its
+        # async close handle is owned by the same session cleanup stack as
+        # every other live-mounted extension.
+        from .live_mcp import LiveMCPReconciler
+
+        self._live_mcp = LiveMCPReconciler(initialized.coordinator)
+        initialized.unregister_handles.append(self._live_mcp.close)
+        from .bundle_compose import boot_module_identities
+
+        # A boot plan records intent, while the coordinator/mount report prove
+        # what actually attached. Keep failed provider and tool identities out
+        # of the live ledger so a degraded module remains retryable through
+        # /module or /bundle instead of being trapped as "already active".
+        self._live_module_keys = boot_module_identities(
+            resolved.mount_plan,
+            initialized.coordinator,
+            missing_tools=initialized.mount_report.missing_tools,
+        )
         if self._session_settings_path is None:
             self._session_settings_path = (
                 store.session_dir(initialized.session_id) / "settings.yaml"
             )
         self._sync_directory_tools()
         hooks = initialized.coordinator.hooks
+        # B7: off-machine delivery consumes the same durable record/ack
+        # events as every other destination.  The app-owned adapter uses
+        # ntfy sequence IDs for destination dedupe + exact clear and never
+        # listens to raw orchestrator completion (which would recreate a
+        # second, uncorrelated notification source).
+        attention_push = NtfyAttentionDestination(resolve_ntfy_attention_config(resolved.settings))
+        initialized.unregister_handles.append(attention_push.register_hooks(hooks))
+        self._attention_push = attention_push
         initialized.unregister_handles.append(self.bridge.register_hooks(hooks))
+        # Filesystem undo is TUI-owned because Amplifier Foundation exposes
+        # conversation forks but mounted file tools retain no preimages. The
+        # store is private to this durable session and registers only on the
+        # ROOT hook bus (it is deliberately not inherited by SessionSpawner),
+        # matching the documented limitation that subagent/bash edits are not
+        # code-restorable.
+        from .checkpoints import (
+            WorkspaceCheckpointStore,
+            WorkspaceCheckpointUnavailableError,
+        )
+
+        try:
+            checkpoint_store = WorkspaceCheckpointStore(
+                store.session_dir(initialized.session_id),
+                Path(resolved.project_dir),
+                initialized.session_id,
+            )
+        except WorkspaceCheckpointUnavailableError:
+            # Two independent runtimes writing/restoring one session cannot
+            # uphold compare-and-swap. Refuse the duplicate owner instead of
+            # silently running an uncheckpointed competing turn.
+            await initialized.cleanup()
+            self._initialized = None
+            raise
+        except (OSError, ValueError):
+            logger.warning("workspace checkpoint store unavailable", exc_info=True)
+            self.bridge.emit(
+                Notification(
+                    message=(
+                        "Code checkpoints are unavailable because private checkpoint "
+                        "storage could not be secured; conversation restore still works."
+                    ),
+                    level="warning",
+                )
+            )
+        else:
+            initialized.unregister_handles.append(checkpoint_store.close)
+            unregister_checkpoint_store = checkpoint_store.register_hooks(hooks)
+            if callable(unregister_checkpoint_store):
+                initialized.unregister_handles.append(unregister_checkpoint_store)
+            self._checkpoint_store = checkpoint_store
+            self._workspace_reconcile_pending = bool(
+                getattr(checkpoint_store, "pending_visible_reconcile", False)
+            )
+            if self._workspace_reconcile_pending and not self._rewind_recovery_pending:
+                # A staged workspace branch without a conversation intent is
+                # never allowed to race a new turn. Keep the pre-submit gate
+                # closed and surface the missing marker on retry.
+                self._rewind_recovery_pending = True
+                self._rewind_recovery_disk_reconciled = True
+            recovery_required = tuple(getattr(checkpoint_store, "recovery_required", ()))
+            if recovery_required:
+                self.bridge.emit(
+                    Notification(
+                        message=(
+                            "An interrupted code restore needs attention before another "
+                            "turn. Retry checkpoint " + ", ".join(recovery_required) + "."
+                        ),
+                        level="warning",
+                    )
+                )
         # Drift canary: hook kinds the engine publishes (core ALL_EVENTS +
         # observability.events contributions) that the bridge neither
         # consumes nor deliberately ignores surface once per session
@@ -991,27 +1182,42 @@ class RealRuntime:
         return self._store.session_dir(self._initialized.session_id)
 
     async def publish_attention(self, payload: dict[str, Any]) -> None:
-        """Best-effort: mirror a normalized attention transition onto the
-        hooks bus as ``attention:recorded`` (B7 gap 2).
+        """Best-effort: publish one normalized attention transition.
 
         *payload* is the record-derived shape from ``ui.notifications.
         attention_push_payload`` -- carrying the attention ``event_id`` so a
-        listener can dedupe by it instead of firing on every raw kernel
-        event. This is additive: it does not replace or reconfigure the
-        mounted ``hooks-notify-push`` module's own ``orchestrator:complete``
-        subscription (bundle.md), since that module lives in a different
-        repository and this side cannot verify how it would react to a
-        changed ``listen_event`` -- see bundle.md's ``hooks-notify-push``
-        comment for the honest cross-repo scope. Never raises: a hooks-bus
-        problem must never block or crash the session.
+        listener can retain the durable producer-side dedupe key.  The one
+        canonical ``attention:recorded`` event is emitted unchanged for every
+        record-aware consumer, including the app-owned ntfy destination.
+        There is deliberately no raw-completion or compatibility projection:
+        one persisted record remains the only producer.
+
+        Emission never raises: a listener or hooks-bus problem must not block
+        the live session.
         """
         initialized = self._initialized
         if initialized is None:
             return
         try:
-            await initialized.coordinator.hooks.emit("attention:recorded", payload)
+            await initialized.coordinator.hooks.emit("attention:recorded", dict(payload))
         except Exception:  # noqa: BLE001 -- a destination failure must never block the session
             logger.debug("attention:recorded hook emission failed", exc_info=True)
+
+    async def publish_attention_acknowledged(self, payload: dict[str, Any]) -> None:
+        """Best-effort mirror of a durable acknowledgement onto the hooks bus.
+
+        The normalized ``attention:acknowledged`` event gives every destination
+        that supports clearing an explicit, event-id-correlated signal.  The
+        app-owned ntfy destination maps it to the same deterministic sequence
+        ID used for publish, then issues ntfy's clear operation.
+        """
+        initialized = self._initialized
+        if initialized is None:
+            return
+        try:
+            await initialized.coordinator.hooks.emit("attention:acknowledged", payload)
+        except Exception:  # noqa: BLE001 -- a destination failure must never block the session
+            logger.debug("attention:acknowledged hook emission failed", exc_info=True)
 
     def _spawn_result(self, sub_session_id: str) -> str:
         """Child final-output summary for AgentCompleted.result synthesis."""
@@ -1212,7 +1418,14 @@ class RealRuntime:
             )
         )
 
-    async def submit(self, text: str, attachments: tuple[ImageAttachment, ...] = ()) -> str:
+    async def submit(
+        self,
+        text: str,
+        attachments: tuple[ImageAttachment, ...] = (),
+        *,
+        _expanded_prompt: str | None = None,
+        _on_admitted: Callable[[], None] | None = None,
+    ) -> str:
         """Execute one user turn; returns the final response text.
 
         Git-yield capture (reference: amplifier-app-cli
@@ -1225,6 +1438,12 @@ class RealRuntime:
         and the injector's ``provider:request`` hook upgrades the pending
         user message to multimodal content just before the provider call.
         """
+        if self._rewind_recovery_pending:
+            await self._retry_rewind_recovery()
+        if self._restoring_checkpoint:
+            raise RuntimeError("checkpoint restore in progress")
+        if self._executing:
+            raise RuntimeError("another turn is already running")
         if self._initialized is None:
             raise RuntimeError("RealRuntime.start() has not completed")
         if attachments:
@@ -1235,7 +1454,29 @@ class RealRuntime:
         self._executing = True
         response: Any = ""
         starting_diff = GitDiffSnapshot(False)
+        workspace_checkpoint_id = ""
+        turn_started = False
         try:
+            # Cut the durable file checkpoint BEFORE the UI echo and before
+            # session.execute can emit a write-tool pre hook. Its opaque id is
+            # carried by PromptSubmit into the model ledger; display tN ids can
+            # be reused after rewind, filesystem ids never are.
+            if self._checkpoint_store is not None:
+                candidate_checkpoint_id = uuid.uuid4().hex
+                try:
+                    await asyncio.to_thread(
+                        self._checkpoint_store.begin,
+                        candidate_checkpoint_id,
+                        text,
+                    )
+                except Exception as exc:  # noqa: BLE001 — reject unsafe untracked turn
+                    from .checkpoints import WorkspaceCheckpointUnavailableError
+
+                    logger.warning("workspace checkpoint begin failed", exc_info=True)
+                    raise WorkspaceCheckpointUnavailableError(
+                        "workspace checkpoint could not be created; message was not sent"
+                    ) from exc
+                workspace_checkpoint_id = candidate_checkpoint_id
             # Turn-open first: the user's echo + working line paint NOW, not
             # after the pre-prompt hook work inside ``session.execute``.
             # Stamp the live app posture so the durable ui-events.jsonl log
@@ -1247,24 +1488,40 @@ class RealRuntime:
                     session_id=self._initialized.session_id,
                     prompt=text,
                     mode=self._mode(),
+                    workspace_checkpoint_id=workspace_checkpoint_id,
                 )
             )
+            if _on_admitted is not None:
+                _on_admitted()
             self.turn_yield.start_turn()
+            turn_started = True
             starting_diff = await self._capture_diff()
-            prompt_for_model = await self._expand_mentions(text)
+            prompt_for_model = (
+                _expanded_prompt
+                if _expanded_prompt is not None
+                else await self._expand_mentions(text)
+            )
             response = await self._initialized.session.execute(prompt_for_model)
         finally:
             self._executing = False
+            if workspace_checkpoint_id and self._checkpoint_store is not None:
+                try:
+                    await asyncio.to_thread(
+                        self._checkpoint_store.finish,
+                        workspace_checkpoint_id,
+                    )
+                except Exception:  # noqa: BLE001 — preserve the turn; surface in logs
+                    logger.warning("workspace checkpoint finish failed", exc_info=True)
             if self._image_injector is not None:
                 self._image_injector.clear()
-            if self._interrupt_requested:
+            if turn_started and self._interrupt_requested:
                 await self._append_turn_aborted_marker()
                 self._interrupt_requested = False
             # End-of-turn save (reference: amplifier-app-cli persists after
             # every turn) — the incremental tool:post save misses the final
             # assistant message, which lands in the context only after the
             # last tool call.
-            if self._saver is not None:
+            if turn_started and self._saver is not None:
                 try:
                     await self._saver.maybe_save()
                 except Exception:  # noqa: BLE001 — persistence is best-effort
@@ -1272,8 +1529,61 @@ class RealRuntime:
             # The close-out event is emitted here — never from the raw
             # ``prompt:complete`` hook — so it is guaranteed to (a) follow
             # every turn event and (b) carry the end-of-turn yield.
-            await self._emit_close_out(str(response or ""), starting_diff)
+            if turn_started:
+                await self._emit_close_out(str(response or ""), starting_diff)
         return str(response or "")
+
+    async def _retry_rewind_recovery(self) -> None:
+        """Reconcile disk and live context before accepting a later prompt."""
+        from .rewind import RewindRecoveryPendingError
+
+        if self._store is None or self._initialized is None:
+            raise RewindRecoveryPendingError(
+                "checkpoint restore recovery is pending; message was not sent"
+            )
+        try:
+            if not self._rewind_recovery_disk_reconciled:
+                reconciled = await asyncio.to_thread(
+                    self._store.reconcile_rewind_intent,
+                    self._initialized.session_id,
+                )
+                if not reconciled:
+                    raise RuntimeError("durable checkpoint restore intent is missing")
+                self._rewind_recovery_disk_reconciled = True
+            # Startup may have built Foundation's context from the old
+            # transcript after reconciliation failed. Reload the durable
+            # result and replace that already-live context before a later
+            # save can overwrite the recovered history.
+            transcript, _ = await asyncio.to_thread(
+                self._store.load,
+                self._initialized.session_id,
+            )
+            context = self._initialized.coordinator.get("context")
+            if context is None or not hasattr(context, "set_messages"):
+                raise RuntimeError("context module lacks set_messages")
+            await context.set_messages([dict(message) for message in transcript])
+            if self._workspace_reconcile_pending and self._checkpoint_store is not None:
+                reconcile_staged = getattr(
+                    self._checkpoint_store,
+                    "reconcile_staged_visible",
+                    None,
+                )
+                if not callable(reconcile_staged):
+                    raise RuntimeError("workspace branch recovery is unavailable")
+                workspace_reconciled = await asyncio.to_thread(reconcile_staged)
+                if not workspace_reconciled:
+                    raise RuntimeError("workspace branch rewind marker is not durable")
+                self._workspace_reconcile_pending = False
+            if self._saver is not None:
+                mark_saved = getattr(self._saver, "mark_saved_message_count", None)
+                if callable(mark_saved):
+                    mark_saved(len(transcript))
+        except Exception as exc:  # noqa: BLE001 — keep the send gate closed
+            raise RewindRecoveryPendingError(
+                f"checkpoint restore recovery is still pending: {exc}; message was not sent"
+            ) from exc
+        self._rewind_recovery_pending = False
+        self._rewind_recovery_disk_reconciled = False
 
     async def _append_turn_aborted_marker(self) -> bool:
         """Append the durable model-only boundary for an interrupted turn."""
@@ -1506,10 +1816,19 @@ class RealRuntime:
         ok, detail = await session_ops.set_model(coord, model)
         if ok:
             # ``model_name`` feeds the footer; without this a switch kept
-            # showing the boot-time model until restart. Success detail is
-            # "provider · model" (session_ops.set_model).
-            provider_name = detail.partition(" · ")[0]
-            self.model_name = "/".join(part for part in (provider_name, model.strip()) if part)
+            # showing the boot-time model until restart. Read the structured
+            # session selection rather than parsing presentation text, which
+            # may also carry an independent routing-matrix status suffix.
+            state = getattr(coord, "session_state", None)
+            selection = state.get("ui.model_override") if isinstance(state, dict) else None
+            if isinstance(selection, dict):
+                provider_name = str(selection.get("provider") or "")
+                selected_model = str(selection.get("model") or "")
+            else:
+                parts = detail.split(" · ", 2)
+                provider_name = parts[0]
+                selected_model = parts[1] if len(parts) > 1 else ""
+            self.model_name = "/".join(part for part in (provider_name, selected_model) if part)
         return (ok, detail)
 
     async def get_effort(self) -> str | None:
@@ -1533,6 +1852,53 @@ class RealRuntime:
         if coord is None:
             return (False, 0)
         return await session_ops.clear_context(coord)
+
+    async def manage_goal(self, args: str) -> goal_bridge.GoalCommandResult:
+        """Bridge ``/goal`` into the mounted orchestrator's native loop.
+
+        The TUI owns only command parsing and first-turn admission.  Goal
+        evaluation, continuation, stall detection, cancellation, and progress
+        events remain inside ``loop-streaming``.  Mention expansion is snapped
+        once so the evaluator condition and the first model turn see identical
+        content while the transcript keeps the user's original text.
+        """
+
+        coord = self._coordinator()
+        if coord is None:
+            return goal_bridge.GoalCommandResult(
+                False,
+                "error",
+                "Goal unavailable: session still starting.",
+            )
+        result = await goal_bridge.configure_goal(
+            coord,
+            args,
+            expand_mentions=self._expand_mentions,
+        )
+        if not result.ok or result.action != "set":
+            return result
+
+        admitted = False
+
+        def mark_admitted() -> None:
+            nonlocal admitted
+            admitted = True
+
+        try:
+            await self.submit(
+                result.raw_condition,
+                _expanded_prompt=result.condition,
+                _on_admitted=mark_admitted,
+            )
+        except BaseException:
+            # A checkpoint/preflight rejection happened before PromptSubmit;
+            # do not leave an invisible armed goal behind.  Once admitted,
+            # native state is authoritative and can be inspected/cleared with
+            # a later bare ``/goal`` or ``/goal stop``.
+            if not admitted:
+                goal_bridge.clear_matching_goal(coord, result)
+            raise
+        return result
 
     async def status(self) -> session_ops.StatusInfo:
         coord = self._coordinator()
@@ -1599,6 +1965,137 @@ class RealRuntime:
         coord = self._coordinator()
         return await session_ops.list_mcp_tools(coord) if coord is not None else ()
 
+    async def mcp_prompts(self) -> tuple[Any, ...]:
+        """Live prompt descriptors from native tool-mcp wrappers."""
+        from .mcp_prompts import discover_mcp_prompts
+
+        coord = self._coordinator()
+        return discover_mcp_prompts(coord) if coord is not None else ()
+
+    async def execute_mcp_prompt(
+        self, server: str, prompt: str, args: str = ""
+    ) -> tuple[bool, str]:
+        """Fetch a prompt body through the currently mounted native wrapper."""
+        from .mcp_prompts import execute_mcp_prompt
+
+        coord = self._coordinator()
+        if coord is None:
+            return (False, "session still starting")
+        return await execute_mcp_prompt(coord, server, prompt, args)
+
+    def _inline_mcp_config(self) -> dict[str, Any]:
+        """Inline config on the boot-plan's tool-mcp entry, if any."""
+        resolved = self._resolved
+        if resolved is None:
+            return {}
+        for entry in resolved.mount_plan.get("tools") or ():
+            if not isinstance(entry, dict):
+                continue
+            module = str(entry.get("module") or "")
+            canonical = module.removeprefix("amplifier-module-")
+            if canonical == "tool-mcp":
+                config = entry.get("config")
+                return dict(config) if isinstance(config, dict) else {}
+        return {}
+
+    def _effective_mcp_servers(self) -> dict[str, Any]:
+        """Effective MCP config using tool-mcp's actual precedence."""
+        from .mcp_config import read_effective_servers
+
+        return read_effective_servers(
+            project_dir=self.project_dir,
+            inline=self._inline_mcp_config(),
+        )
+
+    async def mcp_servers(self) -> dict[str, str]:
+        """Configured server summaries across user/project/env/inline scopes."""
+        from .mcp_config import describe_server
+
+        return {name: describe_server(spec) for name, spec in self._effective_mcp_servers().items()}
+
+    async def add_mcp_server(
+        self,
+        name: str,
+        command: str,
+        args: tuple[str, ...] = (),
+    ) -> tuple[bool, str]:
+        """Persist a stdio server and connect it to this session when safe."""
+        if self._initialized is None or self._live_mcp is None:
+            return (False, "session still starting")
+        server = name.strip()
+        executable = command.strip()
+        if not server or not executable:
+            return (False, "usage: /mcp add <name> <command> [args…]")
+
+        from . import mcp_config
+
+        before = self._effective_mcp_servers()
+        path = mcp_config.mcp_config_path()
+        mcp_config.add_stdio_server(path, server, executable, args)
+        desired: dict[str, Any] = {"command": executable}
+        if args:
+            desired["args"] = list(args)
+        after = self._effective_mcp_servers()
+        effective = after.get(server)
+        if effective != desired:
+            return (
+                False,
+                f"configuration saved globally for '{server}', but a project, environment, "
+                "or inline definition still overrides it; live connection unchanged",
+            )
+        result = await self._live_mcp.add(
+            server,
+            desired,
+            configured=True,
+            previously_configured=server in before,
+        )
+        return (result.ok, f"mcp {server} · {result.message}")
+
+    async def reload_mcp_server(self, name: str) -> tuple[bool, str]:
+        """Reconnect a TUI-owned server; preserve boot-owned connections."""
+        if self._initialized is None or self._live_mcp is None:
+            return (False, "session still starting")
+        server = name.strip()
+        spec = self._effective_mcp_servers().get(server)
+        if not isinstance(spec, Mapping):
+            return (False, f"no configured MCP server · {server}")
+        result = await self._live_mcp.reload(server, dict(spec), configured=True)
+        return (result.ok, f"mcp {server} · {result.message}")
+
+    async def remove_mcp_server(self, name: str) -> tuple[bool, str]:
+        """Remove a user-scope server and disconnect it when TUI-owned."""
+        if self._initialized is None or self._live_mcp is None:
+            return (False, "session still starting")
+        server = name.strip()
+        if not server:
+            return (False, "usage: /mcp remove <name>")
+
+        from . import mcp_config
+
+        before = self._effective_mcp_servers()
+        removed = mcp_config.remove_server(mcp_config.mcp_config_path(), server)
+        if not removed:
+            if server in before:
+                return (
+                    False,
+                    f"'{server}' is configured by project, environment, or bundle scope; "
+                    "remove it at that source",
+                )
+            return (False, f"no such server · {server}")
+        after = self._effective_mcp_servers()
+        if server in after:
+            return (
+                False,
+                f"global configuration removed for '{server}', but a higher-priority "
+                "definition remains active; live connection unchanged",
+            )
+        result = await self._live_mcp.remove(
+            server,
+            configured=False,
+            previously_configured=server in before,
+        )
+        return (result.ok, f"mcp {server} · {result.message}")
+
     async def _install_deferred_summon(self, initialized: InitializedSession, context: Any) -> None:
         """Make deferred bundles discoverable + summonable by the model.
 
@@ -1647,61 +2144,143 @@ class RealRuntime:
     async def _install_question_tool(self, initialized: InitializedSession) -> None:
         """Mount the host-provided ``question`` tool onto the live coordinator.
 
-        The model calls ``question`` to pause the turn and ask the user a
-        structured question; the tool defers it onto the shared
+        The model calls ``question`` to ask the user a structured question;
+        the tool defers it onto the shared
         :class:`NeedsYouQueue` (surfaced to both clients via the existing
-        ``level=\"decision\"`` notification) and blocks until the user answers
-        through the SAME ``needs_you.answer`` seam the serve ``decision`` op and
-        the TUI ``apply_decision`` already drive. Same mount seam as
+        ``level=\"decision\"`` notification). Interactive modes wait for the
+        same ``needs_you.answer`` seam the serve ``decision`` op and TUI use;
+        Auto returns immediately so unrelated work continues and the answer is
+        injected when available. Same mount seam as
         :meth:`_install_deferred_summon`'s ``load_bundle``. Best-effort: a mount
         failure degrades to no question tool rather than blocking boot.
         """
         from .question import QUESTION_TOOL_NAME, QuestionTool
 
-        tool = QuestionTool(self.needs_you)
+        tool = QuestionTool(self.needs_you, mode=self._mode)
         try:
             await initialized.coordinator.mount("tools", tool, name=QUESTION_TOOL_NAME)
         except Exception:  # noqa: BLE001 — degrade to no question tool, never block boot
             logger.warning("could not mount question tool", exc_info=True)
 
-    # -- in-session bundle composition (/bundle load) -----------------------
+    # -- in-session bundle/module composition (/bundle, /module) ------------
 
     def deferred_bundles(self) -> tuple[str, ...]:
-        """Overlay URIs held back from boot (``bundle.deferred``) for this session.
+        """Names/URIs the live ``/bundle load`` path can resolve.
 
-        The candidates a user can compose on demand with ``/bundle load``;
-        empty when nothing was deferred."""
+        The legacy method name remains part of the adapter contract, but the
+        catalog is no longer deferred-only: it includes held-back overlays,
+        ``bundle.added`` registrations, locally discovered bundles, and the
+        shared Foundation registry.  A bundle already active at boot remains
+        visible and reports an idempotent no-op if selected.
+        """
         if self._resolved is None:
             return ()
-        return deferred_overlay_uris(self._resolved.settings)
+        settings = self._resolved.settings
+        names: list[str] = list(deferred_overlay_uris(settings))
+        names.extend(added_bundle_uris(settings))
+        try:
+            entries = list_known_bundles(
+                self._resolved.project_dir,
+                Path.home() / ".amplifier",
+            )
+        except Exception:  # noqa: BLE001 — the deferred/added catalog still works
+            entries = ()
+        names.extend(entry.name for entry in entries)
+        return tuple(dict.fromkeys(name for name in names if name))
+
+    def _resolve_live_bundle_uri(self, target: str) -> str | None:
+        """Resolve a deferred, registered, local, or direct bundle target."""
+        resolved = self._resolved
+        if resolved is None:
+            return None
+        settings = resolved.settings
+        # Preserve the original deferred resolver's name -> URI semantics,
+        # then broaden through the same local/added discovery boot uses.
+        uri = resolve_deferred_bundle(target, settings)
+        if uri is not None:
+            return uri
+        search = bundle_search_paths(resolved.project_dir, Path.home() / ".amplifier")
+        uri = resolve_bundle_name(target, settings, search)
+        if uri is not None:
+            return uri
+        # Foundation's registry can contain names that are neither on disk nor
+        # in bundle.added.  Resolve from its already-known entries without
+        # changing settings or composing anything yet.
+        try:
+            entries = list_known_bundles(
+                resolved.project_dir,
+                Path.home() / ".amplifier",
+            )
+        except Exception:  # noqa: BLE001 — an unknown target is reported below
+            return None
+        for entry in entries:
+            if entry.name == target and entry.uri:
+                return entry.uri
+        return None
+
+    @staticmethod
+    def _live_bundle_key(uri: str) -> str:
+        """Canonical ledger key for a bundle URI or local path."""
+        path = Path(uri).expanduser()
+        if path.exists():
+            try:
+                return str(path.resolve())
+            except OSError:
+                pass
+        return uri
 
     async def load_deferred_bundle(self, name: str) -> tuple[bool, str]:
-        """Compose a deferred overlay into the LIVE session (``/bundle load``).
+        """Compose a bundle's additive modules into the LIVE session.
 
-        Resolves *name* to a ``bundle.deferred`` overlay URI, prepares it
-        (installing any missing modules — the same warm foundation owns), and
-        mounts its additive tool/hook/agent modules onto the running
-        coordinator via :func:`kernel.bundle_compose.mount_overlay_modules`.
+        Resolves *name* as a deferred overlay, a ``bundle.added`` or Foundation
+        registry name, a locally discovered bundle, or a direct URI/path;
+        prepares it (installing missing modules), then mounts only its additive
+        provider/tool/hook/agent modules onto the running coordinator via
+        :func:`kernel.bundle_compose.mount_overlay_modules`.
         Settings bridges (mode search paths, routing, telemetry, notifications)
         are applied to the overlay plan first so a deferred behavior bundle
         still gets its config lowered exactly as it would at boot.
 
-        Returns ``(ok, detail)``; never raises into the UI. A name that is not
-        a deferred overlay comes back ``(False, reason)`` — loading a
-        boot-composed bundle is a no-op by design (it is already mounted)."""
+        Returns ``(ok, detail)``; never raises into the UI.  A newly mounted
+        provider stays idle until the user selects its model; orchestrator and
+        context replacement remain an explicit next-session boundary.
+        The URI ledger and shared module ledger make retries idempotent and
+        guarantee that each newly mounted instance registers one cleanup.
+        """
         target = name.strip()
         if self._initialized is None or self._resolved is None:
             return (False, "session still starting")
         if not target:
             available = ", ".join(self.deferred_bundles()) or "none"
-            return (False, f"usage: /bundle load <name> · deferred: {available}")
+            return (False, f"usage: /bundle load <name-or-uri> · available: {available}")
+        async with self._live_load_lock:
+            return await self._load_bundle_live(target)
+
+    async def _load_bundle_live(self, target: str) -> tuple[bool, str]:
+        """Locked implementation for :meth:`load_deferred_bundle`."""
+        assert self._initialized is not None
+        assert self._resolved is not None
         settings = self._resolved.settings
-        uri = resolve_deferred_bundle(target, settings)
+        uri = self._resolve_live_bundle_uri(target)
         if uri is None:
             available = ", ".join(self.deferred_bundles()) or "none"
-            return (False, f"'{target}' is not a deferred bundle · deferred: {available}")
+            return (False, f"bundle '{target}' not found · available: {available}")
+        key = self._live_bundle_key(uri)
+        active_keys = {
+            self._live_bundle_key(active)
+            for active in (self._resolved.bundle_uri, *self._resolved.overlays)
+            if active
+        }
+        if key in active_keys:
+            return (True, f"already active from session start · {target}")
+        previous = self._live_bundle_ledger.get(key)
+        if previous is not None:
+            ok, detail = previous
+            state = "already loaded this session" if ok else "already attempted this session"
+            return (ok, f"{state} · {target} · {detail}")
         try:
-            mount_plan = await prepare_overlay_bundle(uri, settings, progress=self._progress)
+            prepared = await prepare_live_overlay_bundle(uri, settings, progress=self._progress)
+            mount_plan = prepared.mount_plan
         except Exception as error:  # noqa: BLE001 — surfaced as a load miss, never a traceback
             logger.warning("deferred bundle prepare failed: %s", uri, exc_info=True)
             return (False, f"could not prepare '{target}': {error or type(error).__name__}")
@@ -1713,10 +2292,73 @@ class RealRuntime:
         inject_notifications_config(mount_plan, settings)
         _apply_hook_suppression(mount_plan, self.bridge.emit, suppressed_hooks_setting(settings))
         from .bundle_compose import mount_overlay_modules
+        from .bundle_content import activate_bundle_content
 
-        result = await mount_overlay_modules(self._initialized.coordinator, mount_plan)
+        content = await activate_bundle_content(
+            prepared,
+            self._initialized.coordinator,
+            self._initialized.session,
+            self.project_dir,
+        )
+
+        result = await mount_overlay_modules(
+            self._initialized.coordinator,
+            mount_plan,
+            seen=self._live_module_keys,
+            bundle_content_deferred=not content.ok,
+            parent_config=getattr(self._initialized.session, "config", None),
+        )
         # Mounted modules unwind with the session (parity with the boot hooks'
         # unregister_handles) — a bare cleanup would otherwise leak on exit.
+        self._initialized.unregister_handles.extend(result.cleanups)
+        if content.cleanup is not None:
+            self._initialized.unregister_handles.append(content.cleanup)
+        detail = result.summary(target)
+        if content.added:
+            detail += " · instructions/context active for next turn"
+        elif not content.ok and content.reason:
+            detail += f" · content activation failed: {content.reason}"
+        self._live_bundle_ledger[key] = (result.ok, detail)
+        return (result.ok, detail)
+
+    async def load_module(self, module_id: str, source_hint: str = "") -> tuple[bool, str]:
+        """Mount one additive provider/tool/hook module into the current session.
+
+        Explicit module loading accepts named multi-slot providers, tools, and
+        hooks. It intentionally rejects orchestrators, contexts, agents, and
+        unknown module kinds; those are singleton/config-identity surfaces and
+        attach at the next session start. TUI-suppressed printing/notification
+        hooks are rejected too.
+        """
+        initialized = self._initialized
+        if initialized is None or self._resolved is None:
+            return (False, "session still starting")
+        target = module_id.strip()
+        if not target:
+            return (False, "usage: /module load <provider-, tool-, or hook-module> [source-uri]")
+        async with self._live_load_lock:
+            return await self._load_module_live(target, source_hint)
+
+    async def _load_module_live(self, target: str, source_hint: str) -> tuple[bool, str]:
+        """Locked implementation for :meth:`load_module`."""
+        assert self._initialized is not None
+        assert self._resolved is not None
+        canonical = target.removeprefix("amplifier-module-")
+        suppressed = suppressed_hooks_setting(self._resolved.settings)
+        if target in suppressed or canonical in suppressed:
+            return (
+                False,
+                f"module '{target}' is suppressed because it bypasses TUI rendering",
+            )
+        from .bundle_compose import mount_additive_module
+
+        result = await mount_additive_module(
+            self._initialized.coordinator,
+            target,
+            source_hint=source_hint.strip() or None,
+            seen=self._live_module_keys,
+            parent_config=getattr(self._initialized.session, "config", None),
+        )
         self._initialized.unregister_handles.extend(result.cleanups)
         return (result.ok, result.summary(target))
 
@@ -1923,10 +2565,370 @@ class RealRuntime:
             )
         return outcome
 
+    async def restore_checkpoint(self, checkpoint_id: str, ledger: Any, *, scope: str) -> Any:
+        """Serialize one checkpoint restore against every new user turn."""
+        from .rewind import RewindError
+
+        if self._rewind_recovery_pending:
+            await self._retry_rewind_recovery()
+        if self._restoring_checkpoint:
+            raise RewindError("another checkpoint restore is already in progress")
+        if self._executing:
+            raise RewindError("turn still running — interrupt it first")
+        self._restoring_checkpoint = True
+        try:
+            return await self._restore_checkpoint_impl(checkpoint_id, ledger, scope=scope)
+        finally:
+            self._restoring_checkpoint = False
+
+    async def _restore_checkpoint_impl(self, checkpoint_id: str, ledger: Any, *, scope: str) -> Any:
+        """Restore a pre-prompt checkpoint's code, conversation, or both.
+
+        Conversation restoration delegates slicing to Amplifier Foundation
+        and commits through the native context module. Code restoration uses
+        the TUI's private, compare-and-swap workspace store because Core and
+        Foundation do not retain file preimages. Direct root file-tool edits
+        are covered; bash, subagent, and external mutations intentionally are
+        not, and a later manual edit becomes an explicit conflict rather than
+        being overwritten.
+        """
+        from .rewind import CheckpointRestoreOutcome, RewindController, RewindError
+
+        if scope not in {"both", "conversation", "code"}:
+            raise RewindError(f"unknown restore scope: {scope}")
+        validated_scope = cast(Literal["both", "conversation", "code"], scope)
+        initialized = self._initialized
+        if initialized is None:
+            raise RewindError("RealRuntime.start() has not completed")
+        target = ledger.checkpoint_by_id(checkpoint_id)
+        if target is None:
+            raise RewindError(f"unknown checkpoint: {checkpoint_id}")
+
+        summaries: list[str] = []
+        code_status = "not_requested"
+        partial = False
+        controller = RewindController(ledger)
+        context: Any | None = None
+        conversation_plan: Any | None = None
+        kept_turns: int | None = None
+        visible_workspace_ids_before: tuple[str, ...] = ()
+        original_messages: list[dict[str, Any]] = []
+        rewind_marker: RewindMarker | None = None
+        rewind_intent_started = False
+        visible_intent_staged = False
+        conversation_committed = False
+        prompt_attachments: tuple[ImageAttachment, ...] = ()
+        if scope in {"both", "conversation"}:
+            # Validate the native context seam and Foundation slice before a
+            # combined restore mutates any files. A bad turn boundary should
+            # leave both surfaces untouched.
+            context = initialized.coordinator.get("context")
+            if context is None or not hasattr(context, "set_messages"):
+                raise RewindError("context module lacks set_messages — cannot restore")
+            if hasattr(context, "get_messages"):
+                original_messages = list(await context.get_messages())
+            user_messages = [
+                message for message in original_messages if message.get("role") == "user"
+            ]
+            if target.before_turn_id < len(user_messages):
+                prompt_attachments = image_attachments_from_message(
+                    user_messages[target.before_turn_id]
+                )
+            kept_turns = _kept_turns_before(ledger, checkpoint_id)
+            if kept_turns is None:
+                raise RewindError(f"unknown checkpoint: {checkpoint_id}")
+            snapshot_ids = getattr(ledger, "visible_workspace_ids_before", None)
+            if isinstance(snapshot_ids, tuple):
+                visible_workspace_ids_before = tuple(
+                    item for item in snapshot_ids if isinstance(item, str) and item
+                )
+            else:
+                turns = tuple(getattr(ledger, "turns", ()))
+                visible_workspace_ids_before = tuple(
+                    turn.checkpoint.workspace_id
+                    for turn in turns[:kept_turns]
+                    if getattr(turn.checkpoint, "workspace_id", "")
+                )
+            conversation_plan = controller.prepare_restore_before_in_memory(
+                checkpoint_id,
+                messages=original_messages,
+                parent_id=initialized.session_id,
+            )
+            rewind_marker = RewindMarker(
+                event_id=f"rewind-{uuid.uuid4().hex}",
+                session_id=initialized.session_id,
+                checkpoint_id=checkpoint_id,
+                kept_turns=kept_turns,
+            )
+            if self._store is not None:
+                try:
+                    self._store.begin_rewind_intent(
+                        initialized.session_id,
+                        marker=rewind_marker,
+                        messages=[dict(message) for message in conversation_plan.messages],
+                        ready=scope != "both",
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    raise RewindError(f"could not stage durable restore: {exc}") from exc
+                rewind_intent_started = True
+                if scope == "conversation" and self._checkpoint_store is not None:
+                    stage_visible = getattr(
+                        self._checkpoint_store,
+                        "stage_visible_reconcile",
+                        None,
+                    )
+                    if callable(stage_visible):
+                        try:
+                            await asyncio.to_thread(
+                                stage_visible,
+                                visible_workspace_ids_before,
+                                rewind_marker.event_id,
+                            )
+                        except (OSError, RuntimeError, ValueError) as exc:
+                            self._store.cancel_rewind_intent(initialized.session_id)
+                            raise RewindError(
+                                f"could not stage workspace branch restore: {exc}"
+                            ) from exc
+                        visible_intent_staged = True
+                        self._workspace_reconcile_pending = True
+
+        # For a combined restore, commit the reversible conversation slice
+        # first but defer ledger trimming. If code infrastructure then fails
+        # before a result, the original messages can be put back and the UI
+        # timeline/ledger remain untouched.
+        conversation_applied = False
+        if scope == "both":
+            assert context is not None
+            assert conversation_plan is not None
+            try:
+                await controller.apply_prepared_restore(
+                    conversation_plan,
+                    set_messages=context.set_messages,
+                )
+            except RewindError:
+                if rewind_intent_started and self._store is not None:
+                    self._store.cancel_rewind_intent(initialized.session_id)
+                raise
+            conversation_applied = True
+
+        async def rollback_combined_conversation(
+            reason: str,
+            cause: BaseException | None = None,
+        ) -> None:
+            """Restore original context and neutralize its durable intent."""
+            nonlocal conversation_applied, rewind_intent_started
+            if not conversation_applied:
+                return
+            assert context is not None
+            try:
+                await context.set_messages([dict(message) for message in original_messages])
+            except Exception as rollback_error:  # noqa: BLE001 — prevent split state
+                source = cause if cause is not None else rollback_error
+                raise RewindError(
+                    f"{reason}; conversation rollback failed: {rollback_error}"
+                ) from source
+            if rewind_intent_started and self._store is not None:
+                try:
+                    self._store.cancel_rewind_intent(initialized.session_id)
+                except (OSError, TypeError, ValueError) as cancel_error:
+                    source = cause if cause is not None else cancel_error
+                    raise RewindError(
+                        f"{reason}; conversation rolled back, but the durable restore "
+                        f"intent could not be cancelled: {cancel_error}"
+                    ) from source
+            rewind_intent_started = False
+            conversation_applied = False
+
+        if scope in {"both", "code"}:
+            if self._checkpoint_store is None or not target.workspace_id:
+                summaries.append("no tracked code checkpoint")
+                code_status = "unavailable"
+                partial = True
+            else:
+                checkpoint_status = "active"
+                status_fn = getattr(self._checkpoint_store, "checkpoint_status", None)
+                try:
+                    if callable(status_fn):
+                        checkpoint_status = await asyncio.to_thread(
+                            status_fn,
+                            target.workspace_id,
+                        )
+                except (KeyError, OSError, RuntimeError, ValueError) as exc:
+                    await rollback_combined_conversation(
+                        "code checkpoint status failed",
+                        exc,
+                    )
+                    raise RewindError(f"code checkpoint status failed: {exc}") from exc
+                if checkpoint_status == "retired":
+                    summaries.append("code checkpoint already restored")
+                    code_status = "already_restored"
+                    file_outcome = None
+                elif checkpoint_status == "expired":
+                    summaries.append("code checkpoint expired")
+                    code_status = "unavailable"
+                    partial = True
+                    file_outcome = None
+                else:
+                    try:
+                        file_outcome = await asyncio.to_thread(
+                            self._checkpoint_store.restore,
+                            target.workspace_id,
+                            include_target=True,
+                            retain_target=scope == "code",
+                        )
+                    except (KeyError, OSError, RuntimeError, ValueError) as exc:
+                        await rollback_combined_conversation("code restore failed", exc)
+                        raise RewindError(f"code restore failed: {exc}") from exc
+                if file_outcome is not None:
+                    description = getattr(file_outcome, "summary", "")
+                    file_summary = str(description()) if callable(description) else str(description)
+                    warnings = tuple(getattr(file_outcome, "warnings", ()))
+                    skipped = tuple(getattr(file_outcome, "skipped_paths", ()))
+                    if warnings:
+                        first = " ".join(str(warnings[0]).split())[:180]
+                        more = f" (+{len(warnings) - 1} more)" if len(warnings) > 1 else ""
+                        file_summary = f"{file_summary} · {first}{more}"
+                    if skipped or warnings:
+                        code_status = "partial"
+                        partial = True
+                    elif tuple(getattr(file_outcome, "restored_paths", ())):
+                        code_status = "restored"
+                    else:
+                        code_status = "unchanged"
+                    summaries.append(file_summary)
+
+        combined_code_incomplete = scope == "both" and code_status in {
+            "partial",
+            "unavailable",
+        }
+        if combined_code_incomplete and conversation_applied:
+            # Keep the conversation and its ledger target intact when code
+            # restoration needs intervention. The workspace store retains
+            # only unresolved paths, so the same visible checkpoint can be
+            # retried after conflicts are fixed. Successfully restored files
+            # remain restored and are reported as a partial result.
+            await rollback_combined_conversation("code restore was partial")
+            summaries.append("conversation kept for retry")
+
+        if (
+            scope == "both"
+            and not combined_code_incomplete
+            and rewind_intent_started
+            and self._store is not None
+        ):
+            try:
+                self._store.arm_rewind_intent(initialized.session_id)
+            except (OSError, TypeError, ValueError) as exc:
+                await rollback_combined_conversation("could not arm durable restore", exc)
+                raise RewindError(f"could not arm durable restore: {exc}") from exc
+
+        if scope in {"both", "conversation"} and not combined_code_incomplete:
+            assert context is not None
+            assert conversation_plan is not None
+            assert kept_turns is not None
+            if scope == "conversation":
+                try:
+                    await controller.commit_prepared_restore(
+                        conversation_plan,
+                        set_messages=context.set_messages,
+                    )
+                except RewindError:
+                    if rewind_intent_started and self._store is not None:
+                        self._store.cancel_rewind_intent(initialized.session_id)
+                    if visible_intent_staged and self._checkpoint_store is not None:
+                        cancel_visible = getattr(
+                            self._checkpoint_store,
+                            "cancel_visible_reconcile",
+                            None,
+                        )
+                        if callable(cancel_visible):
+                            await asyncio.to_thread(cancel_visible)
+                        self._workspace_reconcile_pending = False
+                    raise
+            else:
+                controller.confirm_prepared_restore(conversation_plan)
+            conversation_committed = True
+            # A private intent was staged before context mutation. Save the
+            # live context, then reconcile transcript + unique rewind marker
+            # as one restart-completable transaction. The intent is removed
+            # only after both durable sides succeed.
+            incremental_saved = False
+            if self._saver is not None:
+                try:
+                    incremental_saved = bool(await self._saver.force_save())
+                except Exception:  # noqa: BLE001 — live restore already committed
+                    logger.warning("restored conversation save failed", exc_info=True)
+            reconciled = False
+            if self._store is not None and rewind_intent_started:
+                try:
+                    reconciled = self._store.reconcile_rewind_intent(initialized.session_id)
+                except (OSError, TypeError, ValueError) as exc:
+                    logger.warning("restored conversation reconciliation deferred", exc_info=True)
+                    summaries.append(f"persistence warning: {exc} · recovery queued")
+                    partial = True
+                    self._rewind_recovery_pending = True
+                    self._rewind_recovery_disk_reconciled = False
+            elif self._store is None and self._saver is not None and not incremental_saved:
+                summaries.append("persistence warning: transcript save was not confirmed")
+                partial = True
+            if reconciled and self._saver is not None:
+                # A real IncrementalSaver already advanced through force_save;
+                # this assignment also covers a force-save failure followed by
+                # successful intent reconciliation without another disk write.
+                mark_saved = getattr(self._saver, "mark_saved_message_count", None)
+                if callable(mark_saved):
+                    mark_saved(len(conversation_plan.messages))
+            if reconciled:
+                self._rewind_recovery_pending = False
+                self._rewind_recovery_disk_reconciled = False
+            reconcile_staged = (
+                getattr(self._checkpoint_store, "reconcile_staged_visible", None)
+                if visible_intent_staged and self._checkpoint_store is not None
+                else None
+            )
+            reconcile_visible = (
+                getattr(self._checkpoint_store, "reconcile_visible", None)
+                if not visible_intent_staged and self._checkpoint_store is not None
+                else None
+            )
+            if callable(reconcile_staged) and reconciled:
+                try:
+                    if not await asyncio.to_thread(reconcile_staged):
+                        raise RuntimeError("rewind marker is not durable")
+                    self._workspace_reconcile_pending = False
+                except (OSError, RuntimeError, ValueError) as exc:
+                    summaries.append(f"workspace history warning: {exc} · branch cleanup queued")
+                    partial = True
+                    self._rewind_recovery_pending = True
+                    self._rewind_recovery_disk_reconciled = True
+            elif callable(reconcile_visible):
+                try:
+                    await asyncio.to_thread(
+                        reconcile_visible,
+                        visible_workspace_ids_before,
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    summaries.append(f"workspace history warning: {exc} · branch cleanup queued")
+                    partial = True
+            summaries.append(f"conversation before turn {target.turn_id}")
+
+        return CheckpointRestoreOutcome(
+            scope=validated_scope,
+            summary=" · ".join(part for part in summaries if part) or "nothing changed",
+            conversation_restored=conversation_committed,
+            code_status=code_status,
+            partial=partial,
+            prompt_attachments=prompt_attachments if conversation_committed else (),
+        )
+
     async def cleanup(self) -> None:
+        if self._attention_push is not None:
+            await self._attention_push.cleanup()
+            self._attention_push = None
         if self._initialized is not None:
             await self._initialized.cleanup()
             self._initialized = None
+        self._live_mcp = None
 
 
 def _tag_message(outcome: session_manager.TagOutcome, *, verb: str) -> str:

@@ -17,6 +17,7 @@ from amplifier_app_tui.kernel.events import (
     ContextCompacted,
     ExecutionEnd,
     ExecutionStart,
+    GoalProgress,
     Notification,
     OrchestratorComplete,
     PromptComplete,
@@ -172,6 +173,58 @@ def test_orchestrator_complete_status_validation() -> None:
     assert weird.status == "incomplete"  # unknown statuses degrade, never crash
 
 
+def test_goal_progress_continuing_persists_only_compact_state() -> None:
+    expanded_condition = "Read @large-plan.md and satisfy every acceptance criterion"
+    old_reasons = [f"historical evaluator reason {index}" for index in range(8)]
+    event = normalize(
+        "orchestrator:goal_progress",
+        {
+            **SID,
+            "orchestrator": "loop-streaming",
+            "state": "continuing",
+            "turn": 4,
+            "continuations": 3,
+            "cap": 10,
+            "reason": "One acceptance criterion remains open.",
+            "reasons": old_reasons,
+            "condition": expanded_condition,
+            "schema_version": 1,
+        },
+    )
+
+    assert isinstance(event, GoalProgress)
+    assert event.state == "continuing"
+    assert event.reason == "One acceptance criterion remains open."
+    assert event.reasons == ()
+    assert event.condition is None
+    assert event.cap == 10
+    persisted = event.model_dump_json()
+    assert expanded_condition not in persisted
+    assert not any(reason in persisted for reason in old_reasons)
+
+
+def test_goal_progress_terminal_persists_only_last_three_reasons() -> None:
+    event = normalize(
+        "orchestrator:goal_progress",
+        {
+            **SID,
+            "orchestrator": "loop-streaming",
+            "state": "stalled",
+            "turn": 9,
+            "reasons": ["reason 1", "reason 2", "reason 3", "reason 4", "reason 5"],
+            "condition": "expanded condition must not be copied into every UI event",
+        },
+    )
+
+    assert isinstance(event, GoalProgress)
+    assert event.reasons == ("reason 3", "reason 4", "reason 5")
+    assert event.condition is None
+    persisted = event.model_dump_json()
+    assert "reason 1" not in persisted
+    assert "reason 2" not in persisted
+    assert "expanded condition" not in persisted
+
+
 def test_turn_lifecycle_events() -> None:
     assert isinstance(normalize("prompt:submit", {**SID, "prompt": "hi"}), PromptSubmit)
     assert isinstance(normalize("prompt:complete", {**SID}), PromptComplete)
@@ -302,12 +355,22 @@ def test_context_compaction_stats_are_normalized() -> None:
             "before_messages": 42,
             "after_messages": 23,
             "strategy_level": 3,
+            "budget": 196_000,
+            "target_tokens": 98_000,
+            "messages_removed": 19,
+            "messages_truncated": 7,
+            "user_messages_stubbed": 2,
         },
     )
     assert isinstance(event, ContextCompacted)
     assert event.before_tokens == 120_000
     assert event.after_tokens == 60_000
     assert event.strategy_level == 3
+    assert event.budget == 196_000
+    assert event.target_tokens == 98_000
+    assert event.messages_removed == 19
+    assert event.messages_truncated == 7
+    assert event.user_messages_stubbed == 2
 
 
 def test_unknown_events_return_none() -> None:

@@ -140,7 +140,7 @@ from typing import IO, Any, cast
 
 from . import session_manager
 from .context_meter import ContextMeter
-from .events import ProviderResponseUsage
+from .events import ContextCompacted, ProviderResponseUsage
 from .jsonl import JsonlRecords
 from .prompt_history import PromptHistoryStore
 from .runtime import RealRuntime
@@ -1040,11 +1040,16 @@ async def serve_loop(
             if getattr(event, "kind", "") == "approval_required":
                 continue
             _emit_raw(out, records.runtime_event(event).model_dump(mode="json"))
-            # Provider usage advances the meter; push the fresh context.state
-            # right after the event that changed it (donor cadence: one update
-            # per provider response). A new record type existing clients skip.
-            if isinstance(event, ProviderResponseUsage):
+            # Only ROOT telemetry describes this session's context window.
+            # Child costs/tokens have their own lanes and must not make the
+            # parent HUD look full. Push after either usage or compaction;
+            # existing clients safely skip this additive record type.
+            is_root = not event.session_id or event.session_id == runtime.session_id
+            if isinstance(event, ProviderResponseUsage) and is_root:
                 meter.record(event)
+                _emit_context_state()
+            elif isinstance(event, ContextCompacted) and is_root:
+                meter.record_compaction(event)
                 _emit_context_state()
 
     pump = asyncio.create_task(_pump())

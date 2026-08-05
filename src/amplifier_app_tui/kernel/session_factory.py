@@ -128,7 +128,7 @@ class InitializedSession:
     session_id: str
     resolved: ResolvedConfig
     mount_report: MountReport
-    unregister_handles: list[Callable[[], None]] = field(default_factory=list)
+    unregister_handles: list[Callable[[], Any]] = field(default_factory=list)
 
     @property
     def coordinator(self) -> Any:
@@ -142,7 +142,9 @@ class InitializedSession:
         """Unregister app hooks, then tear the session down."""
         for unregister in reversed(self.unregister_handles):
             try:
-                unregister()
+                result = unregister()
+                if isinstance(result, Awaitable):
+                    await result
             except Exception:  # noqa: BLE001 — cleanup must never cascade
                 logger.debug("unregister handle failed during cleanup", exc_info=True)
         self.unregister_handles.clear()

@@ -18,7 +18,8 @@ Design constraints (docs/plans/2026-07-22-forge-capability-tier.md):
   list (``ctrl+c``/``ctrl+u``/...); ``ctrl+o`` (cycle tail) and ``ctrl+t``
   (toggle lanes) are outside it, so :meth:`ForgeSession.press_ctrl`
   falls back to ``type`` with the raw control byte -- the documented
-  forge pattern (SKILL.md Rules).
+  forge pattern (SKILL.md Rules). Modified keys outside Forge's list use
+  their terminal byte sequences via :meth:`ForgeSession.press_alt`.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,20 +43,45 @@ class ForgeError(RuntimeError):
     """A ``forge.py`` invocation failed in a way the tier cannot recover from."""
 
 
-def resolve_forge() -> Path | None:
-    """Locate ``forge.py`` -- ``$FORGE`` first, then the known skill dirs.
+def forge_required(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether missing Forge infrastructure must fail instead of skip.
+
+    Release and adoption gates set ``AMPLIFIER_FORGE_REQUIRED=1``.  The
+    ordinary opt-in developer tier leaves it unset and retains its friendly
+    self-skipping behavior on machines without Forge.
+    """
+    source = os.environ if environ is None else environ
+    return source.get("AMPLIFIER_FORGE_REQUIRED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def resolve_forge(
+    *,
+    home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Locate ``forge.py`` -- ``$FORGE`` first, then known install dirs.
 
     Returns ``None`` when the helper cannot be found so the fixture layer
-    can *skip* the tier (never fail) on a machine without the skill.
+    can skip an ordinary developer run or fail a required release/adoption
+    run.  ``home`` and ``environ`` are injectable for deterministic tests.
     """
-    env = os.environ.get("FORGE")
+    source = os.environ if environ is None else environ
+    home_dir = Path.home() if home is None else home
+    env = source.get("FORGE")
     if env:
         candidate = Path(env).expanduser()
         if candidate.is_file():
             return candidate
     for base in (
-        Path.home() / ".claude" / "skills" / "amplifier-skill-forge",
-        Path.home() / ".amplifier" / "skills" / "amplifier-skill-forge",
+        home_dir / ".codex" / "skills" / "amplifier-skill-forge",
+        home_dir / ".claude" / "skills" / "amplifier-skill-forge",
+        home_dir / ".amplifier" / "skills" / "amplifier-skill-forge",
+        home_dir / "dev" / "amplifier-skill-forge",
     ):
         candidate = base / "tools" / "forge.py"
         if candidate.is_file():
@@ -122,13 +149,31 @@ class ForgeSession:
         self.forge.run("key", self.session_id, name)
 
     def submit(self, text: str) -> None:
-        """Type *text* then Enter -- the composer clears on submit."""
+        """Type *text* then Enter -- the composer clears on submit.
+
+        Keep these as separate ``type`` + ``key`` calls.  Forge's top-level
+        ``submit`` command is a Claude Code helper that sends Escape+Enter;
+        Escape intentionally cancels this TUI's custom-decision capture.
+        """
         self.type(text, newline=False)
         self.key("enter")
 
     def press_ctrl(self, letter: str) -> None:
         """Send ctrl+<letter> as a raw control byte (forge ``key`` gap)."""
         self.type(_control_byte(letter), newline=False)
+
+    def press_alt(self, key: str) -> None:
+        """Send the terminal sequence for an Alt chord Forge cannot name."""
+        sequences = {
+            "enter": "\x1b\r",
+            # xterm modified-cursor form: CSI 1 ; (alt=3) A.
+            "up": "\x1b[1;3A",
+        }
+        try:
+            sequence = sequences[key]
+        except KeyError as exc:
+            raise ValueError(f"unsupported alt key: {key!r}") from exc
+        self.type(sequence, newline=False)
 
     # -- teardown -----------------------------------------------------------
 

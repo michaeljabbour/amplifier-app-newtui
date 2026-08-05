@@ -34,9 +34,15 @@ MOCKUP_TABLE = [
     # Beyond the mockup table: in-session ops over the live coordinator
     # (amplifier-app-cli parity).
     ("During", "/status", "session status: model, mode, messages, cost", "built-in"),
-    ("During", "/model", "list models; /model <name> switches the live model", "built-in"),
+    (
+        "During",
+        "/model",
+        "list models; /model [provider] <name> switches the live model",
+        "built-in",
+    ),
     ("During", "/effort", "reasoning effort; /effort <none…max> sets it", "built-in"),
     ("During", "/compact", "compact context; /compact <focus> to steer it", "built-in"),
+    ("During", "/goal", "native autonomous loop; /goal stop clears it", "built-in"),
     # Compliance 2026-08-02, item D3 AC4: corrected in lockstep with
     # builtin.py -- the palette one-liner must itself say /clear resets
     # the view + context together and leaves persisted history alone.
@@ -50,11 +56,17 @@ MOCKUP_TABLE = [
     ("During", "/agents", "list the delegatable agents", "built-in"),
     ("During", "/skills", "list available skills", "skill"),
     ("During", "/skill", "load a skill by name: /skill <name>", "skill"),
-    ("During", "/mcp", "MCP servers: list · add · remove", "built-in"),
+    ("During", "/mcp", "MCP servers: list · live add/reload/remove", "built-in"),
     (
         "During",
         "/bundle",
-        "deferred overlays; /bundle load <name> composes one now",
+        "live bundles; /bundle load <name-or-uri> composes additive modules",
+        "built-in",
+    ),
+    (
+        "During",
+        "/module",
+        "load additive provider/tool/hook now: /module load ID [SOURCE]",
         "built-in",
     ),
     ("During", "/codemode", "code mode · preview the execute() tool catalog", "built-in"),
@@ -68,7 +80,12 @@ MOCKUP_TABLE = [
     ("Ship", "/diff", "working-tree diff; /diff staged for the cached diff", "built-in"),
     # Beyond the mockup table: app/core/bundle/session identity block.
     ("Ship", "/about", "app, core, bundle + session identity", "built-in"),
-    ("Between", "/rewind", "fork from any turn-rule checkpoint", "built-in"),
+    (
+        "Between",
+        "/rewind",
+        "restore code, conversation, or both before a prompt",
+        "built-in",
+    ),
     # Stored-session lifecycle (amplifier-app-cli parity).
     ("Between", "/rename", "name this session for the resume picker", "built-in"),
     ("Between", "/sessions", "list stored sessions for this project", "built-in"),
@@ -136,7 +153,7 @@ def test_clear_palette_desc_states_scope_per_d3_ac4() -> None:
 
 def test_registry_holds_all_commands() -> None:
     registry = build_registry()
-    assert len(registry.specs) == 40
+    assert len(registry.specs) == 42
     grouped = registry.grouped_rows("/")
     assert [g for g, _ in grouped] == ["During", "Parallel", "Ship", "Between", "Repair"]
 
@@ -241,6 +258,7 @@ def test_in_session_ops_dispatch_through_context(fake_command_context) -> None:
     registry.run("/effort", ctx)
     registry.run("/effort", ctx, "high")
     registry.run("/compact", ctx, "keep the API design")
+    registry.run("/goal", ctx, "--max-turns 3 all checks pass")
     registry.run("/clear", ctx)
     registry.run("/tools", ctx)
     registry.run("/agents", ctx)
@@ -253,6 +271,7 @@ def test_in_session_ops_dispatch_through_context(fake_command_context) -> None:
         "apply_effort:",
         "apply_effort:high",
         "compact_context:keep the API design",
+        "manage_goal:--max-turns 3 all checks pass",
         "clear_context",
         "show_tools",
         "show_agents",
@@ -308,6 +327,19 @@ def test_skills_and_mcp_dispatch_through_context(fake_command_context) -> None:
         "manage_mcp:",
         "manage_mcp:add postgres npx -y server",
         "manage_mcp:remove postgres",
+    ]
+
+
+def test_live_bundle_and_module_dispatch_through_context(fake_command_context) -> None:
+    registry = build_registry()
+    ctx = fake_command_context
+    registry.run("/bundle", ctx)
+    registry.run("/bundle", ctx, "load heavy")
+    registry.run("/module", ctx, "load tool-extra git+https://x/tool@abc")
+    assert ctx.calls == [
+        "load_bundle:",
+        "load_bundle:load heavy",
+        "load_module:load tool-extra git+https://x/tool@abc",
     ]
 
 

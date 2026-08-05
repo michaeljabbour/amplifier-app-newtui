@@ -28,6 +28,7 @@ def test_clear_active_bundle(tmp_path: Path) -> None:
     bundle_admin.set_active_bundle(paths, "x", "global")
     assert bundle_admin.clear_active_bundle(paths, "global") is True
     assert bundle_admin.current_bundle(tmp_path / "proj", tmp_path / "home") is None
+    assert bundle_admin.read_scope(paths.global_settings) == {}
     # Second clear is a no-op.
     assert bundle_admin.clear_active_bundle(paths, "global") is False
 
@@ -39,7 +40,43 @@ def test_write_scope_preserves_other_keys(tmp_path: Path) -> None:
     bundle_admin.set_active_bundle(paths, "b", "global")
     data = bundle_admin.read_scope(path)
     assert data["providers"] == {"anthropic": {"model": "m1"}}  # untouched
-    assert data["bundle"]["active"] == "b"
+    assert data["tui"]["bundle"]["active"] == "b"
+    assert "bundle" not in data
+
+
+def test_active_bundle_writer_preserves_and_overrides_legacy_value(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    path = bundle_admin.scope_file(paths, "global")
+    bundle_admin.write_scope(
+        path,
+        {
+            "bundle": {"active": "legacy", "app": ["git+https://example.test/shared"]},
+            "routing": {"matrix": "balanced"},
+        },
+    )
+
+    bundle_admin.set_active_bundle(paths, "tui-only", "global")
+    raw = bundle_admin.read_scope(path)
+    assert raw["bundle"] == {
+        "active": "legacy",
+        "app": ["git+https://example.test/shared"],
+    }
+    assert raw["routing"] == {"matrix": "balanced"}
+    assert raw["tui"]["bundle"]["active"] == "tui-only"
+    assert bundle_admin.current_bundle(tmp_path / "proj", tmp_path / "home") == "tui-only"
+
+
+def test_clear_active_bundle_masks_legacy_without_deleting_it(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    path = bundle_admin.scope_file(paths, "global")
+    bundle_admin.write_scope(path, {"bundle": {"active": "legacy"}})
+
+    assert bundle_admin.clear_active_bundle(paths, "global") is True
+    raw = bundle_admin.read_scope(path)
+    assert raw["bundle"]["active"] == "legacy"
+    assert raw["tui"]["bundle"]["active"] is None
+    assert bundle_admin.current_bundle(tmp_path / "proj", tmp_path / "home") is None
+    assert bundle_admin.clear_active_bundle(paths, "global") is False
 
 
 def test_add_and_remove_registered_bundle(tmp_path: Path) -> None:
@@ -89,7 +126,7 @@ def test_scope_selection_writes_to_the_right_file(tmp_path: Path) -> None:
     bundle_admin.set_active_bundle(paths, "p", "project")
     assert paths.project_settings.is_file()
     assert not paths.global_settings.is_file()
-    assert bundle_admin.read_scope(paths.project_settings)["bundle"]["active"] == "p"
+    assert bundle_admin.read_scope(paths.project_settings)["tui"]["bundle"]["active"] == "p"
 
 
 # -- warm (pre-install modules out of the boot burst) -----------------------

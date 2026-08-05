@@ -275,14 +275,14 @@ def test_run_reset_removes_symlinked_entry_without_following(tmp_path: Path) -> 
     assert (outside / "keep.txt").exists()
 
 
-def test_reinstall_command_builds_uv_argv() -> None:
+def test_reinstall_command_uses_canonical_installer_by_default_and_uv_for_override() -> None:
     from amplifier_app_tui.kernel import reset
 
     assert reset.reinstall_command("git+x") == ["uv", "tool", "install", "--reinstall", "git+x"]
-    assert reset.reinstall_command()[-1] == reset.DEFAULT_INSTALL_SOURCE
+    assert reset.reinstall_command() == reset.source_install_argv()
 
 
-def test_reinstall_tool_reports_uv_missing(monkeypatch) -> None:
+def test_reinstall_tool_reports_custom_source_uv_missing(monkeypatch) -> None:
     import subprocess
 
     from amplifier_app_tui.kernel import reset

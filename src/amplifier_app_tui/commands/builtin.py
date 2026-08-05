@@ -92,7 +92,7 @@ def _cmd_status(ctx: CommandContext, args: str) -> None:
 
 
 def _cmd_model(ctx: CommandContext, args: str) -> None:
-    """``/model`` — list models; ``/model <name>`` switches the live model."""
+    """``/model`` — list models; ``/model [provider] <name>`` switches the live model."""
     ctx.show_model(args.strip())
 
 
@@ -104,6 +104,11 @@ def _cmd_effort(ctx: CommandContext, args: str) -> None:
 def _cmd_compact(ctx: CommandContext, args: str) -> None:
     """``/compact`` — compact context; ``/compact <focus>`` steers it."""
     ctx.compact_context(args.strip())
+
+
+def _cmd_goal(ctx: CommandContext, args: str) -> None:
+    """``/goal`` — inspect, clear, or start the native Amplifier goal loop."""
+    ctx.manage_goal(args.strip())
 
 
 def _cmd_clear(ctx: CommandContext, args: str) -> None:
@@ -147,14 +152,18 @@ def _cmd_skill(ctx: CommandContext, args: str) -> None:
 
 
 def _cmd_mcp(ctx: CommandContext, args: str) -> None:
-    """``/mcp`` — list; ``/mcp add|remove`` manages MCP servers (mcp.json)."""
+    """``/mcp`` — list and live add/reload/remove MCP servers."""
     ctx.manage_mcp(args.strip())
 
 
 def _cmd_bundle(ctx: CommandContext, args: str) -> None:
-    """``/bundle`` — list deferred overlays; ``/bundle load <name>`` composes
-    one into the running session (fast-boot deferral, ``bundle.deferred``)."""
+    """``/bundle`` — list/load registered, deferred, or local bundles."""
     ctx.load_bundle(args.strip())
+
+
+def _cmd_module(ctx: CommandContext, args: str) -> None:
+    """``/module load ID [SOURCE]`` — mount an additive provider/tool/hook now."""
+    ctx.load_module(args.strip())
 
 
 def _cmd_ledger(ctx: CommandContext, args: str) -> None:
@@ -367,7 +376,7 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         group="During",
         name="/model",
-        desc="list models; /model <name> switches the live model",
+        desc="list models; /model [provider] <name> switches the live model",
         tag="built-in",
         handler=_cmd_model,
     ),
@@ -384,6 +393,13 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
         desc="compact context; /compact <focus> to steer it",
         tag="built-in",
         handler=_cmd_compact,
+    ),
+    CommandSpec(
+        group="During",
+        name="/goal",
+        desc="native autonomous loop; /goal stop clears it",
+        tag="built-in",
+        handler=_cmd_goal,
     ),
     CommandSpec(
         group="During",
@@ -434,7 +450,7 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         group="During",
         name="/mcp",
-        desc="MCP servers: list · add · remove",
+        desc="MCP servers: list · live add/reload/remove",
         tag="built-in",
         handler=_cmd_mcp,
     ),
@@ -443,9 +459,16 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         group="During",
         name="/bundle",
-        desc="deferred overlays; /bundle load <name> composes one now",
+        desc="live bundles; /bundle load <name-or-uri> composes additive modules",
         tag="built-in",
         handler=_cmd_bundle,
+    ),
+    CommandSpec(
+        group="During",
+        name="/module",
+        desc="load additive provider/tool/hook now: /module load ID [SOURCE]",
+        tag="built-in",
+        handler=_cmd_module,
     ),
     CommandSpec(
         group="During",
@@ -505,7 +528,7 @@ BUILTIN_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         group="Between",
         name="/rewind",
-        desc="fork from any turn-rule checkpoint",
+        desc="restore code, conversation, or both before a prompt",
         tag="built-in",
         handler=_cmd_rewind,
         key_action="open_rewind",

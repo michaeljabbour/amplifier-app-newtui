@@ -43,6 +43,12 @@ class ComposerApp(App[None]):
     def on_composer_queue_message(self, message: Composer.QueueMessage) -> None:
         self.messages.append(message)
 
+    def on_composer_decision_answer(self, message: Composer.DecisionAnswer) -> None:
+        self.messages.append(message)
+
+    def on_composer_submission_blocked(self, message: Composer.SubmissionBlocked) -> None:
+        self.messages.append(message)
+
     def on_composer_open_palette(self, message: Composer.OpenPalette) -> None:
         self.messages.append(message)
 
@@ -98,6 +104,64 @@ async def test_running_enter_posts_steer_not_submit() -> None:
         assert len(steers) == 1
         assert steers[0].text == "go"
         assert not _of(app, Composer.Submit)
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_restore_blocks_submit_and_queue_without_clearing_draft() -> None:
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        composer.submission_blocked = True
+        await pilot.press("k", "e", "e", "p", "enter")
+        await pilot.pause()
+
+        assert composer.text == "keep"
+        assert len(_of(app, Composer.SubmissionBlocked)) == 1
+        assert not _of(app, Composer.Submit)
+        assert not _of(app, Composer.Steer)
+
+        await pilot.press("shift+enter")
+        await pilot.pause()
+        assert composer.text == "keep"
+        assert len(_of(app, Composer.SubmissionBlocked)) == 2
+        assert not _of(app, Composer.QueueMessage)
+
+
+@pytest.mark.asyncio
+async def test_decision_capture_outranks_running_and_keeps_slash_literal() -> None:
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        composer.set_draft("saved draft")
+        composer.begin_decision_capture()
+        composer.running = True
+
+        await pilot.press(*"/status", "enter")
+        await pilot.pause()
+
+        answers = _of(app, Composer.DecisionAnswer)
+        assert [answer.text for answer in answers] == ["/status"]
+        assert not _of(app, Composer.Steer)
+        assert not _of(app, Composer.Submit)
+        assert not _of(app, Composer.OpenPalette)
+        # The answer stays editable until the app confirms queue resolution.
+        assert composer.text == "/status"
+
+        composer.end_decision_capture()
+        assert composer.text == "saved draft"
+
+
+@pytest.mark.asyncio
+async def test_queue_chord_submits_active_decision_instead_of_queueing() -> None:
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        composer.begin_decision_capture()
+        composer.running = True
+        await pilot.press(*"custom", "shift+enter")
+        await pilot.pause()
+        assert [_message.text for _message in _of(app, Composer.DecisionAnswer)] == ["custom"]
+        assert not _of(app, Composer.QueueMessage)
 
 
 @pytest.mark.asyncio
@@ -266,6 +330,101 @@ async def test_staged_image_rides_submit_and_drops_when_placeholder_deleted() ->
         await pilot.pause()
         submits = _of(app2, Composer.Submit)
         assert len(submits) == 1 and submits[0].attachments == ()
+        assert submits[0].draft is not None
+        assert submits[0].draft.attachments == []
+        assert submits[0].draft.sidecar_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_deleted_paste_stub_is_absent_from_submitted_draft() -> None:
+    payload = "\n".join(f"discarded row {index}" for index in range(20))
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        stub = composer.register_paste(payload)
+        assert stub is not None
+        composer.insert_text(stub)
+        composer.apply_editor_result("just text")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        submits = _of(app, Composer.Submit)
+        assert len(submits) == 1
+        assert submits[0].draft is not None
+        assert submits[0].draft.pastes == {}
+        assert submits[0].draft.sidecar_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_snapshot_and_decision_capture_keep_only_referenced_sidecars() -> None:
+    from amplifier_app_tui.kernel.clipboard import ImageAttachment
+
+    kept_payload = "\n".join(f"café row {index}" for index in range(20))
+    discarded_payload = "\n".join(f"discarded row {index}" for index in range(20))
+    kept_image = ImageAttachment(b"\x89PNG\r\n\x1a\n" + b"\x01" * 32, "image/png")
+    discarded_image = ImageAttachment(b"\x89PNG\r\n\x1a\n" + b"\x02" * 40, "image/png")
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        kept_stub = composer.register_paste(kept_payload)
+        discarded_stub = composer.register_paste(discarded_payload)
+        assert kept_stub is not None and discarded_stub is not None
+        composer.add_image(kept_image)
+        composer.add_image(discarded_image)
+        composer.apply_editor_result(f"review {kept_stub} [Image #1]")
+        await pilot.pause()
+
+        snapshot = composer._snapshot_draft()
+        assert snapshot.pastes == {kept_stub: kept_payload}
+        assert snapshot.attachments == [("[Image #1]", kept_image)]
+        assert snapshot.paste_seq == 2
+        assert snapshot.image_seq == 2
+        assert snapshot.sidecar_bytes == len(kept_payload.encode("utf-8")) + len(kept_image.data)
+
+        composer.begin_decision_capture()
+        assert composer._decision_draft == snapshot
+
+
+@pytest.mark.asyncio
+async def test_parked_draft_recalls_paste_and_image_sidecars_losslessly() -> None:
+    from amplifier_app_tui.kernel.clipboard import ImageAttachment
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    image = ImageAttachment(png, "image/png")
+    payload = "\n".join(f"line {index}" for index in range(20))
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        stub = composer.register_paste(payload)
+        assert stub is not None
+        composer.insert_text(f"review {stub} ")
+        composer.add_image(image)
+        parked_text = composer.text
+
+        assert composer.remember_and_clear_draft() is True
+        assert composer.text == ""
+        assert composer.history_previous() is True
+        await pilot.pause()
+
+        assert composer.text == parked_text
+        assert payload in composer._expand(composer.text)
+        assert composer._staged_attachments(composer.text) == (image,)
+
+
+@pytest.mark.asyncio
+async def test_submitted_image_history_does_not_retain_binary_sidecars() -> None:
+    from amplifier_app_tui.kernel.clipboard import ImageAttachment
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        composer.add_image(ImageAttachment(png, "image/png"))
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert composer._history_drafts == [None]
 
 
 @pytest.mark.asyncio
@@ -690,6 +849,25 @@ async def test_set_draft_replaces_buffer_and_ends_history_nav() -> None:
         assert composer.text == "recalled stash text"
         assert not composer.history_browsing
         assert composer._input.cursor_location == (0, len("recalled stash text"))
+
+
+@pytest.mark.asyncio
+async def test_legacy_restore_compacts_expanded_prompt_without_losing_image() -> None:
+    """A resumed checkpoint has text/image context but no live UI capsule."""
+    from amplifier_app_tui.kernel.clipboard import ImageAttachment
+
+    payload = "\n".join(f"restored row {index}" for index in range(20))
+    prompt = f"inspect this\n{payload}\n[Image #1]"
+    image = ImageAttachment(b"\x89PNG\r\n\x1a\n" + b"\x04" * 32, "image/png")
+    app = ComposerApp()
+    async with app.run_test() as pilot:
+        composer = app.query_one(Composer)
+        composer.set_draft(prompt, (image,), compact_long_paste=True)
+        await pilot.pause()
+
+        assert composer.text == "[Pasted #1 · 22 lines]"
+        assert composer._expand(composer.text) == prompt
+        assert composer._staged_attachments(composer.text) == (image,)
 
 
 # -- D2 structural seam: composer/status boundary (compliance 2026-08-02) -----

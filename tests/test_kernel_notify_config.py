@@ -1,10 +1,10 @@
-"""config.notifications -> ladder-env + ntfy-push bridges (issue #106).
+"""config.notifications -> app ladder/sink + legacy-hook bridges (issue #106).
 
 Covers the two bridges the runtime applies in ``resolve_config`` -- the
 desktop/suppress keys lowered onto the attention-ladder env vars the native
-OSC 777 path reads, and the ntfy push keys folded onto the mounted
-``hooks-notify-push`` config -- plus env-vs-settings precedence and the
-byte-identical no-op when nothing is configured.
+OSC 777 path reads, plus the compatibility bridge for a user overlay that
+still mounts ``hooks-notify-push``. App-owned sink resolution is covered in
+``test_attention_push.py``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _plan(config: dict[str, Any] | None = None) -> dict[str, Any]:
                 "module": PUSH_HOOK,
                 "config": config
                 if config is not None
-                else {"listen_event": "orchestrator:complete"},
+                else {"listen_event": "notify:turn-complete"},
             },
         ]
     }
@@ -69,7 +69,7 @@ def test_push_bridge_maps_server_priority_tags_and_preserves_listen_event() -> N
     assert cfg["priority"] == "high"
     assert cfg["tags"] == ["robot", "warning"]
     # The mounted listen_event pin must survive the merge.
-    assert cfg["listen_event"] == "orchestrator:complete"
+    assert cfg["listen_event"] == "notify:turn-complete"
 
 
 def test_push_bridge_ntfy_block_wins_over_push_block() -> None:

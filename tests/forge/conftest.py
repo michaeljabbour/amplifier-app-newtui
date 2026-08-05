@@ -1,11 +1,10 @@
 """Fixtures for the forge capability tier.
 
-Everything here degrades to a clean ``skip`` (never a ``fail``) when the
-substrate is missing -- no forge helper, an unhealthy daemon, a missing
-binary, or absent credentials -- so the default gate (which runs with
-``-m "not forge"`` and never reaches this file) and CI stay wholly
-unaffected, and a dev machine without forge still reports the tier as
-skipped rather than red.
+Ordinary opt-in developer runs degrade to a clean ``skip`` when the PTY
+substrate is missing.  Release/adoption runs set
+``AMPLIFIER_FORGE_REQUIRED=1`` and turn a missing helper, unhealthy daemon,
+or missing shipped binary into a hard failure.  Provider credentials remain
+a separate, explicit opt-in gate for the paid real lane.
 """
 
 from __future__ import annotations
@@ -13,10 +12,11 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
-from ._forge import ForgeClient, ForgeSession, resolve_forge
+from ._forge import ForgeClient, ForgeSession, forge_required, resolve_forge
 
 # One tag for every PTY the tier opens, so a crashed run is reaped whole
 # via ``close-tag`` in the session finalizer (SKILL.md fan-out rule).
@@ -25,11 +25,24 @@ BATCH_TAG = "tui-forge-cap"
 # tests/forge/conftest.py -> tests/forge -> tests -> repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TUI_BINARY = REPO_ROOT / ".venv" / "bin" / "amplifier-tui"
+TUI_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
+CUSTOM_DECISION_FIXTURE = REPO_ROOT / "tests" / "forge" / "custom_decision_fixture.py"
 
 # Composer placeholder -- a stable single-word boot anchor.
 COMPOSER_ANCHOR = "Message"
 # Fixed layout so rendered widths match the golden family (DEVELOPMENT.md).
 COLS, ROWS = 120, 40
+NARROW_COLS, NARROW_ROWS = 80, 18
+
+
+def _forge_unavailable(reason: str) -> NoReturn:
+    """Skip a developer run or fail a required release/adoption run."""
+    if forge_required():
+        pytest.fail(
+            f"required Forge capability tier could not execute: {reason}",
+            pytrace=False,
+        )
+    pytest.skip(reason)
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -50,13 +63,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 @pytest.fixture(scope="session")
 def forge_client() -> Iterator[ForgeClient]:
-    """A healthy forge daemon, or skip the whole tier."""
+    """A healthy daemon, or skip/fail according to the required-mode policy."""
     forge_path = resolve_forge()
     if forge_path is None:
-        pytest.skip("amplifier-skill-forge not found (set $FORGE or install the skill)")
+        _forge_unavailable("amplifier-skill-forge not found (set $FORGE or install the skill)")
     client = ForgeClient(forge_path)
     if not client.doctor():
-        pytest.skip("forge doctor unhealthy -- daemon/PTY unavailable")
+        _forge_unavailable("forge doctor unhealthy -- daemon/PTY unavailable")
     try:
         yield client
     finally:
@@ -65,9 +78,9 @@ def forge_client() -> Iterator[ForgeClient]:
 
 @pytest.fixture(scope="session")
 def tui_binary() -> Path:
-    """The shipped console-script, or skip (nothing to drive)."""
+    """The shipped console-script, or skip/fail when there is nothing to drive."""
     if not TUI_BINARY.exists():
-        pytest.skip(f"amplifier-tui binary not found at {TUI_BINARY}")
+        _forge_unavailable(f"amplifier-tui binary not found at {TUI_BINARY}")
     return TUI_BINARY
 
 
@@ -89,6 +102,47 @@ def demo_session(forge_client: ForgeClient, tui_binary: Path) -> Iterator[ForgeS
     try:
         booted = session.wait(COMPOSER_ANCHOR, total_timeout_ms=60_000)
         assert booted, "demo runtime did not boot to the composer within 60s"
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def narrow_demo_session(forge_client: ForgeClient, tui_binary: Path) -> Iterator[ForgeSession]:
+    """A fresh demo PTY at the smallest supported acceptance viewport."""
+    session = forge_client.new(
+        program=str(tui_binary),
+        args=("--demo",),
+        cwd=str(REPO_ROOT),
+        cols=NARROW_COLS,
+        rows=NARROW_ROWS,
+        tag=BATCH_TAG,
+        name="tui-cap-narrow",
+    )
+    try:
+        booted = session.wait(COMPOSER_ANCHOR, total_timeout_ms=60_000)
+        assert booted, "narrow demo runtime did not boot to the composer within 60s"
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture
+def custom_decision_session(forge_client: ForgeClient, tui_binary: Path) -> Iterator[ForgeSession]:
+    """The real Textual app with one deterministic, native-shaped question."""
+    del tui_binary  # the installed console script proves this venv is runnable
+    session = forge_client.new(
+        program=str(TUI_PYTHON),
+        args=(str(CUSTOM_DECISION_FIXTURE),),
+        cwd=str(REPO_ROOT),
+        cols=COLS,
+        rows=ROWS,
+        tag=BATCH_TAG,
+        name="tui-cap-custom-decision",
+    )
+    try:
+        booted = session.wait(COMPOSER_ANCHOR, total_timeout_ms=60_000)
+        assert booted, "custom-decision fixture did not boot to the composer within 60s"
         yield session
     finally:
         session.close()

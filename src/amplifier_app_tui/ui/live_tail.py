@@ -432,7 +432,8 @@ class LiveTail(Static):
 
     Contract with the app layer:
 
-    - ``open_stream(block_type)`` on ``stream_block_start``;
+    - ``open_stream(block_type, producer=..., turn=...)`` on
+      ``stream_block_start``;
     - ``feed(text)`` per ``stream_block_delta`` (repaints coalesce to
       ≤30Hz via a trailing timer — high-frequency deltas cost one paint);
     - ``consolidate(block_id)`` on ``stream_block_end`` → returns the
@@ -462,9 +463,11 @@ class LiveTail(Static):
         self._last_paint = 0.0
         self._paint_count = 0
         self._render_generation = 0
-        self._render_pending: tuple[int, str, str, int | None] | None = None
+        self._render_pending: tuple[int, str, str, int | None, str, int] | None = None
         self._async_render_active = False
         self._root_open = False
+        self._producer = ""
+        self._turn = 0
         # Reveal is a session-level preference: the box defaults to hidden
         # (a one-line peek hint), and once the user shows it, it stays shown
         # across subsequent blocks until they hide it again.
@@ -492,6 +495,14 @@ class LiveTail(Static):
         """True while the root stream box shows its content (not the peek hint)."""
         return self._revealed
 
+    @property
+    def identity_label(self) -> str:
+        """Visible producer/turn identity for this stream (D6 AC4)."""
+
+        if not self._producer or self._turn <= 0:
+            return ""
+        return f"{self._producer} · t{self._turn}"
+
     def toggle_reveal(self) -> bool:
         """Flip the reveal preference; repaint the open root stream. Returns new state."""
         self._revealed = not self._revealed
@@ -505,17 +516,28 @@ class LiveTail(Static):
             self.toggle_reveal()
 
     def _reveal_hint(self) -> str:
-        """The collapsed-stream peek: one dim line naming the activity + how to show."""
-        label = "thinking" if self._block_type == "thinking" else "responding"
-        return f"[$dim]▸ {label}… — {REVEAL_HINT_KEY} or click to show[/]"
+        """Collapsed peek: producer + turn + activity + reveal action."""
 
-    def open_stream(self, block_type: str = "text") -> None:
-        """Reset for a new streaming block (``llm:stream_block_start``)."""
+        activity = "thinking" if self._block_type == "thinking" else "responding"
+        identity = self.identity_label
+        prefix = f"{identity} · " if identity else ""
+        return f"[$dim]▸ {prefix}{activity}… — {REVEAL_HINT_KEY} or click to show[/]"
+
+    def open_stream(self, block_type: str = "text", *, producer: str = "", turn: int = 0) -> None:
+        """Reset for a root stream and stamp its producer/turn identity.
+
+        ``producer``/``turn`` are presentation metadata from the reducer's
+        authoritative active turn. Empty/zero defaults retain compatibility
+        for isolated widget harnesses; the shipped app always supplies both.
+        """
+
         self._root_open = True
         self._cancel_timer()
         self._reset_source()
         self._invalidate_async_render()
         self._block_type = block_type
+        self._producer = producer.strip()
+        self._turn = max(0, turn)
         self._last_paint = 0.0
         self._paint_now()
 
@@ -547,6 +569,8 @@ class LiveTail(Static):
         self._root_open = False
         self._reset_source()
         self._invalidate_async_render()
+        self._producer = ""
+        self._turn = 0
         self._last_paint = 0.0
         self.update("")
         self.post_message(self.Consolidated(answer))
@@ -598,12 +622,27 @@ class LiveTail(Static):
         if len(source) < ASYNC_RENDER_THRESHOLD:
             self._render_pending = None
             self._paint_count += 1
-            self.update(self._markup_for(source, self._block_type, MAX_ROOT_LINES))
+            self.update(
+                self._markup_for(
+                    source,
+                    self._block_type,
+                    MAX_ROOT_LINES,
+                    producer=self._producer,
+                    turn=self._turn,
+                )
+            )
             return
         # Keep only the newest requested frame. The parser is pure and the
         # generation fence prevents a stale worker from repainting after a
         # stream closes or a newer delta arrives.
-        self._render_pending = (generation, source, self._block_type, MAX_ROOT_LINES)
+        self._render_pending = (
+            generation,
+            source,
+            self._block_type,
+            MAX_ROOT_LINES,
+            self._producer,
+            self._turn,
+        )
         if not self._async_render_active:
             self._async_render_active = True
             self.run_worker(self._drain_async_renders(), exclusive=False)
@@ -611,9 +650,16 @@ class LiveTail(Static):
     async def _drain_async_renders(self) -> None:
         try:
             while self._render_pending is not None:
-                generation, source, block_type, max_lines = self._render_pending
+                generation, source, block_type, max_lines, producer, turn = self._render_pending
                 self._render_pending = None
-                markup = await asyncio.to_thread(self._markup_for, source, block_type, max_lines)
+                markup = await asyncio.to_thread(
+                    self._markup_for,
+                    source,
+                    block_type,
+                    max_lines,
+                    producer=producer,
+                    turn=turn,
+                )
                 if generation == self._render_generation:
                     self._paint_count += 1
                     self.update(markup)
@@ -621,22 +667,39 @@ class LiveTail(Static):
             self._async_render_active = False
 
     def _markup(self) -> str:
-        return self._markup_for(self.source, self._block_type)
+        return self._markup_for(
+            self.source,
+            self._block_type,
+            producer=self._producer,
+            turn=self._turn,
+        )
 
     @staticmethod
-    def _markup_for(source: str, block_type: str, max_lines: int | None = None) -> str:
+    def _markup_for(
+        source: str,
+        block_type: str,
+        max_lines: int | None = None,
+        *,
+        producer: str = "",
+        turn: int = 0,
+    ) -> str:
+        from textual.markup import escape
+
         lines = source.split("\n")
         cut = visible_length(lines)
         visible = source if cut >= len(lines) else "\n".join(lines[:cut])
-        if not visible:
-            return ""
-        if block_type == "thinking":
-            from textual.markup import escape
-
+        body = ""
+        if visible and block_type == "thinking":
             text = _last_lines(visible, max_lines)
-            return f"[italic $dim]{escape(text)}[/]"
-        render_source = _last_lines(source, max_lines) if max_lines is not None else source
-        return "".join(segment_markup(segment) for segment in streaming_spans(render_source))
+            body = f"[italic $dim]{escape(text)}[/]"
+        elif visible:
+            render_source = _last_lines(source, max_lines) if max_lines is not None else source
+            body = "".join(segment_markup(segment) for segment in streaming_spans(render_source))
+        identity = f"{producer.strip()} · t{turn}" if producer.strip() and turn > 0 else ""
+        if not identity:
+            return body
+        label = f"[$dimmer]{escape(identity)}[/]"
+        return f"{label}\n{body}" if body else label
 
 
 __all__ = [

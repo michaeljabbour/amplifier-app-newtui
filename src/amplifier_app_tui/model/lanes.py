@@ -34,10 +34,13 @@ LaneStateName = Literal["booting", "running", "working", "attention", "done", "e
 spawned child with no event yet, idle, and mid-tool-call respectively) —
 this is the "waiting"/"active" half of the design note's "consistent
 active, waiting, blocked, completed, and failed states" ask. ``attention``
-is the missing live state: a discrete failure signal (a tool error, or a
-failed tool result) surfaced against a lane that is STILL RUNNING — driven
-by ``ui/reducer.py``'s ``_track_child_activity`` (the same event kinds that
-already bypass repaint-coalescing as ``kind="error"``). ``done``/``error``/
+is the missing live state: a discrete failure signal (a tool error or failed
+tool result), a pending child approval, or a denied/blocked child action
+surfaced against a lane that is STILL RUNNING — driven by
+``ui/reducer.py``'s ``_track_child_activity`` from the same normalized event
+envelope that drives the global approval control (not a parallel flag).
+Those signals bypass repaint coalescing as ``kind="error"``/``"attention"``.
+``done``/``error``/
 ``cancelled`` are the three terminal outcomes — :data:`TERMINAL_LANE_STATES`
 — replacing the old fold-everything-into-``done`` behavior where a
 failure's only trace was free-text activity. ``error``/``cancelled``
@@ -47,10 +50,11 @@ success/failure/cancellation for the post-turn summary; lanes now derive
 from the SAME signals instead of maintaining a parallel notion — see
 ``_agent_completed`` and ``_finish_turn``).
 
-Not modeled as a separate state: an agent "blocked" on its OWN pending
-approval. Sub-agent tool-approval events aren't distinctly routed to lanes
-today (a real gap, but a different one from D5) — inventing a state with
-no driving event would be a renderer flag, exactly what this design avoids.
+Pending approval and blocked are deliberately not extra lifecycle states:
+the lane remains active in ``attention`` and its ``activity`` names the exact
+latest need (``approval needed · …`` / ``blocked · …``). The normalized
+``ApprovalRequired``/``ApprovalGranted``/``ApprovalDenied`` session id selects
+the lane; a grant or fresh tool attempt clears it back to active work.
 """
 
 _STATE_GLYPHS: dict[LaneStateName, tuple[str, StyleToken]] = {

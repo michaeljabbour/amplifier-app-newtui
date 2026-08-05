@@ -9,7 +9,7 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 1151.25)">
 <title>tui_amplifier</title>
 <polygon fill="white" stroke="none" points="-4,4 -4,-1151.25 2042,-1151.25 2042,4 -4,4"/>
-<text xml:space="preserve" text-anchor="start" x="890.38" y="-1132.85" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="12.00">tui ⇄ Amplifier — integration architecture</text>
+<text xml:space="preserve" text-anchor="start" x="902" y="-1132.85" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="12.00">tui ⇄ Amplifier — integration architecture</text>
 <text xml:space="preserve" text-anchor="start" x="884.38" y="-1122.75" font-family="Helvetica,sans-Serif" font-size="10.00">app→kernel calls flow right; kernel→app events flow back left</text>
 <g id="clust1" class="cluster">
 <title>cluster_config</title>
@@ -19,12 +19,12 @@
 <g id="clust2" class="cluster">
 <title>cluster_ui</title>
 <path fill="#e3f2fd" stroke="#5b9bd5" d="M21.12,-682.25C21.12,-682.25 522,-682.25 522,-682.25 528,-682.25 534,-688.25 534,-694.25 534,-694.25 534,-874.25 534,-874.25 534,-880.25 528,-886.25 522,-886.25 522,-886.25 21.12,-886.25 21.12,-886.25 15.13,-886.25 9.12,-880.25 9.12,-874.25 9.12,-874.25 9.12,-694.25 9.12,-694.25 9.12,-688.25 15.12,-682.25 21.12,-682.25"/>
-<text xml:space="preserve" text-anchor="start" x="183.81" y="-871.85" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="12.00">tui — UI layer (Textual ~8.2)</text>
+<text xml:space="preserve" text-anchor="start" x="195.44" y="-871.85" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="12.00">tui — UI layer (Textual ~8.2)</text>
 </g>
 <g id="clust3" class="cluster">
 <title>cluster_bridge</title>
 <path fill="#e8f5e9" stroke="#66a06b" d="M1027,-526.25C1027,-526.25 1681,-526.25 1681,-526.25 1687,-526.25 1693,-532.25 1693,-538.25 1693,-538.25 1693,-872.25 1693,-872.25 1693,-878.25 1687,-884.25 1681,-884.25 1681,-884.25 1027,-884.25 1027,-884.25 1021,-884.25 1015,-878.25 1015,-872.25 1015,-872.25 1015,-538.25 1015,-538.25 1015,-532.25 1021,-526.25 1027,-526.25"/>
-<text xml:space="preserve" text-anchor="start" x="1175.12" y="-869.85" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="12.00">tui — kernel bridge (src/…/kernel/, own thread + event loop)</text>
+<text xml:space="preserve" text-anchor="start" x="1186.75" y="-869.85" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="12.00">tui — kernel bridge (src/…/kernel/, own thread + event loop)</text>
 </g>
 <g id="clust4" class="cluster">
 <title>cluster_foundation</title>
@@ -81,10 +81,10 @@
 <title>bundle_md</title>
 <path fill="#fff3cd" stroke="#666666" d="M1310.5,-964.38C1310.5,-964.38 949.5,-964.38 949.5,-964.38 943.5,-964.38 937.5,-958.38 937.5,-952.38 937.5,-952.38 937.5,-912.13 937.5,-912.13 937.5,-906.13 943.5,-900.13 949.5,-900.13 949.5,-900.13 1310.5,-900.13 1310.5,-900.13 1316.5,-900.13 1322.5,-906.13 1322.5,-912.13 1322.5,-912.13 1322.5,-952.38 1322.5,-952.38 1322.5,-958.38 1316.5,-964.38 1310.5,-964.38"/>
 <text xml:space="preserve" text-anchor="middle" x="1130" y="-950.88" font-family="Helvetica,sans-Serif" font-size="10.00">bundle: tui.md (thin wrapper)</text>
-<text xml:space="preserve" text-anchor="middle" x="1130" y="-939.63" font-family="Helvetica,sans-Serif" font-size="10.00">includes: anchors @ pinned SHA (amplifier&#45;foundation)</text>
+<text xml:space="preserve" text-anchor="middle" x="1130" y="-939.63" font-family="Helvetica,sans-Serif" font-size="10.00">includes: anchors @ tracked main (guarded upstream exception)</text>
 <text xml:space="preserve" text-anchor="middle" x="1130" y="-928.38" font-family="Helvetica,sans-Serif" font-size="10.00">loop&#45;streaming · context&#45;simple 300k · provider&#45;anthropic (overlay)</text>
 <text xml:space="preserve" text-anchor="middle" x="1130" y="-917.13" font-family="Helvetica,sans-Serif" font-size="10.00">fs/bash/web/search/todo/apply&#45;patch/delegate/skills/mode/recipes + mcp/team&#45;pulse</text>
-<text xml:space="preserve" text-anchor="middle" x="1130" y="-905.88" font-family="Helvetica,sans-Serif" font-size="10.00">hooks via anchors (printers + logging suppressed) · 6 anchors agents</text>
+<text xml:space="preserve" text-anchor="middle" x="1130" y="-905.88" font-family="Helvetica,sans-Serif" font-size="10.00">stdout hooks suppressed · hooks&#45;logging native · 6 anchors agents</text>
 </g>
 <!-- bundle_md&#45;&gt;config -->
 <g id="edge3" class="edge">
@@ -104,15 +104,15 @@
 <!-- app -->
 <g id="node5" class="node">
 <title>app</title>
-<path fill="#bbdefb" stroke="#666666" d="M443.5,-823.25C443.5,-823.25 400.5,-823.25 400.5,-823.25 394.5,-823.25 388.5,-817.25 388.5,-811.25 388.5,-811.25 388.5,-799.25 388.5,-799.25 388.5,-793.25 394.5,-787.25 400.5,-787.25 400.5,-787.25 443.5,-787.25 443.5,-787.25 449.5,-787.25 455.5,-793.25 455.5,-799.25 455.5,-799.25 455.5,-811.25 455.5,-811.25 455.5,-817.25 449.5,-823.25 443.5,-823.25"/>
+<path fill="#bbdefb" stroke="#666666" d="M437.88,-823.25C437.88,-823.25 406.12,-823.25 406.12,-823.25 400.12,-823.25 394.12,-817.25 394.12,-811.25 394.12,-811.25 394.12,-799.25 394.12,-799.25 394.12,-793.25 400.12,-787.25 406.12,-787.25 406.12,-787.25 437.88,-787.25 437.88,-787.25 443.88,-787.25 449.88,-793.25 449.88,-799.25 449.88,-799.25 449.88,-811.25 449.88,-811.25 449.88,-817.25 443.88,-823.25 437.88,-823.25"/>
 <text xml:space="preserve" text-anchor="middle" x="422" y="-807" font-family="Helvetica,sans-Serif" font-size="10.00">TuiApp</text>
 <text xml:space="preserve" text-anchor="middle" x="422" y="-795.75" font-family="Helvetica,sans-Serif" font-size="10.00">ui/app.py</text>
 </g>
 <!-- cli&#45;&gt;app -->
 <g id="edge4" class="edge">
 <title>cli&#45;&gt;app</title>
-<path fill="none" stroke="#555555" d="M212.75,-782.06C267.8,-788.19 334.04,-795.57 376.8,-800.33"/>
-<polygon fill="#555555" stroke="#555555" points="376.38,-803.8 386.71,-801.43 377.15,-796.85 376.38,-803.8"/>
+<path fill="none" stroke="#555555" d="M212.75,-782.06C270.36,-788.47 340.21,-796.25 382.6,-800.97"/>
+<polygon fill="#555555" stroke="#555555" points="381.96,-804.42 392.28,-802.05 382.73,-797.47 381.96,-804.42"/>
 </g>
 <!-- adapter -->
 <g id="node9" class="node">
@@ -127,7 +127,7 @@
 <!-- app&#45;&gt;adapter -->
 <g id="edge6" class="edge">
 <title>app&#45;&gt;adapter</title>
-<path fill="none" stroke="#555555" d="M455.73,-799.61C478.2,-795.18 508.46,-788.1 534,-778.25 561.46,-767.66 590.24,-752.85 614.77,-738.98"/>
+<path fill="none" stroke="#555555" d="M450.06,-800.7C472.91,-796.39 506.24,-788.96 534,-778.25 561.46,-767.66 590.24,-752.85 614.77,-738.98"/>
 <polygon fill="#555555" stroke="#555555" points="616.4,-742.07 623.33,-734.06 612.92,-736 616.4,-742.07"/>
 </g>
 <!-- reducer -->
@@ -163,8 +163,8 @@
 <!-- composer&#45;&gt;app -->
 <g id="edge5" class="edge">
 <title>composer&#45;&gt;app</title>
-<path fill="none" stroke="#555555" d="M174.61,-830.27C233.72,-824.27 323.46,-815.16 376.77,-809.74"/>
-<polygon fill="#555555" stroke="#555555" points="377.11,-813.23 386.7,-808.73 376.4,-806.26 377.11,-813.23"/>
+<path fill="none" stroke="#555555" d="M174.61,-830.27C235.84,-824.06 329.96,-814.5 382.37,-809.17"/>
+<polygon fill="#555555" stroke="#555555" points="382.73,-812.66 392.32,-808.16 382.02,-805.69 382.73,-812.66"/>
 <text xml:space="preserve" text-anchor="middle" x="273.75" y="-833.56" font-family="Helvetica,sans-Serif" font-size="9.00">submit(text,</text>
 <text xml:space="preserve" text-anchor="middle" x="273.75" y="-823.81" font-family="Helvetica,sans-Serif" font-size="9.00">attachments)</text>
 </g>

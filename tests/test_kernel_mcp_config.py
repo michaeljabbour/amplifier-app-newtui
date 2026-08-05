@@ -42,3 +42,31 @@ def test_describe_server_variants() -> None:
     assert "deepwiki" not in mcp_config.describe_server({"command": "npx"})
     assert "http" in mcp_config.describe_server({"url": "https://x/mcp"})
     assert mcp_config.describe_server("garbage") == "?"
+
+
+def test_effective_servers_follow_tool_mcp_scope_precedence(tmp_path: Path) -> None:
+    user = tmp_path / "home" / "mcp.json"
+    project = tmp_path / "project"
+    env_path = tmp_path / "env.json"
+    mcp_config.add_stdio_server(user, "shared", "user-command")
+    mcp_config.add_stdio_server(user, "user-only", "user-only-command")
+    mcp_config.add_stdio_server(project / ".amplifier" / "mcp.json", "shared", "project")
+    mcp_config.add_stdio_server(env_path, "shared", "environment")
+
+    effective = mcp_config.read_effective_servers(
+        project_dir=project,
+        user_path=user,
+        environ={"AMPLIFIER_MCP_CONFIG": str(env_path)},
+        inline={
+            "servers": {
+                "shared": {"command": "inline"},
+                "inline-only": {"url": "https://example.test/mcp"},
+            }
+        },
+    )
+
+    assert effective == {
+        "shared": {"command": "inline"},
+        "user-only": {"command": "user-only-command"},
+        "inline-only": {"url": "https://example.test/mcp"},
+    }

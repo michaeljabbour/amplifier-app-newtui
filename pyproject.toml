@@ -37,7 +37,7 @@ packages = ["src/amplifier_app_tui"]
 allow-direct-references = true
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
@@ -51,7 +51,10 @@ dev = [
 ]
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "32d4052dad46016f91ce698646580473e4121344" }
+# Keep this at or after foundation 1a408839: the default bundle deliberately
+# pins modules to full commit SHAs, which older source handlers passed to
+# `git clone --branch` and therefore could not install from a cold cache.
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "dea5bd8fe11a7617dbcfc61c47f9f4f2fdc0b134" }
 team-pulse-lib = { git = "https://github.com/microsoft/amplifier-bundle-team-pulse", rev = "e89574d2b90814a0c10a2164aa7d5c9cc43bd3ce", subdirectory = "team-pulse-lib" }
 
 [tool.pytest.ini_options]

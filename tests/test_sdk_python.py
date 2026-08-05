@@ -15,6 +15,10 @@ from amplifier_tui_sdk import (  # noqa: E402
     ProtocolError,
 )
 
+from .test_cli_tui_serve_lifecycle_fixture import (  # noqa: E402
+    ROUTING_FALLBACK_PROMPT,
+)
+
 
 def _fake_cli(tmp_path: Path, records: list[dict[str, object]], *, exit_code: int = 0) -> Path:
     script = tmp_path / "fake_cli.py"
@@ -118,3 +122,27 @@ def test_python_sdk_records_are_json_serializable(tmp_path: Path) -> None:
     script = _fake_cli(tmp_path, _records())
     records = list(AmplifierClient((sys.executable, str(script))).stream("hi"))
     assert json.loads(json.dumps(records))[-1]["type"] == "turn.completed"
+
+
+def test_python_sdk_reuses_real_cli_routing_fallback_fixture(offline_env) -> None:
+    """The dependency-free SDK observes the exact real CLI routing proof.
+
+    This is not another fake protocol producer: ``AmplifierClient`` launches
+    this checkout's real module entry point against the same pytest-owned
+    offline bundle used by CLI/TUI/serve parity.  The standalone TypeScript
+    suite cannot safely consume a pytest temp fixture (and the TS client adds
+    no routing logic; it forwards the same argv/JSONL contract), so its own
+    tests remain the independent protocol/sequence gate rather than copying
+    the offline runtime into JavaScript.
+    """
+    client = AmplifierClient(
+        (sys.executable, "-m", "amplifier_app_tui.main"),
+        cwd=offline_env["project"],
+        env={"HOME": str(offline_env["home"])},
+    )
+    result = client.run(ROUTING_FALLBACK_PROMPT, bundle="offline")
+
+    assert result.response == "routing-fallback=Hello from the fake provider via fake-routed."
+    kinds = [record["event"]["kind"] for record in result.events]
+    assert "orchestrator_complete" in kinds
+    assert "prompt_complete" in kinds

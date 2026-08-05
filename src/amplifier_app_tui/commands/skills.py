@@ -258,6 +258,22 @@ def register_skill_commands(
     return register_skill_commands_reporting(registry, skills).specs
 
 
+def sync_skill_commands_reporting(
+    registry: CommandRegistry, skills: Iterable[SkillLike]
+) -> SkillPlan:
+    """Replace dynamic skill commands with the live native skill catalog.
+
+    Live bundle/module composition can change ``tool-skills`` discovery after
+    boot.  Remove only ``source='skill'`` contributions (built-ins remain
+    immutable), then register the effective catalog so stale aliases vanish
+    and newly available skills become immediately callable.
+    """
+
+    for spec in registry.contributions("skill"):
+        registry.unregister(spec.name)
+    return register_skill_commands_reporting(registry, skills)
+
+
 __all__ = [
     "AliasCollision",
     "SkillLike",
@@ -267,4 +283,5 @@ __all__ = [
     "register_skill_commands",
     "register_skill_commands_reporting",
     "skill_command_specs",
+    "sync_skill_commands_reporting",
 ]

@@ -40,22 +40,16 @@ def test_target_bundles_defaults_to_packaged() -> None:
     assert updater.target_bundles({})[0] == "tui"
 
 
-def test_self_update_hint_mentions_uv() -> None:
-    hint = updater.self_update_hint()
-    assert "uv sync" in hint and "uv tool upgrade amplifier" in hint
+def test_self_update_hint_mentions_source_installer() -> None:
+    hint = updater.self_update_hint(updater.AppIdentity("0.1.0", "abc1234", "git"))
+    assert "scripts/install.sh" in hint and "uv tool upgrade amplifier" in hint
 
 
-def test_self_update_hint_git_install_uses_real_uri_not_dot() -> None:
-    """Regression: the old hint said `uv tool install --reinstall .` -- wrong
-    (and potentially dangerous) advice for the documented global-install
-    path, since `.` only resolves from inside a clone. Must match the
-    README's actual command."""
+def test_self_update_hint_git_install_uses_canonical_installer_not_dot() -> None:
+    """A tool install gets the immutable-resolution bootstrap documented by README."""
     identity = updater.AppIdentity(version="0.1.0", commit="abc1234", source="git")
     hint = updater.self_update_hint(identity)
-    assert (
-        "uv tool install --reinstall git+https://github.com/michaeljabbour/amplifier-app-tui"
-        in hint
-    )
+    assert updater.SOURCE_INSTALL_COMMAND in hint
     assert "--reinstall .`" not in hint
 
 
@@ -65,7 +59,7 @@ def test_self_update_hint_editable_checkout_skips_tool_install() -> None:
     identity = updater.AppIdentity(version="0.1.0", commit=None, source="editable")
     hint = updater.self_update_hint(identity)
     assert "git pull && uv sync" in hint
-    assert "uv tool install" not in hint
+    assert "scripts/install.sh" not in hint
     assert "dev checkout" in hint
 
 

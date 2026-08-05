@@ -1,4 +1,4 @@
-"""The attention-notification ladder: bell -> OSC 777 desktop -> push.
+"""The app-owned attention-notification ladder: bell -> OSC 777 desktop.
 
 The shipped bell (``App.bell``) is the one escape path Textual proves safe
 and it works everywhere, but it is easy to miss when the terminal window is
@@ -6,9 +6,9 @@ unfocused. This module adds the next rung: an OSC 777 desktop notification
 written through the same sanctioned ``driver.write`` path the native
 terminal title already uses (``ui/chrome.write_terminal_title``) -- an
 out-of-band escape the terminal renders as a real OS notification, so it
-never touches the Textual screen grid. The third rung, off-machine push, is
-owned by the mounted ``hooks-notify-push`` module (ntfy), so it lives
-outside the app kernel entirely.
+never touches the Textual screen grid. Off-machine push is the app-owned ntfy
+destination in ``kernel.attention_push``; it consumes the same normalized
+record events but remains outside this local rendering ladder.
 
 Everything here is a pure function of its inputs (no Textual, no
 amplifier-core): escape-sequence builders, terminal-support detection, and
@@ -25,8 +25,8 @@ Re-expressed through TUI's own seams -- nothing is imported or vendored.
 
 -- The attention-event contract (B7, issue #47) -----------------------------
 
-:class:`AttentionRecord` is the ONE normalized shape every destination
-(bell, OSC 777 desktop, and -- conceptually -- ntfy push) consumes instead
+:class:`AttentionRecord` is the ONE normalized shape every app-owned
+destination (bell and OSC 777 desktop) consumes instead
 of each destination deriving its own notion of "does this need to fire" from
 ad-hoc call sites. :class:`AttentionCenter` mints exactly one record per
 transition into an attention state and deduplicates repeats (a re-render, a
@@ -36,13 +36,11 @@ message text. This is the seam item B8 (voice-first/ambient delegation)
 builds on: a session's current attention state -- and its acknowledgement --
 is queryable independent of which local destinations happen to be wired up.
 
-Honest scope note on the ladder's third rung: off-machine ntfy push is
-fired by the separately-mounted ``hooks-notify-push`` module listening to
-the raw kernel ``orchestrator:complete`` event (bundle.md) -- a different
-process/device boundary this module does not reach into. It is not, and
-cannot be, driven through :class:`AttentionCenter` or acknowledged/cleared
-from here; :func:`clear_desktop_notification` only ever addresses the
-in-terminal OSC 777 rung this process itself wrote.
+The off-machine ntfy destination consumes ``attention:recorded`` directly,
+maps the record's stable ``event_id`` to ntfy's safe sequence-ID shape, and
+uses the same mapping to clear the destination on
+``attention:acknowledged``. :func:`clear_desktop_notification` itself still
+addresses only the in-terminal OSC 777 rung this process wrote.
 """
 
 from __future__ import annotations
@@ -95,8 +93,8 @@ Rung = Literal["bell", "desktop"]
 """A step on the notification ladder the app knows how to fire itself.
 
 ``bell`` is Textual's driver-safe ``App.bell``; ``desktop`` is the OSC 777
-sequence written to the terminal. Off-machine ``push`` is the mounted
-``hooks-notify-push`` module's job and never appears here.
+sequence written to the terminal. Off-machine ``push`` is the kernel
+destination's job and never appears in this local-rung type.
 """
 
 NotifyCeiling = Literal["off", "bell", "desktop"]
@@ -110,7 +108,7 @@ clarification, error) notify regardless -- they block on the human by
 definition."""
 
 _NOTIFY_DISABLED_VALUES = frozenset({"false", "0", "no", "off"})
-"""``AMPLIFIER_NOTIFY`` values that silence every rung -- the exact kill
+"""``AMPLIFIER_NOTIFY`` values that silence every app-owned rung -- the exact kill
 switch the (suppressed) hooks-notify module honored, kept for parity."""
 
 _NOTIFY_BELL_ONLY_VALUES = frozenset({"bell"})
@@ -165,13 +163,24 @@ def attention_needed(
     Awaiting-approval, awaiting-clarification and error states always
     qualify; a completion qualifies only once it has run past
     :data:`ATTENTION_MIN_TURN_SECONDS`. ``AMPLIFIER_NOTIFY`` set to a
-    disabled value suppresses everything -- including :class:`AttentionRecord`
-    creation (:meth:`AttentionCenter.note` is only ever called when this is
-    true), so a fully-muted session mints no records either, matching
-    today's behavior byte-for-byte when notifications are off.
+    disabled value suppresses every delivery rung.  It does **not** decide
+    whether the durable :class:`AttentionRecord` exists; callers use
+    :func:`attention_transition_needed` for that semantic decision so a
+    muted session remains observable to resume/ambient control surfaces.
     """
     if notify_ceiling(environ) == "off":
         return False
+    return attention_transition_needed(reason, elapsed_s)
+
+
+def attention_transition_needed(reason: AttentionReason, elapsed_s: float = 0.0) -> bool:
+    """Whether *reason* represents a semantic need-for-attention transition.
+
+    Unlike :func:`attention_needed`, this deliberately ignores delivery
+    configuration.  The internal durable record must still exist when every
+    bell, desktop, and push destination is disabled; muting delivery cannot
+    erase session state that ambient controllers and later resumes consume.
+    """
     if reason in _ALWAYS_QUALIFIES:
         return True
     return elapsed_s >= ATTENTION_MIN_TURN_SECONDS
@@ -291,9 +300,8 @@ def clear_desktop_notification(driver: Driver | None) -> bool:
     one-shot OS toast banner cannot have that banner recalled by any escape
     sequence, honestly, there is nothing to retract. Safe to call even when
     nothing was ever shown (an empty write is inert). Off-machine ntfy push
-    is a separate destination this process does not own and has no
-    acknowledgement channel here at all (see module docstring) -- this
-    function never touches it. Never raises.
+    is cleared separately by the app-owned kernel destination when it consumes
+    ``attention:acknowledged`` -- this function never touches it. Never raises.
     """
     return write_desktop_notification(driver, "", "")
 
@@ -335,7 +343,7 @@ def fire_attention_ladder(
 class AttentionRecord:
     """One normalized "the assistant needs you" event.
 
-    The single shape every destination consumes instead of an ad-hoc call
+    The single shape every app-owned destination consumes instead of an ad-hoc call
     site (WHAT TO BUILD #1/#3). Minted exactly once per transition into an
     attention state by :meth:`AttentionCenter.note` -- never construct one
     directly outside this module, or the idempotency guarantee below no
@@ -393,15 +401,13 @@ def attention_push_payload(record: AttentionRecord, *, title: str, body: str) ->
     """The record-derived payload an off-machine push destination should send.
 
     This is the B7 gap-2 contract: the ONE shape a push consumer reads
-    ``event_id`` from -- today's in-repo ``attention:recorded`` hook
-    emission (:meth:`amplifier_app_tui.kernel.runtime.RealRuntime.
-    publish_attention`), and eventually a dedup/acknowledgement-aware
-    ``hooks-notify-push`` release in the separate amplifier-bundle-notify
-    repository. Carrying ``event_id`` is the whole point (B8 depends on it
-    too): a push consumer that dedupes by this field -- instead of firing
-    on every raw kernel event the way today's ``orchestrator:complete``
-    listen_event does -- gets AC3's "one record per transition" guarantee
-    for free instead of reinventing it.
+    ``event_id`` from. ``RealRuntime.publish_attention`` emits the canonical
+    ``attention:recorded`` event once; the app-owned destination maps that ID
+    deterministically onto ntfy's sequence ID and clears the same sequence on
+    acknowledgement. Carrying ``event_id`` is the whole point (B8 depends on
+    it too): every destination is downstream of the durable producer-side
+    "one record per transition" gate instead of independently firing on a raw
+    kernel event.
 
     ``title``/``body`` are taken from the caller rather than re-derived
     here so there is exactly one "default text per reason" table
@@ -421,6 +427,24 @@ def attention_push_payload(record: AttentionRecord, *, title: str, body: str) ->
         "created_at": record.created_at,
         "title": sanitize_notification_text(title)[:_MAX_TITLE_CHARS].rstrip(),
         "body": sanitize_notification_text(body)[:_MAX_BODY_CHARS].rstrip(),
+    }
+
+
+def attention_acknowledgement_payload(
+    record: AttentionRecord, *, acknowledged_at: float | None = None
+) -> dict[str, object]:
+    """Build the correlated hook payload for an attention acknowledgement.
+
+    Destinations that support clearing can key the acknowledgement to the
+    exact original ``event_id``.  The payload intentionally contains no user
+    text or tool output.
+    """
+    return {
+        "event_id": record.event_id,
+        "session_id": record.session_id,
+        "reason": record.reason,
+        "acknowledged": True,
+        "acknowledged_at": time.time() if acknowledged_at is None else acknowledged_at,
     }
 
 
@@ -496,10 +520,20 @@ class AttentionCenter:
         except Exception:  # noqa: BLE001 -- a durability problem must never block boot
             logger.warning("attention state failed to load", exc_info=True)
             return
+        self._replace_snapshot(rows, current)
+
+    def _replace_snapshot(
+        self,
+        rows: dict[str, AttentionRow],
+        current: dict[str, str],
+    ) -> None:
+        """Replace local state with one freshly read durable snapshot."""
+
+        restored: dict[str, AttentionRecord] = {}
         for event_id, row in rows.items():
             if row.reason not in _ATTENTION_REASONS:
                 continue  # corrupted or foreign-version row -- drop, never misrepresent
-            self._by_id[event_id] = AttentionRecord(
+            restored[event_id] = AttentionRecord(
                 session_id=row.session_id,
                 reason=cast(AttentionReason, row.reason),
                 event_id=row.event_id,
@@ -507,26 +541,10 @@ class AttentionCenter:
                 created_at=row.created_at,
                 acknowledged=row.acknowledged,
             )
-        self._current.update(current)
-
-    def _persist(self) -> None:
-        if self._store is None:
-            return
-        try:
-            rows = {
-                event_id: AttentionRow(
-                    session_id=record.session_id,
-                    reason=record.reason,
-                    event_id=record.event_id,
-                    detail=record.detail,
-                    created_at=record.created_at,
-                    acknowledged=record.acknowledged,
-                )
-                for event_id, record in self._by_id.items()
-            }
-            self._store.save(rows, self._current)
-        except Exception:  # noqa: BLE001 -- a persistence failure must never block the session
-            logger.warning("attention state failed to persist", exc_info=True)
+        self._by_id = restored
+        self._current = {
+            session_id: event_id for session_id, event_id in current.items() if event_id in restored
+        }
 
     def note(
         self,
@@ -546,9 +564,6 @@ class AttentionCenter:
         :meth:`bind` has attached a store.
         """
         event_id = attention_event_id(session_id, reason, occasion)
-        existing = self._by_id.get(event_id)
-        if existing is not None:
-            return existing, False
         record = AttentionRecord(
             session_id=session_id,
             reason=reason,
@@ -556,9 +571,38 @@ class AttentionCenter:
             detail=detail,
             created_at=time.time() if now is None else now,
         )
+
+        # A bound center must let the store make the create-if-absent
+        # decision. Checking only this process's dict would let two centers
+        # bound before either write both report ``is_new=True``.
+        if self._store is not None:
+            try:
+                outcome = self._store.record(
+                    AttentionRow(
+                        session_id=record.session_id,
+                        reason=record.reason,
+                        event_id=record.event_id,
+                        detail=record.detail,
+                        created_at=record.created_at,
+                        acknowledged=record.acknowledged,
+                    )
+                )
+            except Exception:  # noqa: BLE001 -- durability must never break the session
+                logger.warning("attention state failed to persist", exc_info=True)
+                outcome = None
+            if outcome is not None:
+                rows, current, durable, is_new = outcome
+                self._replace_snapshot(rows, current)
+                return self._by_id[durable.event_id], is_new
+
+        # Persistence is optional/best-effort. If it is unavailable, retain
+        # the original in-memory behavior without ever writing this stale
+        # snapshot back over newer durable state.
+        existing = self._by_id.get(event_id)
+        if existing is not None:
+            return existing, False
         self._by_id[event_id] = record
         self._current[session_id] = event_id
-        self._persist()
         return record, True
 
     def acknowledge(self, session_id: str) -> AttentionRecord | None:
@@ -571,6 +615,22 @@ class AttentionCenter:
         error. The acknowledgement is durably persisted too (best-effort,
         never blocking), so a second process or a restart observes it.
         """
+        # The store owns the read-modify-write when bound. This reloads the
+        # current durable row under the same lock, so a stale process can
+        # neither miss a newer event nor revert an acknowledgement.
+        if self._store is not None:
+            try:
+                outcome = self._store.acknowledge(session_id)
+            except Exception:  # noqa: BLE001 -- durability must never break the session
+                logger.warning("attention acknowledgement failed to persist", exc_info=True)
+                outcome = None
+            if outcome is not None:
+                rows, current, acknowledged = outcome
+                self._replace_snapshot(rows, current)
+                if acknowledged is None:
+                    return None
+                return self._by_id[acknowledged.event_id]
+
         event_id = self._current.get(session_id)
         if event_id is None:
             return None
@@ -579,7 +639,6 @@ class AttentionCenter:
             return None
         acked = record.acknowledge()
         self._by_id[event_id] = acked
-        self._persist()
         return acked
 
     def current(self, session_id: str) -> AttentionRecord | None:
@@ -597,8 +656,10 @@ __all__ = [
     "NotifyCeiling",
     "Rung",
     "attention_event_id",
+    "attention_acknowledgement_payload",
     "attention_needed",
     "attention_push_payload",
+    "attention_transition_needed",
     "clear_desktop_notification",
     "desktop_notifications_supported",
     "fire_attention_ladder",

@@ -256,15 +256,15 @@ def test_no_settings_notice_when_all_valid(tmp_path: Path) -> None:
     assert malformed_settings_notice(malformed) is None
 
 
-# -- Item 6: delete dead ApprovalBroker.defer -------------------------------
+# -- Item 6: ApprovalBroker.defer is live and fail-continuing ----------------
 
 
-def test_approval_broker_defer_is_deleted() -> None:
-    """The dead broker-side defer path (no production callers) is gone."""
-    assert not hasattr(ApprovalBroker, "defer")
+def test_approval_broker_defer_contract_is_restored() -> None:
+    """The real adapter's ctrl-y path has a broker method to call."""
+    assert callable(ApprovalBroker.defer)
 
 
-def test_approval_ticket_has_no_deferred_fields() -> None:
+def test_approval_ticket_tracks_atomic_deferral() -> None:
     fields = ApprovalTicket.__dataclass_fields__
-    assert "deferred" not in fields
-    assert "decision_id" not in fields
+    assert "deferred" in fields
+    assert "decision_id" in fields

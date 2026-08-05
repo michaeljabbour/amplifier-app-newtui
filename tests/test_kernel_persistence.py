@@ -6,16 +6,19 @@ Everything runs against tmp directories with fake payloads.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from amplifier_app_tui.kernel.events import normalize
+from amplifier_app_tui.kernel.events import RewindMarker, normalize
 from amplifier_app_tui.kernel.persistence import (
     EVENTS_FILENAME,
     LEGACY_EVENTS_FILENAME,
     METADATA_FILENAME,
+    REWIND_INTENT_FILENAME,
     TRANSCRIPT_FILENAME,
     AmbiguousSessionError,
     IncrementalSaver,
@@ -310,6 +313,254 @@ def test_read_events_located_line_numbers_reset_per_file(store: SessionStore) ->
     ]
 
 
+def test_rewind_intent_reconciles_transcript_and_marker_exactly_once(
+    store: SessionStore,
+) -> None:
+    old = [{"role": "user", "content": "old"}]
+    restored = [{"role": "user", "content": "kept"}]
+    store.save("s1", old, {"session_id": "s1"})
+    marker = RewindMarker(
+        event_id="rewind-unique",
+        session_id="s1",
+        checkpoint_id="t2",
+        kept_turns=1,
+    )
+    store.begin_rewind_intent("s1", marker=marker, messages=restored)
+    intent = store.session_dir("s1") / REWIND_INTENT_FILENAME
+    assert intent.is_file()
+
+    transcript, metadata = store.load("s1")
+    assert transcript == restored
+    assert metadata["rewind_reconciled"] is True
+    assert not intent.exists()
+    markers = [record for record in store.read_events("s1") if record["kind"] == "rewind_marker"]
+    assert [record["event_id"] for record in markers] == ["rewind-unique"]
+
+    # A duplicate reconciliation after the marker landed never appends it twice.
+    store.begin_rewind_intent("s1", marker=marker, messages=restored)
+    assert store.reconcile_rewind_intent("s1") is True
+    markers = [record for record in store.read_events("s1") if record["kind"] == "rewind_marker"]
+    assert [record["event_id"] for record in markers] == ["rewind-unique"]
+
+
+def test_rewind_intent_is_private_redacted_and_excludes_runtime_roles(
+    store: SessionStore,
+) -> None:
+    marker = RewindMarker(
+        event_id="rewind-private",
+        session_id="s1",
+        checkpoint_id="t2",
+        kept_turns=1,
+    )
+    store.begin_rewind_intent(
+        "s1",
+        marker=marker,
+        messages=[
+            {"role": "system", "content": f"system secret {_AWS_KEY}"},
+            {"role": "developer", "content": f"developer secret {_AWS_SECRET}"},
+            {
+                "role": "user",
+                "content": (f"restore using {_AWS_KEY}\naws_secret_access_key = {_AWS_SECRET}"),
+            },
+            {"role": "assistant", "content": "safe response"},
+        ],
+    )
+
+    intent = store.session_dir("s1") / REWIND_INTENT_FILENAME
+    raw_text = intent.read_text(encoding="utf-8")
+    payload = json.loads(raw_text)
+
+    assert stat.S_IMODE(intent.stat().st_mode) == 0o600
+    assert [message["role"] for message in payload["messages"]] == ["user", "assistant"]
+    assert _AWS_KEY not in raw_text
+    assert _AWS_SECRET not in raw_text
+    assert "[REDACTED]" in payload["messages"][0]["content"]
+
+
+def test_rewind_intent_reconciles_after_torn_event_tail_with_one_readable_marker(
+    store: SessionStore,
+) -> None:
+    restored = [{"role": "user", "content": "restored after torn tail"}]
+    store.save("s1", [{"role": "user", "content": "old"}], {"session_id": "s1"})
+    marker = RewindMarker(
+        event_id="rewind-after-torn-tail",
+        session_id="s1",
+        checkpoint_id="t2",
+        kept_turns=1,
+    )
+    store.begin_rewind_intent("s1", marker=marker, messages=restored)
+    intent = store.session_dir("s1") / REWIND_INTENT_FILENAME
+    store.events_path("s1").write_text(
+        '{"kind":"tool_post","tool_call_id":"complete"}\n{"kind":"tool_post","tool_call_id":"torn"',
+        encoding="utf-8",
+    )
+
+    transcript, _metadata = store.load("s1")
+
+    assert transcript == restored
+    assert not intent.exists()
+    records = list(store.read_events("s1"))
+    assert [record["kind"] for record in records] == ["tool_post", "rewind_marker"]
+    assert [record["event_id"] for record in records if record["kind"] == "rewind_marker"] == [
+        "rewind-after-torn-tail"
+    ]
+
+
+def test_critical_event_append_retries_short_os_writes(
+    store: SessionStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = RewindMarker(
+        event_id="rewind-short-write",
+        session_id="s1",
+        checkpoint_id="t1",
+        kept_turns=0,
+    )
+    real_write = os.write
+
+    def short_write(descriptor: int, payload: bytes | memoryview) -> int:
+        return real_write(descriptor, bytes(payload[:3]))
+
+    monkeypatch.setattr(os, "write", short_write)
+    store.append_event_critical("s1", marker)
+
+    assert [record["event_id"] for record in store.read_events("s1")] == ["rewind-short-write"]
+
+
+def test_unready_rewind_intent_preserves_transcript_and_reports_interruption(
+    store: SessionStore,
+) -> None:
+    original = [{"role": "user", "content": "keep the existing conversation"}]
+    store.save("s1", original, {"session_id": "s1", "name": "existing"})
+    marker = RewindMarker(
+        event_id="rewind-not-armed",
+        session_id="s1",
+        checkpoint_id="t2",
+        kept_turns=1,
+    )
+    store.begin_rewind_intent(
+        "s1",
+        marker=marker,
+        messages=[{"role": "user", "content": "must not replace existing"}],
+        ready=False,
+    )
+    intent = store.session_dir("s1") / REWIND_INTENT_FILENAME
+
+    transcript, metadata = store.load("s1")
+
+    assert transcript == original
+    assert metadata["name"] == "existing"
+    assert "rewind_reconciled" not in metadata
+    assert store.rewind_recovery_interrupted is True
+    assert store.rewind_recovery_failed is False
+    assert not intent.exists()
+    assert not any(
+        record.get("event_id") == "rewind-not-armed" for record in store.read_events("s1")
+    )
+
+
+def test_rewind_marker_append_failure_keeps_intent_retryable(
+    store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = [{"role": "user", "content": "retry marker append"}]
+    store.save("s1", [{"role": "user", "content": "old"}], {"session_id": "s1"})
+    marker = RewindMarker(
+        event_id="rewind-retry-append",
+        session_id="s1",
+        checkpoint_id="t2",
+        kept_turns=1,
+    )
+    store.begin_rewind_intent("s1", marker=marker, messages=restored)
+    intent = store.session_dir("s1") / REWIND_INTENT_FILENAME
+    real_append = store.append_event_critical
+
+    def fail_append(_session_id: str, _event: Any) -> None:
+        raise OSError("event log unavailable")
+
+    monkeypatch.setattr(store, "append_event_critical", fail_append)
+    with pytest.raises(OSError, match="event log unavailable"):
+        store.reconcile_rewind_intent("s1")
+
+    assert intent.is_file()
+    assert not any(
+        record.get("event_id") == "rewind-retry-append" for record in store.read_events("s1")
+    )
+
+    monkeypatch.setattr(store, "append_event_critical", real_append)
+    assert store.reconcile_rewind_intent("s1") is True
+    assert not intent.exists()
+    markers = [
+        record
+        for record in store.read_events("s1")
+        if record.get("event_id") == "rewind-retry-append"
+    ]
+    assert len(markers) == 1
+
+
+def test_rewind_intent_unlink_failure_dedupes_marker_on_retry(
+    store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restored = [{"role": "user", "content": "retry intent cleanup"}]
+    store.save("s1", [{"role": "user", "content": "old"}], {"session_id": "s1"})
+    marker = RewindMarker(
+        event_id="rewind-retry-unlink",
+        session_id="s1",
+        checkpoint_id="t2",
+        kept_turns=1,
+    )
+    store.begin_rewind_intent("s1", marker=marker, messages=restored)
+    intent = store.session_dir("s1") / REWIND_INTENT_FILENAME
+    real_unlink = Path.unlink
+    failed_once = False
+
+    def fail_intent_unlink_once(path: Path, missing_ok: bool = False) -> None:
+        nonlocal failed_once
+        if path == intent and not failed_once:
+            failed_once = True
+            raise OSError("intent cleanup unavailable")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_intent_unlink_once)
+    with pytest.raises(OSError, match="intent cleanup unavailable"):
+        store.reconcile_rewind_intent("s1")
+
+    assert intent.is_file()
+    markers = [
+        record
+        for record in store.read_events("s1")
+        if record.get("event_id") == "rewind-retry-unlink"
+    ]
+    assert len(markers) == 1
+
+    assert store.reconcile_rewind_intent("s1") is True
+    assert not intent.exists()
+    markers = [
+        record
+        for record in store.read_events("s1")
+        if record.get("event_id") == "rewind-retry-unlink"
+    ]
+    assert len(markers) == 1
+
+
+def test_cancelled_rewind_intent_never_applies_on_resume(store: SessionStore) -> None:
+    original = [{"role": "user", "content": "original"}]
+    store.save("s1", original, {"session_id": "s1"})
+    marker = RewindMarker(
+        event_id="rewind-cancelled",
+        session_id="s1",
+        checkpoint_id="t1",
+        kept_turns=0,
+    )
+    store.begin_rewind_intent("s1", marker=marker, messages=[])
+    store.cancel_rewind_intent("s1")
+
+    transcript, _metadata = store.load("s1")
+    assert transcript == original
+    assert not any(
+        record.get("event_id") == "rewind-cancelled" for record in store.read_events("s1")
+    )
+
+
 # --------------------------------------------------------------------------
 # listing / lookup
 # --------------------------------------------------------------------------
@@ -426,6 +677,30 @@ async def test_incremental_saver_preserves_existing_metadata(store: SessionStore
     metadata = store.get_metadata("s1")
     assert metadata["name"] == "my session"  # preserved (e.g. session-naming hook)
     assert metadata["created"] == "2026-01-01T00:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_incremental_saver_retries_same_count_after_failed_save(
+    store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = FakeContext()
+    context.messages = [{"role": "user", "content": "retry me"}]
+    saver = IncrementalSaver(store, "s1", session=FakeSession(context))
+    original_save = store.save
+    attempts = 0
+
+    def flaky_save(session_id: str, transcript: list[Any], metadata: dict[str, Any]) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("disk busy")
+        original_save(session_id, transcript, metadata)
+
+    monkeypatch.setattr(store, "save", flaky_save)
+    with pytest.raises(OSError, match="disk busy"):
+        await saver.maybe_save()
+    assert await saver.maybe_save() is True
+    assert attempts == 2
 
 
 def test_saved_files_are_valid_jsonl(store: SessionStore) -> None:

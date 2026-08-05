@@ -23,12 +23,22 @@ uv run amplifier-tui doctor       # setup checkup (exit 1 when findings exist)
 uv run amplifier-tui init         # set up a provider key in ~/.amplifier/keys.env
 uv run amplifier-tui bundle list  # bundles from the shared registry (--all for deps)
 uv run amplifier-tui bundle use B # set the active bundle (--global/--project/--local)
+uv run amplifier-tui routing manage   # inspect and choose a routing matrix
+uv run amplifier-tui routing use NAME # choose one directly (anthropic, runpod, ...)
 uv run amplifier-tui update       # update the mounted bundles/modules (--check-only/--force)
 ```
 
 `bundle` also has `show · current · clear · add · remove · update`; run
 `bundle --help`. These read/write the same amplifier settings and registry
 the reference CLI uses — nothing app-specific.
+
+`routing manage` is a numbered picker. At `choice:`, type either the displayed
+row number or the exact matrix name to select it. Use `v NUMBER` or `v NAME` for
+details, `c` to create a custom matrix, `w` to change the settings scope, and `d`
+to finish. `routing use NAME` is the non-interactive equivalent. A changed matrix
+is used by the next session; it does not reroute a turn already in progress. If a
+custom name is numeric or collides with a one-letter control, use `select NAME`;
+colon-prefixed controls such as `:done` remain unambiguous.
 
 `run` accepts either a prompt argument or all piped stdin. JSON modes reserve stdout for
 machine-readable output and redirect setup/module diagnostics to stderr. `json-trace`
@@ -52,11 +62,12 @@ uv run amplifier-tui serve --attach amplifier-session:SESSION_ID#ho-9a2  # claim
 `--attach` takes the reference a paused controller minted: it opens the SAME session and
 hands you the write lease. Full contract: [SESSION-CONTROL.md](SESSION-CONTROL.md).
 
-**First run:** follow the [README's Install section](../README.md#install) — it deploys
-[Amplifier](https://github.com/microsoft/amplifier) first (`amplifier init` sets up your
-provider and credentials in `~/.amplifier/`, which this app shares), then this app. If
-anything is off, `doctor` will tell you what and how to fix it. Not sure everything's
-wired? `--demo` always works and exercises the whole UI offline.
+**First run:** follow the [README's Install section](../README.md#install). Its single
+source-install command verifies `amplifier-tui` and opens the built-in provider setup; the
+full [Amplifier](https://github.com/microsoft/amplifier) CLI is optional. Existing
+`~/.amplifier/` providers and credentials are reused automatically. If anything is off,
+`doctor` will tell you what and how to fix it. Not sure everything's wired? `--demo` always
+works and exercises the whole UI offline.
 
 ## 2. The screen
 
@@ -64,7 +75,7 @@ wired? `--demo` always works and exercises the whole UI offline.
 ┌ title bar ── spinner · state — bundle — session id ─────────────────┐
 │                                                                     │
 │  transcript — your lines, activity digests, plans, answers,         │
-│               turn rules (one per turn, clickable → rewind)         │
+│               turn rules (one pre-prompt checkpoint each)           │
 │                                                     ┌ notices ┐     │
 ├─ overlay strips appear here (palette / lanes / rewind / queued) ────┤
 │ [mode] ❯ composer — type here            (swaps to approval bar)    │
@@ -103,8 +114,9 @@ has focus (matching ctrl-h/click). Either path flips the control to
 **`▾ Show less`** to collapse it again; at a short
 terminal height the expanded list scrolls inside the panel rather than covering the
 composer. Once every item completes it collapses to the header line (done stays
-visible). On narrow terminals the panel hides and the footer carries the `Plan N/M`
-count instead — the count never shows in both places at once.
+visible). On narrow terminals the panel stacks below the agent lanes at full width;
+the same **ctrl-h**, enter/space, and click controls remain available, and long content
+continues to scroll inside the bounded panel without covering the composer.
 
 ## 3. Talking to Amplifier
 
@@ -115,6 +127,7 @@ count instead — the count never shows in both places at once.
 | Add a newline while composing | **ctrl+j** or **ctrl+enter** |
 | **Steer** the current turn (it's still running) | just type and press **enter** — your note is injected at the next step boundary |
 | Queue a **full next turn** while one runs | **shift+enter** (**alt+enter** on legacy terminals — the hint adapts) |
+| Pull the queued turn back to steer now | **alt+↑**, or click its orange `queued next` strip, then press **enter** |
 | Interrupt the running turn | **esc** |
 | Attach an image | paste it (ctrl+v) or paste a path — it becomes an `[Image #N]` chip |
 | Mention a workspace file | type `@` after whitespace, then **↑/↓** and **enter** (or **tab**) to insert |
@@ -128,9 +141,14 @@ Things worth knowing:
   a queued message becomes the *next* turn. Steers that the turn never consumes are
   discarded — they won't fire later as a message you didn't mean to send.
 - A queued message shows in an orange strip above the composer (`▹ queued next: "…" · runs
-  when this turn ends`) plus a `q1` footer badge, and runs automatically when the turn
-  finishes. Only **one** is held at a time — queueing again replaces it (that's also how
-  you "edit" it; there's no cancel).
+  when this turn ends · alt+↑ recall to steer`) plus a `q1` footer badge, and runs
+  automatically when the turn finishes. Only **one** is held at a time. Press **alt+↑**
+  or click the strip to recall its exact text into an empty composer; **enter** then steers
+  the active turn, while shift/alt+enter queues it again. Recall refuses to overwrite an
+  existing draft or a steer that is already waiting.
+- **Tool failures do not end an Auto turn.** A failed tool is retained as a red failed row
+  with its error detail; the failure result goes back to the model, which can try a fallback
+  tool (for example, a denied file edit followed by a shell-based alternative).
 - **Tool digests** in the transcript (`Read 4 files · ran 6 shell commands · click to
   expand`) expand on click to show the individual calls; click again to collapse.
 - **Final answer marker.** The turn's one authoritative answer opens with a bright/bold
@@ -190,11 +208,14 @@ native confirmations. An ask replaces the composer with **Allow once · Allow al
 Deny**.
 
 - **arrows / tab** select · **enter** confirm · **esc** deny
+- **ctrl+y** defers: the current call is denied immediately so work continues, while the
+  decision remains in the needs-you queue for a later answer
 - Deferred decisions land in the *needs-you* queue (§6), where you can still answer later
 - *Allow once* covers just this call; *Allow always* asks Amplifier's approval system to
   remember the decision for that same action going forward
 
-The approval bar owns the keyboard while visible; other shortcuts pause until you decide.
+The approval bar owns the keyboard while visible; other shortcuts pause until you decide
+or defer it.
 
 ## 6. Needs-you: deferred decisions
 
@@ -205,6 +226,17 @@ the spot in the transcript. To answer an item, **click one of its choice chips**
 the row takes the first choice); your decision is injected into the next turn ("Applying
 decision …"), so nothing is lost — just deferred. Repeated denials (three in a row, or
 twenty in a session) escalate to get your attention.
+
+For a free-text choice, click **Type your own**. A persistent decision band opens above
+the composer and temporarily parks your existing draft. **Enter** submits the answer even
+while a turn is running, **ctrl+j** adds a newline, and **esc** cancels without interrupting
+the turn; submit or cancel restores the original draft exactly. Slash-leading answers are
+literal answers, not slash commands.
+
+The structured `question` tool follows the active posture: interactive modes wait for the
+answer that the current step needs; **Auto** parks the question and returns control to the
+model immediately so independent work continues. If you answer later, the answer is
+injected once at the next model boundary.
 
 ## 7. Commands
 
@@ -219,23 +251,25 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 | | `/brainstorm` | jump to no-tools brainstorming |
 | | `/context` | context-window usage grid (conversation / tools / memory / free) |
 | | `/status` | live session snapshot — model, mode, messages, tools, cost |
-| | `/model [name]` | list the provider's models, or switch the live model |
+| | `/model [[provider] name]` | list the provider's models, or switch the live model (naming a provider also reroutes turns to it) |
 | | `/effort [none…max]` | show or set reasoning effort |
 | | `/compact [focus]` | compact the conversation context, optionally focused |
 | | `/clear` | clear the transcript view + conversation context (not persisted history) |
 | | `/tools` | list the mounted tools |
 | | `/agents` | list the delegatable agents |
 | | `/skills` | list available skills |
-| | `/skill <name>` | load a skill by name |
+| | `/skill <name> [arguments]` | load a skill into the next live model turn |
 | | `/<skill-name>` | every discovered skill is also its own command (plus its `shortcut:` alias) |
-| | `/mcp [add\|remove]` | list MCP servers + connected tools; add/remove in `mcp.json` |
+| | `/mcp [add\|reload\|remove]` | list effective MCP servers + live connection state; reconcile changes now when safely owned |
+| | `/bundle [load NAME_OR_URI]` | list/load registered, deferred, local, or direct bundles into this session |
+| | `/module load ID [SOURCE]` | mount one additive provider/tool/hook module into this session |
 | Parallel | `/tasks` | toggle the agent lanes panel (ctrl+t) |
 | Ship | `/ledger` | session outcome ledger — spend vs. yield summary (ctrl+l) |
 | | `/diff [staged]` | working-tree (or staged) git patch with theme-aware highlighting |
 | | `/export` | write the transcript as markdown to `exports/` |
 | | `/copy` | copy the last answer to the clipboard |
 | | `/about` | app / core / bundle / session identity |
-| Between | `/rewind` | open the rewind picker (ctrl+r) |
+| Between | `/rewind` | open the pre-prompt restore picker (ctrl+r) |
 | | `/quit` | exit |
 | Repair | `/permissions` | show trust slots: boundary, blocks, exceptions |
 | | `/allowed-dirs [list\|add PATH\|remove PATH]` | edit allowed write paths for this session |
@@ -247,23 +281,64 @@ substring as you type). The same commands work typed in full, e.g. `/mode plan`.
 
 **Model, effort, compact, clear, status, tools, agents, diff** act on the live
 Amplifier session through the coordinator (the same calls the reference CLI
-makes). **`/model`** switches the mounted provider's model in place;
+makes). **`/model`** switches the mounted provider's model in place —
+`/model <name>` chooses the unique provider advertising that model (and uses
+the last-switched provider only to disambiguate a model advertised by several);
+`/model <provider> <name>` targets explicitly. When the target is not the provider
+currently answering, its routing priority is lowered below the others'
+so root turns actually move to it, while delegated roles switch to the matching
+provider-family routing matrix. The exact chosen model remains the root model;
+the matrix never substitutes one of its role defaults. **`/effort`** sets the orchestrator's
+per-turn effort; with no override the provider's own configured effort
+applies and is what bare `/effort` and the footer show.
+**`/bundle load`** prepares a registered/deferred/local bundle and mounts its
+additive providers, tools, hooks, agents, instruction, and context immediately.
+**`/module load`** mounts one
+additive provider, tool, or hook module, optionally from an explicit source URI.
+A provider loaded this way does not silently take over; select its exact root
+model with `/model <provider> <model>`. Both live-load paths use a canonical
+session ledger and transactional provider remapping, so repeating an aliased
+load is a no-op, existing provider identities/order are preserved, and a failed
+load is rolled back. Successfully loaded provider/tool/hook entries and new
+agent definitions are mirrored into the parent session configuration, so child
+lanes created afterward inherit them; cleanup restores both the live mounts and
+the inherited configuration. Orchestrator and context *module replacements*
+plus explicit agent modules remain next-session-only and are reported as such;
+swapping those singleton identities mid-conversation is not additive bundle
+composition. Bundle instruction/context prose is rendered through Foundation's
+prepared-bundle prompt factory and enters the very next turn as an additive,
+hook-origin system message.
 **`/compact`** and **`/clear`** drive the context module directly. **`/clear`**
 additionally empties the visible transcript in the same action — both the
 rendered rows and the live context reset together, immediately, with a brief
 confirmation. Neither touches the persisted session log on disk: resume and
 `/export` still see every prior turn.
-The packaged tui bundle also compacts automatically at 80% of its 300k
-window. Override `context.auto_compact`, `context.compact_threshold`, or
-`context.max_tokens` in settings; `/status` shows the effective policy and
-whether accounting is provider-observed or estimated. `/context` uses the effective
-window rather than a hard-coded size, and native compaction events persist a before/after
-token and message-count narration in the transcript.
+The packaged tui bundle compacts automatically at 80% of the serving
+provider's effective request budget. `context.max_tokens` is the 300k fallback
+only when the provider exposes no model limit. Override `context.auto_compact`,
+`context.compact_threshold`, or that fallback in settings; `/status` labels the
+configured fallback and whether accounting is provider-observed or estimated.
+After native compaction reveals the provider-derived budget, `/context` and the
+footer use it rather than the fallback. Root compaction bursts update one
+summary row in place; child-agent maintenance stays in its own event log instead
+of flooding the parent conversation.
 
-**MCP & skills.** `/mcp` reads `~/.amplifier/mcp.json` (and `./.amplifier/mcp.json`);
-each configured server's tools mount as `mcp_<server>_<tool>` at session start, so
-`/mcp add` / `/mcp remove` take effect on the next launch. `/skills` and `/skill`
-drive the mounted skills tool — the agent also loads skills on its own when relevant.
+`/compact` asks the mounted context implementation for a persistent compaction.
+The bundled `context-simple` compacts ephemeral request views automatically, so
+its explicit protocol method makes no persistent change; the notice says so
+rather than claiming messages were removed.
+
+**MCP & skills.** `/mcp` reads the same effective scopes as `tool-mcp` (user
+`~/.amplifier/mcp.json`, project `./.amplifier/mcp.json`, environment override,
+then inline bundle config). A genuinely new `/mcp add` connects and mounts its
+`mcp_<server>_<tool>` capabilities into the current session transactionally;
+servers added by this live reconciler can also reload/remove immediately. A server
+owned by the aggregate boot-time `tool-mcp` remains connected until restart unless
+the mounted module exposes the upstream per-server reconciliation capability; the
+notice distinguishes "configuration saved/removed" from "connected" instead of
+claiming a live change. `/skills` and `/skill` drive the mounted skills tool and add
+the returned inline instructions or fork result to live next-turn context exactly
+once — the agent also loads skills on its own when relevant.
 Discovered skills additionally register as first-class commands: `/cranky-old-sam`
 (and its declared `shortcut:` alias, e.g. `/cosam`) resolves exactly like a built-in —
 in the palette, in the help listing, and at the prompt — and loads that skill. Text
@@ -298,6 +373,7 @@ sandbox around arbitrary interpreter code.
 |---|---|---|
 | enter | send · steer · confirm | idle · running · in panels |
 | shift+enter (alt+enter) | queue next-turn message | any time |
+| alt+↑ | recall queued next-turn text so Enter can steer it now (or send it if the prior turn already ended) | queued message visible |
 | ctrl+j (ctrl+enter) | newline in composer | composing |
 | ↑ / ↓ | older/newer prompt; restore draft | single-line composer |
 | ↑ / ↓ | move file suggestion | `@file` suggestions open |
@@ -308,20 +384,22 @@ sandbox around arbitrary interpreter code.
 | ctrl+o | cycle which running agent the live tail follows | agents fanned out |
 | ctrl+l | outcome ledger | any time |
 | ctrl+y | needs-you queue | any time |
-| ctrl+r | rewind picker | any time |
+| ctrl+r | checkpoint restore picker | any time |
 | ctrl+f | jump back to the current turn's final-answer start | any time |
-| esc esc | interrupt, then open rewind | running turn |
+| esc esc | open restore picker; while running, interrupt first | running; idle with empty composer |
 | ↑ ↓ | select in palette/lanes (lanes from an empty composer) | panels |
-| ‹ › (← →) | navigate checkpoints · evidence refs | rewind · evidence |
+| ‹ › (← →) | navigate checkpoints · evidence refs | restore picker · evidence |
 | d | open/refresh/close evidence detail panel | evidence |
 | ctrl+c | copy mouse-selected transcript text | after selecting |
 | ctrl+d | quit | any time |
 | esc | one step "out" | see below |
 
-**Esc does the nearest thing first:** leave a focused lane → close the palette → close
-rewind → close the lanes panel → interrupt the running turn. During an approval, esc means
-*deny*. Press Esc again within 750ms after an interrupt to open the same rewind picker used
-by ctrl+r; this works whether turn close-out has finished yet or not.
+**Esc does the nearest thing first:** leave a focused lane → close the palette → close the
+restore picker → close the lanes panel → interrupt the running turn. During an approval,
+esc means *deny*. With an empty composer, press Esc twice within 750ms to open the same
+picker used by ctrl+r. During a turn the first Esc requests an interrupt and the second
+opens the picker while close-out finishes. With a draft at idle, double-Esc clears it but
+keeps it recoverable with **↑**, rather than opening a restore over text you may still need.
 
 An accepted turn interrupt is also recorded in model context as a hidden
 `<turn_aborted>` boundary. The next turn therefore knows the prior response was cut off and
@@ -339,7 +417,10 @@ hints.)*
 
 When the agent fans work out to subagents, the **lanes panel** opens automatically (or
 toggle with **ctrl+t**): one live row per agent — state glyph (◐ running · ■ working ·
-✔ done), current activity, elapsed time, tokens, cost.
+✔ done · `!` attention · ✖ failed · ⊘ cancelled), producing turn, current
+activity, elapsed time, tokens, cost. A child waiting for approval or continuing after a
+denied/blocked action turns its own row orange and names that need; the same global
+approval bar remains where you answer it.
 
 Child tool and stream events update that row and its compact transcript-tree row in place
 (`reading README.md`, `editing reducer.py`, `writing response`) without accumulating status
@@ -351,8 +432,11 @@ While agents run and the root model is quiet, the area under the transcript show
 the work happening. It follows whichever running agent spoke most recently; press
 **ctrl+o** to pin it to a different one (the `▸` after a lane's name marks who you're
 tailing — also shown in the panel header hint). The moment the root model speaks, the tail
-switches back to it. Tail text is a live preview only: the agent's full prose lives in its
-own transcript (focus the lane to read it), and nothing from the tail lands in yours.
+switches back to it. Every live stream names its source and turn: child identity sits on
+the containing lane row/focus banner, while the root peek and revealed box say
+`main · tN`. Tail text is a live preview only: the agent's full prose lives in its own
+transcript (focus the lane to read it), and neither the preview nor its identity label lands
+in your durable answer.
 
 Select a lane with ↑↓ and press **enter** (or click its row) to *focus* it: the transcript
 switches to that subagent's own work, with a **‹ Back to parent** control at the top — click it,
@@ -371,22 +455,75 @@ plus the final plan on one line. Click again to collapse.
 
 ## 10. Rewind
 
-Every turn ends with a rule line and a checkpoint. To go back:
+A checkpoint is cut **before every prompt starts**, then attached to that turn's rule line
+when it closes. The pending checkpoint is already selectable while its turn is running,
+including for the first prompt in a session. Selecting `before turn 3`, for example, means
+“undo turn 3 and everything after it,” not “keep turn 3.”
 
-- press **ctrl+r** (or `/rewind`), or click any turn rule in the transcript
-- navigate checkpoints with **‹ ›**, then **enter** to fork
+Open the bottom restore picker with **ctrl+r**, `/rewind`, a click on a turn rule, or
+**esc esc** while the composer is empty. Use **←/→** (or click **‹/›**) to choose the
+prompt, **↑/↓** to choose a scope, and **enter** to restore:
 
-Rewind is **confirm-then-trim**: the session forks from that checkpoint first, and only
-after that succeeds is the transcript trimmed. A failed fork changes nothing. Cost and
-ledger accounting roll back with it.
+| Scope | Conversation | Workspace files |
+|---|---|---|
+| **code + conversation** *(default)* | restored to immediately before the selected prompt | safely restores tracked direct edits from that prompt onward |
+| **conversation only** | restored to immediately before the selected prompt | left exactly as they are |
+| **code only** | left exactly as it is | safely restores tracked direct edits from that prompt onward |
 
-Opening the picker never touches a running turn — browse checkpoints freely while one
-streams. Confirming a fork while a turn is still running is different: it interrupts that
-turn first (the same break esc requests) and waits for it to close out — which records its
-own · interrupted checkpoint — before forking, so nothing is orphaned mid-stream. A pending
-approval isn't answered for you; the fork just waits behind it until you decide. A message
-queued with shift+enter isn't dropped either — it runs right after the fork, against the
-now-rewound state.
+When conversation is included, the selected prompt returns to the composer for editing and
+resubmission; the selected turn and all later transcript/ledger entries disappear only after
+the context restore succeeds. Code-only restore does not rewrite the conversation or
+composer. If a turn is active when you confirm, the app requests the normal graceful
+interrupt, waits for close-out, and then restores. Opening and browsing the picker alone
+never interrupts anything. A queued next-turn message remains queued; because the restored
+prompt now occupies the composer, it is not silently run ahead of your revision.
+
+If a **code + conversation** restore can safely restore only some files, those successful
+file restores stay applied, but the conversation remains in place so the same visible
+checkpoint can be retried after you resolve the skipped paths. The notice says **partial
+restore** and includes the first concrete warning; it never presents a mixed result as a
+complete rewind.
+
+### What code undo covers
+
+The code checkpoint store watches only **root-session structured file tools** whose target
+is known before execution: `write_file`, `edit_file`, `create_file`, `delete_file`, and
+`apply_patch`. It records private preimages before the tool runs, then uses a strict
+compare-and-swap check at restore time. If a current file no longer matches the recorded
+after-state — because you, a shell command, another process, or another agent changed it —
+that file is **skipped**, never overwritten. Other independent files can still restore.
+The completion notice reports restored and skipped counts, and unsafe/conflicting paths are
+surfaced as warnings rather than being presented as successful undo.
+
+The following are deliberately not checkpointed:
+
+- `bash`/shell or arbitrary interpreter changes;
+- subagent/child-session writes;
+- MCP, external-tool, editor, or other manual changes;
+- paths outside the workspace, anything under `.git`, and symlinked paths;
+- hard-linked files, directories/devices/other non-regular files, and files over 8 MiB;
+- files with extended attributes, extended ACLs, non-default file flags, or ownership the
+  current process cannot reproduce safely.
+
+On supported POSIX systems (including macOS), each parent directory is held by a no-follow
+descriptor through capture or restore, so swapping an intermediate path to a symlink cannot
+redirect the operation. A host without the required descriptor-relative primitives skips
+code restore paths rather than falling back to an unsafe path-based write.
+
+Checkpoint data lives inside the session's private `workspace-checkpoints/` directory
+(0700 directories and 0600 files), survives `resume`, and retains the newest **100**
+restore points. It is removed with the containing session. Rewind has **no redo stack**,
+cannot reconstruct untracked mutation sources above, and is not a replacement for commits,
+branches, or a clean Git working tree. Use Git when you need durable, inspectable history.
+One prompt can retain at most 512 preimages / 64 MiB in total, in addition to the 8 MiB
+per-file limit; anything beyond those bounds is reported as skipped.
+
+Structured turns and restores targeting the same workspace share an exclusive checkpoint
+lease, even across two TUI sessions. If another turn owns that lease, or the pre-prompt
+checkpoint cannot be made durable, the new message is returned to the composer and is
+**not sent**. Restore journals and branch intents are replayed on resume before another
+checkpoint operation is allowed, so a process exit cannot silently bless a half-finished
+undo.
 
 ## 11. Watching cost and yield
 
@@ -434,12 +571,12 @@ terminal's native selection.
 ## 14. Sessions
 
 Sessions persist under `~/.amplifier/projects/<project>/sessions/` — transcript, metadata,
-and a full event log. Saving is incremental (after every tool call), so even a crash loses
-almost nothing. `sessions` lists them; `resume SESSION_ID` picks one back up with history,
-cost, and checkpoints intact. A prefix works too (`resume abc123`); an ambiguous prefix lists
-every match instead of guessing, and `resume`/`session resume`/`run --resume`/`serve --resume`
-all use distinct, stable exit codes (0 ok, 2 no match, 3 ambiguous, 4 corrupt) instead of a
-blanket 1 — see the table below.
+a full event log, and private workspace-checkpoint data. Saving is incremental (after every
+tool call), so even a crash loses almost nothing. `sessions` lists them; `resume SESSION_ID`
+picks one back up with history, cost, and the newest 100 restore points intact. A prefix
+works too (`resume abc123`); an ambiguous prefix lists every match instead of guessing, and
+`resume`/`session resume`/`run --resume`/`serve --resume` all use distinct, stable exit codes
+(0 ok, 2 no match, 3 ambiguous, 4 corrupt) instead of a blanket 1 — see the table below.
 
 | Exit code | Meaning |
 |---|---|
@@ -448,15 +585,27 @@ blanket 1 — see the table below.
 | `3` | The prefix matches more than one stored session (candidates are listed) |
 | `4` | The match is unambiguous but its metadata is corrupt, even from backup |
 
+If an interruption lands after the assistant emitted tool calls but before their results
+were saved, resume repairs that transcript boundary before the first new model request. It
+persists an uncertainty result for each orphaned call and shows a warning such as
+`Resume repaired 2 interrupted tool results`. The repair deliberately does **not** claim
+whether the tools executed: inspect the actual disk or external state before retrying any
+side effect. Re-resuming is idempotent, and a real stored result is never replaced.
+
 In-session, `/sessions` opens an interactive picker over this project's stored roster
-(never just a wall of ids): **↑/↓** or click a row to select it, **enter** or click to open
-it — keyboard and mouse both work everywhere. Opening a row shows its full id on its own
-line (the table itself only shows a short 8-char id) plus name, bundle, message/turn counts
-and age; the full id is copied to the clipboard automatically where the terminal allows it,
-and is always safely mouse-selectable from that detail view even when it isn't. A session
-whose stored metadata could not be read is never dropped or shown as if it were healthy — it
-lists with an explicit **recovered** (patched from a backup) or **corrupt** (unreadable)
-state chip instead.
+(never just a wall of ids): **↑/↓** clearly moves the highlighted row; **enter** (or a row
+click) opens its detail, while **r** (or the trailing **⟳**) actually resumes it. Resume
+cleanly closes the current runtime, then reopens the selected stored session through the
+same fresh-runtime path as `amplifier-tui resume SESSION_ID`; the equivalent command is
+copied to the clipboard as a fallback, but there is nothing else to paste or run.
+
+Opening detail shows the full id on its own line (the table itself only shows a short
+8-character id) plus name, bundle, message/turn counts and age; the full id is copied where
+the terminal allows it and is always safely mouse-selectable. A session whose stored data
+could not be read is never dropped or shown as healthy: it lists with an explicit
+**recovered**, **transcript lost**, **indexing**, or **corrupt** state. Rows without enough
+trusted identity to resume remain in the picker for inspection, but **r** refuses them with
+a clear notice instead of closing into a predictable boot failure.
 
 ## 15. When something's off
 

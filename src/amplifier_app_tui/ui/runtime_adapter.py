@@ -24,7 +24,11 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from ..kernel.events import ParsedEvent, UIEvent
 
+from ..kernel.ambient.reply_listener import ReplyListenerLifecycle
 from ..kernel.compaction import CompactionConfig
+from ..kernel.goal import GoalCommandResult
+from ..kernel.mcp_prompts import MCPPromptInfo
+from ..kernel.approval import DENY
 from ..kernel.directory_permissions import DirectoryEntry, DirectoryKind
 from ..kernel.prompt_history import PromptHistoryStore
 from ..kernel.session_ops import ModelListing, StatusInfo
@@ -114,6 +118,11 @@ _COMPACT: SessionOp[tuple[bool, str]] = SessionOp(
     (False, _STILL_STARTING),
 )
 _CLEAR_CONTEXT: SessionOp[tuple[bool, int]] = SessionOp("clear_context", (False, 0), (False, 0))
+_MANAGE_GOAL: SessionOp[GoalCommandResult] = SessionOp(
+    "manage_goal",
+    GoalCommandResult(False, "error", "goals need a real session"),
+    GoalCommandResult(False, "error", _STILL_STARTING),
+)
 _STATUS: SessionOp[StatusInfo] = SessionOp("status", StatusInfo(), StatusInfo())
 _LIST_TOOLS: SessionOp[tuple[str, ...]] = SessionOp("list_tools", (), ())
 _LIST_AGENTS: SessionOp[tuple[str, ...]] = SessionOp("list_agents", (), ())
@@ -126,9 +135,36 @@ _LOAD_SKILL: SessionOp[tuple[bool, str]] = SessionOp(
     (False, _STILL_STARTING),
 )
 _MCP_TOOLS: SessionOp[tuple[str, ...]] = SessionOp("mcp_tools", (), ())
+_MCP_PROMPTS: SessionOp[tuple[MCPPromptInfo, ...]] = SessionOp("mcp_prompts", (), ())
+_EXECUTE_MCP_PROMPT: SessionOp[tuple[bool, str]] = SessionOp(
+    "execute_mcp_prompt",
+    (False, "MCP prompts need a real session"),
+    (False, _STILL_STARTING),
+)
+_MCP_SERVERS: SessionOp[dict[str, str]] = SessionOp("mcp_servers", {}, {})
+_ADD_MCP_SERVER: SessionOp[tuple[bool, str]] = SessionOp(
+    "add_mcp_server",
+    (False, "MCP connections need a real session"),
+    (False, _STILL_STARTING),
+)
+_RELOAD_MCP_SERVER: SessionOp[tuple[bool, str]] = SessionOp(
+    "reload_mcp_server",
+    (False, "MCP connections need a real session"),
+    (False, _STILL_STARTING),
+)
+_REMOVE_MCP_SERVER: SessionOp[tuple[bool, str]] = SessionOp(
+    "remove_mcp_server",
+    (False, "MCP connections need a real session"),
+    (False, _STILL_STARTING),
+)
 _LOAD_DEFERRED_BUNDLE: SessionOp[tuple[bool, str]] = SessionOp(
     "load_deferred_bundle",
     (False, "loading a bundle needs a real session"),
+    (False, _STILL_STARTING),
+)
+_LOAD_MODULE: SessionOp[tuple[bool, str]] = SessionOp(
+    "load_module",
+    (False, "loading a module needs a real session"),
     (False, _STILL_STARTING),
 )
 
@@ -142,6 +178,7 @@ SESSION_OPS: tuple[SessionOp[Any], ...] = (
     _SET_EFFORT,
     _COMPACT,
     _CLEAR_CONTEXT,
+    _MANAGE_GOAL,
     _STATUS,
     _LIST_TOOLS,
     _LIST_AGENTS,
@@ -150,7 +187,14 @@ SESSION_OPS: tuple[SessionOp[Any], ...] = (
     _LIST_SKILLS,
     _LOAD_SKILL,
     _MCP_TOOLS,
+    _MCP_PROMPTS,
+    _EXECUTE_MCP_PROMPT,
+    _MCP_SERVERS,
+    _ADD_MCP_SERVER,
+    _RELOAD_MCP_SERVER,
+    _REMOVE_MCP_SERVER,
     _LOAD_DEFERRED_BUNDLE,
+    _LOAD_MODULE,
 )
 """The one declaration site for the passthrough session-op ladder."""
 
@@ -236,7 +280,7 @@ class RuntimeAdapter:
     async def submit(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
         """Run *text* as a new user turn (with optional image attachments)."""
 
-    async def submit_queued(self, text: str) -> None:
+    async def submit_queued(self, text: str, attachments: tuple[Any, ...] = ()) -> None:
         """Run a queue-drained message as the next turn (spec §5).
 
         Default: same as :meth:`submit`. The demo adapter overrides it
@@ -244,7 +288,7 @@ class RuntimeAdapter:
         the drained turn without ``setMode``, so nothing overwrites the
         ``queued message picked up`` notice.
         """
-        await self.submit(text)
+        await self.submit(text, attachments)
 
     # -- persistent prompt history (cross-session ↑ recall) ------------------
     # The store is keyed per working directory (ADR-0007: the adapter seam
@@ -269,6 +313,14 @@ class RuntimeAdapter:
         Base/demo no-op: there is no real hooks bus without a live session.
         Never raises and never blocks -- see ``RealRuntimeAdapter``'s
         override for the fire-and-forget cross-thread contract.
+        """
+
+    def publish_attention_acknowledged(self, payload: Mapping[str, Any]) -> None:
+        """Best-effort mirror of an acknowledgement onto the runtime hooks bus.
+
+        Base/demo no-op.  Real sessions emit ``attention:acknowledged`` with
+        the original event id so destinations that support clearing can
+        correlate it without inspecting local persistence.
         """
 
     # -- in-session op dispatch (ONE seam; see :class:`SessionOp`) -----------
@@ -317,6 +369,9 @@ class RuntimeAdapter:
     async def clear_context(self) -> tuple[bool, int]:
         return await self._run_op(_CLEAR_CONTEXT)
 
+    async def manage_goal(self, args: str) -> GoalCommandResult:
+        return await self._run_op(_MANAGE_GOAL, args)
+
     async def status(self) -> StatusInfo:
         return await self._run_op(_STATUS)
 
@@ -342,13 +397,39 @@ class RuntimeAdapter:
     async def mcp_tools(self) -> tuple[str, ...]:
         return await self._run_op(_MCP_TOOLS)
 
+    async def mcp_prompts(self) -> tuple[MCPPromptInfo, ...]:
+        return await self._run_op(_MCP_PROMPTS)
+
+    async def execute_mcp_prompt(
+        self, server: str, prompt: str, args: str = ""
+    ) -> tuple[bool, str]:
+        return await self._run_op(_EXECUTE_MCP_PROMPT, server, prompt, args)
+
+    async def mcp_servers(self) -> dict[str, str]:
+        return await self._run_op(_MCP_SERVERS)
+
+    async def add_mcp_server(
+        self, name: str, command: str, args: tuple[str, ...] = ()
+    ) -> tuple[bool, str]:
+        return await self._run_op(_ADD_MCP_SERVER, name, command, args)
+
+    async def reload_mcp_server(self, name: str) -> tuple[bool, str]:
+        return await self._run_op(_RELOAD_MCP_SERVER, name)
+
+    async def remove_mcp_server(self, name: str) -> tuple[bool, str]:
+        return await self._run_op(_REMOVE_MCP_SERVER, name)
+
     async def load_deferred_bundle(self, name: str) -> tuple[bool, str]:
-        """Compose a deferred overlay into the live session (``/bundle load``)."""
+        """Compose a registered/local bundle into the live session."""
         return await self._run_op(_LOAD_DEFERRED_BUNDLE, name)
 
     async def deferred_bundles(self) -> tuple[str, ...]:
-        """Overlay URIs held back from boot (``bundle.deferred``); () for demo."""
+        """Live-loadable bundle names/URIs; ``()`` for demo."""
         return ()
+
+    async def load_module(self, module_id: str, source_hint: str = "") -> tuple[bool, str]:
+        """Mount one additive provider/tool/hook module into the live session."""
+        return await self._run_op(_LOAD_MODULE, module_id, source_hint)
 
     async def rename_session(self, name: str) -> tuple[bool, str]:
         del name
@@ -402,6 +483,33 @@ class RuntimeAdapter:
         """
         ledger.trim_to(checkpoint_id)
 
+    async def restore_checkpoint(self, checkpoint_id: str, ledger: Any, scope: str) -> Any:
+        """Restore a pre-prompt checkpoint in the in-memory/demo runtime."""
+        from ..kernel.rewind import CheckpointRestoreOutcome
+
+        del checkpoint_id, ledger
+        if scope not in {"both", "conversation", "code"}:
+            raise ValueError(f"unknown restore scope: {scope}")
+        if scope == "code":
+            return CheckpointRestoreOutcome(
+                scope="code",
+                summary="code restore unavailable in demo sessions",
+                code_status="unavailable",
+                partial=True,
+            )
+        if scope == "both":
+            return CheckpointRestoreOutcome(
+                scope="both",
+                summary="conversation restored · no tracked code edits in demo sessions",
+                conversation_restored=True,
+                code_status="unchanged",
+            )
+        return CheckpointRestoreOutcome(
+            scope="conversation",
+            summary="conversation restored",
+            conversation_restored=True,
+        )
+
     def answer_approval(self, ticket_id: str, choice: str) -> None:
         """Route an approval-bar resolution back to the runtime."""
 
@@ -432,27 +540,27 @@ class RuntimeAdapter:
         return save_config(self._config_state, scope=scope, project_dir=self._config_project_dir)
 
     def defer_approval(self, ticket_id: str, prompt: str, options: tuple[str, ...]) -> None:
-        """Park a live approval ticket into the needs-you queue WITHOUT
-        answering it (ctrl-y on the approval bar).
+        """Park a live approval ticket and deny this attempt so work continues.
 
         The base/demo runtime has no kernel broker, so the deferred
-        decision is parked here directly: the pending approval future is
-        left untouched (deny-and-continue) and the item stays retro-
-        answerable via ctrl-y (ADR-0007 resolution 5). The real adapter
-        overrides this to route through the broker, which owns the
-        ticket's structured detail. ``ticket_id`` names the ticket for
-        that override; the base park keys off the visible prompt.
+        decision is parked here directly, then :meth:`answer_approval`
+        resolves the active request to ``Deny``.  The item stays retro-
+        answerable via ctrl-y; its later answer is injected as context.
+        The real adapter overrides this and performs the same atomic contract
+        through the broker, which owns the ticket's structured detail.
         """
-        del ticket_id
         question = prompt.strip()
-        if not question:
-            return
-        self.needs_you.defer(
-            question,
-            "deferred approval",
-            choices=options,
-            action=question,
-        )
+        if question:
+            try:
+                self.needs_you.defer(
+                    question,
+                    "deferred approval",
+                    choices=options,
+                    action=question,
+                )
+            except ValueError:
+                pass  # a full queue still denies this attempt below
+        self.answer_approval(ticket_id, DENY)
 
     # -- optional data hooks (demo fidelity / real telemetry) ---------------
 
@@ -552,6 +660,34 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self._thread: Any = None
         self._stop: asyncio.Event | None = None  # belongs to the runtime loop
         self._prompt_store: PromptHistoryStore | None = None
+        self._ambient_reply: ReplyListenerLifecycle | None = None
+
+    def _start_ambient_reply_listener(self) -> None:
+        """Own E7's same-host reply listener for this live session.
+
+        Session identity and persistence are not available until runtime boot
+        completes, so this is called exactly once from :meth:`start` after
+        both have been copied onto the adapter.  The lifecycle itself is
+        non-throwing; the guard here keeps a future/injected implementation
+        from turning an optional ambient surface into a session boot failure.
+        """
+        if self._ambient_reply is not None:
+            return
+        if not self.session_id or self.session_dir is None:
+            return
+        try:
+            lifecycle = ReplyListenerLifecycle(
+                self.session_id,
+                self.session_dir,
+                self.needs_you,
+            )
+            self._ambient_reply = lifecycle
+            status = lifecycle.start()
+        except Exception:  # noqa: BLE001 -- ambient ingress may not block TUI boot
+            logger.warning("ambient reply listener lifecycle failed during boot", exc_info=True)
+            return
+        if not status.active:
+            logger.debug("ambient reply listener unavailable: %s", status.reason)
 
     def _history_store(self) -> PromptHistoryStore:
         """Lazily build the per-project prompt-history store (keyed to the
@@ -592,6 +728,7 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self.pending_directive = runtime.pending_directive
         self.mount_report = runtime.mount_report
         self.session_dir = runtime.session_dir()
+        self._start_ambient_reply_listener()
         if runtime.degraded_notice:
             self.startup_notices = (runtime.degraded_notice,)
         self._config_state = runtime.config_state()
@@ -807,6 +944,37 @@ class RealRuntimeAdapter(RuntimeAdapter):
             raise RewindError("session not started")
         await self._in_runtime(self._runtime.fork(checkpoint_id, ledger))
 
+    async def restore_checkpoint(self, checkpoint_id: str, ledger: Any, scope: str) -> Any:
+        """Restore code/conversation through the real kernel checkpoint seam."""
+        from ..kernel.rewind import RewindError, RestoreLedgerSnapshot
+
+        if self._runtime is None:
+            raise RewindError("session not started")
+        checkpoint = ledger.checkpoint_by_id(checkpoint_id)
+        if checkpoint is None:
+            raise RewindError(f"unknown checkpoint: {checkpoint_id}")
+        kept_turns_before = next(
+            (
+                index
+                for index, turn in enumerate(ledger.turns)
+                if turn.checkpoint.id == checkpoint_id
+            ),
+            len(ledger.turns),
+        )
+        visible_workspace_ids_before = tuple(
+            turn.checkpoint.workspace_id
+            for turn in ledger.turns[:kept_turns_before]
+            if turn.checkpoint.workspace_id
+        )
+        snapshot = RestoreLedgerSnapshot(
+            checkpoint,
+            kept_turns_before,
+            visible_workspace_ids_before,
+        )
+        return await self._in_runtime(
+            self._runtime.restore_checkpoint(checkpoint_id, snapshot, scope=scope)
+        )
+
     def answer_approval(self, ticket_id: str, choice: str) -> None:
         if self._runtime is None or self._runtime_loop is None:
             return
@@ -820,11 +988,12 @@ class RealRuntimeAdapter(RuntimeAdapter):
         self._runtime_loop.call_soon_threadsafe(_answer)
 
     def defer_approval(self, ticket_id: str, prompt: str, options: tuple[str, ...]) -> None:
-        """ctrl-y park through the kernel broker (its ``defer`` owns the
-        ticket's structured detail, parks the shared needs-you item, and
-        fires the decision Notification the UI already handles). The
-        ticket keeps its future — timing out to deny while the needs-you
-        item stays retro-answerable (ADR-0007 resolution 5)."""
+        """Ctrl-y parks through the broker and immediately denies this call.
+
+        The broker owns the structured detail and shared needs-you item.  Its
+        deny result unblocks the live tool call now; the queued decision stays
+        retro-answerable for later context injection.
+        """
         del prompt, options  # broker.defer reads the ticket's own detail
         if self._runtime is None or self._runtime_loop is None:
             return
@@ -862,6 +1031,23 @@ class RealRuntimeAdapter(RuntimeAdapter):
 
         self._runtime_loop.call_soon_threadsafe(_publish)
 
+    def publish_attention_acknowledged(self, payload: Mapping[str, Any]) -> None:
+        """Fire-and-forget ``attention:acknowledged`` on the runtime loop."""
+        if self._runtime is None or self._runtime_loop is None:
+            return
+        runtime = self._runtime
+        data = dict(payload)
+
+        def _publish() -> None:
+            try:
+                self._runtime_loop.create_task(  # type: ignore[union-attr]
+                    runtime.publish_attention_acknowledged(data)
+                )
+            except RuntimeError:
+                pass  # loop closing / closed between the check and the call
+
+        self._runtime_loop.call_soon_threadsafe(_publish)
+
     def shutdown(self) -> None:
         """Stop the runtime thread and WAIT for its cleanup (bounded).
 
@@ -877,6 +1063,16 @@ class RealRuntimeAdapter(RuntimeAdapter):
         calling into it then raised ``RuntimeError: Event loop is closed``
         and masked the real boot error. Guard the closed/finished loop.
         """
+        ambient_reply = self._ambient_reply
+        self._ambient_reply = None
+        if ambient_reply is not None:
+            try:
+                ambient_reply.close()
+            except Exception:  # noqa: BLE001 -- teardown must continue to runtime cleanup
+                logger.warning(
+                    "ambient reply listener lifecycle failed during teardown", exc_info=True
+                )
+
         loop, stop = self._runtime_loop, self._stop
         if loop is not None and stop is not None and not loop.is_closed():
             try:

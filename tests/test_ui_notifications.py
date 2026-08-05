@@ -402,6 +402,9 @@ def test_app_notify_attention_ladder_via_recording_driver(
     app._notify_attention("completion", 999.0, occasion="turn-9")
     assert bells == [1, 1]
     assert len(driver.writes) == 1
+    muted_record = app._attention.current(app.adapter.session_id)
+    assert muted_record is not None
+    assert muted_record.event_id.endswith(":completion:turn-9")
 
 
 def test_notify_attention_dedupes_the_same_occasion(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -432,6 +435,12 @@ def test_on_app_focus_acknowledges_open_attention(monkeypatch: pytest.MonkeyPatc
     driver = RecordingDriver()
     app._driver = driver  # type: ignore[assignment]
     monkeypatch.setattr(app, "bell", lambda: None)
+    acknowledged: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        app.adapter,
+        "publish_attention_acknowledged",
+        lambda payload: acknowledged.append(dict(payload)),
+    )
     app._notify_attention("error", occasion="err-1", detail="boom")
     session_id = app.adapter.session_id
     before = app._attention.current(session_id)
@@ -445,6 +454,17 @@ def test_on_app_focus_acknowledges_open_attention(monkeypatch: pytest.MonkeyPatc
     assert after is not None
     assert after.acknowledged
     assert driver.writes == ["\x1b]777;notify;;\x07"]
+    assert len(acknowledged) == 1
+    assert (
+        acknowledged[0].items()
+        >= {
+            "event_id": before.event_id,
+            "session_id": before.session_id,
+            "reason": "error",
+            "acknowledged": True,
+        }.items()
+    )
+    assert isinstance(acknowledged[0]["acknowledged_at"], float)
 
 
 def test_on_app_focus_with_nothing_open_is_a_safe_no_op() -> None:
@@ -489,6 +509,42 @@ def test_attention_center_bind_hydrates_and_persists_across_restart(tmp_path) ->
     assert third.current("s1").acknowledged is True  # type: ignore[union-attr]
 
 
+def test_two_prebound_centers_atomically_dedupe_the_same_transition(tmp_path) -> None:
+    first = AttentionCenter()
+    second = AttentionCenter()
+    # Both processes hydrate the same empty snapshot before either writes.
+    first.bind(tmp_path)
+    second.bind(tmp_path)
+
+    first_record, first_is_new = first.note("s1", "error", "same", detail="boom")
+    second_record, second_is_new = second.note("s1", "error", "same", detail="boom")
+
+    assert first_is_new is True
+    assert second_is_new is False
+    assert second_record == first_record
+
+
+def test_stale_center_cannot_revert_a_durable_acknowledgement(tmp_path) -> None:
+    first = AttentionCenter()
+    stale = AttentionCenter()
+    first.bind(tmp_path)
+    stale.bind(tmp_path)
+
+    original, _ = first.note("s1", "error", "first")
+    # Refresh the second center once, then let the first process acknowledge.
+    stale.note("s1", "error", "first")
+    assert first.acknowledge("s1") is not None
+
+    # A later unrelated transition from the formerly stale process must merge
+    # against disk, not replace the acknowledged row with its old snapshot.
+    stale.note("s1", "completion", "second")
+    assert stale._by_id[original.event_id].acknowledged is True
+
+    restarted = AttentionCenter()
+    restarted.bind(tmp_path)
+    assert restarted._by_id[original.event_id].acknowledged is True
+
+
 def test_attention_center_persist_failure_never_raises(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -499,7 +555,7 @@ def test_attention_center_persist_failure_never_raises(
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise OSError("disk is full")
 
-    monkeypatch.setattr(center._store, "save", _boom)  # type: ignore[union-attr]
+    monkeypatch.setattr(center._store, "record", _boom)  # type: ignore[union-attr]
     record, is_new = center.note("s1", "completion", "turn-1")  # must not raise
     assert is_new is True
     assert record.session_id == "s1"
@@ -568,6 +624,41 @@ def test_notify_attention_publishes_to_adapter_only_when_new(
 
     app._notify_attention("error", occasion="err-1", detail="boom")  # AC3: dedupe
     assert len(published) == 1
+
+
+def test_new_clarification_binds_event_to_exact_pending_decision(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from amplifier_app_tui.kernel.ambient import reply as ambient_reply
+
+    ambient_root = tmp_path / "ambient"
+    monkeypatch.setattr(ambient_reply, "default_ambient_root", lambda: ambient_root)
+    monkeypatch.setenv("AMPLIFIER_NOTIFY", "off")
+    adapter = DemoRuntimeAdapter(instant=True)
+    adapter.session_id = "s-1"
+    adapter.session_dir = tmp_path / "projects" / "project-a" / "sessions" / "s-1"
+    adapter.session_dir.mkdir(parents=True)
+    app = TuiApp(adapter)
+
+    app._notify_attention(
+        "awaiting_clarification",
+        occasion="decision-7",
+        detail="Which test label should I use?",
+    )
+
+    event_id = "s-1:awaiting_clarification:decision-7"
+    row = ambient_reply.CorrelationTable(ambient_root).resolve(event_id)
+    assert row is not None
+    assert (
+        row.items()
+        >= {
+            "event_id": event_id,
+            "session_id": "s-1",
+            "decision_id": "decision-7",
+            "session_dir": str(adapter.session_dir),
+            "project": "project-a",
+        }.items()
+    )
 
 
 # -- B7 gap 3: production error transition #1 -- a failed turn ---------------

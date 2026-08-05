@@ -13,8 +13,9 @@ bundle + its ``bundle.app`` overlays — via foundation's
 source that's stale in uv's *package* cache is genuinely re-fetched.
 
 Updating the app itself, or the whole Amplifier platform, is out of scope
-(see :func:`self_update_hint`) — that's ``git pull``/``uv sync`` or
-``uv tool upgrade``, not this command.
+(see :func:`self_update_hint`) — the app uses the canonical source installer
+(or ``git pull``/``uv sync`` for a development clone); the platform uses
+``uv tool upgrade amplifier``. Neither is this command.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from ..install_contract import APP_REPO_URL, SOURCE_INSTALL_COMMAND
 from .config import (
     DEFAULT_BUNDLE,
     SettingsPaths,
@@ -44,7 +46,6 @@ UNCHECKABLE_LABEL = "local/non-git sources skipped (no remote to compare)"
 # The three Amplifier packages the "Amplifier" table reports on, and where
 # their upstream lives. The app itself is git-hosted; core is the PyPI one.
 APP_PACKAGE = "amplifier-app-tui"
-APP_REPO_URL = "https://github.com/michaeljabbour/amplifier-app-tui"
 FOUNDATION_REPO_URL = "https://github.com/microsoft/amplifier-foundation"
 
 
@@ -309,7 +310,7 @@ async def check_packages() -> list[PackageStatus]:
 # --- app identity (verified, not hardcoded) + upgrade-path confirmation -----
 # D1/AC3: `update` and the upgrade docs must PROVE what's installed, not just
 # echo the static `__version__` string baked at build time -- and, when the
-# app itself was upgraded (via the README's `uv tool install --reinstall` /
+# app itself was upgraded (via the canonical source installer or
 # `git pull && uv sync`, both OUT of this command's scope), confirm it and say
 # what changed. See `self_update_hint` below for the paired guidance fix.
 
@@ -456,14 +457,12 @@ def describe_identity_change(previous: AppIdentity | None, current: AppIdentity)
     return f"upgraded · {previous.label()} → {current.label()}"
 
 
-# --- anchors include ref (tracked, not statically pinned) -------------------
+# --- anchors include ref (reviewed static pin) ------------------------------
 
-# Every live copy of the anchors include declares this ref. The wrapper tracks
-# foundation @main (a *floating* ref): bundle.md pins nothing statically — a
-# bare 40-hex SHA was tried and abandoned because GitHub stops serving a
-# non-tip SHA once foundation advances, which broke clean installs (see #96).
-# So "staleness" here means "the local anchors cache is behind upstream", which
-# `amplifier-tui update` refreshes; it is NOT a static-pin bump.
+# Every live copy declares the same full Foundation commit. Foundation's newer
+# git handler clones then checks out non-tip SHAs, so the historical #96
+# `clone --branch <sha>` limitation no longer applies. The outer pin and its
+# recursive source lock advance only in a reviewed app release.
 _ANCHORS_REF_RE = re.compile(
     r"git\+https://github\.com/microsoft/amplifier-foundation@([^\s#]+)#subdirectory=bundles/anchors"
 )
@@ -562,16 +561,18 @@ def _anchors_uri(ref: str) -> str:
 
 
 async def anchors_status(amplifier_home: Path | None = None) -> AnchorsStatus:
-    """Check the tracked anchors include against upstream (side-effect-light).
+    """Describe the Anchors include pin or compare a legacy moving ref.
 
-    The anchors bundle is composed via an *include*, and foundation's
-    ``check_bundle_status`` deliberately skips included-bundle URIs, so anchors
-    freshness is otherwise invisible to ``amplifier-tui update``. This checks
-    it directly via foundation's git source handler (an ``ls-remote`` compare
-    against the local cache). Offline → ``error`` set, ``has_update`` ``None``."""
+    Full SHAs are immutable and return without network access. The live compare
+    remains for a user-modified/legacy branch ref because Foundation's normal
+    bundle-status walk skips include URIs. Offline branch checks degrade to an
+    honest ``error`` with unknown freshness.
+    """
     ref = anchors_ref()
     if ref is None:
         return AnchorsStatus(ref=None, error="anchors include not found")
+    if _is_sha(ref):
+        return AnchorsStatus(ref=ref, has_update=False, cached_commit=ref)
     try:
         from amplifier_foundation.paths.resolution import parse_uri
         from amplifier_foundation.sources.git import GitSourceHandler
@@ -782,12 +783,12 @@ def self_update_hint(identity: AppIdentity | None = None) -> str:
     project happens to be in the CWD).
     """
     identity = identity or app_identity()
-    tool_install = f"uv tool install --reinstall git+{APP_REPO_URL}"
     if identity.source == "editable":
         app_line = "to update the app itself (dev checkout): `git pull && uv sync`"
     else:
         app_line = (
-            f"to update the app itself: `git pull && uv sync` (clone) or `{tool_install}` (tool)"
+            "to update the app itself: `git pull && uv sync` (clone) or "
+            f"`{SOURCE_INSTALL_COMMAND}` (source installer)"
         )
     return (
         f"{app_line}\n"

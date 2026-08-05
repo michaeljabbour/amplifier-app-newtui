@@ -2,12 +2,13 @@
 
 **Issue:** [#49](https://github.com/michaeljabbour/amplifier-app-tui/issues/49) — "Forge-driven
 capability test tier: validate the real TUI through a real terminal"
-**Status:** proposed · **Author:** backlog-attractor worker · **Date:** 2026-07-22
+**Status:** implemented in PR #94 (design PR #57; issue #49 closed) · **Author:** backlog-attractor worker · **Date:** 2026-07-22
 **Slug:** `forge-capability-tier`
 
-> This is a design/decision doc only. No code lands with it. All line citations were verified
-> against the read-only `origin/main` checkout at `/Users/michaeljabbour/dev/tui-wt/base` and
-> the forge helper at `~/.claude/skills/amplifier-skill-forge`.
+> This is the historical design/decision record; its implementation later landed in PR #94.
+> Line citations below describe the 2026-07-22 design-time snapshot, verified against the
+> read-only `origin/main` checkout at `/Users/michaeljabbour/dev/tui-wt/base` and the forge
+> helper at `~/.claude/skills/amplifier-skill-forge`.
 
 ---
 

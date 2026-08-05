@@ -53,7 +53,7 @@ def _stage_row(number: int, **over: str) -> list[str]:
     row = {
         "stage": str(number),
         "owner": f"owner-{number}",
-        "min_window_days": "0" if number == 5 else "1",
+        "min_window_days": "1",
         "entry_criteria": f"S{number}-entry",
         "exit_criteria": f"S{number}-exit",
         "tested_commit": "-",
@@ -147,8 +147,9 @@ def test_shipped_ledger_has_five_stages_with_owners_and_windows() -> None:
     assert sorted(stages) == [1, 2, 3, 4, 5]
     assert stages[1].owner == "MJ Jabbour"
     assert stages[2].owner == "Brian Krabach"
-    # AC1: every stage that can still run carries a >= 1 day window.
-    assert [stages[n].min_window_days for n in (1, 2, 3, 4)] == [1, 1, 1, 1]
+    assert stages[3].owner == "MJ Jabbour"
+    # AC1 is literal: all five stages carry a >= 1 day window.
+    assert [stages[n].min_window_days for n in (1, 2, 3, 4, 5)] == [1, 1, 1, 1, 1]
     assert all(s.decision == "pending" for s in stages.values())
 
 
@@ -187,6 +188,16 @@ def test_window_shorter_than_one_day_is_blocked(tmp_path: Path) -> None:
     )
     directory = _write(tmp_path, rows)
     assert "usage window not met: 0 of 1 day(s) elapsed" in _reasons(directory, 1)
+
+
+def test_zero_day_minimum_is_a_validation_error(tmp_path: Path) -> None:
+    rows = [_stage_row(n) for n in (1, 2, 3, 4)]
+    rows.append(_stage_row(5, min_window_days="0"))
+    problems = gate.validate(gate.load(_write(tmp_path, rows)))
+    assert any(
+        "stage 5: min_window_days is 0; every stage requires at least one day" in p
+        for p in problems
+    )
 
 
 def test_one_full_day_with_evidence_clears_the_gate(tmp_path: Path) -> None:
@@ -341,6 +352,23 @@ def test_stage_3_blocked_when_a_seat_has_no_tested_commit(tmp_path: Path) -> Non
     assert "seat-3 (cy) has no tested_commit recorded" in reasons
 
 
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("date", "seat-3 (cy) has no feedback date recorded"),
+        ("friction", "seat-3 (cy) has no friction report recorded"),
+        ("disposition_ref", "seat-3 (cy) has no disposition reference"),
+    ],
+)
+def test_stage_3_requires_a_complete_feedback_record(
+    tmp_path: Path, field: str, reason: str
+) -> None:
+    seats = _named_seats()
+    seats[2] = _named_seat("seat-3", "cy", **{field: "-"})
+    reasons = _reasons(_write(tmp_path, _through_stage_2(), feedback=seats), 3)
+    assert reason in reasons
+
+
 def test_stage_3_clears_with_three_dispositioned_seats(tmp_path: Path) -> None:
     assert _reasons(_write(tmp_path, _through_stage_2(), feedback=_named_seats()), 3) == []
 
@@ -355,7 +383,7 @@ def test_fewer_than_three_seats_is_a_validation_error(tmp_path: Path) -> None:
     assert any("stage 3 needs at least 3 seats" in p for p in problems)
 
 
-# -- AC5: `promote 4` is the replacement gate --------------------------------
+# -- AC5: stage 4 opens the final window; `promote 5` is replacement ----------
 
 
 def _through_stage_3() -> list[list[str]]:
@@ -381,15 +409,36 @@ def _named_seats() -> list[list[str]]:
     ]
 
 
-def test_replacement_gate_clears_when_the_record_is_clean(tmp_path: Path) -> None:
+def test_stage_4_gate_clears_to_open_the_final_observation_window(tmp_path: Path) -> None:
     directory = _write(tmp_path, _through_stage_3(), feedback=_named_seats())
     assert _reasons(directory, 4) == []
 
 
 def test_replacement_gate_refuses_while_any_release_blocker_is_open(tmp_path: Path) -> None:
-    blocker = ["BL-9", "3", "release-blocking", "open", "2026-08-02", "-", "hangs on resume"]
+    # Filed after stage 3 ended, so it does not retroactively invalidate the earlier
+    # promotions; it still blocks stage 4 and every future promotion.
+    blocker = ["BL-9", "3", "release-blocking", "open", "2026-08-07", "-", "hangs on resume"]
     directory = _write(tmp_path, _through_stage_3(), blockers=[blocker], feedback=_named_seats())
     assert "open release-blocking defect BL-9 (stage 3)" in _reasons(directory, 4)
+
+
+def _through_stage_4() -> list[list[str]]:
+    rows = [_promoted(n) for n in (1, 2, 3, 4)]
+    rows.append(
+        _stage_row(
+            5,
+            tested_commit="abc1234",
+            start_date="2026-08-09",
+            entry_evidence="stage 4 clear; both tools retained",
+            exit_evidence="one-day replacement observation complete",
+        )
+    )
+    return rows
+
+
+def test_stage_5_is_the_final_replacement_gate(tmp_path: Path) -> None:
+    directory = _write(tmp_path, _through_stage_4(), feedback=_named_seats())
+    assert _reasons(directory, 5) == []
 
 
 # -- the tool refuses to guess ------------------------------------------------
@@ -507,7 +556,7 @@ def test_the_placeholder_list_is_the_single_source_of_truth() -> None:
 
 def test_shipped_stage_owners_are_all_real_names() -> None:
     for row in gate.load().stages:
-        assert not gate.is_placeholder(row.owner), row
+        assert gate.is_named_person(row.owner), row
 
 
 def test_placeholder_owner_is_a_validation_error(tmp_path: Path) -> None:
@@ -536,6 +585,14 @@ def test_empty_owner_is_a_validation_error(tmp_path: Path) -> None:
     rows.insert(0, _stage_row(1, owner="   "))
     problems = gate.validate(gate.load(_write(tmp_path, rows)))
     assert any("owner '' is a placeholder" in p for p in problems)
+
+
+@pytest.mark.parametrize("role", ["team", "daily drivers", "stage-3 seats (see feedback.tsv)"])
+def test_role_label_cannot_own_a_stage(tmp_path: Path, role: str) -> None:
+    rows = [_stage_row(n) for n in (2, 3, 4, 5)]
+    rows.insert(0, _stage_row(1, owner=role))
+    problems = gate.validate(gate.load(_write(tmp_path, rows)))
+    assert any(f"owner {role!r} is a role label, not a named person" in p for p in problems)
 
 
 def test_every_unfilled_seat_is_named_in_the_refusal(tmp_path: Path) -> None:
@@ -752,6 +809,23 @@ def test_a_stage_3_promotion_without_named_seats_is_an_error(tmp_path: Path) -> 
     assert any("stage 3: promoted but seat-3 is unfilled" in p for p in problems)
 
 
+def test_hand_edited_promotion_cannot_bypass_an_existing_open_blocker(tmp_path: Path) -> None:
+    blocker = ["BL-1", "1", "release-blocking", "open", "2026-08-01", "-", "resume hangs"]
+    rows = [_promoted(1)] + [_stage_row(n) for n in (2, 3, 4, 5)]
+    problems = gate.validate(gate.load(_write(tmp_path, rows, blockers=[blocker])))
+    assert any(
+        "stage 1: promoted while release-blocking defect BL-1 was open" in p for p in problems
+    )
+
+
+def test_later_open_blocker_does_not_retroactively_invalidate_promotion(tmp_path: Path) -> None:
+    blocker = ["BL-2", "2", "release-blocking", "open", "2026-08-03", "-", "new failure"]
+    rows = [_promoted(1)] + [_stage_row(n) for n in (2, 3, 4, 5)]
+    ledger = gate.load(_write(tmp_path, rows, blockers=[blocker]))
+    assert gate.validate(ledger) == []
+    assert "open release-blocking defect BL-2 (stage 2)" in gate.promote_reasons(ledger, 2, TODAY)
+
+
 def test_a_promotion_with_a_fabricated_commit_is_an_error(tmp_path: Path) -> None:
     bad = _promoted(1)
     bad[5] = "latest main"
@@ -780,7 +854,7 @@ uv tool install git+https://github.com/microsoft/amplifier
 ```
 
 ```sh
-uv tool install --force git+https://github.com/michaeljabbour/amplifier-app-tui@<tested_commit>
+bash -o pipefail -c "curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/michaeljabbour/amplifier-app-tui/main/scripts/install.sh | bash -s -- --ref <tested_commit>"
 ```
 """
 
@@ -794,7 +868,7 @@ amplifier-tui = "amplifier_app_tui.main:main"
 
 GOOD_ADR = "# ADR-0008\n\n**Keep `amplifier-tui` as this repo's console script. Do not rename.**\n"
 
-GOOD_UPDATER = 'APP_REPO_URL = "https://github.com/michaeljabbour/amplifier-app-tui"\n'
+GOOD_INSTALL_CONTRACT = 'APP_REPO_URL = "https://github.com/michaeljabbour/amplifier-app-tui"\n'
 
 
 def _fake_repo(
@@ -803,7 +877,7 @@ def _fake_repo(
     readme: str = GOOD_README,
     pyproject: str = GOOD_PYPROJECT,
     adr: str | None = GOOD_ADR,
-    updater: str = GOOD_UPDATER,
+    install_contract: str = GOOD_INSTALL_CONTRACT,
     extra_py: str = "",
     extra_sh: str = "",
 ) -> Path:
@@ -816,7 +890,7 @@ def _fake_repo(
     (root / "pyproject.toml").write_text(pyproject)
     if adr is not None:
         (root / gate.ADR_PATH).write_text(adr)
-    (root / gate.UPDATER_PATH).write_text(updater)
+    (root / gate.INSTALL_CONTRACT_PATH).write_text(install_contract)
     (root / "src" / "amplifier_app_tui" / "kernel" / "extra.py").write_text(extra_py)
     (root / "scripts" / "extra.sh").write_text(extra_sh)
     return root
@@ -897,7 +971,7 @@ def test_rollback_catches_a_missing_rollback_section(tmp_path: Path) -> None:
 
 
 def test_rollback_catches_a_pin_that_points_at_the_wrong_repo(tmp_path: Path) -> None:
-    wrong = GOOD_README.replace("michaeljabbour/amplifier-app-tui@", "someone/else@")
+    wrong = GOOD_README.replace("michaeljabbour/amplifier-app-tui/main", "someone/else/main")
     results = _rollback(_fake_repo(tmp_path, readme=wrong))
     assert results["pinned-build rollback command is well-formed"].startswith("FAIL")
 

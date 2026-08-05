@@ -4,7 +4,7 @@ Esc while a store turn runs stops it at the next step boundary: the
 transcript gains the italic ``Interrupted. Goal: …`` recap with the
 ``✳ `` dimmer marker and the turn rule is cut dimmer with the
 ``· interrupted`` outcome; the checkpoint records
-``store refactor · interrupted`` and nothing ships.
+the original prompt and nothing ships.
 """
 
 from __future__ import annotations
@@ -58,7 +58,9 @@ async def test_esc_interrupts_running_turn_with_recap_and_interrupted_rule() -> 
         assert rule.label.endswith(" · interrupted")
         assert not rule.shipped  # dimmer label (spec §3: not shipped)
         checkpoint = app.reducer.ledger.checkpoints[-1]
-        assert checkpoint.label == "store refactor · interrupted"
+        # The pre-prompt checkpoint restores the exact prompt; interrupted
+        # status belongs to the completed turn rule, not the rewind payload.
+        assert checkpoint.label == BUILD_PROMPT
         assert not app.reducer.ledger.last_shipped  # no ▲ yield glyph
 
 

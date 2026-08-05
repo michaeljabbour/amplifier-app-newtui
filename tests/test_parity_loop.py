@@ -20,6 +20,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOL = REPO_ROOT / "pipelines" / "parity_loop.py"
+LEDGER_TOOL = REPO_ROOT / "pipelines" / "ledger.py"
+GENE_TRANSFER_DOT = REPO_ROOT / "pipelines" / "gene-transfer.dot"
 
 
 def _load() -> ModuleType:
@@ -143,6 +145,54 @@ def test_owner_can_end_the_run_before_any_clean_pass(loop: ModuleType, capsys) -
     out = capsys.readouterr().out.strip()
     assert out.startswith("DONE reason=owner-ended")
     assert "owner=mjabbour" in out
+
+
+@pytest.mark.parametrize("owner", ["", "-", "TBD", "team", "owner", "unknown", "?"])
+def test_placeholder_owner_cannot_end_run_at_write_time(loop: ModuleType, owner: str) -> None:
+    loop.record_pass("s1", "150")
+    before = loop.passes_file().read_bytes()
+
+    assert loop.end_run(owner, "forged stop") is None
+    assert loop.passes_file().read_bytes() == before
+    assert loop.run_ended_by() == ""
+
+
+def test_end_run_full_name_uses_unambiguous_note_format(loop: ModuleType, capsys) -> None:
+    row = loop.end_run("Michael Jabbour", "remaining gaps are deferred")
+
+    assert row is not None
+    assert row[6] == "owner=Michael Jabbour | remaining gaps are deferred"
+    assert loop._end_run_owner(row[6]) == "Michael Jabbour"
+    assert loop.run_ended_by() == row[6]
+    assert loop.main(["should-continue"]) == 0
+    assert capsys.readouterr().out.startswith("DONE reason=owner-ended")
+
+
+def test_legacy_single_token_owner_ended_note_remains_readable(loop: ModuleType) -> None:
+    loop.passes_file().write_text(
+        loop.PASSES_HEADER + "1\t2026-08-04\t-\towner-ended\t0\t-\towner=mjabbour legacy reason\n"
+    )
+
+    assert loop._end_run_owner(loop.read_passes()[0][6]) == "mjabbour"
+    assert loop.run_ended_by() == "owner=mjabbour legacy reason"
+
+
+def test_hand_edited_placeholder_owner_end_is_ignored_and_validation_flags_it(
+    loop: ModuleType, capsys
+) -> None:
+    loop.passes_file().write_text(
+        loop.PASSES_HEADER + "1\t2026-08-04\t-\towner-ended\t0\t-\towner=TBD | forged stop\n"
+    )
+
+    assert loop.run_ended_by() == ""
+    assert loop.unattributed_end_rows() == [loop.read_passes()[0]]
+    assert loop.main(["should-continue"]) == 0
+    assert capsys.readouterr().out.strip() == "CONTINUE clean_streak=0/3"
+
+    assert loop.main(["validate"]) == 1
+    output = capsys.readouterr().out.strip().splitlines()
+    assert output[0].startswith("pass=1\towner-ended\towner='TBD'")
+    assert output[-1] == "INVALID gates=0 unattributed=0 owner_ends_unattributed=1"
 
 
 # ------------------------------------------------- the counters stay separate
@@ -292,6 +342,147 @@ def test_cli_entrypoint_exit_codes(tmp_path: Path) -> None:
     assert proceed.stdout.strip().splitlines()[-1].startswith("PROCEED")
 
 
+def test_cli_entrypoint_refuses_placeholder_end_run_and_accepts_full_name(
+    tmp_path: Path,
+) -> None:
+    passes = tmp_path / "p.tsv"
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "PARITY_PASSES_FILE": str(passes),
+        "PARITY_GATES_FILE": str(tmp_path / "g.tsv"),
+    }
+    run = lambda *args: subprocess.run(  # noqa: E731
+        [sys.executable, str(TOOL), *args], capture_output=True, text=True, env=env
+    )
+
+    refused = run("end-run", "team", "ship it")
+    assert refused.returncode == 1
+    assert "placeholder owner refused" in refused.stderr
+    assert not passes.exists(), "a refused end-run must not write the pass artifact"
+
+    accepted = run("end-run", "Michael Jabbour", "remaining gaps deferred")
+    assert accepted.returncode == 0
+    assert "owner=Michael Jabbour | remaining gaps deferred" in accepted.stdout
+    assert run("should-continue").stdout.startswith("DONE reason=owner-ended")
+
+
+# ---------------------------------------- gene-transfer boundary recheck
+
+
+def _ledger_runner(loop: ModuleType, tmp_path: Path):
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "LEDGER_FILE": str(tmp_path / "ledger.tsv"),
+        "LEDGER_SOURCES_FILE": str(tmp_path / "ledger-sources.tsv"),
+        "PARITY_PASSES_FILE": str(loop.passes_file()),
+        "PARITY_GATES_FILE": str(loop.gates_file()),
+    }
+    return lambda *args: subprocess.run(  # noqa: E731
+        [sys.executable, str(LEDGER_TOOL), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+@pytest.mark.parametrize(
+    ("effective", "owner"),
+    [
+        ("pending", "-"),
+        ("rejected", "Michael Jabbour"),
+        ("deferred", "Michael Jabbour"),
+        ("already-covered", "Michael Jabbour"),
+        ("unattributed", "TBD"),
+        ("unknown-state", "Michael Jabbour"),
+    ],
+)
+def test_gene_transfer_boundary_blocks_nonaccepted_parity_states(
+    loop: ModuleType, tmp_path: Path, effective: str, owner: str
+) -> None:
+    run = _ledger_runner(loop, tmp_path)
+    assert run("add", "700", "direct-enqueue").returncode == 0
+    stored = "accepted" if effective == "unattributed" else effective
+    loop.gates_file().write_text(
+        loop.GATES_HEADER + f"700\tdirect-enqueue\t{stored}\t{owner}\t2026-08-05\ttest row\n"
+    )
+
+    selected = run("earliest-transferable")
+    assert selected.returncode == 1
+    assert selected.stdout.strip() == (f"BLOCKED issue=700 source=parity disposition={effective}")
+    rechecked = run("gate-transfer", "700")
+    assert rechecked.returncode == 1
+    assert rechecked.stdout.startswith("BLOCKED issue=700")
+
+
+def test_gene_transfer_boundary_blocks_direct_unknown_ledger_row(
+    loop: ModuleType, tmp_path: Path
+) -> None:
+    run = _ledger_runner(loop, tmp_path)
+    (tmp_path / "ledger.tsv").write_text("701\thand-edited\tnew\n")
+
+    selected = run("earliest-transferable")
+    assert selected.returncode == 1
+    assert selected.stdout.strip() == ("BLOCKED issue=701 source=unknown disposition=undecided")
+
+
+def test_gene_transfer_boundary_rechecks_accepted_before_code_changes(
+    loop: ModuleType, tmp_path: Path
+) -> None:
+    run = _ledger_runner(loop, tmp_path)
+    assert run("add", "702", "accepted-gap").returncode == 0
+    loop.register_gap("702", "accepted-gap")
+    assert loop.decide("702", "accepted", "Michael Jabbour", "build it") is not None
+
+    assert run("earliest-transferable").stdout.strip() == "702 accepted-gap"
+    proceed = run("gate-transfer", "702")
+    assert proceed.returncode == 0
+    assert proceed.stdout.strip() == ("PROCEED issue=702 source=parity disposition=accepted")
+
+    # The deterministic node checks again after selection; a changed decision
+    # cannot race through to BranchSetup.
+    assert loop.decide("702", "rejected", "Michael Jabbour", "changed call") is not None
+    blocked = run("gate-transfer", "702")
+    assert blocked.returncode == 1
+    assert blocked.stdout.strip().endswith("disposition=rejected")
+
+
+def test_explicit_non_parity_lane_is_deliberate_and_transferable(
+    loop: ModuleType, tmp_path: Path
+) -> None:
+    run = _ledger_runner(loop, tmp_path)
+    added = run("add-non-parity", "703", "authorized-backlog")
+
+    assert added.returncode == 0
+    assert added.stdout.strip() == "added 703 source=non-parity"
+    assert run("earliest-transferable").stdout.strip() == "703 authorized-backlog"
+    proceed = run("gate-transfer", "703")
+    assert proceed.returncode == 0
+    assert "source=non-parity disposition=not-applicable" in proceed.stdout
+
+
+def test_non_parity_marker_cannot_override_an_existing_parity_gate(
+    loop: ModuleType, tmp_path: Path
+) -> None:
+    run = _ledger_runner(loop, tmp_path)
+    loop.register_gap("704", "known-parity-gap")
+    assert run("add-non-parity", "704", "known-parity-gap").returncode == 0
+
+    blocked = run("gate-transfer", "704")
+    assert blocked.returncode == 1
+    assert blocked.stdout.strip() == ("BLOCKED issue=704 source=non-parity disposition=pending")
+
+
+def test_gene_transfer_graph_routes_blocked_rows_away_from_code_changes() -> None:
+    graph = GENE_TRANSFER_DOT.read_text()
+
+    assert graph.count("ledger.py earliest-transferable") == 2
+    assert "ledger.py gate-transfer" in graph
+    assert "SelectIssue -> RecheckOwnerGate" in graph
+    assert "RecheckOwnerGate -> BranchSetup" in graph
+    assert "RecheckOwnerGate -> owner_gate_blocked" in graph
+    assert "CheckLedger -> owner_gate_blocked" in graph
+
+
 # ------------------------------------------------- placeholder owner rejection
 #
 # A disposition is a PRODUCT-OWNER decision. A decision nobody signed is not a
@@ -436,7 +627,7 @@ def test_validate_flags_unattributed_rows_and_exits_nonzero(loop: ModuleType, ca
     ]
     assert loop.main(["validate"]) == 1
     out = capsys.readouterr().out.strip().splitlines()
-    assert out[-1] == "INVALID gates=2 unattributed=1"
+    assert out[-1] == "INVALID gates=2 unattributed=1 owner_ends_unattributed=0"
     assert out[0].startswith("321\t")
 
 

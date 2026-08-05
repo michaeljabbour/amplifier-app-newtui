@@ -8,7 +8,9 @@ bundle:
     default: streaming orchestrator, 300k context, standard tool roster with
     tool-delegate subagents, and six bundle-local agents) and overlays only
     what the TUI needs: a default provider so fresh installs boot, tool-mcp,
-    tool-team-pulse, hooks-notify-push, and the terminal response contract.
+    tool-team-pulse, and the terminal response contract. The app runtime owns
+    ntfy delivery from its durable attention events rather than mounting a
+    second raw-completion producer.
     The TUI renders everything itself; printing hooks composed in via
     anchors and the OSC/BEL-writing hooks-notify are suppressed at boot
     by the app kernel (built-in suppression list + the `hooks.suppress`
@@ -16,31 +18,14 @@ bundle:
     events.jsonl; the app's UIEvent log lives in ui-events.jsonl.
 
 includes:
-  # anchors, tracked at amplifier-foundation @main (fetchable, floating).
-  # A bare commit SHA was used previously, but GitHub stops serving it once
-  # foundation advances (its server won't fetch a non-tip SHA) — clean installs
-  # then failed with "Include Failed (skipping): amplifier-foundation". A tag
-  # would be reproducible, but foundation's release tags (v2.1.x) do NOT ship
-  # bundles/anchors — only @main carries it — so @main is the only fetchable
-  # source, and it matches how the shared registry resolves "anchors".
-  # anchors' own internal includes/modules already float @main too, so this is
-  # no less reproducible than before. Reproducible pinning is a foundation
-  # follow-up (tag the anchors bundle in a release).
-  # Re-checked 2026-08-02 (compliance B9 pinning pass): the latest foundation
-  # tag (v2.1.2) still 404s on bundles/anchors (confirmed via the GitHub
-  # contents API) -- @main remains the only correct choice here. Every OTHER
-  # bundle.md dependency below IS pinned as part of this same pass.
-  # Re-re-checked 2026-08-04 (compliance B9 gap-closure pass): foundation has
-  # published no new tag since the 2026-08-02 check (still v2.1.0/v2.1.1/
-  # v2.1.2 -- `git ls-remote --tags`); v2.1.2 still 404s on bundles/anchors
-  # via the contents API, main still 200s. Constraint unchanged; a bare-SHA
-  # re-pin was considered and rejected again -- it is exactly what #96
-  # reverted. Mitigated instead by tests/test_no_floating_dependencies.py
-  # (fails the build if any OTHER dependency starts floating; this include
-  # is the one justified, allow-listed exception) and
-  # scripts/verify_anchors_constraint.py (re-run that before ever touching
-  # this line -- it re-checks this exact constraint against the live repo).
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  # Anchors is pinned to the Foundation commit reviewed on 2026-08-05. The
+  # pinned Foundation dependency now resolves non-tip SHAs by cloning and
+  # checking out the commit (cold-cache integration-tested), so the historical
+  # @main exception is no longer necessary. Anchors' own descriptors still
+  # spell nested sources as @main; kernel/source_lock.py applies the packaged
+  # anchors-source-lock.json at both Foundation resolver seams (includes and
+  # modules), including source URIs nested in tool configuration.
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@dea5bd8fe11a7617dbcfc61c47f9f4f2fdc0b134#subdirectory=bundles/anchors/bundle.md
 
 providers:
   # anchors is provider-agnostic by design; this app hard-fails boot at zero
@@ -82,52 +67,21 @@ tools:
   # amplifier too. Missing local dirs are skipped, not fatal.
   # Pinned 2026-08-02 (compliance B9): amplifier-bundle-skills has a release
   # tag (v1.1.0, confirmed to still ship modules/tool-skills); the foundation
-  # skills/ scan below is pinned to foundation's latest tag (v2.1.2, confirmed
-  # to ship skills/) rather than @main -- consistent with the anchors policy
-  # above of never bare-SHA-pinning foundation. Trade-off: this misses any
-  # foundation skill added after v2.1.2 (currently: per-repo-conventions)
-  # until the pin is bumped.
+  # skills/ scan below stays on the reviewed v2.1.2 release artifact
+  # (confirmed to ship skills/) and is updated deliberately. amplifier-app-
+  # cli's packaged skill source is pinned independently: this exposes native
+  # first-party skills such as /goalify without importing or copying CLI
+  # runtime code. Workspace/user dirs follow app-cli's precedence contract.
   - module: tool-skills
     source: git+https://github.com/microsoft/amplifier-bundle-skills@v1.1.0#subdirectory=modules/tool-skills
     config:
       skills:
         - "git+https://github.com/microsoft/amplifier-foundation@v2.1.2#subdirectory=skills"
+        - "git+https://github.com/microsoft/amplifier-app-cli@5462f1e04099269e6487519676875fccd0980bd5#subdirectory=amplifier_app_cli/data/skills"
+        - ".amplifier/skills"
         - "~/.amplifier/skills"
 
 hooks:
-  # Unattended-session push notifications via ntfy.sh — a clean HTTP
-  # side-channel (aiohttp POST, no stdout, TUI-safe). No-op unless
-  # configured: without AMPLIFIER_NTFY_TOPIC in the environment, mount()
-  # disables itself with a log warning. listen_event is pinned to the raw
-  # orchestrator:complete event because the default (notify:turn-complete)
-  # is emitted by hooks-notify, which the app kernel suppresses at boot
-  # (raw OSC-777/BEL stdout corrupts the full-screen Textual TUI).
-  #
-  # B7 gap-closure (issue #47): this rung still fires off the raw
-  # orchestrator:complete event above, not the in-app AttentionRecord
-  # ladder (ui/notifications.py) — it has no acknowledgement channel back
-  # to the TUI (a different device's notification tray) and cannot dedupe
-  # by the record's event_id. What changed on THIS side: the kernel now
-  # ALSO emits an additive "attention:recorded" hook event (session_id,
-  # reason, event_id, detail, created_at — ui.notifications.
-  # attention_push_payload / kernel.runtime.RealRuntime.publish_attention)
-  # on the same hooks bus every time a new record is minted, carrying
-  # exactly the dedupe key a push destination needs. listen_event stays
-  # pinned to orchestrator:complete rather than switching to it: the
-  # module below ships from a DIFFERENT repository
-  # (microsoft/amplifier-bundle-notify) and this side cannot verify how
-  # its shipped v0.2.0 code would behave against a changed listen_event or
-  # an unfamiliar payload shape, so flipping it here would be an
-  # unverifiable, potentially session-breaking guess. Fully routing push
-  # through the record — listen_event: "attention:recorded" plus
-  # event-id-based dedup and an acknowledgement channel — is upstream
-  # work in that repository; see docs/SETTINGS.md "Attention notifications".
-  # Pinned 2026-08-02 (compliance B9) to amplifier-bundle-notify's release tag
-  # v0.2.0 (confirmed to still ship modules/hooks-notify-push).
-  - module: hooks-notify-push
-    source: git+https://github.com/microsoft/amplifier-bundle-notify@v0.2.0#subdirectory=modules/hooks-notify-push
-    config:
-      listen_event: "orchestrator:complete"
   # Redaction allowlist extension (module-native config; the module unions
   # user entries with its structural defaults). anchors' redaction behavior
   # scrubs live event payloads, and the delegate lifecycle carries its
@@ -160,9 +114,10 @@ system.md). Printing hooks and the OSC/BEL-writing `hooks-notify`
 composed in via anchors are stripped at boot by the app kernel's
 suppressed-hooks mechanism; `hooks-logging` mounts natively (it owns the
 canonical `events.jsonl`; the app's UIEvent log is `ui-events.jsonl`),
-and the wrapper's own `hooks-notify-push` (ntfy HTTP push) survives it —
-a stdout-free side-channel that no-ops unless `AMPLIFIER_NTFY_TOPIC` is
-set.
+while the app runtime's stdout-free attention destination consumes only
+normalized `attention:recorded` / `attention:acknowledged` events. It no-ops
+unless `AMPLIFIER_NTFY_TOPIC` is set and never mounts a second
+`orchestrator:complete` notification producer.
 
 A packaged copy ships inside the wheel at
 `amplifier_app_tui/data/bundles/tui.md` (lowest-precedence search

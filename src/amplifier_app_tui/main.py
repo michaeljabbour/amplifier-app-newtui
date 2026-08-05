@@ -94,30 +94,42 @@ async def _launch_tui(
     model: str | None = None,
 ) -> int:
     from .ui.app import TuiApp
+    from .ui.sessions_strip import ResumeSessionRequest
     from .ui.term_probe import patch_legacy_alt_named_keys, probe_kitty_protocol
 
     patch_legacy_alt_named_keys()
+    kitty_protocol = probe_kitty_protocol()
+    next_resume_id = resume_id
 
-    if demo:
-        from .ui.demo_wiring import DemoRuntimeAdapter
+    while True:
+        if demo:
+            from .ui.demo_wiring import DemoRuntimeAdapter
 
-        adapter = DemoRuntimeAdapter()
-    else:
-        from .ui.runtime_adapter import RealRuntimeAdapter
+            adapter = DemoRuntimeAdapter()
+        else:
+            from .ui.runtime_adapter import RealRuntimeAdapter
 
-        # Per-invocation overrides ride the same ephemeral seam as ``run``:
-        # --provider/--model mutate only the resolved in-memory plan; --mode
-        # seeds the interaction posture. None of them touch a settings scope.
-        adapter = RealRuntimeAdapter(
-            bundle=bundle,
-            resume_id=resume_id,
-            provider_override=provider,
-            model_override=model,
-        )
-    app = TuiApp(adapter, kitty_protocol=probe_kitty_protocol(), initial_mode=mode)
-    await app.run_async()
-    _print_resume_hint(getattr(adapter, "session_id", ""))
-    return app.return_code or 0
+            # Per-invocation overrides ride the same ephemeral seam as ``run``:
+            # --provider/--model mutate only the resolved in-memory plan; --mode
+            # seeds the interaction posture. None of them touch a settings scope.
+            adapter = RealRuntimeAdapter(
+                bundle=bundle,
+                resume_id=next_resume_id,
+                provider_override=provider,
+                model_override=model,
+            )
+        app = TuiApp(adapter, kitty_protocol=kitty_protocol, initial_mode=mode)
+        result = await app.run_async()
+        if isinstance(result, ResumeSessionRequest) and not demo:
+            # ``run_async`` returns only after Textual's shutdown completes;
+            # TuiApp.on_unmount has therefore stopped the current runtime.
+            # Relaunching here is the same fresh-adapter path used by the
+            # top-level ``resume SESSION_ID`` command, without asking a
+            # keyboard user to copy, quit, paste, and run it themselves.
+            next_resume_id = result.session_id
+            continue
+        _print_resume_hint(getattr(adapter, "session_id", ""))
+        return app.return_code or 0
 
 
 def _print_resume_hint(session_id: str) -> None:
@@ -398,6 +410,7 @@ async def _run_preflight(
     model: str | None,
     *,
     live_verify: bool = False,
+    strict: bool = False,
 ) -> Any:
     """Resolve mounts/providers for THIS launch, without creating a session.
 
@@ -407,10 +420,9 @@ async def _run_preflight(
     resolution. Returns a ``kernel.preflight.PreflightReport``.
 
     ``live_verify`` opts into the networked models-list check (S4 AC4
-    follow-up -- see ``kernel/preflight_verify.py``); ``_dry_run_preflight``
-    is the only caller that passes ``True`` today, since ``--dry-run`` is
-    the one moment a user has already signalled "I'm willing to wait for a
-    more thorough answer" (mirrors ``reset --dry-run``'s own preview shape).
+    follow-up -- see ``kernel/preflight_verify.py``). ``strict`` is the
+    bounded fail-closed tier used by explicit model overrides and diagnostic
+    surfaces; ordinary launches without an explicit model stay offline-fast.
     """
     from .kernel.preflight import run_preflight
 
@@ -419,6 +431,7 @@ async def _run_preflight(
         provider_override=provider,
         model_override=model,
         verify_live=live_verify,
+        strict=strict,
     )
 
 
@@ -473,7 +486,10 @@ def _preflight_or_none(
     right here, so the alternate screen is never touched when mounts/
     providers won't resolve.
     """
-    report = asyncio.run(_run_preflight(bundle, provider, model))
+    # A user-supplied model is the one ordinary-launch case where a live,
+    # bounded catalog probe is required: accepting an arbitrary string here
+    # only to fail after Textual takes over violates the preflight contract.
+    report = asyncio.run(_run_preflight(bundle, provider, model, strict=model is not None))
     if report.ok:
         return None
     _render_preflight_failure(report)
@@ -495,10 +511,9 @@ def _dry_run_preflight(
         click.echo("--demo has no real mounts/providers to preflight (fully offline)")
         return 0
     # --dry-run is the opt-in "I'll wait for a thorough answer" moment (see
-    # _run_preflight): it additionally confirms the selected model actually
-    # exists via a live, network-bound models-list call, not just the
-    # normal launch's fast/offline checks.
-    report = asyncio.run(_run_preflight(bundle, provider, model, live_verify=True))
+    # _run_preflight): strict mode confirms the selected model via a bounded
+    # catalog call and refuses inconclusive provider imports.
+    report = asyncio.run(_run_preflight(bundle, provider, model, strict=True))
     if not report.ok:
         _render_preflight_failure(report)
         return 1
@@ -1658,12 +1673,32 @@ session.add_command(resume, "resume")
 
 @main.command()
 def doctor() -> None:
-    """Setup checkup: prints the report, exit 1 when findings exist."""
-    from .commands.doctor import run_standalone
+    """Setup checkup: prints the report, exit 1 when findings exist.
+
+    The standalone command verifies the same bundle/provider launch path as
+    an interactive boot, before claiming the installation is ready.  That
+    closes the previous false-green case where a broken provider source or
+    missing credential was invisible because no live session existed yet.
+    """
+    from .commands.doctor import CheckResult, run_standalone
     from .kernel import updater
 
-    anchors = asyncio.run(updater.anchors_status())
-    raise SystemExit(run_standalone(anchors_status=anchors))
+    async def inspect_launch_readiness() -> tuple[Any, Any]:
+        anchors_task = asyncio.create_task(updater.anchors_status())
+        preflight_task = asyncio.create_task(_run_preflight(None, None, None, strict=True))
+        return await anchors_task, await preflight_task
+
+    anchors, preflight = asyncio.run(inspect_launch_readiness())
+    if preflight.ok:
+        target = " / ".join(value for value in (preflight.provider, preflight.model) if value)
+        message = "launch preflight ready" + (f" ({target})" if target else "")
+    else:
+        detail = str(preflight.error or "launch preflight failed")
+        if preflight.remediation:
+            detail = f"{detail} · {preflight.remediation}"
+        message = f"launch blocked: {detail}"
+    launch_check = CheckResult(name="launch-preflight", ok=bool(preflight.ok), message=message)
+    raise SystemExit(run_standalone(anchors_status=anchors, additional_checks=(launch_check,)))
 
 
 def _package_version(dist_name: str) -> str:
@@ -1810,9 +1845,9 @@ def reset(
       - secrets (keys) are cleared ONLY when named explicitly
       - never deletes outside the confirmed app home
 
-    ``--reinstall`` additionally repairs a wedged install by reinstalling the
-    tui tool (``uv tool install --reinstall``) after clearing — the ``uv
-    tool`` analogue of app-cli's reset-and-reinstall.
+    ``--reinstall`` additionally repairs a wedged install through the canonical
+    source installer after clearing — the tui analogue of app-cli's
+    reset-and-reinstall.
 
     \b
     Examples:
@@ -2742,15 +2777,45 @@ async def _interactive_provider_setup(
         source=None if target.installed else target.source_uri,
     )
     cfg_path = setup.write_provider_config(paths, scope, entry)
+    matrix = _persist_selected_model_matrix(
+        paths,
+        scope,
+        provider_name=instance_id or _default_instance_id(target),
+        module_id=target.module_id,
+        model=collected.get("default_model"),
+    )
     if written:
         click.echo(f"\nwrote {', '.join(written)} → {path}")
     click.echo(f"configured provider {instance_id or target.module_id} → {cfg_path}")
+    if matrix is not None:
+        click.echo(f"routing matrix → {matrix[0]}  ({scope}: {matrix[1]})")
     click.echo("run `amplifier-tui` to start a session.")
     return 0
 
 
 def _default_instance_id(choice) -> str:  # noqa: ANN001
     return choice.module_id.replace("provider-", "")
+
+
+def _persist_selected_model_matrix(
+    paths: Any,
+    scope: Literal["global", "project", "local"],
+    *,
+    provider_name: str,
+    module_id: str,
+    model: object,
+) -> tuple[str, Path] | None:
+    """Persist a same-named provider matrix when setup selected a model."""
+    if not isinstance(model, str) or not model.strip():
+        return None
+    from .kernel.model_routing import persist_model_routing_hint
+
+    return persist_model_routing_hint(
+        paths,
+        scope,
+        provider_name=provider_name,
+        module_id=module_id,
+    )
 
 
 def _requires_secret(choice, schema) -> bool:  # noqa: ANN001
@@ -2822,9 +2887,18 @@ def _init_non_interactive(
         source=None if target.installed else target.source_uri,
     )
     cfg_path = setup.write_provider_config(paths, scope, entry)
+    matrix = _persist_selected_model_matrix(
+        paths,
+        scope,
+        provider_name=instance_id or _default_instance_id(target),
+        module_id=target.module_id,
+        model=model,
+    )
     if written:
         click.echo(f"\nwrote {', '.join(written)} → {keys_path}")
     click.echo(f"configured provider {instance_id or target.module_id} → {cfg_path}")
+    if matrix is not None:
+        click.echo(f"routing matrix → {matrix[0]}  ({scope}: {matrix[1]})")
     return 0
 
 
@@ -2866,8 +2940,17 @@ def _init_basic_interactive(
         source=None if target.installed else target.source_uri,
     )
     cfg_path = setup.write_provider_config(paths, scope, entry)
+    matrix = _persist_selected_model_matrix(
+        paths,
+        scope,
+        provider_name=instance_id or _default_instance_id(target),
+        module_id=target.module_id,
+        model=model,
+    )
     click.echo(f"\nwrote {', '.join(written)} → {keys_path}")
     click.echo(f"configured provider {instance_id or target.module_id} → {cfg_path}")
+    if matrix is not None:
+        click.echo(f"routing matrix → {matrix[0]}  ({scope}: {matrix[1]})")
     click.echo("run `amplifier-tui` to start a session.")
     return 0
 
@@ -3193,8 +3276,19 @@ def _console_edit_provider(console: Any, choice: str, providers) -> None:  # noq
     paths = bundle_admin.settings_paths(None, None)
     setup.replace_provider_config(paths, target_entry.scope, entry)  # type: ignore[arg-type]
     model = collected.get("default_model", "")
+    matrix = None
+    if target_entry.primary:
+        matrix = _persist_selected_model_matrix(
+            paths,
+            target_entry.scope,  # type: ignore[arg-type]
+            provider_name=target_entry.name,
+            module_id=target_entry.module_id,
+            model=model,
+        )
     model_display = f" ({model})" if model else ""
     console.print(f"\n  [green]✓ Provider updated: {target_entry.name}{model_display}[/green]")
+    if matrix is not None:
+        console.print(f"  [green]✓ Routing matrix updated: {matrix[0]}[/green]")
 
 
 def _console_remove_provider(console: Any, choice: str, providers) -> None:  # noqa: ANN001
@@ -3246,8 +3340,19 @@ def _console_reorder_providers(console: Any, providers) -> None:  # noqa: ANN001
         console.print(f"  [red]Please enter all numbers from 1 to {len(providers)}.[/red]")
         return
     priorities = {providers[num - 1].key: pri for pri, num in enumerate(new_order, start=1)}
-    setup.set_provider_priorities(bundle_admin.settings_paths(None, None), priorities)
+    paths = bundle_admin.settings_paths(None, None)
+    setup.set_provider_priorities(paths, priorities)
+    primary = providers[new_order[0] - 1]
+    matrix = _persist_selected_model_matrix(
+        paths,
+        primary.scope,  # type: ignore[arg-type]
+        provider_name=primary.name,
+        module_id=primary.module_id,
+        model=primary.model,
+    )
     console.print("\n  [green]✓ Priorities updated.[/green]")
+    if matrix is not None:
+        console.print(f"  [green]✓ Routing matrix updated: {matrix[0]}[/green]")
 
 
 def _console_test_providers(console: Any, providers) -> None:  # noqa: ANN001
@@ -3398,11 +3503,21 @@ def provider_use(name: str) -> None:
     """Make NAME the primary provider (sets it to priority 1)."""
     from .kernel import bundle_admin, setup
 
-    target = setup.use_provider(bundle_admin.settings_paths(None, None), name)
+    paths = bundle_admin.settings_paths(None, None)
+    target = setup.use_provider(paths, name)
     if target is None:
         click.echo(f"unknown provider: {name} · run `amplifier-tui provider list`", err=True)
         raise SystemExit(1)
     click.echo(f"primary provider → {target.name}")
+    matrix = _persist_selected_model_matrix(
+        paths,
+        target.scope,  # type: ignore[arg-type]
+        provider_name=target.name,
+        module_id=target.module_id,
+        model=target.model,
+    )
+    if matrix is not None:
+        click.echo(f"routing matrix → {matrix[0]}  ({target.scope}: {matrix[1]})")
 
 
 @provider.command("remove")
@@ -3457,7 +3572,10 @@ def _notify_show() -> None:
     click.echo(f"  desktop rung   : {status.desktop_gate}  (from {status.desktop_gate_source})")
     click.echo(f"  suppress all   : {status.suppress}")
     click.echo("  push (ntfy):")
-    enabled = "(module default)" if status.push_enabled is None else str(status.push_enabled)
+    if status.suppress:
+        enabled = "False (globally suppressed)"
+    else:
+        enabled = "(module default)" if status.push_enabled is None else str(status.push_enabled)
     click.echo(f"    enabled  : {enabled}")
     click.echo(f"    topic    : {'configured' if status.topic else 'not set'}")
     click.echo(f"    server   : {status.push_server or '(default) https://ntfy.sh'}")
@@ -3476,8 +3594,8 @@ def _notify_test() -> int:
     settings = load_merged_settings(paths)
     env = notify_admin.resolved_environ(settings)
     # An awaiting-approval/clarification reason always qualifies and, when
-    # unfocused, opens the desktop rung -- so a test exercises the whole
-    # ladder the app would fire.
+    # unfocused, opens the desktop rung -- so this exercises both rungs in
+    # the app-owned local ladder. It deliberately does not send an ntfy push.
     rungs = notifications.notification_rungs("awaiting_approval", focused=False, environ=env)
     fired: list[str] = []
     if "bell" in rungs:
@@ -3698,7 +3816,7 @@ async def _update(check_only: bool, yes: bool, force: bool, verbose: bool) -> in
     # AC3: prove what's installed -- every invocation, regardless of mode --
     # and confirm it when it changed since the last invocation (typically
     # because the user followed this same command's own guidance below:
-    # `uv tool install --reinstall ...` / `git pull && uv sync`, both out of
+    # canonical source installer / `git pull && uv sync`, both out of
     # this command's own scope). Never blocks: identity/state I/O degrades
     # to "unknown"/silently-skipped rather than raising.
     current_identity = updater.app_identity()
@@ -4355,48 +4473,117 @@ def routing_create() -> None:
     click.echo(f"saved custom matrix '{name}' \u2192 {saved}")
 
 
+def _manage_matrix_target(
+    console: Any,
+    target: str,
+    names: list[str],
+    *,
+    prompt: str,
+    prefer_name: bool = False,
+) -> str | None:
+    """Resolve a matrix by the displayed row number or its exact name.
+
+    The management table is a numbered picker, so the prompt accepts what the
+    table shows: ``2`` and ``economy`` are both complete answers. The older
+    compact forms (``s2`` / ``v2``) remain routing-console shortcuts and pass
+    only their suffix into this helper.
+    """
+    if not target:
+        try:
+            target = click.prompt(prompt, default="", show_default=False).strip()
+        except (click.Abort, EOFError):
+            return None
+    if not target:
+        return None
+
+    def match_name() -> tuple[bool, str | None]:
+        # Preserve an exact spelling when two external sources happen to
+        # publish names that differ only by case. A mixed-case abbreviation is
+        # ambiguous and must not silently select whichever file loaded last.
+        if target in names:
+            return True, target
+        matches = [name for name in names if name.casefold() == target.casefold()]
+        if len(matches) == 1:
+            return True, matches[0]
+        if len(matches) > 1:
+            options = ", ".join(matches)
+            console.print(
+                f"ambiguous matrix name: {target} · use its displayed row number "
+                f"or exact spelling ({options})",
+                style="yellow",
+            )
+            return True, None
+        return False, None
+
+    if prefer_name:
+        handled, named = match_name()
+        if handled:
+            return named
+
+    try:
+        num = int(target)
+    except ValueError:
+        pass
+    else:
+        if num < 1 or num > len(names):
+            console.print(f"out of range: 1-{len(names)}", style="yellow")
+            return None
+        return names[num - 1]
+
+    handled, named = match_name()
+    if handled:
+        return named
+
+    available = ", ".join(names)
+    console.print(
+        f"unknown matrix: {target} · enter 1-{len(names)} or one of: {available}",
+        style="yellow",
+    )
+    return None
+
+
 def _manage_select(
     console: Any,
-    num_str: str,
+    target: str,
     names: list[str],
     paths: Any,
     scope: Literal["global", "project", "local"],
+    *,
+    prefer_name: bool = False,
 ) -> None:
     from .kernel import routing_admin
 
-    if not num_str:
-        num_str = click.prompt("matrix number", default="", show_default=False).strip()
-    try:
-        num = int(num_str)
-    except ValueError:
-        console.print(f"invalid number: {num_str}", style="yellow")
+    name = _manage_matrix_target(
+        console,
+        target,
+        names,
+        prompt="matrix number or name",
+        prefer_name=prefer_name,
+    )
+    if name is None:
         return
-    if num < 1 or num > len(names):
-        console.print(f"out of range: 1-{len(names)}", style="yellow")
-        return
-    name = names[num - 1]
     path = routing_admin.set_active_matrix(paths, name, scope)
     console.print(f"active routing matrix \u2192 {name}  ({scope}: {path})", style="green")
 
 
 def _manage_view(
     console: Any,
-    num_str: str,
+    target: str,
     names: list[str],
     matrices: dict[str, dict[str, Any]],
     settings: dict[str, Any],
+    *,
+    prefer_name: bool = False,
 ) -> None:
-    if not num_str:
-        num_str = click.prompt("matrix number", default="", show_default=False).strip()
-    try:
-        num = int(num_str)
-    except ValueError:
-        console.print(f"invalid number: {num_str}", style="yellow")
+    name = _manage_matrix_target(
+        console,
+        target,
+        names,
+        prompt="matrix number or name",
+        prefer_name=prefer_name,
+    )
+    if name is None:
         return
-    if num < 1 or num > len(names):
-        console.print(f"out of range: 1-{len(names)}", style="yellow")
-        return
-    name = names[num - 1]
     _render_matrix_waterfall(console, name, matrices[name], settings)
 
 
@@ -4454,27 +4641,55 @@ def _routing_console(scope: Literal["global", "project", "local"]) -> Any:
             _render_matrix_resolution(console, active, matrices[active], settings)
 
         console.print(
-            "\n  [s<N>] select matrix   [v<N>] view details   [c] create   [w] scope   [d] done"
+            "\n  [1/name] select matrix   [v1/v name] view details   "
+            "[c] create   [w] scope   [d] done",
+            markup=False,
         )
         try:
-            raw = click.prompt("choice", default="d", show_default=False).strip().lower()
+            raw = click.prompt("choice", default="d", show_default=False).strip()
         except (click.Abort, EOFError):
             return scope
-        if raw in ("d", "", "q"):
+
+        folded = raw.casefold()
+        name_keys = {name.casefold() for name in names}
+
+        # A displayed number or ordinary exact name is a complete selection.
+        # This precedes one-letter controls so even an externally supplied
+        # matrix named ``c`` or ``d`` remains selectable; colon-prefixed
+        # controls are the unambiguous escape hatch for that rare collision.
+        if raw.isdigit() or folded in name_keys:
+            _manage_select(console, raw, names, paths, scope)
+        elif folded in ("", "d", "q", "done", "quit", ":d", ":q", ":done", ":quit"):
             return scope
-        if raw == "c":
+        elif folded in ("c", "create", ":c", ":create"):
             try:
                 click.get_current_context().invoke(routing_create)
             except SystemExit:
                 pass
-        elif raw == "w":
+        elif folded in ("w", "scope", ":w", ":scope"):
             scope = _prompt_scope_change(console, scope)
-        elif raw.startswith("s"):
+        elif folded == "select" or folded.startswith("select "):
+            target = raw[len("select") :].strip()
+            _manage_select(console, target, names, paths, scope, prefer_name=True)
+        elif folded == "view" or folded.startswith("view "):
+            target = raw[len("view") :].strip()
+            _manage_view(console, target, names, matrices, settings, prefer_name=True)
+        elif folded == "s" or folded.startswith("s "):
             _manage_select(console, raw[1:].strip(), names, paths, scope)
-        elif raw.startswith("v"):
+        elif folded == "v" or folded.startswith("v "):
+            _manage_view(console, raw[1:].strip(), names, matrices, settings)
+        elif folded.startswith("s"):
+            # Backwards-compatible compact shortcut: s2 / santhropic.
+            _manage_select(console, raw[1:].strip(), names, paths, scope)
+        elif folded.startswith("v"):
+            # Backwards-compatible compact shortcut: v2 / vanthropic.
             _manage_view(console, raw[1:].strip(), names, matrices, settings)
         else:
-            console.print(f"unknown choice: {raw}", style="yellow")
+            available = ", ".join(names)
+            console.print(
+                f"unknown choice: {raw} · enter 1-{len(names)} or a matrix name ({available})",
+                style="yellow",
+            )
 
 
 @routing.command("manage")

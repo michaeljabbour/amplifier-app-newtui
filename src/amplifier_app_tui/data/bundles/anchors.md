@@ -2,17 +2,15 @@
 name: anchors
 version: 0.1.0
 description: >-
-  Packaged pointer to foundation's anchors bundle at the same pinned SHA the
+  Packaged pointer to foundation's anchors bundle at the same locked ref the
   tui wrapper composes — so `bundle.active: anchors` (a valid
   amplifier-app-cli default carried in shared settings) resolves here too.
   No app overlays: raw anchors; providers come from settings
   `config.providers` / keys.env.
 includes:
-  # Keep this ref in lockstep with the include in tui.md — a test pins
-  # the two together (test_kernel_session_config.py). Tracked at foundation
-  # @main: fetchable, and the only ref that ships bundles/anchors (release
-  # tags don't). A bare SHA becomes unfetchable once foundation advances.
-  - bundle: git+https://github.com/microsoft/amplifier-foundation@main#subdirectory=bundles/anchors/bundle.md
+  # Keep this full SHA in lockstep with tui.md and anchors-source-lock.json.
+  # The pinned Foundation resolver cold-loads non-tip commits correctly.
+  - bundle: git+https://github.com/microsoft/amplifier-foundation@dea5bd8fe11a7617dbcfc61c47f9f4f2fdc0b134#subdirectory=bundles/anchors/bundle.md
 ---
 
 # anchors (packaged pointer)

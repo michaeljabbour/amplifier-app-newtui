@@ -39,8 +39,11 @@ The design doc's eight required contract extensions map onto modules:
 - **E5** durable cross-process attention records -- already delivered by B7
   (:mod:`kernel.attention_store`); consumed by :mod:`.reply`.
 - **E6** cross-project session discovery -- :mod:`.discovery`.
-- **E7** authenticated inbound reply channel -- :mod:`.reply` (security core
-  built and tested; **no network listener ships** -- see that module).
+- **E7** authenticated inbound reply channel -- :mod:`.reply` provides the
+  security/submission core and loopback transport; :mod:`.reply_listener`
+  gives live TUI sessions startup/shutdown ownership plus private same-host
+  port discovery. **No remotely reachable listener ships** -- see those
+  modules.
 - **E8** Teams/Outlook connectors -- :mod:`.sources` ships the PORT and a
   working local implementation only. **A real connector cannot be built or
   verified offline**; that module says so and explains what is missing.
@@ -72,11 +75,24 @@ from .principal import LocalPrincipal, PrincipalLike, actor_for, session_authz_a
 from .reply import (
     CorrelationTable,
     DeviceRegistry,
+    LoopbackReplyListener,
+    NeedsYouReplySubmissionPort,
     PendingReply,
     ReplyChannel,
+    ReplyDeliveryStore,
     ReplyEnvelope,
     ReplyOutcome,
+    ReplySubmissionPort,
+    ReplySubmissionResult,
     sign_reply,
+)
+from .reply_listener import (
+    ReplyListenerEndpoint,
+    ReplyListenerLifecycle,
+    ReplyListenerRegistry,
+    ReplyListenerStatus,
+    discover_reply_endpoints,
+    discover_reply_endpoints_for_event,
 )
 from .sources import GrantedSource, LocalFileSource, SourceItem, SourcePort, SourceSendResult
 from .voice import (
@@ -109,12 +125,21 @@ __all__ = [
     "InterpretationError",
     "LocalFileSource",
     "LocalPrincipal",
+    "LoopbackReplyListener",
+    "NeedsYouReplySubmissionPort",
     "PendingReply",
     "PlanStep",
     "PrincipalLike",
     "ReplyChannel",
+    "ReplyDeliveryStore",
     "ReplyEnvelope",
+    "ReplyListenerEndpoint",
+    "ReplyListenerLifecycle",
+    "ReplyListenerRegistry",
+    "ReplyListenerStatus",
     "ReplyOutcome",
+    "ReplySubmissionPort",
+    "ReplySubmissionResult",
     "RequestFacts",
     "ReversibilityClass",
     "SessionDiscovery",
@@ -127,6 +152,8 @@ __all__ = [
     "authorize_source",
     "classify_request",
     "consume_grant",
+    "discover_reply_endpoints",
+    "discover_reply_endpoints_for_event",
     "discover_sessions",
     "parse_response",
     "parse_scope",

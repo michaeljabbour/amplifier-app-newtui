@@ -25,7 +25,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import unquote, urlsplit
 
 from amplifier_core import HookResult
@@ -52,6 +52,36 @@ class ImageAttachment:
             raise ValueError("image attachment exceeds the allowed size")
         if _detect_image_media_type(self.data) != self.media_type:
             raise ValueError("image attachment type does not match its content")
+
+
+def image_attachments_from_message(message: Any) -> tuple[ImageAttachment, ...]:
+    """Recover validated TUI image blocks from one persisted user message."""
+    if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+        return ()
+    attachments: list[ImageAttachment] = []
+    total = 0
+    for block in message["content"]:
+        if not isinstance(block, dict) or block.get("type") != "image":
+            continue
+        source = block.get("source")
+        if not isinstance(source, dict) or source.get("type") != "base64":
+            continue
+        media_type = source.get("media_type")
+        encoded = source.get("data")
+        if media_type not in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+            continue
+        if not isinstance(encoded, str):
+            continue
+        try:
+            data = base64.b64decode(encoded, validate=True)
+            attachment = ImageAttachment(data, cast(ImageMediaType, media_type))
+        except (binascii.Error, ValueError):
+            continue
+        total += len(data)
+        if len(attachments) >= MAX_CLIPBOARD_ATTACHMENTS or total > MAX_CLIPBOARD_TOTAL_BYTES:
+            return ()
+        attachments.append(attachment)
+    return tuple(attachments)
 
 
 def build_image_message(
@@ -320,6 +350,7 @@ def _detect_image_media_type(data: bytes) -> ImageMediaType | None:
 __all__ = [
     "ClipboardImageInjector",
     "ImageAttachment",
+    "image_attachments_from_message",
     "ImageMediaType",
     "MAX_CLIPBOARD_ATTACHMENTS",
     "MAX_CLIPBOARD_IMAGE_BYTES",

@@ -155,6 +155,9 @@ class FakeCommandContext:
     def compact_context(self, focus: str) -> None:
         self.calls.append(f"compact_context:{focus}")
 
+    def manage_goal(self, args: str) -> None:
+        self.calls.append(f"manage_goal:{args}")
+
     def clear_context(self) -> None:
         self.calls.append("clear_context")
 
@@ -176,8 +179,14 @@ class FakeCommandContext:
     def manage_mcp(self, args: str) -> None:
         self.calls.append(f"manage_mcp:{args}")
 
+    def run_mcp_prompt(self, server: str, prompt: str, args: str) -> None:
+        self.calls.append(f"run_mcp_prompt:{server}:{prompt}:{args}")
+
     def load_bundle(self, args: str) -> None:
         self.calls.append(f"load_bundle:{args}")
+
+    def load_module(self, args: str) -> None:
+        self.calls.append(f"load_module:{args}")
 
     def manage_config(self, args: str) -> None:
         self.calls.append(f"manage_config:{args}")

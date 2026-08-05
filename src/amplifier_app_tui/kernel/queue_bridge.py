@@ -40,6 +40,7 @@ CONSUMED_EVENTS: tuple[str, ...] = (
     "content_block:start",
     "content_block:end",
     "orchestrator:complete",
+    "orchestrator:goal_progress",
     # Turn / execution lifecycle
     "prompt:submit",
     "prompt:complete",

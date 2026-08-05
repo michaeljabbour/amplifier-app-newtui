@@ -10,20 +10,18 @@ focusable/activatable with keyboard AND mouse parity:
 - ``enter`` on the highlighted row -- or a CLICK on any row, highlighted
   or not (mirrors the palette's "click runs any row") -- activates it.
 - ``r`` on the highlighted row -- or a CLICK on any row's trailing
-  :data:`RESUME_GLYPH` -- requests its ready-to-run resume command (S2
-  gap 2, see :class:`SessionsStrip.ResumeRequested` below).
+  :data:`RESUME_GLYPH` -- resumes it through a clean app handoff (Samuel
+  S2 AC4; see :class:`SessionsStrip.ResumeRequested` below).
 
 Activating a session (Enter/click on the row body) posts
 :class:`SessionsStrip.SessionActivated`; the app opens that session's full
-detail (``session_ops_view.session_detail_spans``) rather than attempting
-an in-place resume -- the stored-session roster has always been read-only
-here: switching sessions is a fresh ``amplifier-tui resume SESSION_ID``,
-never a live teardown of the running one. ``r``/the glyph click instead
-post :class:`SessionsStrip.ResumeRequested`; the app answers with
-``session_ops_view.session_resume_spans`` -- the exact command, copied to
-the clipboard -- which reconciles "give me a keyboard path to resume" with
-that same read-only contract by making the fastest reachable thing a
-ready-to-paste command rather than a live teardown.
+detail (``session_ops_view.session_detail_spans``). ``r``/the glyph click
+instead post :class:`SessionsStrip.ResumeRequested`; the app exits with a
+:class:`ResumeSessionRequest`, letting the CLI composition root shut down the
+current runtime and relaunch through the existing ``resume SESSION_ID`` path.
+The equivalent CLI command is copied as a fallback, but keyboard resume is a
+completed action -- it no longer stops at "copy this command and run it
+somewhere else."
 
 Rows render as a small table (Session id · name/bundle or state ·
 msgs/turns/age · resume glyph), matching the CLI's ``_print_session_table``
@@ -39,6 +37,7 @@ column readable rather than crushing it to an ellipsis.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from rich.style import Style
 from rich.table import Table
@@ -69,7 +68,7 @@ cutover to derive)."""
 
 RESUME_GLYPH = "\u27f3"
 """Trailing per-row resume glyph (S2 gap 2) -- clicking it (see
-:meth:`_SessionRow.on_click`) requests that row's resume command directly,
+:meth:`_SessionRow.on_click`) requests that row's resume directly,
 giving mouse users the same "any row" reach the keyboard's ``r`` chord and
 the existing "click any row" activation already have, without a second
 select-then-act step."""
@@ -80,6 +79,20 @@ RESUME_COL_WIDTH = 3
 RESUME_HIT_WIDTH = RESUME_COL_WIDTH + 1
 """Trailing cells (glyph column + the grid's own 1-cell gap) that count as
 a resume click rather than a row-activate click."""
+
+
+@dataclass(frozen=True)
+class ResumeSessionRequest:
+    """Result returned by :class:`~amplifier_app_tui.ui.app.TuiApp` when
+    the user explicitly resumes a highlighted stored session.
+
+    Keeping this as a typed app result (rather than an exit code or mutable
+    global) gives the composition root one unambiguous handoff: the old app
+    has fully unmounted and shut down its adapter before a new adapter is
+    constructed for ``session_id``.
+    """
+
+    session_id: str
 
 
 def session_row_cells(
@@ -185,10 +198,10 @@ class SessionsStrip(VerticalScroll):
       select-then-activate step for the mouse, mirroring
       ``PaletteStrip``).
     - :class:`ResumeRequested` -- ``r`` on the highlighted row, or a click
-      on any row's trailing :data:`RESUME_GLYPH` (S2 gap 2). Read-only
-      stays read-only: the app answers with the exact ready-to-run
-      ``amplifier-tui resume SESSION_ID`` command (copied to the
-      clipboard), never an in-place teardown of the running session.
+      on any row's trailing :data:`RESUME_GLYPH` (S2 AC4). The app closes
+      the current runtime cleanly and returns :class:`ResumeSessionRequest`
+      so its composition root relaunches the selected stored session. The
+      equivalent CLI command is also copied as a fallback.
     - :class:`Closed` -- :meth:`close_strip` ran (Esc itself is resolved
       by the app via ``keymap.ESC_CHAIN``, never a local binding here --
       matches every other picker strip).
@@ -233,8 +246,8 @@ class SessionsStrip(VerticalScroll):
             super().__init__()
 
     class ResumeRequested(Message):
-        """A session's resume command was requested (``r``, or a click on
-        the row's :data:`RESUME_GLYPH`) -- S2 compliance gap 2."""
+        """A session resume was requested (``r``, or a click on the row's
+        :data:`RESUME_GLYPH`) -- Samuel S2 AC4."""
 
         def __init__(self, session_id: str) -> None:
             self.session_id = session_id
@@ -305,7 +318,7 @@ class SessionsStrip(VerticalScroll):
             self.post_message(self.SessionActivated(summary.session_id))
 
     def resume_selected(self) -> None:
-        """Post :class:`ResumeRequested` for the highlighted row (S2 gap 2)."""
+        """Post :class:`ResumeRequested` for the highlighted row (S2 AC4)."""
         summary = self.selected_summary
         if summary is not None:
             self.post_message(self.ResumeRequested(summary.session_id))
@@ -356,6 +369,7 @@ __all__ = [
     "RESUME_COL_WIDTH",
     "RESUME_GLYPH",
     "RESUME_HIT_WIDTH",
+    "ResumeSessionRequest",
     "SessionsStrip",
     "session_row_cells",
 ]

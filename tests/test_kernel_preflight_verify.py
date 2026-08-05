@@ -182,6 +182,29 @@ async def test_missing_third_party_dependency_degrades_not_blocks(
 
 
 @pytest.mark.asyncio
+async def test_strict_missing_third_party_dependency_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Diagnostic/explicit-override checks cannot call an unmounted provider
+    ready merely because the following real launch *might* self-heal it."""
+    _install_fake_module(
+        tmp_path,
+        monkeypatch,
+        "provider-missingdep-strict",
+        _MISSING_DEPENDENCY_PROVIDER,
+    )
+    result = await verify_provider(
+        module_id="provider-missingdep-strict",
+        config={},
+        model="",
+        strict=True,
+    )
+    assert result.ok is False
+    assert "some_definitely_missing_third_party_sdk_xyz" in (result.error or "")
+    assert result.remediation is not None and "without --model" in result.remediation
+
+
+@pytest.mark.asyncio
 async def test_no_mount_function_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -372,6 +395,40 @@ async def test_live_tier_passes_when_model_is_known(
         config={"list_models_return": ["model-a", "model-b"]},
         model="model-b",
         live_verify=True,
+    )
+    assert result == ProviderVerification(ok=True)
+
+
+@pytest.mark.asyncio
+async def test_strict_live_tier_fails_when_model_catalog_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty catalog is inconclusive, not proof an override is valid."""
+    _install_fake_module(tmp_path, monkeypatch, "provider-liveempty", _FLEX_PROVIDER)
+    result = await verify_provider(
+        module_id="provider-liveempty",
+        config={"list_models_return": []},
+        model="model-nope",
+        live_verify=True,
+        strict=True,
+    )
+    assert result.ok is False
+    assert "returned no models" in (result.error or "")
+    assert "model-nope" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_strict_live_tier_probes_even_when_provider_uses_its_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Doctor has no explicit override but still needs a real readiness signal."""
+    _install_fake_module(tmp_path, monkeypatch, "provider-livedefault", _FLEX_PROVIDER)
+    result = await verify_provider(
+        module_id="provider-livedefault",
+        config={"list_models_return": ["provider-default"]},
+        model="",
+        live_verify=True,
+        strict=True,
     )
     assert result == ProviderVerification(ok=True)
 

@@ -40,6 +40,8 @@ def test_required_actions_present_with_expected_keys() -> None:
     assert by_action["insert_newline"][0].keys == ("ctrl+j", "ctrl+enter")
     assert by_action["history_prev"][0].keys == ("up",)
     assert by_action["history_next"][0].keys == ("down",)
+    assert by_action["recall_queued"][0].keys == ("alt+up",)
+    assert by_action["recall_queued"][0].contexts == frozenset({"idle", "running"})
 
 
 def test_shift_enter_with_alt_enter_fallback() -> None:
@@ -79,6 +81,7 @@ def test_footer_hints_exact_spec_strings() -> None:
     assert FOOTER_HINTS["lane_focus"] == "esc back to parent · transcript is the subagent's own"
     assert FOOTER_HINTS["palette"] == "↑↓ select · enter run · esc close"
     assert FOOTER_HINTS["mention"] == "↑↓ select · enter/tab insert · esc close"
+    assert FOOTER_HINTS["needs_you"] == "enter submit · ctrl-j newline · esc cancel"
     assert FOOTER_HINTS["running"] == "esc interrupt · enter steer · shift+enter queue"
 
 
@@ -104,8 +107,8 @@ def test_help_rows_labels_come_from_the_keymap_live() -> None:
     hand-copied string that could drift from the bound chord."""
     rows = help_rows()
     assert dict(rows)["ctrl-r"] == (
-        "open the rewind picker to fork an earlier turn "
-        "(forking mid-turn interrupts the turn first)"
+        "open pre-prompt checkpoints to restore code, conversation, or both "
+        "(restoring mid-turn interrupts it first)"
     )
     for action in HELP_ACTIONS:
         assert hint_label(action) in dict(rows)
@@ -148,11 +151,12 @@ def test_action_help_has_an_entry_for_every_help_action() -> None:
 
 def test_open_rewind_help_states_mid_turn_interrupt_behavior() -> None:
     """S1 AC4: the static /keys help for rewind must say what happens to
-    an in-progress turn, not just what rewind restores -- forking mid-turn
-    interrupts the turn first and waits for it to close out before the
-    fork itself runs (app_support.confirm_fork's interrupt-then-fork,
+    an in-progress turn, not just what the checkpoint restores. Restoring
+    mid-turn interrupts the turn first and waits for it to close out before
+    the restore itself runs (app_support.confirm_restore's interrupt-first
+    path,
     exercised end-to-end by test_flow_rewind.py's
-    test_fork_during_running_turn_interrupts_then_forks).
+    test_restore_during_running_turn_interrupts_then_restores_before_prompt).
 
     Guards content, not just presence -- mirrors D3 AC4's
     test_clear_palette_desc_states_scope_per_d3_ac4 for /clear: a future
@@ -160,8 +164,9 @@ def test_open_rewind_help_states_mid_turn_interrupt_behavior() -> None:
     under-described one-liner that silently re-opens the gap.
     """
     help_text = ACTION_HELP["open_rewind"]
-    assert "interrupt" in help_text, "must say forking mid-turn interrupts the turn"
+    assert "interrupt" in help_text, "must say restoring mid-turn interrupts the turn"
     assert "mid-turn" in help_text, "must call out the in-progress-turn case explicitly"
+    assert {"code", "conversation", "both"} <= set(help_text.replace(",", "").split())
 
 
 def test_validate_rejects_conflicts() -> None:

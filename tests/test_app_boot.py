@@ -189,7 +189,7 @@ class _LateBaselineAdapter(DemoRuntimeAdapter):
 @pytest.mark.asyncio
 async def test_resume_cost_baseline_set_in_adapter_start_reaches_reducer() -> None:
     """Resumed prior spend learned in ``start()`` lands in footer $ and
-    checkpoint ``cost_at`` (spec §11: one session cost basis everywhere)."""
+    the pre-prompt checkpoint (spec §11: one session cost basis everywhere)."""
     adapter = _LateBaselineAdapter()
     app = TuiApp(adapter)
     async with app.run_test(size=(110, 40)) as pilot:
@@ -201,7 +201,10 @@ async def test_resume_cost_baseline_set_in_adapter_start_reaches_reducer() -> No
         )
         # Seed turn cost $0.17 on top of the $0.40 resumed baseline.
         assert app.reducer.session_cost == DEMO_SESSION_COST_START  # $0.57
-        assert app.ledger.checkpoints[0].cost_at == DEMO_SESSION_COST_START
+        # Checkpoints are now cut before prompt execution, so restoring this
+        # one returns to the resumed $0.40 boundary rather than retaining the
+        # seed turn's $0.17 of spend.
+        assert app.ledger.checkpoints[0].cost_at == adapter.session_cost_start
         assert app_support.footer_state(app).cost == DEMO_SESSION_COST_START
 
 

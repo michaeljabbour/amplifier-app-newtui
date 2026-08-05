@@ -4,28 +4,45 @@ A one-line orange strip docked ABOVE the composer, shown while a full
 next-turn message is queued (Shift+Enter while running, or a second
 steer):
 
-``▹ queued next: "<text>" · runs when this turn ends``
+``▹ queued next: "<text>" · runs when this turn ends · alt+↑ recall to steer``
 
-The strip is display-only: the SteeringQueue owns the state, the footer
-shows the ``· q1`` badge, and the app clears the strip when the queued
-message is picked up at turn end.
+The SteeringQueue owns the state and the footer shows the ``· q1`` badge.
+Clicking the strip (or pressing Alt+Up) recalls the exact text into an empty
+composer, where Enter can steer the current turn without retyping it.
 """
 
 from __future__ import annotations
 
 from rich.text import Text
+from textual import events
+from textual.message import Message
 from textual.widgets import Static
 
 from ..model.blocks import GLYPH_QUEUED
 
+RECALL_HINT = "alt+↑ recall to steer"
+QUEUED_PREVIEW_CHARS = 120
+
+
+def _queued_preview(text: str) -> str:
+    """One bounded line for the strip; the queue retains the full payload."""
+    compact = " ".join(text.split())
+    if len(compact) <= QUEUED_PREVIEW_CHARS:
+        return compact
+    return compact[: QUEUED_PREVIEW_CHARS - 1].rstrip() + "…"
+
 
 def queued_text(text: str) -> str:
-    """Exact strip text: ``▹ queued next: "<text>" · runs when this turn ends``."""
-    return f'{GLYPH_QUEUED} queued next: "{text}" · runs when this turn ends'
+    """Queued message plus the visible, keyboard-reachable recall action."""
+    preview = _queued_preview(text)
+    return f'{GLYPH_QUEUED} queued next: "{preview}" · runs when this turn ends · {RECALL_HINT}'
 
 
 class QueuedStrip(Static):
     """The queued-next-message strip (orange, bordered, above composer)."""
+
+    class RecallRequested(Message):
+        """Click requested the same recall action as Alt+Up."""
 
     DEFAULT_CSS = """
     QueuedStrip {
@@ -64,5 +81,10 @@ class QueuedStrip(Static):
         self.update(Text(""))
         self.display = False
 
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        if self._queued is not None:
+            self.post_message(self.RecallRequested())
 
-__all__ = ["QueuedStrip", "queued_text"]
+
+__all__ = ["QUEUED_PREVIEW_CHARS", "RECALL_HINT", "QueuedStrip", "queued_text"]

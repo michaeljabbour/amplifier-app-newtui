@@ -16,8 +16,9 @@ inverse of app-cli's default ``--preserve`` view but identical to its
 (``cache``, ``registry``) — the same net effect as app-cli's safe default,
 which preserves everything else.
 
-Deliberately NOT ported (see ``.ai/worker_report.md``): ``uv cache clean`` +
-``uv tool uninstall/install`` (tui ships differently), the interactive
+Deliberately NOT ported (see ``.ai/worker_report.md``): destructive ``uv cache clean`` +
+``uv tool uninstall/install`` churn (the optional repair path uses the same verified source
+installer as onboarding), the interactive
 checklist TUI, app-cli's ``--full`` nuke option, and its dynamic ``other``
 sweep of uncategorized files — this cleaner is allowlist-only for safety and
 never deletes a path it wasn't explicitly told to.
@@ -35,6 +36,8 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from ..install_contract import APP_INSTALL_URI, source_install_argv
 
 
 @dataclass(frozen=True)
@@ -297,13 +300,15 @@ def _remove(path: Path) -> None:
         path.unlink()
 
 
-DEFAULT_INSTALL_SOURCE = "git+https://github.com/michaeljabbour/amplifier-app-tui"
+DEFAULT_INSTALL_SOURCE = APP_INSTALL_URI
 """Default source for ``reset --reinstall`` — the tui git repo. Override with
 ``--install-source .`` from a clone, or a fork URL."""
 
 
 def reinstall_command(source: str = DEFAULT_INSTALL_SOURCE) -> list[str]:
-    """The ``uv`` argv that reinstalls the tui tool from *source* (pure)."""
+    """Reinstall argv: canonical bootstrap by default, explicit source for developers."""
+    if source == DEFAULT_INSTALL_SOURCE:
+        return source_install_argv()
     return ["uv", "tool", "install", "--reinstall", source]
 
 
@@ -321,7 +326,7 @@ def reinstall_tool(source: str = DEFAULT_INSTALL_SOURCE) -> tuple[bool, str]:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except FileNotFoundError:
-        return (False, "uv not found on PATH — run manually: " + " ".join(cmd))
+        return (False, f"{cmd[0]} not found on PATH — run manually: " + " ".join(cmd))
     except Exception as error:  # noqa: BLE001 — recovery must never crash the reset
         return (False, f"reinstall could not run ({error}); run manually: " + " ".join(cmd))
     if proc.returncode != 0:

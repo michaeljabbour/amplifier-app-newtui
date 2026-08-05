@@ -1,16 +1,16 @@
-"""Rewind picker overlay strip (DESIGN-SPEC §9, §2 overlay strips).
+"""Checkpoint restore picker (DESIGN-SPEC §9, §2 overlay strips).
 
 A bordered orange strip docked ABOVE the composer, opened by ctrl-r /
 ``/rewind`` / clicking a turn rule:
 
-``‹ rewind · pick a turn · turn N · $X.XX · <label> › [enter fork] [esc close]``
+``‹ checkpoint · before turn N · <prompt> › [code + conversation] [enter restore]``
 
 - ``‹`` / ``›`` (click or ``←``/``→``) navigate checkpoints, clamped at
   the ends (mockup ``Math.max/Math.min`` — no wrap-around).
-- ``enter fork`` (chip, bright on bg-tab; Enter or click) posts
-  :class:`RewindStrip.ForkRequested` with the current checkpoint id —
-  the app performs the actual session fork (confirm-then-trim,
-  ADR-0007) and only then trims the transcript.
+- ``↑`` / ``↓`` select Restore both, Conversation only, or Code only.
+- ``enter restore`` posts :class:`RewindStrip.ForkRequested` with the
+  checkpoint id and selected scope. The legacy message name remains as a
+  compatibility seam; the operation is a pre-prompt restore.
 - ``esc close`` (dimmer; Esc or click) posts :class:`RewindStrip.Closed`.
 
 The strip hides itself after fork/close.
@@ -19,6 +19,7 @@ The strip hides itself after fork/close.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 from textual import events
 from textual.binding import Binding
@@ -29,8 +30,14 @@ from textual.widgets import Static
 from ..model.blocks import GLYPH_REWIND_LEFT, GLYPH_REWIND_RIGHT
 from ..model.turn import Checkpoint
 
-FORK_HINT = "enter fork"
+FORK_HINT = "enter restore"
 CLOSE_HINT = "esc close"
+RestoreScope = Literal["both", "conversation", "code"]
+RESTORE_SCOPES: tuple[tuple[RestoreScope, str], ...] = (
+    ("both", "code + conversation"),
+    ("conversation", "conversation only"),
+    ("code", "code only"),
+)
 
 
 def rewind_label(checkpoint: Checkpoint) -> str:
@@ -40,7 +47,7 @@ def rewind_label(checkpoint: Checkpoint) -> str:
     marker reads legibly (S5 discoverability: users could not tell what
     ``t3`` meant).
     """
-    return f"turn {checkpoint.turn_id} · ${checkpoint.cost_at:.2f} · {checkpoint.label}"
+    return f"before turn {checkpoint.turn_id} · ${checkpoint.cost_at:.2f} · {checkpoint.label}"
 
 
 def rewind_line(checkpoint: Checkpoint) -> str:
@@ -51,7 +58,7 @@ def rewind_line(checkpoint: Checkpoint) -> str:
     shows the currently selected turn — flanked by the ‹ › nav glyphs and
     the ``enter fork`` / ``esc close`` chips the strip composes alongside.
     """
-    return f"rewind · pick a turn · {rewind_label(checkpoint)}"
+    return f"checkpoint · pick a prompt · {rewind_label(checkpoint)}"
 
 
 class RewindStrip(Horizontal):
@@ -60,7 +67,7 @@ class RewindStrip(Horizontal):
     Open with :meth:`show_checkpoints` (defaults to the newest
     checkpoint, or the clicked rule's). Posts:
 
-    - :class:`ForkRequested` — Enter / ``enter fork`` chip click.
+    - :class:`ForkRequested` — Enter / ``enter restore`` chip click.
     - :class:`Closed` — Esc / ``esc close`` click.
     """
 
@@ -94,7 +101,9 @@ class RewindStrip(Horizontal):
     BINDINGS = [
         Binding("left", "prev", "‹ ›", show=False),
         Binding("right", "next", "‹ ›", show=False),
-        Binding("enter", "fork", "enter fork", show=False),
+        Binding("up", "scope_prev", "restore mode", show=False),
+        Binding("down", "scope_next", "restore mode", show=False),
+        Binding("enter", "fork", "enter restore", show=False),
         # No local escape binding: Esc must bubble to the app so it resolves
         # via keymap.ESC_CHAIN (spec §5 — lane-focus/palette close before
         # rewind even while this strip holds keyboard focus). The chain
@@ -102,10 +111,11 @@ class RewindStrip(Horizontal):
     ]
 
     class ForkRequested(Message):
-        """The user asked to fork from a checkpoint (Enter / chip click)."""
+        """The user asked to restore a checkpoint (legacy message name)."""
 
-        def __init__(self, checkpoint_id: str) -> None:
+        def __init__(self, checkpoint_id: str, scope: RestoreScope = "both") -> None:
             self.checkpoint_id = checkpoint_id
+            self.scope = scope
             super().__init__()
 
     class Closed(Message):
@@ -129,11 +139,13 @@ class RewindStrip(Horizontal):
         super().__init__(id=id)
         self._checkpoints: tuple[Checkpoint, ...] = ()
         self._index = 0
+        self._scope_index = 0
 
     def compose(self):
         yield Static(GLYPH_REWIND_LEFT, id="rewind-prev")
         yield Static("", id="rewind-label")
         yield Static(GLYPH_REWIND_RIGHT, id="rewind-next")
+        yield Static("", id="rewind-scope")
         yield Static(FORK_HINT, id="rewind-fork")
         yield Static(CLOSE_HINT, id="rewind-close")
 
@@ -159,6 +171,14 @@ class RewindStrip(Horizontal):
         current = self.current
         return rewind_line(current) if current is not None else ""
 
+    @property
+    def scope(self) -> RestoreScope:
+        return RESTORE_SCOPES[self._scope_index][0]
+
+    @property
+    def scope_text(self) -> str:
+        return f"↑↓ {RESTORE_SCOPES[self._scope_index][1]}"
+
     def show_checkpoints(self, checkpoints: Sequence[Checkpoint], index: int | None = None) -> None:
         """Open the picker on *checkpoints* (newest selected by default).
 
@@ -171,6 +191,7 @@ class RewindStrip(Horizontal):
             return
         last = len(self._checkpoints) - 1
         self._index = last if index is None else max(0, min(last, index))
+        self._scope_index = 0
         self._refresh_label()
         self.display = True
         self.focus()
@@ -198,13 +219,18 @@ class RewindStrip(Horizontal):
         self._index = max(0, min(len(self._checkpoints) - 1, self._index + delta))
         self._refresh_label()
 
+    def nav_scope(self, delta: int) -> None:
+        """Move through restore modes, clamped at both ends."""
+        self._scope_index = max(0, min(len(RESTORE_SCOPES) - 1, self._scope_index + delta))
+        self._refresh_label()
+
     def fork(self) -> None:
         """Request the fork for the current checkpoint and close the strip."""
         current = self.current
         if current is None:
             return
         self.display = False
-        self.post_message(self.ForkRequested(current.id))
+        self.post_message(self.ForkRequested(current.id, self.scope))
 
     def close_strip(self) -> None:
         self.display = False
@@ -227,6 +253,12 @@ class RewindStrip(Horizontal):
     def action_next(self) -> None:
         self.nav(1)
 
+    def action_scope_prev(self) -> None:
+        self.nav_scope(-1)
+
+    def action_scope_next(self) -> None:
+        self.nav_scope(1)
+
     def action_fork(self) -> None:
         self.fork()
 
@@ -243,6 +275,9 @@ class RewindStrip(Horizontal):
             self.nav(-1)
         elif widget.id == "rewind-next":
             self.nav(1)
+        elif widget.id == "rewind-scope":
+            delta = 1 if self._scope_index < len(RESTORE_SCOPES) - 1 else -self._scope_index
+            self.nav_scope(delta)
         elif widget.id == "rewind-fork":
             self.fork()
         elif widget.id == "rewind-close":
@@ -253,12 +288,15 @@ class RewindStrip(Horizontal):
     def _refresh_label(self) -> None:
         if self.is_mounted:
             self.query_one("#rewind-label", Static).update(self.label_text)
+            self.query_one("#rewind-scope", Static).update(self.scope_text)
 
 
 __all__ = [
     "CLOSE_HINT",
     "FORK_HINT",
+    "RESTORE_SCOPES",
     "RewindStrip",
+    "RestoreScope",
     "rewind_label",
     "rewind_line",
 ]

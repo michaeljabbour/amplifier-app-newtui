@@ -114,6 +114,12 @@ KEYMAP: tuple[Binding, ...] = (
     _b("history_next", ("down",), "↓", frozenset({"idle", "running"})),
     _b("queue_message", ("shift+enter",), "shift+enter", NO_APPROVAL),
     _b("queue_message", ("alt+enter",), "alt+enter", NO_APPROVAL, fallback=True),
+    # Normally the next-turn slot drains as the active turn settles.  It is
+    # intentionally preserved when the composer already contains a draft;
+    # in that recovery state the app is idle but the visible q1/queued strip
+    # still promises this recall action.  Keep the same chord live in both
+    # contexts so the user can clear/park the draft and recover the queue.
+    _b("recall_queued", ("alt+up",), "alt+↑", frozenset({"idle", "running"})),
     # Mode & permission cycles (independent controls, ADR-0005 amendment).
     _b("cycle_mode", ("shift+tab",), "shift+tab", NO_APPROVAL),
     _b("cycle_permission", ("ctrl+p",), "ctrl-p", NO_APPROVAL),
@@ -177,13 +183,15 @@ KEYMAP: tuple[Binding, ...] = (
     _b("focus_lane", ("enter",), "enter", _LANES),
     _b("rewind_prev", ("left",), "‹ ›", _REWIND),
     _b("rewind_next", ("right",), "‹ ›", _REWIND),
-    _b("rewind_fork", ("enter",), "enter fork", _REWIND),
+    _b("rewind_scope_prev", ("up",), "↑↓ mode", _REWIND),
+    _b("rewind_scope_next", ("down",), "↑↓ mode", _REWIND),
+    _b("rewind_fork", ("enter",), "enter restore", _REWIND),
     _b("sessions_up", ("up",), "↑↓ select", _SESSIONS),
     _b("sessions_down", ("down",), "↑↓ select", _SESSIONS),
     _b("sessions_activate", ("enter",), "enter open", _SESSIONS),
-    # Keyboard resume (S2 gap 2): read-only stays read-only -- this
-    # surfaces the exact ready-to-run resume command rather than an
-    # in-place teardown (SessionsStrip.ResumeRequested docstring).
+    # Keyboard resume (Samuel S2 AC4): the selected row requests a clean
+    # shutdown-and-relaunch through the existing resume path. Enter remains
+    # the distinct inspect/copy-details action.
     _b("sessions_resume", ("r",), "r resume", _SESSIONS),
     _b("evidence_prev", ("left",), "←/→", _EVIDENCE),
     _b("evidence_next", ("right",), "←/→", _EVIDENCE),
@@ -251,6 +259,7 @@ FOOTER_HINTS: dict[str, str] = {
     "palette": "↑↓ select · enter run · esc close",
     "mention": "↑↓ select · enter/tab insert · esc close",
     "sessions": "↑↓ select · enter open · r resume · esc close",
+    "needs_you": "enter submit · ctrl-j newline · esc cancel",
     "running": "esc interrupt · enter steer · shift+enter queue",
     "idle": "",
 }
@@ -298,6 +307,7 @@ HELP_ACTIONS: tuple[str, ...] = (
     "insert_newline",
     "history_prev",
     "queue_message",
+    "recall_queued",
     "cycle_mode",
     "cycle_permission",
     "cycle_effort",
@@ -331,6 +341,7 @@ ACTION_HELP: dict[str, str] = {
     "insert_newline": "add a newline without sending",
     "history_prev": "recall an earlier prompt (↓ for newer / your current draft)",
     "queue_message": "queue a full next turn while one runs (alt+enter on legacy terminals)",
+    "recall_queued": "recall the queued next turn so Enter can steer with it now",
     "cycle_mode": "cycle posture: chat → plan → brainstorm → build → auto",
     "cycle_permission": "show the current trust posture",
     "cycle_effort": "cycle reasoning-effort tier (none…xhigh)",
@@ -340,7 +351,7 @@ ACTION_HELP: dict[str, str] = {
     "toggle_thinking": "show/hide the live thinking box while a turn runs",
     "show_ledger": "print the session outcome ledger",
     "show_needs_you": "open deferred decisions",
-    "open_rewind": "open the rewind picker to fork an earlier turn (forking mid-turn interrupts the turn first)",
+    "open_rewind": "open pre-prompt checkpoints to restore code, conversation, or both (restoring mid-turn interrupts it first)",
     "return_to_answer": "jump back to the current/most-recent turn's final answer",
     "plan_drilldown": "cycle the plan panel's row window",
     "toggle_plan_overflow": "expand or collapse the plan panel's hidden rows",

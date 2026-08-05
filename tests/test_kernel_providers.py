@@ -90,11 +90,20 @@ def test_has_configured_provider_env_credential_counts(tmp_path: Path, monkeypat
     assert setup.has_configured_provider(tmp_path / "proj", tmp_path / "home")
 
 
-def test_has_configured_provider_keys_env_credential_counts(tmp_path: Path) -> None:
+def test_has_configured_provider_nondefault_key_alone_needs_onboarding(tmp_path: Path) -> None:
     # ``amplifier_home`` is the .amplifier dir itself (as keys_file resolves it).
+    # OpenAI is known, but without a config.providers entry it is not mounted;
+    # the packaged Anthropic provider therefore still needs onboarding.
     home = tmp_path / "home"
     home.mkdir()
     (home / "keys.env").write_text("OPENAI_API_KEY=sk-o\n", encoding="utf-8")
+    assert not setup.has_configured_provider(tmp_path / "proj", home)
+
+
+def test_has_configured_provider_default_key_in_keys_env_counts(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "keys.env").write_text("ANTHROPIC_API_KEY=sk-a\n", encoding="utf-8")
     assert setup.has_configured_provider(tmp_path / "proj", home)
 
 
@@ -176,7 +185,9 @@ async def test_onboarding_choices_falls_back_to_known_table(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_onboarding_choices_offers_uninstalled_catalog_providers(monkeypatch) -> None:
+async def test_onboarding_choices_offers_uninstalled_catalog_providers(
+    monkeypatch, tmp_path
+) -> None:
     # The gap that hid vLLM from `amplifier-tui init` on a fresh machine:
     # entry-point discovery only sees INSTALLED modules, and the old
     # known-credential table had no vllm entry. The module catalog is the
@@ -185,7 +196,9 @@ async def test_onboarding_choices_offers_uninstalled_catalog_providers(monkeypat
         return ()
 
     monkeypatch.setattr(setup, "discover_providers", _empty)
-    choices = await setup.onboarding_choices()
+    # Isolate the catalog assertion from the developer's real global settings:
+    # a user-level provider source override is intentionally higher precedence.
+    choices = await setup.onboarding_choices(tmp_path / "home", tmp_path / "project")
     by_id = {c.module_id: c for c in choices}
     assert "provider-vllm" in by_id
     assert by_id["provider-vllm"].source_uri == setup.PROVIDER_SOURCES["provider-vllm"]

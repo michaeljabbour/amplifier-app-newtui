@@ -33,6 +33,7 @@ from typing import Any
 import yaml
 
 from .compaction import apply_compaction_settings
+from .source_lock import pin_git_uri, pin_mount_plan_sources
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,31 @@ DEFAULT_BUNDLE = "tui"
 
 _URI_PREFIXES = ("git+", "file://", "http://", "https://", "zip+")
 _BUNDLE_FILE_CANDIDATES = ("{name}.md", "{name}.yaml", "{name}/bundle.md", "{name}/bundle.yaml")
+
+TUI_SETTINGS_NAMESPACE = "tui"
+"""App-owned preferences inside the shared Amplifier settings files.
+
+``~/.amplifier`` remains the platform home shared with amplifier-app-cli:
+provider configuration, routing, bundle registries/overlays, module sources,
+and caches deliberately stay shared.  Only preferences that control this
+full-screen app are projected out of ``tui:`` (see
+:data:`_TUI_SCOPED_SETTINGS`).
+"""
+
+_TUI_SCOPED_SETTINGS: dict[str, frozenset[str]] = {
+    "bundle": frozenset({"active", "deferred"}),
+    "hooks": frozenset({"suppress"}),
+    "permissions": frozenset({"governance", "write_boundary"}),
+    "preflight": frozenset({"verify_live", "verify_provider"}),
+    "pricing": frozenset({"live"}),
+    "resume": frozenset({"use_active_bundle"}),
+}
+"""Legacy top-level preference paths now owned by ``tui:``.
+
+The whitelist is intentional.  Project-wide/platform settings such as
+``config.providers`` and ``routing`` must not become app-specific merely
+because somebody placed a similarly shaped value below ``tui:``.
+"""
 
 
 # --------------------------------------------------------------------------
@@ -128,6 +154,35 @@ def merge_settings(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, A
     return merged
 
 
+def project_tui_preferences(scope: dict[str, Any]) -> dict[str, Any]:
+    """Return one scope's effective TUI view without mutating its raw data.
+
+    Canonical app preferences live under ``tui:``.  Their former top-level
+    locations remain migration fallbacks: a namespaced value wins over the
+    legacy value *within the same scope*.  Projection happens before the
+    global -> project -> local merge, so normal scope precedence is retained
+    (for example, a project legacy value still beats a global namespaced one).
+
+    Only the explicit app-owned paths in :data:`_TUI_SCOPED_SETTINGS` are
+    projected.  Platform-shared settings below an accidental ``tui:`` block
+    are ignored, while their top-level values remain untouched.
+    """
+    effective = merge_settings({}, scope)
+    namespace = scope.get(TUI_SETTINGS_NAMESPACE)
+    if not isinstance(namespace, dict):
+        return effective
+
+    projected: dict[str, Any] = {}
+    for section_name, allowed_keys in _TUI_SCOPED_SETTINGS.items():
+        section = namespace.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        selected = {key: section[key] for key in allowed_keys if key in section}
+        if selected:
+            projected[section_name] = selected
+    return merge_settings(effective, projected)
+
+
 @dataclass(frozen=True)
 class SettingsPaths:
     """The three settings scopes, least → most specific."""
@@ -172,7 +227,10 @@ def load_merged_settings_reporting(
             malformed.append(path)
             continue
         if isinstance(content, dict):
-            merged = merge_settings(merged, content)
+            # Namespace projection is deliberately per scope.  Project/local
+            # legacy fallbacks must remain more specific than global TUI
+            # preferences during the migration window.
+            merged = merge_settings(merged, project_tui_preferences(content))
     return merged, tuple(malformed)
 
 
@@ -277,7 +335,7 @@ def load_keys_env(amplifier_home: Path | None = None) -> None:
 
 
 def active_bundle_name(settings: dict[str, Any]) -> str | None:
-    """Read ``bundle.active`` from merged settings."""
+    """Read effective ``tui.bundle.active`` (or its projected legacy fallback)."""
     bundle_section = settings.get("bundle")
     if isinstance(bundle_section, dict):
         active = bundle_section.get("active")
@@ -320,7 +378,7 @@ def overlay_uris(settings: dict[str, Any]) -> tuple[str, ...]:
 
 
 def deferred_bundle_entries(settings: dict[str, Any]) -> tuple[str, ...]:
-    """The ``bundle.deferred`` opt-out list (names and/or URIs), verbatim.
+    """The effective ``tui.bundle.deferred`` opt-out list, verbatim.
 
     Fast boot (issue: 18 overlays composed on every boot): a user marks the
     heavy/slow overlays here so they are held back at startup and composed
@@ -404,12 +462,17 @@ def resolve_deferred_bundle(name: str, settings: dict[str, Any]) -> str | None:
     return None
 
 
-ROUTING_MATRIX_BUNDLE_URI = "git+https://github.com/microsoft/amplifier-bundle-routing-matrix@main"
+ROUTING_MATRIX_BUNDLE_URI = (
+    "git+https://github.com/microsoft/amplifier-bundle-routing-matrix"
+    "@6df3cc5b6a6655599a7d65ad2d37f6bb541dab20"
+)
 """The curated routing-matrix bundle (donor parity: amplifier-app-cli's
 ``WELL_KNOWN_BUNDLES['routing-matrix']['remote']``). Its ``bundle.md``
 includes ``behaviors/routing.yaml``, which mounts ``hooks-routing`` (with a
 pinned ``source``), a routing-instructions context file, and the routing
-skills. Composed as an overlay only when routing is opted in."""
+skills. Composed as an overlay only when routing is opted in. The URI is a
+full commit (upstream main verified 2026-08-05), so two clean installs resolve
+the same overlay; a future app release deliberately reviews and bumps it."""
 
 _ROUTING_BUNDLE_MARKER = "amplifier-bundle-routing-matrix"
 """Substring identifying the routing-matrix bundle in any overlay URI
@@ -455,7 +518,9 @@ def build_source_resolver(settings: dict[str, Any]) -> Callable[[str, str], str]
     """Module-source override resolver for ``Bundle.prepare()``.
 
     Precedence (least → most specific): ``sources.modules`` <
-    ``overrides.<id>.source``. Unknown modules fall through unchanged.
+    ``overrides.<id>.source``. Unknown modules inherited from the packaged
+    Anchors composition fall through the app's reviewed recursive source lock;
+    unrelated user-bundle sources remain unchanged.
     """
     combined: dict[str, str] = {}
 
@@ -472,7 +537,7 @@ def build_source_resolver(settings: dict[str, Any]) -> Callable[[str, str], str]
                 combined[str(module_id)] = override["source"]
 
     def resolve(module_id: str, source: str) -> str:
-        return combined.get(module_id, source)
+        return combined.get(module_id, pin_git_uri(source))
 
     return resolve
 
@@ -512,14 +577,15 @@ def bundle_source_overrides(settings: dict[str, Any]) -> dict[str, str]:
 
 def build_bundle_include_resolver(
     settings: dict[str, Any],
-) -> Callable[[str], str | None] | None:
-    """Include-source resolver from ``sources.bundles``, or ``None`` when unset.
+) -> Callable[[str], str | None]:
+    """Include resolver combining user redirects with the Anchors source lock.
 
     ``source add --bundles`` writes ``sources.bundles.<key> = uri``; those
     redirect the URIs a bundle *includes* (composes) before foundation resolves
     them, so a user can point a bundle include at a local checkout or a fork.
-    Returns ``None`` when no bundle sources are configured, so the default load
-    path (no registry override) is left untouched.
+    Explicit settings redirects win. Otherwise a known floating include from
+    the immutable Anchors bundle is translated to its reviewed full commit;
+    unrelated includes return ``None`` and Foundation resolves them normally.
 
     Behavioral contract mirrors amplifier-app-cli
     (``lib/bundle_loader/prepare._build_include_source_resolver``): each key is
@@ -529,8 +595,6 @@ def build_bundle_include_resolver(
     ``namespace:path`` include is never redirected (:func:`_is_namespace_path`).
     """
     overrides = bundle_source_overrides(settings)
-    if not overrides:
-        return None
 
     def resolve(source: str) -> str | None:
         if _is_namespace_path(source):
@@ -542,24 +606,20 @@ def build_bundle_include_resolver(
                 if "#" in source and "#" not in override:
                     return f"{override}#{source.split('#', 1)[1]}"
                 return override
-        return None
+        locked = pin_git_uri(source)
+        return locked if locked != source else None
 
     return resolve
 
 
 def _bundle_registry_for(settings: dict[str, Any], amplifier_home: Path) -> Any:
-    """A ``BundleRegistry`` carrying the ``sources.bundles`` include resolver.
+    """A registry carrying user include redirects and the Anchors source lock.
 
-    Returns ``None`` when no bundle-source overrides are configured, so
-    ``load_bundle`` keeps building its own default registry (behavior
-    unchanged). Otherwise a registry scoped to *amplifier_home* is created with
-    the include resolver attached, so bundle-include redirects reach
-    foundation's include resolution during load/compose (the seam app-cli uses:
-    ``registry.set_include_source_resolver`` + ``load_bundle(uri, registry=...)``).
+    The registry is always explicit: even with no user override, recursive
+    ``@main`` includes inherited from Anchors must pass through the reviewed
+    lock before Foundation resolves them.
     """
     include_resolver = build_bundle_include_resolver(settings)
-    if include_resolver is None:
-        return None
     from amplifier_foundation import BundleRegistry  # lazy: keep module import light
 
     registry = BundleRegistry(home=amplifier_home)
@@ -959,11 +1019,12 @@ def inject_telemetry_config(mount_plan: dict[str, Any], settings: dict[str, Any]
 # --------------------------------------------------------------------------
 
 NOTIFY_PUSH_HOOK = "hooks-notify-push"
-"""Module id of the mounted off-machine ntfy push hook (amplifier-bundle-notify).
+"""Module id of the legacy/external ntfy push hook.
 
-The wrapper bundle mounts it inert (no-op unless ``AMPLIFIER_NTFY_TOPIC`` is
-set); :func:`inject_notifications_config` bridges the non-secret ntfy knobs
-from settings onto its config, mirroring :func:`inject_telemetry_config`."""
+The wrapper no longer mounts it: app-owned push consumes normalized attention
+events in ``kernel.attention_push``. The bridge remains for user/deferred
+overlays that still compose this module; global suppression strips it so such
+an overlay cannot create a duplicate raw-completion destination."""
 
 # The attention-ladder env vars the native OSC 777 path (``ui/notifications``)
 # already reads. Mirrored here as literals (kernel must not import ``ui`` --
@@ -971,9 +1032,9 @@ from settings onto its config, mirroring :func:`inject_telemetry_config`."""
 _NOTIFY_ENV = "AMPLIFIER_NOTIFY"
 _NOTIFY_TERMINAL_ENV = "AMPLIFIER_TERMINAL_NOTIFICATIONS"
 
-# ntfy push env vars owned by the hooks-notify-push module. The topic is a
-# secret (public ntfy topics are world-readable) and is read ONLY from the
-# environment/keys.env -- never bridged from a settings scope.
+# ntfy push env vars shared by the app destination and legacy external hook.
+# The topic is a secret (public ntfy topics are world-readable) and is read
+# ONLY from environment/keys.env -- never bridged from a settings scope.
 _NTFY_TOPIC_ENV = "AMPLIFIER_NTFY_TOPIC"
 _NTFY_SERVER_ENV = "AMPLIFIER_NTFY_SERVER"
 _NOTIFY_PUSH_ENABLED_ENV = "AMPLIFIER_NOTIFY_PUSH_ENABLED"
@@ -1011,6 +1072,20 @@ def notification_settings(settings: dict[str, Any]) -> dict[str, Any]:
         return {}
     notifications = config.get("notifications")
     return notifications if isinstance(notifications, dict) else {}
+
+
+def notifications_globally_suppressed(settings: dict[str, Any]) -> bool:
+    """Whether the persisted notification kill switch is explicitly on.
+
+    This resolver is intentionally independent of environment precedence:
+    :func:`apply_notification_ladder_env` still lets an explicit environment
+    value control the app-owned bell/desktop ladder, while mount planning uses
+    this setting to disable the app-owned sink and remove any legacy external
+    ``hooks-notify-push`` destination. That keeps
+    ``config.notifications.suppress: true`` from silently leaving an
+    off-machine delivery path active.
+    """
+    return _coerce_bool(notification_settings(settings).get("suppress")) is True
 
 
 def merged_push_settings(notifications: dict[str, Any]) -> dict[str, Any]:
@@ -1057,7 +1132,7 @@ def apply_notification_ladder_env(
     notifications = notification_settings(settings)
     if not notifications:
         return
-    if _coerce_bool(notifications.get("suppress")) and _NOTIFY_ENV not in env:
+    if notifications_globally_suppressed(settings) and _NOTIFY_ENV not in env:
         env[_NOTIFY_ENV] = "off"
     desktop = notifications.get("desktop")
     if isinstance(desktop, dict) and _NOTIFY_TERMINAL_ENV not in env:
@@ -1073,7 +1148,7 @@ def inject_notifications_config(
     settings: dict[str, Any],
     environ: Mapping[str, str] | None = None,
 ) -> None:
-    """Bridge ``config.notifications.push``/``ntfy`` onto the ntfy push hook.
+    """Bridge push settings onto a legacy/external ntfy hook when present.
 
     Mirrors :func:`inject_telemetry_config`: finds the mounted
     ``hooks-notify-push`` entry and folds the non-secret ntfy knobs a user can
@@ -1086,7 +1161,7 @@ def inject_notifications_config(
     - ``priority`` / ``tags`` / ``debug`` -- no env equivalent, taken from
       settings as-is.
 
-    The ntfy *topic* is deliberately NOT bridged: the push module treats it as
+    The ntfy *topic* is deliberately NOT bridged: both implementations treat it as
     a secret and reads it only from ``AMPLIFIER_NTFY_TOPIC`` (keys.env), so
     ``notify set topic`` writes there, never a settings scope. A no-op when the
     hook isn't mounted or ``config.notifications`` is absent/junk -- so an
@@ -1219,7 +1294,7 @@ def resolve_bundle_name(
        where a local bundle overrides a same-named ``bundle.added`` entry.
     2. **The ``bundle.added`` registry** (:func:`added_bundle_uris`) — what
        ``bundle add <name> <uri>`` persisted. Without this step a
-       ``bundle use <added-name>`` (which writes ``bundle.active: <name>``)
+       ``bundle use <added-name>`` (which writes ``tui.bundle.active: <name>``)
        resolves to nothing at boot and the caller silently falls back to the
        default; consulting it here is the fix for that redirect being ignored.
        A registered value is itself run back through :func:`discover_bundle`
@@ -1254,7 +1329,7 @@ def resolve_bundle_source(
     asked for it by name. A settings-configured bundle that can't resolve
     degrades to :data:`DEFAULT_BUNDLE` with a notice (third element) so a
     settings file shared with another amplifier app never kills the boot
-    (field report: ``bundle.active: anchors`` → "session failed to start").
+    (field report: legacy ``bundle.active: anchors`` → "session failed to start").
     """
     name = bundle or active_bundle_name(settings) or DEFAULT_BUNDLE
     uri = resolve_bundle_name(name, settings, search_paths)
@@ -1352,8 +1427,9 @@ async def resolve_config(
     """The single configuration golden path (see module docstring).
 
     Args:
-        bundle: Bundle name or URI. Falls back to settings
-            ``bundle.active``, then :data:`DEFAULT_BUNDLE`.
+        bundle: Bundle name or URI. Falls back to effective settings
+            ``tui.bundle.active`` (including the legacy projection), then
+            :data:`DEFAULT_BUNDLE`.
         project_dir: Project root (default: cwd).
         amplifier_home: Amplifier home dir (default: ``~/.amplifier``).
         install_deps: Passed to ``Bundle.prepare()``.
@@ -1378,6 +1454,24 @@ async def resolve_config(
     )
     settings_notice = malformed_settings_notice(malformed_settings)
 
+    # A chosen model remains the root/orchestrating model; this hint only
+    # selects the companion matrix used by delegated model roles.  Explicit
+    # launch flags win for this in-memory boot, while an existing user matrix
+    # (balanced/quality/custom) is otherwise preserved.  Legacy settings with
+    # a provider default but no matrix gain the matching provider matrix so a
+    # later live /model switch has a resolver to retarget.
+    from .model_routing import apply_model_routing_hint
+
+    if provider_override is not None or model_override is not None:
+        apply_model_routing_hint(
+            settings,
+            provider=provider_override,
+            home=amplifier_home,
+            force=True,
+        )
+    else:
+        apply_model_routing_hint(settings, home=amplifier_home)
+
     # 2. Bundle discovery.
     search_paths = bundle_search_paths(project_dir, amplifier_home)
     bundle_name, uri, fallback_notice = resolve_bundle_source(bundle, settings, search_paths)
@@ -1385,11 +1479,8 @@ async def resolve_config(
     # 3. Foundation lifecycle: load → compose overlays → prepare() ONCE.
     from amplifier_foundation import load_bundle  # lazy: keep module import light
 
-    # sources.bundles (source add --bundles) redirects bundle *include* URIs.
-    # A registry carrying that include-source resolver must back every
-    # load_bundle call so the redirect reaches foundation's include resolution;
-    # with no bundle-source override this is None and load_bundle keeps its own
-    # default registry (behavior unchanged).
+    # The registry applies explicit sources.bundles redirects first, then the
+    # packaged Anchors recursive lock for inherited floating include URIs.
     registry = _bundle_registry_for(settings, amplifier_home)
 
     if progress:
@@ -1409,9 +1500,10 @@ async def resolve_config(
 
     if progress:
         progress("preparing", bundle_name)
+    source_resolver = build_source_resolver(settings)
     prepared = await composed.prepare(
         install_deps=install_deps,
-        source_resolver=build_source_resolver(settings),
+        source_resolver=source_resolver,
         progress_callback=progress,
     )
 
@@ -1419,6 +1511,7 @@ async def resolve_config(
     #    then ${VAR} placeholder expansion (reference: amplifier-app-cli
     #    expands the effective bundle config before session creation).
     mount_plan = apply_module_overrides(prepared.mount_plan, settings)
+    pin_mount_plan_sources(mount_plan, source_resolver)
     # Per-invocation ``run --provider/--model`` overrides — ephemeral to THIS
     # boot (they mutate the in-memory plan, never a settings scope file).
     apply_run_overrides(mount_plan, provider=provider_override, model=model_override)
@@ -1437,13 +1530,30 @@ async def resolve_config(
     # hook (custom destinations + legacy single-destination keys); a no-op
     # unless that behavior is composed in via a bundle.app overlay (issue #51).
     inject_telemetry_config(mount_plan, settings)
-    # Bridge settings.config.notifications -> the mounted ntfy push hook
-    # (non-secret knobs) and lower the desktop/suppress keys onto the
-    # attention-ladder env vars the native OSC 777 path reads; both no-op
-    # (byte-identical) unless config.notifications is configured (issue #106).
+    # Preserve config compatibility for a user overlay that still names the
+    # legacy ntfy hook (the TUI suppression layer always strips that producer),
+    # and lower desktop/suppress keys onto the native ladder environment. The
+    # default app-owned sink resolves the same settings directly (issue #106).
     inject_notifications_config(mount_plan, settings)
     apply_notification_ladder_env(settings)
     expand_env_placeholders(mount_plan)
+    # Full commit SHAs are immutable but the current native tool-skills git
+    # fetcher treats them as branch names. Resolve only those sources through
+    # Foundation's SHA-aware cache first; tool-skills still owns discovery and
+    # loading from the resulting local directories.
+    from .skill_sources import materialize_pinned_skill_sources
+
+    skill_sources = await materialize_pinned_skill_sources(
+        mount_plan,
+        amplifier_home=amplifier_home,
+        project_dir=project_dir,
+        progress=progress,
+    )
+    if skill_sources.failures:
+        for source, error in skill_sources.failures:
+            logger.warning("Pinned skill source unavailable: %s: %s", source, error)
+        degraded = f"{len(skill_sources.failures)} pinned skill source(s) unavailable"
+        settings_notice = f"{settings_notice} · {degraded}" if settings_notice else degraded
 
     # Overlays held back from THIS boot by bundle.deferred (fast boot). They
     # are composed on demand in-session; surfacing the count keeps deferral
@@ -1491,6 +1601,31 @@ async def prepare_overlay_bundle(
     resolves modules exactly as it would at boot. ``${VAR}`` placeholders are
     expanded from the environment (keys.env already loaded by boot). Foundation
     is imported lazily so ``--demo`` never touches it."""
+    prepared = await prepare_live_overlay_bundle(
+        uri,
+        settings,
+        amplifier_home=amplifier_home,
+        install_deps=install_deps,
+        progress=progress,
+    )
+    return prepared.mount_plan
+
+
+async def prepare_live_overlay_bundle(
+    uri: str,
+    settings: dict[str, Any],
+    *,
+    amplifier_home: Path | None = None,
+    install_deps: bool = True,
+    progress: Callable[[str, str], None] | None = None,
+) -> Any:
+    """Prepare an overlay while retaining its instruction/context renderer.
+
+    ``prepare_overlay_bundle`` remains the mount-plan-only compatibility API
+    used by warming/admin flows. The live runtime needs the full Foundation
+    ``PreparedBundle`` so it can render and inject behavioral content into the
+    already-running context before the next turn.
+    """
     amplifier_home = amplifier_home or (Path.home() / ".amplifier")
     from amplifier_foundation import load_bundle  # lazy: keep module import light
 
@@ -1500,14 +1635,26 @@ async def prepare_overlay_bundle(
     root = await load_bundle(uri, registry=registry)
     if progress:
         progress("preparing", uri)
+    source_resolver = build_source_resolver(settings)
     prepared = await root.prepare(
         install_deps=install_deps,
-        source_resolver=build_source_resolver(settings),
+        source_resolver=source_resolver,
         progress_callback=progress,
     )
     mount_plan = prepared.mount_plan
+    pin_mount_plan_sources(mount_plan, source_resolver)
     expand_env_placeholders(mount_plan)
-    return mount_plan
+    from .skill_sources import materialize_pinned_skill_sources
+
+    skill_sources = await materialize_pinned_skill_sources(
+        mount_plan,
+        amplifier_home=amplifier_home,
+        project_dir=Path.cwd(),
+        progress=progress,
+    )
+    for source, error in skill_sources.failures:
+        logger.warning("Pinned live-bundle skill source unavailable: %s: %s", source, error)
+    return prepared
 
 
 def get_project_slug(project_dir: Path | None = None) -> str:
@@ -1525,6 +1672,7 @@ def get_project_slug(project_dir: Path | None = None) -> str:
 
 __all__ = [
     "DEFAULT_BUNDLE",
+    "TUI_SETTINGS_NAMESPACE",
     "BundleNotFoundError",
     "ResolvedConfig",
     "SettingsPaths",
@@ -1547,6 +1695,7 @@ __all__ = [
     "inject_notifications_config",
     "apply_notification_ladder_env",
     "notification_settings",
+    "notifications_globally_suppressed",
     "merged_push_settings",
     "NOTIFY_PUSH_HOOK",
     "packaged_modes_dir",
@@ -1559,6 +1708,7 @@ __all__ = [
     "malformed_settings_notice",
     "merge_settings",
     "merge_tool_configs",
+    "project_tui_preferences",
     "map_provider_ids_to_instance_ids",
     "overlay_uris",
     "composed_overlay_uris",
@@ -1568,6 +1718,7 @@ __all__ = [
     "deferred_overlays_notice",
     "resolve_deferred_bundle",
     "prepare_overlay_bundle",
+    "prepare_live_overlay_bundle",
     "routing_enabled",
     "ROUTING_MATRIX_BUNDLE_URI",
     "packaged_bundles_dir",

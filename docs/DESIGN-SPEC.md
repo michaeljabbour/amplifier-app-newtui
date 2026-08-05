@@ -1,8 +1,10 @@
 # Amplifier TUI v3 — Cohesive: Compliance Specification
 
 Ground truth: `docs/design-v3-cohesive.html` (Amplifier TUI v3 - Cohesive.dc.html).
-Every item below is a testable requirement. The rebuild is done when every checkbox
-can be demonstrated in the real terminal app.
+Every item below is a testable requirement. The rebuild is done when every requirement
+can be demonstrated in the real terminal app. The literal `[ ]` markers are normative
+checklist bullets, **not implementation-status indicators**; current status and evidence
+live in the dated compliance ledger and audit artifacts.
 
 > **Precedence:** this document is the authoritative behavioral spec. Where the earlier
 > presentation spec (`docs/tui-v3-cohesive.md`) conflicts with it — palette groups,
@@ -61,10 +63,14 @@ file. Issue #210 is closed by this change.
 4. **Overlay strips** (each a bordered strip above composer, shown when active):
    - Command palette (max-height scrollable list)
    - Bottom strip: agent lanes panel (left) | plan panel (right — the turn's todo
-     checklist, `Plan n/m` header; under 90 cols the panel hides and the FooterBar
-     carries the `Plan n/m` count)
+     checklist, `Plan n/m` header); under 90 cols the two panels stack vertically
+     so the plan's expand/collapse control remains usable
    - Rewind picker strip
+   - Sessions picker strip (`↑/↓` highlight · `enter` detail · `r` resume); resume closes
+     the current runtime cleanly and relaunches the selected stored session, while copying
+     the equivalent CLI command only as a fallback
    - Queued-message strip
+   - Decision-capture strip (persistent question + submit/newline/cancel instructions)
    - Approval bar (replaces composer while open)
 5. **Composer**: left edge tinted 2px in mode accent; `[mode]` badge (clickable/cyclable) + green bold `❯` + input. Placeholder: `Message Amplifier…  ( ↑ history · ctrl+j newline · enter send · / commands )`.
 6. **Footer status bar** (bg-chrome): left = `mode <mode>` (mode color) `· <trust> · <model> · <session-short> · $<cost><yield▲><queued q1>` and optional orange `N decisions waiting · ctrl-y`; right = context-sensitive hints. The active bundle is not repeated here — item 1's title bar is its one persistent home (compliance 2026-08-02, item D4: a bundle path duplicated between the title and footer was consolidated to the top).
@@ -75,6 +81,7 @@ file. Issue #210 is closed by this change.
   - approval open → `arrows select · enter confirm · esc deny`
   - lane focused → `esc back to parent · transcript is the subagent's own`
   - palette open → `↑↓ select · enter run · esc close`
+  - sessions open → `↑↓ select · enter open · r resume · esc close`
   - running → `esc interrupt · enter steer · shift+enter queue`
   - idle → *(empty — the generic reminder isn't a persistent-frame occupant; see `/keys` and the composer placeholder below)*
 - [ ] `/keys` lists every keyboard shortcut, rendered from the same `ui/keymap.py` table the footer hints and key bindings read (item D4: removing a hint from the footer never costs discoverability).
@@ -128,10 +135,13 @@ file. Issue #210 is closed by this change.
 
 - [ ] Idle + Enter → send as user turn.
 - [ ] Running + Enter → **steer** this turn (applies at next step boundary; echoed with ↳; consumed steer removed).
-- [ ] Running + Shift+Enter (or second steer) → **queue** full next-turn message; queued strip shows `▹ queued next: "<text>" · runs when this turn ends`; footer shows ` · q1`; auto-runs at turn end (`queued message picked up`).
+- [ ] Running + Shift+Enter (or second steer) → **queue** full next-turn message; queued strip shows `▹ queued next: "<text>" · runs when this turn ends · alt+↑ recall to steer`; footer shows ` · q1`; auto-runs at turn end (`queued message picked up`). Alt+↑ or strip click atomically recalls it into an empty composer; a draft or pending steer prevents recall without losing the queue.
+- [ ] A free-text needs-you answer has priority over submit/steer/queue and slash-command routing. Choosing `Type your own` opens a persistent decision-capture strip, parks the exact draft (including paste/image payloads), Enter submits, ctrl-j inserts a newline, and Esc cancels without interrupting the turn.
 - [ ] `/` prefix opens the palette live-filtered as you type.
-- [ ] Esc priority order: lane-focus → palette → rewind → lanes → interrupt-running;
-  a second Esc within 750ms opens the existing rewind picker.
+- [ ] Esc priority order: lane-focus → palette → rewind → lanes → interrupt-running.
+  With an empty composer, a second Esc within 750ms opens the restore picker; during a
+  running turn the first Esc interrupts and the second may open the picker while close-out
+  finishes. At idle with a draft, double-Esc clears but preserves it for ↑ recall.
 
 ## 6. Command palette
 
@@ -147,12 +157,14 @@ file. Issue #210 is closed by this change.
 - [ ] Notice on open: `approval required · choose below the transcript`.
 - [ ] If a lane is focused when approval arrives → auto-return to parent with notice.
 - [ ] Deny → `⊘ blocked · <thing> · denied by user · continuing without <thing>` and the turn continues.
+- [ ] Ctrl-y on a live approval parks an answerable needs-you item AND resolves the current approval to Deny immediately; hiding the bar must never leave a future waiting.
 - [ ] Trust-boundary blocks in auto mode → deferred decision: narration explains, footer badge `1 decision waiting · ctrl-y`, run continues to a shipped-locally outcome.
 - [ ] ctrl-y / badge click → `Needs you  N deferred decision` orange block listing numbered decisions with inline actionable choice chips (e.g. `[yes · push to fork]` green on bg-tab); acting on one logs `Applying decision: …` and clears the badge.
+- [ ] Host `question` calls are posture-aware: interactive modes wait for their answer; auto mode parks the questions, returns a successful deferred result immediately, and injects any later answer once at a provider boundary.
 
 ## 8. Agent lanes & subagent focus
 
-- [ ] ctrl-t (or `/tasks`) toggles lanes panel: header `Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close` + one aligned line per subagent: `  <glyph> <name> · <activity> · <elapsed> · $<cost>` (glyph/color per state: ◐ teal running, ■ fg working, ✔ dim done, `!` orange attention (a discrete failure surfaced against a still-running lane), ✖ red error, ⊘ red cancelled — D5 AC1; error/cancelled glyphs match the post-turn delegate-summary block's own).
+- [ ] ctrl-t (or `/tasks`) toggles lanes panel: header `Agent lanes · ↑↓ select · enter focus · ctrl-o tail · esc close` + one aligned line per subagent: `  <glyph> <name> · t<turn> · <activity> · <elapsed> · $<cost>` (glyph/color per state: ◐ teal running, ■ fg working, ✔ dim done, `!` orange attention (a discrete failure, pending child approval, or denied/blocked child action surfaced against a still-running lane), ✖ red error, ⊘ red cancelled — D5 AC1; error/cancelled glyphs match the post-turn delegate-summary block's own). Approval attention is projected from the normalized child event's `session_id`; the global approval bar remains the one answer control.
 - [ ] Multi-agent turn: per-agent progress lives in the lanes panel and the delegate
   summary (§3), not per-agent transcript tree lines. Successful native file writes still
   aggregate into one expandable, diff-styled `Changed N files` row.
@@ -162,14 +174,42 @@ file. Issue #210 is closed by this change.
   cycles the pin among running lanes; the tailed lane carries a `▸` after its name in
   the panel. The root stream always preempts instantly. Tail content is ephemeral —
   never a transcript block; durable child prose lives in the lane's own transcript.
+- [ ] **Stream identity**: every visible live stream states producer and turn. Child tails
+  inherit `<name> · t<turn>` from their containing lane row/focus banner; the root peek and
+  revealed box render `main · t<turn>` from the reducer's active turn. Labels are
+  presentation metadata only and never enter the consolidated answer.
 - [ ] Selecting a lane focuses that subagent: transcript swaps to the child's own transcript with banner `focused: <name> · subagent of <parent-session> · own context window · results report back to parent · esc back`, its delegated brief as user-line `[delegated]`, its log, its state recap. Esc returns to parent (`back to parent session`).
 - [ ] Title while coordinating: `… — ✳ coordinating N agents — …`.
 
 ## 9. Rewind & checkpoints
 
-- [ ] Every turn rule records a checkpoint `{id: tN, label, cost-at-time}`.
-- [ ] ctrl-r / `/rewind` / double-Esc after interrupt / clicking a rule opens picker strip: `‹ rewind › tN · $<cost> · <label> › [enter fork] [esc close]`; ‹/› navigate, fork forks the session from that checkpoint.
-- [ ] Forking actually restores conversation state to that point (session fork in the store).
+- [ ] Cut and expose a checkpoint **before every prompt runs**, including the first and an
+  in-flight prompt; finalize that same checkpoint onto its turn rule. Record `{id: tN,
+  restore_turn_id, label, cost-at-time, workspace_id}` so the target means “immediately
+  before this prompt,” not “after this turn.” Retain the newest 100 picker/workspace targets.
+- [ ] ctrl-r / `/rewind` / clicking a rule / double-Esc with an empty composer opens
+  `‹ checkpoint · pick a prompt · before turn N · $<cost> · <label> ›` with
+  `[↑↓ code + conversation] [enter restore] [esc close]`. ←/→ navigate checkpoints; ↑/↓
+  select `code + conversation` (default), `conversation only`, or `code only`.
+- [ ] Conversation restore uses Amplifier Foundation's live context boundary, removes the
+  selected prompt and every later conversation/transcript/ledger turn only after the backend
+  accepts the change, and returns the selected prompt to the composer. Conversation-only
+  never touches files; code-only never touches conversation or composer.
+- [ ] Confirming while a turn runs requests the normal graceful interrupt, waits for turn
+  close-out, then restores. Merely opening/navigating the picker does not interrupt.
+- [ ] Code restore covers root-session `write_file`, `edit_file`, `create_file`,
+  `delete_file`, and `apply_patch` targets whose preimages can be safely captured. It undoes
+  the selected prompt and later tracked edits with per-file compare-and-swap: changed or
+  divergent files are skipped with explicit warnings while independent safe files restore.
+- [ ] Never checkpoint shell/interpreter, subagent, MCP/external, editor, or manual changes;
+  outside-workspace paths, `.git`, symlinks, hard links, non-regular files, and files over
+  8 MiB are excluded and surfaced as skips/warnings rather than overwritten. The same is
+  true for files with extended attributes/ACLs, unsafe ownership, or non-default flags.
+- [ ] Store manifests/preimages privately inside the session, persist them across resume,
+  replay interrupted restore/branch transactions before new work, and prune beyond 100
+  checkpoints. Same-workspace structured turns/restores are mutually exclusive, and a
+  failed pre-prompt checkpoint returns the unsent rich draft. This is best-effort undo, not
+  Git; there is no redo.
 
 ## 10. Ledger, evidence, context
 
@@ -195,7 +235,8 @@ file. Issue #210 is closed by this change.
 ## 12. Non-visual requirements
 
 - [ ] Built the amplifier-native way: thin app over amplifier-core; providers/tools/hooks come from mounted modules; bundle-driven config.
-- [ ] Real sessions: streaming from amplifier-core events; persistence with resume + fork.
+- [ ] Real sessions: streaming from amplifier-core events; persistence with resume,
+  conversation restore, and private workspace checkpoints.
 - [ ] Keybindings work in real terminals (document kitty-protocol need for shift+enter; graceful fallback).
 - [ ] Resize reflows transcript without corruption.
 - [ ] Mouse: click targets for rules, tool lines, lanes, palette rows, approval options, mode badge, needs-you chips (graceful no-mouse fallback).

@@ -34,6 +34,11 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..install_contract import (
+    APP_INSTALL_URI,
+    SOURCE_INSTALL_COMMAND,
+    SOURCE_INSTALL_LAUNCH_COMMAND,
+)
 from ..model.blocks import DoctorBlock, DoctorFinding
 from ..model.formatting import format_tokens_compact
 from .improve import ApprovalTally
@@ -44,15 +49,6 @@ DEFAULT_SETTINGS_PATHS = (
     Path.home() / ".amplifier" / "settings.yaml",
     Path.home() / ".amplifier" / "settings.json",
 )
-
-APP_INSTALL_URI = "git+https://github.com/michaeljabbour/amplifier-app-tui"
-"""The README's documented global-install source.
-
-Kept as a literal here rather than imported (``commands/`` may not import
-``kernel/`` -- ADR-0007 layering); pinned equal to
-``kernel.updater.APP_REPO_URL`` by a cross-check test so the two copies can
-never quietly drift apart.
-"""
 
 _UNSUPPORTED_MACHINES = frozenset({"i386", "i486", "i586", "i686", "x86"})
 """32-bit archs: uv and this app's dependencies (textual, httpx[socks], ...)
@@ -240,8 +236,8 @@ def check_path(
         looked = ", ".join(str(d) for d in dirs)
         message = (
             f"{executable} not on PATH and not found in the usual install dir(s) ({looked}) · "
-            f"install it: `uv tool install {APP_INSTALL_URI}`, then `uv tool update-shell` and "
-            "restart your terminal"
+            f"install and open setup: `{SOURCE_INSTALL_LAUNCH_COMMAND}` · if the command was "
+            "already installed, run `uv tool update-shell` and restart your terminal"
         )
     else:
         looked = ", ".join(str(d) for d in dirs)
@@ -276,6 +272,15 @@ def check_platform(system: str, machine: str) -> CheckResult:
                 f"{label} is not a supported platform · amplifier-tui is tested on macOS, "
                 "Linux, and WSL · install WSL2 (`wsl --install` in an admin PowerShell), then "
                 "reinstall from inside the WSL shell"
+            ),
+        )
+    if system not in {"Darwin", "Linux"}:
+        return CheckResult(
+            name="platform",
+            ok=False,
+            message=(
+                f"{label} is outside the supported platform matrix · use 64-bit macOS, "
+                "Linux, or WSL; no clean-install evidence is claimed for this OS"
             ),
         )
     if machine.lower() in _UNSUPPORTED_MACHINES:
@@ -398,7 +403,7 @@ def check_python_uv(facts: PythonUvFacts) -> CheckResult:
         parts.append(
             f"Python {facts.python_version} is older than the {facts.min_python}+ this app "
             f"requires · upgrade: `uv python install {facts.min_python}` (uv manages its own "
-            f"Pythons), then `uv tool install --reinstall {APP_INSTALL_URI}` to rebuild against it"
+            f"Pythons), then `{SOURCE_INSTALL_COMMAND}` to rebuild the tool"
         )
     else:
         floor = f" (>={facts.min_python})" if facts.min_python else ""
@@ -406,8 +411,8 @@ def check_python_uv(facts: PythonUvFacts) -> CheckResult:
 
     if facts.uv_version is None:
         parts.append(
-            "uv not found · install: `curl -LsSf https://astral.sh/uv/install.sh | sh` (see "
-            "https://astral.sh/uv for other platforms)"
+            f"uv not found · rerun the Amplifier TUI source installer (it installs uv): "
+            f"`{SOURCE_INSTALL_COMMAND}`"
         )
     else:
         healthy.append(f"uv {facts.uv_version}")
@@ -637,7 +642,11 @@ def check_mounts(report: MountHealth | None) -> CheckResult:
     return CheckResult(
         name="mounts",
         ok=False,
-        message=f"{' · '.join(parts)} · reinstall with `amplifier-tui update --force`",
+        message=(
+            f"{' · '.join(parts)} · refresh mounted bundles/modules with "
+            "`amplifier-tui update --force`; if the app itself is broken, rerun "
+            f"`{SOURCE_INSTALL_COMMAND}`"
+        ),
     )
 
 
@@ -645,13 +654,21 @@ def run_checks(
     *,
     mcp_stats: Iterable[McpServerStats] = (),
     approval_tallies: Iterable[ApprovalTally] = (),
+    additional_checks: Iterable[CheckResult] = (),
     settings_paths: Sequence[Path] = DEFAULT_SETTINGS_PATHS,
     package: str = PACKAGE_NAME,
     executable: str = EXECUTABLE_NAME,
     anchors_status: AnchorsPinStatus | None = None,
     mount_report: MountHealth | None = None,
 ) -> DoctorReport:
-    """Run the full named-check suite and return the report."""
+    """Run the full named-check suite and return the report.
+
+    ``additional_checks`` is the composition seam for checks that live
+    outside ``commands/``.  In particular, the top-level CLI supplies the
+    kernel's real launch-preflight result here; keeping the already-normalized
+    :class:`CheckResult` at this boundary preserves ADR-0007's rule that the
+    commands layer never imports the kernel.
+    """
     return DoctorReport(
         checks=(
             check_install(package),
@@ -665,6 +682,7 @@ def run_checks(
             check_repeated_approvals(approval_tallies),
             check_anchors_pin(anchors_status),
         )
+        + tuple(additional_checks)
     )
 
 
@@ -697,6 +715,7 @@ def run_standalone(
     *,
     mcp_stats: Iterable[McpServerStats] = (),
     approval_tallies: Iterable[ApprovalTally] = (),
+    additional_checks: Iterable[CheckResult] = (),
     settings_paths: Sequence[Path] = DEFAULT_SETTINGS_PATHS,
     package: str = PACKAGE_NAME,
     executable: str = EXECUTABLE_NAME,
@@ -711,6 +730,7 @@ def run_standalone(
     report = run_checks(
         mcp_stats=mcp_stats,
         approval_tallies=approval_tallies,
+        additional_checks=additional_checks,
         settings_paths=settings_paths,
         package=package,
         executable=executable,

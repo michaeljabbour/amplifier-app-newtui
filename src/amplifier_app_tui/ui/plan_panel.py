@@ -32,13 +32,11 @@ off-screen (``ui/app_support.py:sync_plan_surfaces``).
 S7 follow-up (2026-08-04, two outstanding gaps closed): (1) the control was
 keyboard-*activatable* once focused, but nothing gave a keyboard-only user
 a way to *reach* it -- Tab is not a general focus chain in this app (it is
-claimed by mention-accept/approval nav, and shift+tab is ``cycle_mode``),
-and the composer intentionally keeps focus so typing always steers (the
-same reasoning ``ui/transcript.py``'s ``FocusHeader`` docstring records for
-S6). The fix follows this app's real idiom instead of Tab order: a
-dedicated global chord, ``toggle_plan_overflow`` (ctrl+h, ``ui/keymap.py``),
-that toggles the SAME state Enter/Space/click do -- the same way ctrl+n
-already drives ``cycle_drill`` without stealing composer focus. See
+claimed by mention-accept/approval nav, and shift+tab is ``cycle_mode``).
+The dedicated global chord, ``toggle_plan_overflow`` (ctrl+h,
+``ui/keymap.py``), now places focus on the SAME control before toggling it.
+That makes the selected ``Show less`` action explicit after expansion;
+Enter/Space can reverse it and Esc returns to the composer. See
 :func:`plan_overflow_notice` and ``TuiApp.action_toggle_plan_overflow``.
 (2) At narrow widths/short heights the control stays present, focusable,
 and click/keyboard-activatable throughout (pinned at 40/80/97/120 cols and
@@ -58,6 +56,7 @@ from collections.abc import Sequence
 from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
@@ -323,6 +322,21 @@ class _PlanOverflowControl(Static):
 
     def action_activate(self) -> None:
         self.post_message(PlanOverflowToggled())
+
+    def on_key(self, event: events.Key) -> None:
+        """Esc leaves the plan action and returns to normal composition.
+
+        Ctrl-H is the keyboard reach path and intentionally leaves this
+        control selected so Enter/Space can reverse the disclosure.  A
+        concrete escape route keeps that focus handoff from trapping typing.
+        """
+        if event.key != "escape":
+            return
+        event.stop()
+        composer = getattr(self.app, "composer", None)
+        focus_input = getattr(composer, "focus_input", None)
+        if callable(focus_input):
+            focus_input()
 
 
 class PlanPanel(VerticalScroll):

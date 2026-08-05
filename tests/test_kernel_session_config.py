@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from amplifier_app_tui.kernel.config import (
     DEFAULT_BUNDLE,
@@ -75,6 +76,111 @@ def test_settings_three_scope_merge_most_specific_wins(tmp_path: Path) -> None:
     assert active_bundle_name(settings) == "proj-bundle"
 
 
+def test_tui_namespace_wins_over_legacy_value_in_same_scope(tmp_path: Path) -> None:
+    paths = SettingsPaths.default(tmp_path / "proj", tmp_path / "home")
+    _write(
+        paths.global_settings,
+        """
+bundle:
+  active: legacy
+  app: [git+https://example.test/shared]
+tui:
+  bundle:
+    active: namespaced
+""",
+    )
+
+    settings = load_merged_settings(paths)
+    assert active_bundle_name(settings) == "namespaced"
+    # Platform-shared siblings remain top-level and are not replaced by the
+    # small app-owned bundle projection.
+    assert overlay_uris(settings) == ("git+https://example.test/shared",)
+
+
+def test_tui_namespace_projection_preserves_normal_scope_precedence(tmp_path: Path) -> None:
+    paths = SettingsPaths.default(tmp_path / "proj", tmp_path / "home")
+    _write(paths.global_settings, "tui:\n  bundle:\n    active: global-tui\n")
+    _write(paths.project_settings, "bundle:\n  active: project-legacy\n")
+    _write(paths.local_settings, "tui:\n  bundle:\n    active: local-tui\n")
+
+    settings = load_merged_settings(paths)
+    assert active_bundle_name(settings) == "local-tui"
+
+    # Removing the local scope proves that a more-specific legacy value is a
+    # migration fallback, not silently outranked by a broad global preference.
+    paths.local_settings.unlink()
+    settings = load_merged_settings(paths)
+    assert active_bundle_name(settings) == "project-legacy"
+
+
+def test_tui_namespace_cannot_shadow_platform_shared_settings(tmp_path: Path) -> None:
+    paths = SettingsPaths.default(tmp_path / "proj", tmp_path / "home")
+    _write(
+        paths.global_settings,
+        """
+config:
+  providers:
+    - module: provider-anthropic
+routing:
+  matrix: balanced
+tui:
+  config:
+    providers:
+      - module: provider-openai
+  routing:
+    matrix: accidental-app-copy
+""",
+    )
+
+    settings = load_merged_settings(paths)
+    assert settings["config"]["providers"] == [{"module": "provider-anthropic"}]
+    assert settings["routing"]["matrix"] == "balanced"
+
+
+def test_all_app_owned_preferences_project_from_tui_namespace(tmp_path: Path) -> None:
+    paths = SettingsPaths.default(tmp_path / "proj", tmp_path / "home")
+    _write(
+        paths.global_settings,
+        """
+tui:
+  bundle:
+    deferred: [heavy]
+  hooks:
+    suppress: [hook-noisy]
+  permissions:
+    governance: gated
+    write_boundary: guarded
+  preflight:
+    verify_provider: false
+    verify_live: true
+  pricing:
+    live: false
+  resume:
+    use_active_bundle: true
+""",
+    )
+
+    settings = load_merged_settings(paths)
+    assert settings["bundle"]["deferred"] == ["heavy"]
+    assert settings["hooks"]["suppress"] == ["hook-noisy"]
+    assert settings["permissions"] == {
+        "governance": "gated",
+        "write_boundary": "guarded",
+    }
+    assert settings["preflight"] == {
+        "verify_provider": False,
+        "verify_live": True,
+    }
+    assert settings["pricing"]["live"] is False
+    assert settings["resume"]["use_active_bundle"] is True
+
+
+def test_malformed_tui_namespace_safely_falls_back_to_legacy(tmp_path: Path) -> None:
+    paths = SettingsPaths.default(tmp_path / "proj", tmp_path / "home")
+    _write(paths.global_settings, "bundle:\n  active: legacy\ntui: [not, a, mapping]\n")
+    assert active_bundle_name(load_merged_settings(paths)) == "legacy"
+
+
 def test_settings_missing_and_malformed_files_skipped(tmp_path: Path) -> None:
     paths = SettingsPaths.default(tmp_path / "p", tmp_path / "h")
     _write(paths.global_settings, ": not: valid: yaml: [\n")
@@ -112,11 +218,16 @@ def test_bundle_source_overrides_reads_sources_bundles() -> None:
     assert bundle_source_overrides(settings) == {"amplifier-bundle-foo": "/local/foo"}
 
 
-def test_build_bundle_include_resolver_none_when_unset() -> None:
-    # No sources.bundles -> None, so resolve_config keeps the default load path
-    # (load_bundle builds its own registry) untouched.
-    assert build_bundle_include_resolver({}) is None
-    assert build_bundle_include_resolver({"sources": {"modules": {"a": "/b"}}}) is None
+def test_build_bundle_include_resolver_applies_builtin_lock_when_unset() -> None:
+    # The app always supplies a resolver now: without user redirects it pins
+    # Anchors' recursive defaults and leaves unrelated includes untouched.
+    resolve = build_bundle_include_resolver({})
+    pinned = resolve(
+        "git+https://github.com/microsoft/amplifier-foundation@main"
+        "#subdirectory=behaviors/logging.yaml"
+    )
+    assert pinned is not None and "@main" not in pinned
+    assert resolve("git+https://github.com/example/unrelated@main") is None
 
 
 def test_build_bundle_include_resolver_substring_match_and_fragment() -> None:
@@ -693,6 +804,113 @@ async def test_resolve_config_bridges_routing_settings_into_mounted_hook(
     assert routing["config"]["default_matrix"] == "anthropic"  # settings won
     assert routing["config"]["overrides"] == {"coding": {"candidates": []}}
     assert str(home / "routing") in routing["config"]["custom_routing_dirs"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_launch_model_switches_companion_matrix_in_memory_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--provider/--model`` keeps the exact root model and matching matrix.
+
+    ``routing.enabled: false`` makes this a fully offline test while the local
+    sourceless hook still exposes which matrix the launch selected.  The
+    settings file must retain the user's persisted ``balanced`` choice.
+    """
+    project = tmp_path / "proj"
+    home = tmp_path / "home"
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    _write(project / ".amplifier" / "bundles" / "routing-local.md", ROUTING_LOCAL_BUNDLE)
+    settings_path = project / ".amplifier" / "settings.yaml"
+    _write(
+        settings_path,
+        "config:\n"
+        "  providers:\n"
+        "    - module: provider-openai\n"
+        "      config: {priority: 1, default_model: gpt-persisted}\n"
+        "    - module: provider-anthropic\n"
+        "      config: {priority: 2, default_model: claude-persisted}\n"
+        "routing:\n"
+        "  enabled: false\n"
+        "  matrix: balanced\n",
+    )
+
+    resolved = await resolve_config(
+        "routing-local",
+        project_dir=project,
+        amplifier_home=home,
+        install_deps=False,
+        provider_override="anthropic",
+        model_override="claude-exact-launch",
+    )
+
+    hooks = resolved.mount_plan.get("hooks") or []
+    routing_hook = next(h for h in hooks if h.get("module") == "hooks-routing")
+    assert routing_hook["config"]["default_matrix"] == "anthropic"
+    anthropic = next(
+        provider
+        for provider in resolved.mount_plan["providers"]
+        if provider.get("module") == "provider-anthropic"
+    )
+    assert anthropic["config"]["default_model"] == "claude-exact-launch"
+    assert anthropic["config"]["priority"] == 0
+    assert yaml.safe_load(settings_path.read_text(encoding="utf-8"))["routing"]["matrix"] == (
+        "balanced"
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_launch_enables_routing_overlay_when_root_has_no_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit launch cannot inherit a persisted routing opt-out.
+
+    The root has no ``hooks-routing`` entry. Pointing the curated overlay URI
+    at a tiny local bundle proves the real resolve/load/compose path adds it
+    for this invocation, while the settings file remains unchanged.
+    """
+    project = tmp_path / "proj"
+    home = tmp_path / "home"
+    monkeypatch.setenv("AMPLIFIER_HOME", str(home))
+    _write(project / ".amplifier" / "bundles" / "mini.md", MINI_BUNDLE)
+    routing_overlay = tmp_path / "routing-overlay.md"
+    _write(routing_overlay, ROUTING_LOCAL_BUNDLE)
+    monkeypatch.setattr(
+        "amplifier_app_tui.kernel.config.ROUTING_MATRIX_BUNDLE_URI",
+        str(routing_overlay),
+    )
+    settings_path = project / ".amplifier" / "settings.yaml"
+    _write(
+        settings_path,
+        "config:\n"
+        "  providers:\n"
+        "    - module: provider-anthropic\n"
+        "      config: {priority: 1, default_model: claude-persisted}\n"
+        "routing:\n"
+        "  enabled: false\n"
+        "  matrix: balanced\n",
+    )
+
+    resolved = await resolve_config(
+        "mini",
+        project_dir=project,
+        amplifier_home=home,
+        install_deps=False,
+        provider_override="anthropic",
+        model_override="claude-exact-launch",
+    )
+
+    assert resolved.overlays == (str(routing_overlay),)
+    hooks = resolved.mount_plan.get("hooks") or []
+    routing_hook = next(hook for hook in hooks if hook.get("module") == "hooks-routing")
+    assert routing_hook["config"]["default_matrix"] == "anthropic"
+    anthropic = next(
+        provider
+        for provider in resolved.mount_plan["providers"]
+        if provider.get("module") == "provider-anthropic"
+    )
+    assert anthropic["config"]["default_model"] == "claude-exact-launch"
+    persisted = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+    assert persisted["routing"] == {"enabled": False, "matrix": "balanced"}
 
 
 CONTEXT_SIMPLE_BUNDLE = """---

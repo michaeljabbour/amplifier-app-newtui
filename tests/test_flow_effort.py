@@ -63,6 +63,7 @@ async def test_ctrl_e_suppressed_while_an_approval_owns_the_keyboard() -> None:
     async with app.run_test(size=SIZE) as pilot:
         await seed_done(pilot, app)
         # Mount an approval (the bar owns the keyboard, spec §7).
+        app.set_mode_by_id("chat")
         app.present_approval("t-1", "Run `pytest -q`?", ("Allow once", "Deny"))
         await pilot.pause()
         assert app.approval_bar is not None

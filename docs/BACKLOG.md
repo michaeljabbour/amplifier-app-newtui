@@ -4,14 +4,11 @@
 This file indexes them (background, file:line evidence, and acceptance criteria live in each
 issue) alongside the shipped ledger and non-goals.
 
-**Campaign status (2026-07-23):** the 2026-07-22 audit backlog (#21–#54) has been driven to
-done — 34 PRs merged: the backlog attractor's 33/33-green run (PRs in the #55–#89 range, per
-`54d8a1d`) plus the fresh `ruff format` cut #92. Every issue below is **closed** except
-**#29** (hygiene — format shipped in #92; residual lint/pyright/dedup items remain) and
-**#49** (forge capability tier — design merged in #57, implementation underway on
-`auto/forge-capability-tier-impl`). Two follow-ups filed during the campaign are also open
-(**#90**, **#91**). The **Status** column cites the merging PR; treat GitHub as the source of
-truth.
+**Campaign status (verified 2026-08-05):** the 2026-07-22 audit backlog (#21–#54) and its
+two follow-ups (#90, #91) are closed. The backlog-attractor campaign landed the PRs listed
+below; the later hygiene closure is #99, the Forge implementation is #94, live-tail
+attachment is #97, and clean lane summaries are #95. The **Status** column cites the
+merging PR; GitHub remains the source of truth.
 
 Calibrated 2026-07-22 against `main` (`ac854ef`): the 2026-07 five-specialist audit
 (architecture, security, quality, tests, reliability + deterministic lint) was
@@ -36,7 +33,7 @@ touches amplifier-core.
 | [#26](https://github.com/michaeljabbour/amplifier-app-tui/issues/26) | ✅ #55 (decision doc) | Governance: classifier allows unrecognized EXEC by default — decide posture |
 | [#27](https://github.com/michaeljabbour/amplifier-app-tui/issues/27) | ✅ #64 | ui-events.jsonl hot path: per-token open/write/close; deltas filtered on read not write |
 | [#28](https://github.com/michaeljabbour/amplifier-app-tui/issues/28) | ✅ #65 | Behavioral test gaps: real AppCommandContext, RealRuntime op wrappers, wall-clock flake |
-| [#29](https://github.com/michaeljabbour/amplifier-app-tui/issues/29) | 🟢 open | Hygiene: `ruff format` landed via #92 (superseded #66, closed unmerged). **Open:** BLE001 lint select, pyright strict verdict docs, token-formatter dedup |
+| [#29](https://github.com/michaeljabbour/amplifier-app-tui/issues/29) | ✅ #99 | Hygiene: `ruff format`, BLE001 lint selection, Pyright strict verdict, and token-formatter dedup |
 | [#30](https://github.com/michaeljabbour/amplifier-app-tui/issues/30) | ✅ #69 | Collapse the session-op passthrough ladder (14 ops × 5 sites → one typed dispatch) |
 | [#31](https://github.com/michaeljabbour/amplifier-app-tui/issues/31) | ✅ #70 | Extract SessionOpsController from ui/app.py |
 | [#32](https://github.com/michaeljabbour/amplifier-app-tui/issues/32) | ✅ #71 | Extract LaneReducer from TranscriptReducer |
@@ -88,16 +85,51 @@ touches amplifier-core.
 
 | Issue | Status | Item |
 |---|---|---|
-| [#49](https://github.com/michaeljabbour/amplifier-app-tui/issues/49) | 🟢 open | Forge-driven capability test tier — validate the real TUI through a real terminal. Design/decision merged (#57); **implementation in progress** on `auto/forge-capability-tier-impl` |
+| [#49](https://github.com/michaeljabbour/amplifier-app-tui/issues/49) | ✅ #94 | Forge-driven capability test tier — validate the real TUI through a real terminal (design #57, implementation #94) |
 | [#50](https://github.com/michaeljabbour/amplifier-app-tui/issues/50) | ✅ #58 (decision doc) | Self-improvement loop over skills/harness (SkillOpt discipline, AIDE² safeguards; references documented in-issue) |
 
-## Follow-ups filed during the campaign (open)
+## Follow-ups filed during the campaign
 
 | Issue | Status | Item |
 |---|---|---|
-| [#90](https://github.com/michaeljabbour/amplifier-app-tui/issues/90) | 🟢 open | Live tail: attach the streaming block to the lane/item it's working on (not a detached bottom strip) |
-| [#91](https://github.com/michaeljabbour/amplifier-app-tui/issues/91) | 🟢 open | Lane "done" row shows raw markdown result instead of a clean summary |
+| [#90](https://github.com/michaeljabbour/amplifier-app-tui/issues/90) | ✅ #97 | Live tail: attach the streaming block to the lane/item it's working on (not a detached bottom strip) |
+| [#91](https://github.com/michaeljabbour/amplifier-app-tui/issues/91) | ✅ #95 | Lane "done" row shows a clean summary instead of raw markdown |
 | [#210](https://github.com/michaeljabbour/amplifier-app-tui/issues/210) | ✅ #216 | Light theme (`paper`) shipped: selectable via `/theme paper` (or cycling bare `/theme`), every theme's token pairs WCAG-contrast-tested (`tests/test_ui_theme_contrast.py`) -- AC4 fully met, no longer scoped out. See docs/DESIGN-SPEC.md §1 |
+
+## Supplemental engineering ledger (working tree, 2026-08-05)
+
+This is a compact index to the complete
+[supplemental acceptance matrix](audits/feedback-status-2026-08-05.md#supplemental-engineering-work-matrix).
+It is separate from the original 23-story **19 PASS · 4 PARTIAL · 0 GAP**
+score. The supplemental aggregate is **17 PASS (local evidence) · 4 PARTIAL**;
+the partial rows are item 4, item 13, item 20, and item 21. Item 11 is counted
+among the 17 local passes while B8 remains PARTIAL overall. Every `PASS` below means
+**local working-tree evidence only**; it does not mean committed, pushed,
+reviewed, merged, installed, deployed, or released.
+
+| # | Work | Engineering status | Remaining or publication boundary |
+|---|---|---|---|
+| 1 | `/model` | **PASS (local only)** | Providers retain model/capability authority; publish the working-tree routing and rollback changes. |
+| 2 | `/effort` | **PASS (local only)** | Validate or disclose provider-specific `none`/`minimal` semantics; publish the local propagation/reporting work. |
+| 3 | Manual compaction | **PASS (local only; AC1–AC5)** | Publish the serialized, bounded manual-operation contract, including rich-input preservation and stale-worker fencing; automatic rebuild behavior is item 4. |
+| 4 | Repeated automatic compaction | **PARTIAL (upstream); AC1/2/3/5 pass, AC4 open** | `context-simple` still needs cached/incremental request-view maintenance and hysteresis. |
+| 5 | Steering/queue recall | **PASS (local only)** | Publish the identity-owned rich-capsule admission/recall behavior. |
+| 6 | Exact custom decisions | **PASS (local only)** | Publish the exact-text/exact-decision capture path. |
+| 7 | Auto deny/tool-failure continuation | **PASS (local only)** | Publish the deny-and-continue and same-turn failure-recovery behavior. |
+| 8 | Settings namespace [#187](https://github.com/michaeljabbour/amplifier-app-tui/issues/187) | **PASS (local only); issue open** | Commit/review/merge the `tui:` whitelist and fallback. `bundle clear` removes/prunes the canonical key when no legacy value exists, but preserves and null-masks legacy `bundle.active` when it does. |
+| 9 | Real streaming [#129](https://github.com/michaeljabbour/amplifier-app-tui/issues/129) | **PASS (local Anthropic evidence); issue open** | The currently pinned Anthropic path satisfies the local runtime proof; #129's acceptance list remains unchecked and the result is neither provider-generic nor published. |
+| 10 | B7 notification durability | **PASS (local only)** | Publish locked record/ack mutation and terminal-clear priority; live ntfy/mobile smoke remains release evidence. |
+| 11 | B8 listener hardening | **PASS (local listener); B8 overall PARTIAL** | Ship a phone-reachable authenticated TLS/tunnel and authorized Teams/Outlook tenant integrations. |
+| 12 | Locked source installer | **PASS (local installer); D1 publication PARTIAL** | Review/merge the script, then verify the raw URL from a clean shell. Inventory reproducibility is limited to the same OS/architecture/Python/marker target. |
+| 13 | Cold-boot activation [#130](https://github.com/michaeljabbour/amplifier-app-tui/issues/130) | **PARTIAL (upstream)** | Pinned Foundation `dea5bd8` equals inspected upstream `main` and still needs cross-process locking, timeout/retry, signal-aware diagnostics, and lossless state merging; a deterministic probe reproduced overlap and lost state. |
+| 14 | Short-ID resume (related broad wrap-up [#148](https://github.com/michaeljabbour/amplifier-app-tui/issues/148)) | **PASS (local sub-contract); issue open** | Publish the shared resolver, deterministic exit codes, completion, and canonical 8-character hints. #148 is a broad open recap, not a short-ID-specific closure issue. |
+| 15 | Resume-time orphan-tool repair | **PASS (local, bounded contract)** | Publish recognized stored-shape repair, uncertainty warning, and successful-save-before-mount behavior. Persistence is best-effort on `OSError`, and no all-provider wire-format claim is made. |
+| 16 | Interactive routing-matrix choice | **PASS (local only)** | Publish the intuitive number/name picker and literal shortcut help. Until then, users of the old build can enter `s1` or run `amplifier-tui routing use NAME`. |
+| 17 | Full-SHA source activation compatibility | **PASS (local installed snapshot); D1 publication PARTIAL** | Publish/reinstall the application dependency containing Foundation's commit-aware clone path. Both reported SHAs are valid and cold-resolve locally; `amplifier-tui update` cannot replace the old application runtime. |
+| 18 | Root model → delegate matrix synchronization | **PASS (local only)** | Publish the model/matrix synchronization work. The exact selected model remains the root/orchestrating model; the matching provider-family matrix governs delegated roles. Live resolver switching remains compatibility-scoped to the audited pinned routing runtime. |
+| 19 | Live skill activation | **PASS (local only)** | Publish the context-injection path. Successful inline instructions or completed fork results affect the next model turn; missing content/context never reports a false success. |
+| 20 | Live bundle and additive module loading | **PARTIAL (safe additive/content path local; singleton identity boundary open)** | Bundle instructions/context and additive providers, tools, hooks, and agent definitions load into the current session; proven live configuration propagates transactionally to child sessions, providers remain idle until selected, and failed remaps restore identity/order. Orchestrator, context-module, existing-provider, and explicit agent-module identity replacement remains a new-session boundary. |
+| 21 | Live MCP reconciliation | **PARTIAL (new/owned servers live; boot-owned replacement upstream-bound)** | New and TUI-owned servers connect/reload/remove live. Boot-owned server replacement remains a restart boundary until the upstream aggregate exposes ownership-aware reconciliation. |
 
 ## Non-goals
 
@@ -106,10 +138,14 @@ touches amplifier-core.
   than rainbow soup.
 - **Ingested-source deletion** (corpus "Delete original" UI) — not a tui
   feature; no amplifier tool exposes a corpus-document delete.
-- **Admin surface** — `module`, `source`-authoring, `tool invoke`, `reset`,
+- **Admin surface** — `source`-authoring, `tool invoke`, `reset`,
   `--install-completion`, `session cleanup`, replay: one-time/admin operations
   that belong in a small separate `amplifier-admin` CLI, not the TUI. (The
-  `source` *override* group in #46 is the exception, kept for parity.)
+  `source` *override* group in #46 is the exception, kept for parity.) The TUI's
+  `/module load` is deliberately narrower: additive provider/tool/hook modules
+  mount in the current session and propagate to subsequently spawned child
+  sessions; existing-provider and orchestrator/context identity changes remain
+  a next-session operation.
 
 ---
 
@@ -122,7 +158,8 @@ no post-rewind ghosts #75), the ui/app.py and transcript.py refactors (#69–#72
 parity (onboarding #80, `/config` #83, session-manager #82, `source`/routing #81/#87,
 `@mention` #85, notifications #84, telemetry bridge #86), perf (5k transcript budget #79,
 no per-token delta persistence #64), and six 2026-07-22 design/decision docs (#55, #56, #57,
-#58, #59, #60). Open residue: #29 (hygiene) and #49 (forge tier, in progress).
+#58, #59, #60). The hygiene and Forge residues subsequently closed in #99 and #94;
+follow-ups #90 and #91 closed in #97 and #95.
 
 **Amplifier-native / CLI parity** — in-session commands over the live
 coordinator; skills (`/skills`, `/skill`); MCP (`tool-mcp` + `/mcp` over
@@ -144,8 +181,8 @@ provider-reported cost authoritative, live Helicone pricing wired at startup
 `~$` marker for unpriced usage, `--resume` cost re-seed.
 
 **Plan/TODO** — real `todo` tool adapter → PlanBlock (demo `plan` shape
-coexists); PlanPanel bottom strip + `Plan N/M` narrow-footer fallback
-(responsive either/or, PR #13).
+coexists); PlanPanel bottom strip, side-by-side with lanes on wide terminals
+and stacked below them on narrow terminals so expansion stays interactive.
 
 **Streaming & inline** — committed lines use the final renderer during
 streaming; `**bold**`, `` `code` ``, `[text](url)` in `_inline()`; blockquotes

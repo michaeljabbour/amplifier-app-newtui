@@ -145,37 +145,175 @@ async def set_model(coordinator: Any, model: str) -> tuple[bool, str]:
 
     amplifier exposes no coordinator ``set_model``; app-cli sets
     ``provider.default_model`` (and the provider ``config`` dict) directly,
-    plus a ``ui.model_override`` session-state marker. Applies to the
-    provider that advertises *model* when known, else the primary one."""
+    plus a ``ui.model_override`` session-state marker. Target resolution is:
+
+    1. the explicit ``/model <provider> <model>`` form — a two-token arg
+       whose first token names a mounted provider;
+    2. the ONE provider whose ``list_models()`` advertises *model* (beyond
+       the reference, so a bare model name can cross providers).
+
+    A sticky prior override never beats present-tense provider evidence. Bare
+    names advertised by zero or multiple providers fail explicitly and direct
+    the user to ``/model <provider> <model>``; otherwise a stale override could
+    silently send a valid model name to the wrong API.
+
+    When the target is not the serving provider its priority is lowered
+    below every other mounted provider's, or the switch would mutate a
+    provider that never answers: the orchestrator selects strictly by
+    priority-min (``loop-streaming::_select_provider``), with no per-turn
+    override. A ``"/model foo bar"`` whose first token is NOT a mounted
+    provider is treated as a single (space-containing) bare model name and
+    must therefore be advertised exactly once too.
+    """
     model = model.strip()
     if not model:
-        return (False, "usage: /model <name>")
+        return (False, "usage: /model [provider] <name>")
     providers = _providers(coordinator)
     if not providers:
         return (False, "no provider mounted")
 
-    target_name, target = _primary_provider(coordinator)
-    for name, provider in providers.items():
-        lister = getattr(provider, "list_models", None)
-        if callable(lister):
-            try:
-                if model in _model_ids(await _maybe_await(lister())):
-                    target_name, target = str(name), provider
-                    break
-            except Exception:  # noqa: BLE001
-                continue
+    target_name: str | None = None
+    parts = model.split(maxsplit=1)
+    if len(parts) == 2 and parts[0] in providers:
+        target_name, model = parts[0], parts[1].strip()
+        if not model:
+            return (False, "usage: /model [provider] <name>")
+    if target_name is None:
+        advertised_by: list[str] = []
+        for name, provider in providers.items():
+            lister = getattr(provider, "list_models", None)
+            if callable(lister):
+                try:
+                    if model in _model_ids(await _maybe_await(lister())):
+                        advertised_by.append(str(name))
+                except Exception:  # noqa: BLE001
+                    continue
+        if len(advertised_by) > 1:
+            choices = ", ".join(advertised_by)
+            return (
+                False,
+                f"model {model!r} is advertised by multiple providers ({choices}); "
+                "use /model <provider> <model>",
+            )
+        if not advertised_by:
+            return (
+                False,
+                f"model {model!r} is not advertised by any mounted provider; "
+                "use /model <provider> <model> to override explicitly",
+            )
+        target_name = advertised_by[0]
+    target = providers.get(target_name) if target_name else None
     if target is None:
         return (False, "no provider mounted")
 
+    old_default = getattr(target, "default_model", "")
+    config = getattr(target, "config", None)
+    missing = object()
+    old_config_default = (
+        config.get("default_model", missing) if isinstance(config, dict) else missing
+    )
     try:
         target.default_model = model
     except Exception:  # noqa: BLE001 — some providers freeze attributes
         return (False, f"provider {target_name} does not allow model override")
-    config = getattr(target, "config", None)
     if isinstance(config, dict):
         config["default_model"] = model
+    if not _promote_to_serving(providers, target_name):
+        # Never report a switch that cannot actually route a turn. Restore
+        # the model mutation as well as the helper's priority rollback so a
+        # failed cross-provider switch is atomic from the user's point of
+        # view.
+        try:
+            target.default_model = old_default
+        except Exception:  # noqa: BLE001 — best-effort rollback after a successful set
+            pass
+        if isinstance(config, dict):
+            if old_config_default is missing:
+                config.pop("default_model", None)
+            else:
+                config["default_model"] = old_config_default
+        return (
+            False,
+            f"provider {target_name} has a read-only routing priority; model switch not applied",
+        )
     _set_session_state(coordinator, "ui.model_override", {"provider": target_name, "model": model})
-    return (True, f"{target_name} · {model}")
+    detail = f"{target_name} · {model}"
+    try:
+        from .model_routing import LiveMatrixSelection, activate_live_matrix
+
+        matrix = await activate_live_matrix(coordinator, target_name)
+    except Exception as error:  # noqa: BLE001 — the exact root-model switch already succeeded
+        matrix = LiveMatrixSelection(reason=f"live routing update failed unexpectedly: {error}")
+    if matrix.live and matrix.matrix:
+        detail += f" · routing {matrix.matrix}"
+    else:
+        reason = matrix.reason or "live routing update was unavailable"
+        _set_session_state(
+            coordinator,
+            "ui.routing_matrix",
+            {
+                "name": matrix.matrix,
+                "live": False,
+                "reason": reason,
+                "divergent": True,
+            },
+        )
+        detail += f" · delegated routing unchanged ({reason}); root/delegates may diverge"
+    return (True, detail)
+
+
+def _promote_to_serving(providers: dict[str, Any], name: str) -> bool:
+    """Make *name* the priority-min provider so IT serves the next turn.
+
+    The orchestrator reads the ``priority`` ATTRIBUTE a provider snaps hot
+    at construction before falling back to its ``config`` dict — both must
+    be written, attribute first, so ``loop-streaming::_select_provider``
+    and :func:`_primary_provider` agree. Skipped when *name* is already
+    strictly lowest (a tie can still resolve elsewhere in mount order, so
+    ties promote). One below the others' minimum mirrors the boot-time
+    ``--provider`` promotion (``config.apply_run_overrides`` stamps 0).
+    """
+    target = providers.get(name)
+    others = [provider for key, provider in providers.items() if key != name]
+    if target is None or not others:
+        return target is not None
+    min_others = min(_provider_priority(provider) for provider in others)
+    if _provider_priority(target) < min_others:
+        return True
+    promoted = min_others - 1
+    missing = object()
+    old_attr = getattr(target, "priority", missing)
+    config = getattr(target, "config", None)
+    old_config = config.get("priority", missing) if isinstance(config, dict) else missing
+    try:
+        target.priority = promoted
+    except Exception:  # noqa: BLE001 — config-backed properties may still promote
+        pass
+    if isinstance(config, dict):
+        config["priority"] = promoted
+    if _provider_priority(target) < min_others:
+        return True
+
+    # The orchestrator always prefers an existing ``priority`` attribute
+    # over config. A stale read-only snapshot therefore cannot be rescued
+    # by changing config alone. Roll back and fail closed rather than claim
+    # that a provider/model is active while another provider keeps serving.
+    if old_attr is not missing:
+        try:
+            target.priority = old_attr
+        except Exception:  # noqa: BLE001 — it was read-only in this failure shape
+            pass
+    if isinstance(config, dict):
+        if old_config is missing:
+            config.pop("priority", None)
+        else:
+            config["priority"] = old_config
+    return False
+
+
+def _session_state(coordinator: Any) -> dict[str, Any]:
+    state = getattr(coordinator, "session_state", None)
+    return state if isinstance(state, dict) else {}
 
 
 def _orchestrator_config(coordinator: Any) -> dict[str, Any] | None:
@@ -195,12 +333,27 @@ def normalize_effort(value: str) -> str | None:
 
 
 def get_effort(coordinator: Any) -> str | None:
-    """Current ``reasoning_effort`` from the mounted orchestrator config."""
+    """The effort the next turn will effectively run at.
+
+    The per-turn override in the orchestrator config
+    (``request.reasoning_effort``) wins when set; otherwise the SERVING
+    provider's own ``reasoning_effort``/``effort`` config applies (the
+    provider's config-level fallback), so a bare ``/effort`` and the
+    footer reflect what the provider will actually do instead of
+    reporting "default" while e.g. ``effort: max`` is configured.
+    """
     config = _orchestrator_config(coordinator)
-    if config is None:
-        return None
-    value = config.get("reasoning_effort")
-    return str(value) if value else None
+    if config is not None:
+        value = config.get("reasoning_effort")
+        if value:
+            return str(value)
+    _, provider = _primary_provider(coordinator)
+    provider_config = getattr(provider, "config", None)
+    if isinstance(provider_config, dict):
+        value = provider_config.get("reasoning_effort") or provider_config.get("effort")
+        if value:
+            return str(value)
+    return None
 
 
 def set_effort(coordinator: Any, level: str) -> tuple[bool, str]:
@@ -259,6 +412,11 @@ async def compact_context(coordinator: Any, focus: str = "") -> tuple[bool, str]
     except Exception as error:  # noqa: BLE001
         return (False, str(error))
     after = await _message_count(context)
+    if before == after:
+        return (
+            True,
+            f"{after} messages · no persistent change; request-view compaction may be automatic",
+        )
     return (True, f"{before} → {after} messages")
 
 
@@ -278,6 +436,12 @@ async def clear_context(coordinator: Any) -> tuple[bool, int]:
         await _maybe_await(clear())
     except Exception:  # noqa: BLE001
         return (False, 0)
+    # app-cli parity: /clear ends any autonomous native loop as well as
+    # clearing its conversation context.  The orchestrator reads this exact
+    # shared state between turns, so no TUI-owned cancellation loop exists.
+    state = getattr(coordinator, "session_state", None)
+    if isinstance(state, dict):
+        state["goal"] = None
     return (True, count)
 
 
@@ -489,23 +653,32 @@ async def load_skill(coordinator: Any, name: str) -> tuple[bool, str]:
     Returns ``(ok, content_or_error)`` — on success the skill body, else a
     reason. The mounted skills-visibility hook already advertises skills to
     the agent; this is the explicit user-driven load."""
-    name = name.strip()
-    if not name:
-        return (False, "usage: /skill <name>")
+    from .skill_activation import (
+        activate_skill_result,
+        parse_skill_request,
+        skill_payload,
+    )
+
+    request = parse_skill_request(name)
+    if not request.name:
+        return (False, "usage: /skill <name> [arguments]")
     tool = _tool(coordinator, "load_skill")
     if tool is None:
         return (False, "no skills tool mounted")
     try:
-        result = await tool.execute({"skill_name": name})
+        result = await tool.execute(skill_payload(request))
     except Exception as error:  # noqa: BLE001
         return (False, str(error))
     if not getattr(result, "success", False):
         err = getattr(result, "error", None)
         message = err.get("message") if isinstance(err, dict) else err
-        return (False, str(message) if message else f"skill not found: {name}")
+        return (False, str(message) if message else f"skill not found: {request.name}")
     output = getattr(result, "output", None)
-    content = output.get("content", "") if isinstance(output, dict) else ""
-    return (True, str(content))
+    activation = await activate_skill_result(coordinator, request, output)
+    if not activation.context_added:
+        reason = activation.reason or "live context activation failed"
+        return (False, f"skill loaded but is not active for the next turn: {reason}")
+    return (True, activation.display)
 
 
 async def list_mcp_tools(coordinator: Any) -> tuple[str, ...]:
